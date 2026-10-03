@@ -60,6 +60,63 @@ def _emit_static_coverage(stream: TextIO, data: dict[str, object]) -> None:
             stream.write(f"  … 외 {omitted}개\n")
 
 
+def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
+    if data.get("percentage_kind") != "known_checkpoint_fraction":
+        return
+    stream.write(
+        "이 비율은 현재 알려진 checkpoint 기준이며 비용·시간·저장소 전체 커버리지를 "
+        "뜻하지 않습니다.\n"
+    )
+    phases = data.get("phase_counts")
+    if not isinstance(phases, dict):
+        stream.write("보안 surface: coverage 확인 불가\n")
+        return
+    for key, label in (
+        ("static", "정적 단계"),
+        ("triage", "후보 선별"),
+        ("candidate_deep", "후보 심층 처리"),
+        ("verification", "가설 검증"),
+    ):
+        values = phases.get(key)
+        if (
+            isinstance(values, dict)
+            and type(values.get("completed")) is int
+            and type(values.get("known")) is int
+        ):
+            stream.write(f"{label}: {values['completed']}/{values['known']}\n")
+    poc = phases.get("poc")
+    if (
+        isinstance(poc, dict)
+        and type(poc.get("attempted")) is int
+        and type(poc.get("completed")) is int
+    ):
+        stream.write(f"PoC 시도: {poc['attempted']}건 · 완료 {poc['completed']}건\n")
+    surface = phases.get("surface")
+    if not isinstance(surface, dict) or type(surface.get("total")) is not int:
+        stream.write("보안 surface: coverage 확인 불가\n")
+        return
+    total = surface["total"]
+    if all(
+        type(surface.get(key)) is int
+        for key in ("covered", "uncovered", "insufficient")
+    ):
+        stream.write(
+            f"보안 surface: 검토 근거 충족 {surface['covered']}/{total} · "
+            f"미검토 {surface['uncovered']} · 근거 부족 {surface['insufficient']}\n"
+        )
+        if surface["uncovered"] or surface["insufficient"]:
+            stream.write("부분 분석: 보안 surface 검토 범위가 남아 있습니다.\n")
+    else:
+        recorded_contexts = surface.get("recorded_contexts")
+        if type(recorded_contexts) is int:
+            stream.write(
+                f"보안 surface: 저장된 context {recorded_contexts}건 · "
+                f"인덱스 {total}개 · coverage 확인 전\n"
+            )
+        else:
+            stream.write("보안 surface: coverage 확인 불가\n")
+
+
 def emit_public(
     output_format: str,
     stream: TextIO,
@@ -85,10 +142,16 @@ def emit_public(
     if "status" in data:
         stream.write(f"상태: {data['status']}\n")
     if "percent" in data:
-        stream.write(f"진행률: {data['percent']}%\n")
+        label = (
+            "현재 알려진 checkpoint 비율"
+            if data.get("percentage_kind") == "known_checkpoint_fraction"
+            else "진행률"
+        )
+        stream.write(f"{label}: {data['percent']}%\n")
     if "current_stage" in data:
         stream.write(f"현재 단계: {data['current_stage']}\n")
     _emit_static_coverage(stream, data)
+    _emit_v2_phase_counts(stream, data)
     candidate_total = data.get("candidate_total_count")
     if type(candidate_total) is int:
         raw_decisions = data.get("candidate_decision_counts")
@@ -132,7 +195,13 @@ def emit_public(
     if "finding_count" in data:
         stream.write(f"Finding: {data['finding_count']}개\n")
     if data.get("status") == "PAUSED":
-        if data.get("resume_action") == "RESUME_INTERRUPTED":
+        if data.get("resume_action") == "REVALIDATE_POC":
+            stream.write(
+                "이전 PoC 결과를 현재 기준으로 재검증해야 합니다. "
+                "저장된 단계부터 재개하세요:\n\n"
+                f"sastsimi resume {data.get('analysis_id', '')}\n"
+            )
+        elif data.get("resume_action") == "RESUME_INTERRUPTED":
             stream.write(
                 "이전 실행이 중단됐습니다. 저장된 작업부터 재개하세요:\n\n"
                 f"sastsimi resume {data.get('analysis_id', '')}\n"
@@ -149,6 +218,17 @@ def emit_public(
             )
         return
     if data.get("status") in {"BLOCKED", "FAILED"}:
+        if data.get("error_code") in {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }:
+            stream.write(
+                "Codex 호출 또는 프로세스 정리 상태를 확인할 수 없어 차단되었습니다. "
+                "호출과 프로세스를 확실히 연결할 기록이 없어 운영자의 수동 검토가 "
+                "필요합니다. 현재 CLI에는 종료 확인 명령이 없으며 "
+                "resume을 반복해도 재개되지 않습니다.\n"
+            )
+            return
         if data.get("error_code") == "RECOVERY_EXHAUSTED":
             stream.write("자동 복구 한도에 도달해 수동 검토가 필요합니다.\n")
             return

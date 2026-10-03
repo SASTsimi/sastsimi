@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Mapping
 from typing import Literal, Protocol
 from uuid import uuid4
 
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.observability.agent_activity import ActivityKind
 
+from .artifacts import SimpleArtifactRepository
 from .models import (
     HYPOTHESIS_STAGES,
     STAGE_ORDER,
@@ -20,6 +23,7 @@ from .models import (
     StageStatus,
     input_reference_hash,
     terminal_gate_outcome,
+    terminal_initial_outcome,
     terminal_poc_outcome,
 )
 from .recovery import (
@@ -54,6 +58,8 @@ class RunOutcome(ContractModel):
     current_stage: SimpleStage
     status: StageStatus
     error_code: str | None = None
+    hypothesis_id: str | None = None
+    attempt_id: str | None = None
 
 
 class SimpleRuntimeRunner:
@@ -65,12 +71,14 @@ class SimpleRuntimeRunner:
         recovery: RecoveryCoordinator | None = None,
         policy_snapshot_ref: StoredDataRef | None = None,
         codex_invalid_output_resume: bool = False,
+        cleanup_artifacts: SimpleArtifactRepository | None = None,
     ) -> None:
         self.store = store
         self.handlers = handlers
         self.recovery = recovery
         self.policy_snapshot_ref = policy_snapshot_ref
         self.codex_invalid_output_resume = codex_invalid_output_resume
+        self.cleanup_artifacts = cleanup_artifacts
 
     async def resume_analysis(self, identity: CheckpointIdentity) -> RunOutcome:
         return await self.resume_hypothesis(identity)
@@ -100,14 +108,89 @@ class SimpleRuntimeRunner:
                 ):
                     continue
                 existing = self.store.get(identity, stage)
+                if existing is not None and self._has_prior_poc_recovery_decision(
+                    existing
+                ):
+                    promoted = self._promote_stopped_inconclusive_poc(existing)
+                    if promoted is not None:
+                        return promoted
+                    return RunOutcome(
+                        current_stage=stage,
+                        status=existing.status,
+                        error_code=existing.error_code,
+                        attempt_id=existing.attempt_id,
+                    )
+                if (
+                    stage is SimpleStage.POC_EXECUTION_DONE
+                    and existing is not None
+                    and existing.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+                    and not existing.retryable
+                    and not (
+                        self.codex_invalid_output_resume
+                        and existing.error_code == "INVALID_OUTPUT"
+                        and existing.attempt_number < MAX_RECOVERY_ATTEMPTS
+                    )
+                ):
+                    # A version bump cannot authorize replaying a terminal PoC.
+                    return RunOutcome(
+                        current_stage=stage,
+                        status=existing.status,
+                        error_code=existing.error_code,
+                        attempt_id=existing.attempt_id,
+                    )
                 if (
                     existing is not None
                     and existing.stage_version != STAGE_VERSION[stage]
                 ):
-                    self.store.invalidate_from(
-                        identity, stage, new_inputs=existing.input_refs
-                    )
-                    existing = None
+                    if (
+                        stage is SimpleStage.VERIFICATION_INITIAL_DONE
+                        and existing.status is StageStatus.BLOCKED
+                        and existing.error_code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
+                    ):
+                        if existing.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+                            return RunOutcome(
+                                current_stage=stage,
+                                status=existing.status,
+                                error_code=existing.error_code,
+                                attempt_id=existing.attempt_id,
+                            )
+                        existing = existing.model_copy(
+                            update={
+                                "stage_version": STAGE_VERSION[stage],
+                                "status": StageStatus.PENDING,
+                                "output_refs": (),
+                                "attempt_id": None,
+                                "error_code": None,
+                                "retryable": False,
+                            }
+                        )
+                        self.store.replace_from(existing)
+                    elif (
+                        stage is SimpleStage.POC_EXECUTION_DONE
+                        and existing.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+                        and existing.error_code == "INVALID_OUTPUT"
+                        and self.codex_invalid_output_resume
+                        and existing.attempt_number < MAX_RECOVERY_ATTEMPTS
+                    ):
+                        # Keep the exhausted-attempt boundary across a stage
+                        # version upgrade; the old failure is not a new first
+                        # attempt. replace_from also clears downstream work.
+                        existing = existing.model_copy(
+                            update={
+                                "stage_version": STAGE_VERSION[stage],
+                                "status": StageStatus.PENDING,
+                                "output_refs": (),
+                                "attempt_id": None,
+                                "error_code": None,
+                                "retryable": False,
+                            }
+                        )
+                        self.store.replace_from(existing)
+                    else:
+                        self.store.invalidate_from(
+                            identity, stage, new_inputs=existing.input_refs
+                        )
+                        existing = None
                 if existing is not None and (
                     self.recovery is not None
                     or existing.status in {StageStatus.BLOCKED, StageStatus.FAILED}
@@ -136,11 +219,13 @@ class SimpleRuntimeRunner:
                     )
                 if self.store.reusable(identity, stage, input_refs):
                     reusable = self.store.require(identity, stage)
-                    if terminal_poc_outcome(reusable) is not None:
-                        return RunOutcome(
-                            current_stage=stage,
-                            status=StageStatus.SUCCEEDED,
-                        )
+                    if terminal_initial_outcome(reusable) is not None:
+                        return self._verified_initial_terminal(reusable)
+                    if (
+                        terminal_poc_outcome(reusable) is not None
+                        or reusable.poc_stop_decision_ref is not None
+                    ):
+                        return self._verified_poc_terminal(reusable)
                     if (
                         stage is SimpleStage.VERIFICATION_FINAL_DONE
                         and reusable.verdict == "FALSE"
@@ -205,6 +290,7 @@ class SimpleRuntimeRunner:
                         current_stage=stage,
                         status=StageStatus.FAILED,
                         error_code=failure.code,
+                        attempt_id=checkpoint.attempt_id,
                     )
                 try:
                     result = await handler(checkpoint, prior)
@@ -248,11 +334,13 @@ class SimpleRuntimeRunner:
                     )
                 else:
                     completed = self.store.complete(checkpoint, result)
-                    if terminal_poc_outcome(completed) is not None:
-                        return RunOutcome(
-                            current_stage=stage,
-                            status=StageStatus.SUCCEEDED,
-                        )
+                    if terminal_initial_outcome(completed) is not None:
+                        return self._verified_initial_terminal(completed)
+                    if (
+                        terminal_poc_outcome(completed) is not None
+                        or completed.poc_stop_decision_ref is not None
+                    ):
+                        return self._verified_poc_terminal(completed)
                     if (
                         stage is SimpleStage.VERIFICATION_FINAL_DONE
                         and completed.verdict == "FALSE"
@@ -307,6 +395,67 @@ class SimpleRuntimeRunner:
             return "restart"
         return None
 
+    def _verified_initial_terminal(self, checkpoint: StageCheckpoint) -> RunOutcome:
+        artifacts = self.cleanup_artifacts
+        if artifacts is not None:
+            try:
+                artifacts.verified_terminal_initial_outcome(checkpoint)
+            except (OSError, ValueError, sqlite3.Error):
+                failed = self.store.mark_failure(
+                    checkpoint,
+                    StageFailure(
+                        code="INITIAL_VERIFICATION_EVIDENCE_INVALID",
+                        retryable=False,
+                        safe_message=(
+                            "Initial verification evidence is unavailable or invalid"
+                        ),
+                        evidence_refs=checkpoint.output_refs,
+                    ),
+                    StageStatus.BLOCKED,
+                )
+                return RunOutcome(
+                    current_stage=checkpoint.stage,
+                    status=StageStatus.BLOCKED,
+                    error_code=failed.error_code,
+                    attempt_id=failed.attempt_id,
+                )
+        return RunOutcome(
+            current_stage=checkpoint.stage,
+            status=StageStatus.SUCCEEDED,
+        )
+
+    def _verified_poc_terminal(self, checkpoint: StageCheckpoint) -> RunOutcome:
+        error_code = (
+            "POC_STOP_EVIDENCE_INVALID"
+            if checkpoint.poc_stop_decision_ref is not None
+            else "POC_TERMINAL_EVIDENCE_INVALID"
+        )
+        try:
+            if self.cleanup_artifacts is None:
+                raise ValueError(error_code)
+            self.cleanup_artifacts.verified_terminal_poc_outcome(checkpoint)
+        except (OSError, ValueError, sqlite3.Error):
+            failed = self.store.mark_failure(
+                checkpoint,
+                StageFailure(
+                    code=error_code,
+                    retryable=False,
+                    safe_message="Terminal PoC evidence is unavailable or invalid",
+                    evidence_refs=checkpoint.output_refs,
+                ),
+                StageStatus.BLOCKED,
+            )
+            return RunOutcome(
+                current_stage=checkpoint.stage,
+                status=StageStatus.BLOCKED,
+                error_code=failed.error_code,
+                attempt_id=failed.attempt_id,
+            )
+        return RunOutcome(
+            current_stage=checkpoint.stage,
+            status=StageStatus.SUCCEEDED,
+        )
+
     async def _recover_existing(
         self,
         checkpoint: StageCheckpoint,
@@ -314,6 +463,33 @@ class SimpleRuntimeRunner:
         if checkpoint.status is StageStatus.PENDING:
             return False
         if checkpoint.status is StageStatus.SUCCEEDED:
+            return False
+        promoted = self._promote_stopped_inconclusive_poc(checkpoint)
+        if promoted is not None:
+            return promoted
+        if self._has_prior_poc_recovery_decision(checkpoint):
+            return RunOutcome(
+                current_stage=checkpoint.stage,
+                status=checkpoint.status,
+                error_code=checkpoint.error_code,
+                attempt_id=checkpoint.attempt_id,
+            )
+        if checkpoint.status in {
+            StageStatus.RUNNING,
+            StageStatus.BLOCKED,
+            StageStatus.FAILED,
+        } and self._confirmed_codex_cleanup_allows_replay(checkpoint):
+            self.store.replace_from(
+                checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "output_refs": (),
+                        "attempt_id": None,
+                        "error_code": None,
+                        "retryable": False,
+                    }
+                )
+            )
             return False
         if checkpoint.status is StageStatus.RUNNING:
             return await self._recover_or_stop(
@@ -325,6 +501,33 @@ class SimpleRuntimeRunner:
                 ),
                 StageStatus.BLOCKED,
             )
+        if (
+            checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+            and checkpoint.status is StageStatus.BLOCKED
+            and checkpoint.error_code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
+        ):
+            if checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+                return RunOutcome(
+                    current_stage=checkpoint.stage,
+                    status=checkpoint.status,
+                    error_code=checkpoint.error_code,
+                    attempt_id=checkpoint.attempt_id,
+                )
+            # Earlier prompts mixed attack preconditions with installable
+            # requirements. Re-evaluate only this failed stage under the
+            # separated schema, preserving the retry count and prior agents.
+            self.store.replace_from(
+                checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "output_refs": (),
+                        "attempt_id": None,
+                        "error_code": None,
+                        "retryable": False,
+                    }
+                )
+            )
+            return False
         if (
             checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
             and checkpoint.error_code == "INVALID_OUTPUT"
@@ -339,6 +542,7 @@ class SimpleRuntimeRunner:
                     current_stage=checkpoint.stage,
                     status=checkpoint.status,
                     error_code=checkpoint.error_code,
+                    attempt_id=checkpoint.attempt_id,
                 )
             self.store.replace_from(
                 checkpoint.model_copy(
@@ -357,6 +561,7 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=checkpoint.status,
                 error_code=checkpoint.error_code,
+                attempt_id=checkpoint.attempt_id,
             )
         return await self._recover_or_stop(
             checkpoint,
@@ -369,6 +574,31 @@ class SimpleRuntimeRunner:
             checkpoint.status,
             already_failed=True,
         )
+
+    def _confirmed_codex_cleanup_allows_replay(
+        self, checkpoint: StageCheckpoint
+    ) -> bool:
+        artifacts = self.cleanup_artifacts
+        if (
+            checkpoint.identity.hypothesis_id is None
+            or artifacts is None
+            or artifacts.identity != checkpoint.identity
+        ):
+            return False
+        try:
+            if self.store.unresolved_codex_call(checkpoint.identity.analysis_id):
+                return False
+            if checkpoint.status is StageStatus.RUNNING:
+                return self.store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+            if checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED":
+                return self.store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+            if checkpoint.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED":
+                return self.store.confirmed_codex_call_covering(
+                    checkpoint.identity.analysis_id, checkpoint.updated_at
+                )
+            return False
+        except (OSError, ValueError, LookupError, sqlite3.Error):
+            return False
 
     async def _recover_or_stop(
         self,
@@ -388,6 +618,7 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=original_status,
                 error_code=failure.code,
+                attempt_id=failed.attempt_id,
             )
         if failed.attempt_number >= MAX_RECOVERY_ATTEMPTS:
             exhausted = self.store.mark_recovery_exhausted(failed)
@@ -395,14 +626,19 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=StageStatus.BLOCKED,
                 error_code=exhausted.error_code,
+                attempt_id=exhausted.attempt_id,
             )
         resolution = await self.recovery.decide(failed, failure)
         if resolution.decision.action is RecoveryAction.STOP:
             self.store.record_recovery_stop(failed, resolution)
+            promoted = self._promote_stopped_inconclusive_poc(failed)
+            if promoted is not None:
+                return promoted
             return RunOutcome(
                 current_stage=checkpoint.stage,
                 status=original_status,
                 error_code=failure.code,
+                attempt_id=failed.attempt_id,
             )
         restart_stage = self._recovery_restart_stage(
             checkpoint.stage,
@@ -414,9 +650,51 @@ class SimpleRuntimeRunner:
                 current_stage=checkpoint.stage,
                 status=original_status,
                 error_code=failure.code,
+                attempt_id=failed.attempt_id,
             )
         self.store.prepare_recovery(failed, resolution, restart_stage)
         return None
+
+    def _promote_stopped_inconclusive_poc(
+        self, checkpoint: StageCheckpoint
+    ) -> RunOutcome | None:
+        if (
+            checkpoint.stage is not SimpleStage.POC_EXECUTION_DONE
+            or checkpoint.status is not StageStatus.BLOCKED
+            or checkpoint.error_code != "POC_INCONCLUSIVE"
+            or self.cleanup_artifacts is None
+        ):
+            return None
+        try:
+            self.store.promote_inconclusive_execution(
+                checkpoint, artifacts=self.cleanup_artifacts
+            )
+        except ValueError:
+            return None
+        return RunOutcome(
+            current_stage=checkpoint.stage,
+            status=StageStatus.SUCCEEDED,
+        )
+
+    def _has_prior_poc_recovery_decision(self, checkpoint: StageCheckpoint) -> bool:
+        if (
+            checkpoint.stage is not SimpleStage.POC_EXECUTION_DONE
+            or checkpoint.status is not StageStatus.BLOCKED
+            or checkpoint.error_code != "POC_INCONCLUSIVE"
+            or checkpoint.attempt_id is None
+        ):
+            return False
+        try:
+            return any(
+                event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == checkpoint.error_code
+                for event in self.store.stage_activity(
+                    checkpoint.identity, checkpoint.stage, checkpoint.attempt_id
+                )
+            )
+        except (ValueError, sqlite3.Error):
+            # Unknown append-only history must never authorize PoC replay.
+            return True
 
     @staticmethod
     def _recovery_restart_stage(
@@ -440,8 +718,16 @@ class SimpleRuntimeRunner:
             return
         if candidate.status is not StageStatus.SUCCEEDED:
             return
+        if (
+            execution is not None
+            and execution.status is StageStatus.SUCCEEDED
+            and execution.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+        ):
+            # A completed legacy PoC needs a new stage run, not a new candidate.
+            return
         if execution is not None and (
             execution.error_code == "INVALID_OUTPUT"
+            or self._has_prior_poc_recovery_decision(execution)
             or execution.status is StageStatus.PENDING
             or execution.status in {StageStatus.BLOCKED, StageStatus.FAILED}
             and not execution.retryable

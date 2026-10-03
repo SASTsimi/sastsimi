@@ -71,6 +71,7 @@ class CodexProcessResult:
     invalid_output_category: str | None = None
     invalid_output_sha256: str | None = None
     invalid_output_source: str | None = None
+    cleanup_unconfirmed: bool = False
 
 
 @dataclass(frozen=True)

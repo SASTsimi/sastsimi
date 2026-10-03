@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -11,6 +12,7 @@ from sastsimi.composition.simple_runtime_composition import (
 from sastsimi.config.user_config import SimpleExecutionProfile, UserConfig
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attack_surfaces import AttackSurface, SurfaceIndex
 from sastsimi.simple_runtime.models import (
     CandidateTerminal,
     CheckpointIdentity,
@@ -341,3 +343,133 @@ def test_status_marks_static_artifact_database_error_unavailable(
 
     assert status["static_coverage_status"] == "UNAVAILABLE"
     assert status["static_coverage_expected"] is None
+
+
+def test_v2_public_status_exposes_scoped_surface_progress(tmp_path: Path) -> None:
+    app, identity = _application(tmp_path)
+    _coverage(tmp_path, app, identity)
+    run = app._store.require_analysis_run(identity.analysis_id)
+    assert run.static_bundle_ref is not None
+    app._store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_pipeline_version": 2,
+                "candidate_scope_fingerprint": "scope-1",
+            }
+        )
+    )
+    index = SurfaceIndex(
+        scope_fingerprint="scope-1",
+        static_bundle_hash=run.static_bundle_ref.content_hash,
+        ast_manifest_hash="ast-hash",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        candidate_inventory_hash="inventory-hash",
+        candidate_count=0,
+        surfaces=(
+            AttackSurface(
+                surface_id="auth-surface",
+                type="AUTHORIZATION",
+                path="pkg/auth.py",
+                symbol="check_access" + "x" * (1024 * 1024),
+                line=1,
+                linked_candidate_ids=(),
+                evidence_refs=(),
+                detector="AST",
+            ),
+        ),
+        static_gaps=(),
+    )
+    index_ref = SimpleArtifactRepository(tmp_path / "data", identity).put_json(
+        index.to_json()
+    )
+    app._store.save_attack_surface_index(
+        identity,
+        "scope-1",
+        static_bundle_hash=run.static_bundle_ref.content_hash,
+        ast_manifest_hash="ast-hash",
+        candidate_inventory_hash="inventory-hash",
+        candidate_count=0,
+        index_ref=index_ref,
+    )
+
+    context_ref = SimpleArtifactRepository(tmp_path / "data", identity).put_json(
+        {"kind": "simple_surface_hypothesis_result_v1", "context_id": "part-1"}
+    )
+    app._store.commit_surface_exploration(
+        identity,
+        "scope-1",
+        "auth-surface",
+        "part-1",
+        static_bundle_hash=run.static_bundle_ref.content_hash,
+        index_hash=index_ref.content_hash,
+        context_hash="context-part-1",
+        source_sha256=None,
+        status="NO_HYPOTHESIS",
+        result_ref=context_ref,
+        registrations=(),
+    )
+
+    status = app.status("A-001")
+    assert status["percentage_kind"] == "known_checkpoint_fraction"
+    phase_counts = cast(dict[str, dict[str, int]], status["phase_counts"])
+    assert phase_counts["surface"] == {
+        "recorded_contexts": 1,
+        "completed": 0,
+        "total": 1,
+    }
+
+    coverage = {
+        **index.to_json(),
+        "kind": "simple_attack_surface_coverage_v1",
+        "surfaces": [{**index.surfaces[0].to_json(), "coverage_status": "COVERED"}],
+        "complete": True,
+    }
+    coverage_ref = SimpleArtifactRepository(tmp_path / "data", identity).put_json(
+        coverage
+    )
+    missing_coverage_ref = index_ref.model_copy(update={"content_hash": "0" * 64})
+    checkpoint = app._store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="test-producer"
+    )
+    app._store.complete(
+        checkpoint,
+        StageResult(output_refs=(index_ref, coverage_ref, missing_coverage_ref)),
+    )
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash=run.static_bundle_ref.content_hash,
+        scope_fingerprint="scope-1",
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=0,
+        surface_index_hash=index_ref.content_hash,
+        surface_coverage_hash=coverage_ref.content_hash,
+        surface_counts={"COVERED": 1, "UNCOVERED": 0, "INSUFFICIENT": 0},
+        producer_finished=True,
+    )
+    app._store.save_analysis_run(
+        app._store.require_analysis_run(identity.analysis_id).model_copy(
+            update={"candidate_terminal": terminal}
+        )
+    )
+    verified = app.status("A-001")
+    verified_phases = cast(dict[str, dict[str, int]], verified["phase_counts"])
+    assert verified_phases["surface"]["covered"] == 1
+
+    app._store.save_analysis_run(
+        app._store.require_analysis_run(identity.analysis_id).model_copy(
+            update={
+                "candidate_terminal": terminal.model_copy(
+                    update={"surface_coverage_hash": "0" * 64}
+                )
+            }
+        )
+    )
+    unverified = app.status("A-001")
+    unverified_phases = cast(dict[str, dict[str, int]], unverified["phase_counts"])
+    assert unverified_phases["surface"] == {
+        "recorded_contexts": 1,
+        "completed": 0,
+        "total": 1,
+    }

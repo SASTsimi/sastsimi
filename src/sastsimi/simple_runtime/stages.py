@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, NoReturn, Protocol, cast
 
 from pydantic import JsonValue
@@ -39,17 +39,20 @@ from sastsimi.reporting.markdown_export import write_report_markdown
 from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
+from .attempt_owner import AttemptOwner, PromptByteCounts
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .gate_guard import technical_gate_accepted
 from .models import (
     STAGE_ORDER,
+    STAGE_VERSION,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
     StageResult,
+    StageStatus,
 )
 from .poc import PoCCandidateRejected, validate_candidate
-from .provider import SimpleLLMCallResult, SimpleLLMClient
+from .provider import SimpleLLMCallResult, SimpleLLMClient, _validate_schema
 from .recovery import MAX_RECOVERY_ATTEMPTS
 from .retrieval import collect_requested_sources
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
@@ -67,6 +70,9 @@ _POC_SOURCE_CONTEXT_BYTES = 128_000
 _POC_SOURCE_MAX_REQUESTS = 32
 _POC_SOURCE_ARTIFACT_BYTES = 96_000
 _REPORT_DRAFT_MAX_BYTES = 4 * 1024 * 1024
+_PRO_CON_BATCH_MAX_SIZE = 8
+_PRO_CON_BATCH_MAX_PROMPT_BYTES = 256 * 1024
+_PRO_CON_BATCH_MAX_ATTEMPTS = 2
 
 
 def _has_python_import_failure(output: bytes) -> bool:
@@ -165,6 +171,59 @@ def _enum(*values: str) -> dict[str, Any]:
 
 def _unique_refs(refs: tuple[StoredDataRef, ...]) -> tuple[StoredDataRef, ...]:
     return tuple(dict.fromkeys(refs))
+
+
+def _trusted_batch_evidence_hashes(
+    artifacts: SimpleArtifactRepository,
+    shared_ref: StoredDataRef,
+    proposal_ref: StoredDataRef,
+) -> frozenset[str]:
+    """Allow only exact, owned artifact references supplied to one hypothesis.
+
+    Source lines and LLM-authored proposal fields are never searched for hashes.
+    The nested fields below are produced by our context/proposal builders.
+    """
+
+    allowed = {shared_ref.content_hash, proposal_ref.content_hash}
+    context = json.loads(artifacts.read(shared_ref))
+    proposal = json.loads(artifacts.read_prompt_proposal(proposal_ref))
+
+    def add_ref(value: object) -> None:
+        if value is None:
+            return
+        ref = StoredDataRef.model_validate(value)
+        artifacts.read(ref)
+        allowed.add(ref.content_hash)
+
+    if isinstance(context, dict) and context.get("kind") in {
+        "simple_candidate_file_context_v1",
+        "simple_surface_context_v1",
+        "simple_surface_context_v2",
+    }:
+        add_ref(context.get("ast_file_ref"))
+        if context.get("kind") in {
+            "simple_surface_context_v1",
+            "simple_surface_context_v2",
+        }:
+            hashes = context.get("static_evidence_ref_hashes", [])
+            if not isinstance(hashes, list):
+                raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID")
+            for value in hashes:
+                if (
+                    not isinstance(value, str)
+                    or len(value) != 64
+                    or any(character not in "0123456789abcdef" for character in value)
+                ):
+                    raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID")
+                allowed.add(value)
+    if isinstance(proposal, dict):
+        for field in (
+            "static_bundle_ref",
+            "batch_input_ref",
+            "batch_response_ref",
+        ):
+            add_ref(proposal.get(field))
+    return frozenset(allowed)
 
 
 def _prior_refs(
@@ -359,6 +418,10 @@ scheme, slash, host, path, and chr(92) components. Never embed an executable
 external URL, a Windows drive path, or a UNC-like double-backslash literal.
 Before exit 2, print a concise error type and traceback to stderr so the next
 attempt can repair the exact runtime failure; never print secrets or host paths.
+For a Python ModuleNotFoundError, include exc.name only if it came from a static
+import and is a simple dotted module identifier made of ASCII letters, digits,
+and underscores. Otherwise omit the name. Never print the full exception
+message, traceback file paths, source lines, or dynamic import values.
 When testing a Python handler, prefer importing the real repository module or
 execute extracted code with its original globals (including `__file__`) intact;
 do not rebuild a handler in a way that changes its path or framework semantics.
@@ -578,6 +641,7 @@ class PoCExecutionStage:
         candidate_ref, content_ref = candidate.output_refs[:2]
         content = self._artifacts.read(content_ref)
         validate_candidate(content, allowed_environment_names=frozenset())
+        self._require_reportable_environment(checkpoint, candidate, prior)
         container_id = await self._container(candidate)
         evidence_refs: list[StoredDataRef] = []
         execution_error: DockerOperationError | OSError | ValueError | None = None
@@ -867,6 +931,154 @@ artifact. Do not reinterpret an execution error as DISPROVED.
             ),
         )
 
+    def _require_reportable_environment(
+        self,
+        checkpoint: StageCheckpoint,
+        candidate: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+    ) -> None:
+        recipe_ref = candidate.recipe_ref
+        evidence_refs = candidate.output_refs[:2]
+        if recipe_ref is None:
+            raise StageFailed(
+                StageFailure(
+                    code="POC_ENVIRONMENT_RECIPE_INVALID",
+                    retryable=False,
+                    safe_message="PoC environment recipe is missing",
+                    evidence_refs=evidence_refs,
+                )
+            )
+        evidence_refs = (*evidence_refs, recipe_ref)
+        try:
+            recipe = json.loads(self._artifacts.read(recipe_ref))
+        except (OSError, UnicodeError, ValueError) as error:
+            raise StageFailed(
+                StageFailure(
+                    code="POC_ENVIRONMENT_RECIPE_INVALID",
+                    retryable=False,
+                    safe_message="PoC environment recipe cannot be verified",
+                    evidence_refs=evidence_refs,
+                )
+            ) from error
+        if (
+            not isinstance(recipe, dict)
+            or recipe.get("kind") != "simple_environment_recipe"
+            or recipe.get("status") != "BUILT"
+            or recipe.get("analysis_id") != checkpoint.identity.analysis_id
+            or recipe.get("workspace_id") != checkpoint.identity.workspace_id
+            or recipe.get("commit_id") != checkpoint.identity.commit_id
+            or recipe.get("hypothesis_id") != checkpoint.identity.hypothesis_id
+            or not isinstance(recipe.get("attempt_id"), str)
+            or not recipe["attempt_id"]
+            or recipe.get("dockerfile_source")
+            not in {
+                "REPOSITORY_DOCKERFILE",
+                "GENERATED",
+                "GENERATED_NO_INSTALL",
+                "GENERATED_OFFLINE_WHEELS",
+            }
+            or not isinstance(recipe.get("degraded"), bool)
+        ):
+            raise StageFailed(
+                StageFailure(
+                    code="POC_ENVIRONMENT_RECIPE_INVALID",
+                    retryable=False,
+                    safe_message="PoC environment recipe does not match this analysis",
+                    evidence_refs=evidence_refs,
+                )
+            )
+        if recipe["dockerfile_source"] == "GENERATED_OFFLINE_WHEELS":
+
+            def valid_sha(value: object) -> bool:
+                return (
+                    isinstance(value, str)
+                    and len(value) == 64
+                    and all(character in "0123456789abcdef" for character in value)
+                )
+
+            try:
+                wheel_ref = StoredDataRef.model_validate(
+                    recipe.get("wheel_archive_ref")
+                )
+                dockerfile_ref = StoredDataRef.model_validate(
+                    recipe.get("dockerfile_ref")
+                )
+                wheel_sha = recipe.get("wheel_archive_sha256")
+                base_digest = recipe.get("base_image_digest")
+                valid = (
+                    recipe.get("build_network") == "none"
+                    and valid_sha(wheel_sha)
+                    and valid_sha(recipe.get("manifest_sha256"))
+                    and valid_sha(recipe.get("context_sha256"))
+                    and isinstance(base_digest, str)
+                    and base_digest.startswith("sha256:")
+                    and valid_sha(base_digest.removeprefix("sha256:"))
+                    and wheel_ref.content_hash == wheel_sha
+                    and hashlib.sha256(self._artifacts.read(wheel_ref)).hexdigest()
+                    == wheel_sha
+                    and bool(self._artifacts.read(dockerfile_ref))
+                )
+            except (OSError, TypeError, ValueError):
+                valid = False
+            if not valid:
+                raise StageFailed(
+                    StageFailure(
+                        code="POC_ENVIRONMENT_RECIPE_INVALID",
+                        retryable=False,
+                        safe_message="Offline PoC recipe provenance is incomplete",
+                        evidence_refs=evidence_refs,
+                    )
+                )
+        initial = prior.get(SimpleStage.VERIFICATION_INITIAL_DONE)
+        image_bound = (
+            isinstance(candidate.image_digest, str)
+            and bool(candidate.image_digest)
+            and (
+                recipe["image_digest"] == candidate.image_digest
+                if "image_digest" in recipe
+                else initial is not None
+                and initial.identity == checkpoint.identity
+                and initial.status is StageStatus.SUCCEEDED
+                and initial.stage_version
+                == STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                and initial.recipe_ref == recipe_ref
+                and initial.image_digest == candidate.image_digest
+            )
+        )
+        if not image_bound:
+            raise StageFailed(
+                StageFailure(
+                    code="POC_ENVIRONMENT_RECIPE_INVALID",
+                    retryable=False,
+                    safe_message="PoC image does not match its environment recipe",
+                    evidence_refs=evidence_refs,
+                )
+            )
+        if recipe["degraded"] or recipe["dockerfile_source"] == (
+            "GENERATED_NO_INSTALL"
+        ):
+            environment_check_ref = self._artifacts.put_json(
+                {
+                    "kind": "simple_poc_environment_check",
+                    "decision": "UNVERIFIED_DEPENDENCIES",
+                    "attempt_id": checkpoint.attempt_id,
+                    "recipe_ref": recipe_ref.model_dump(mode="json"),
+                    "candidate_ref": candidate.output_refs[0].model_dump(mode="json"),
+                    "content_ref": candidate.output_refs[1].model_dump(mode="json"),
+                }
+            )
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_ENVIRONMENT_UNVERIFIED",
+                    retryable=False,
+                    safe_message=(
+                        "Source-only or degraded image cannot validate product "
+                        "dependencies"
+                    ),
+                    evidence_refs=(*evidence_refs, environment_check_ref),
+                )
+            )
+
     async def _container(self, checkpoint: StageCheckpoint) -> str:
         if checkpoint.container_id and checkpoint.image_digest:
             try:
@@ -956,6 +1168,34 @@ class _StructuredStage:
         return result, output_ref
 
 
+class ProConBatchBlocked(StageBlocked):
+    """A retryable batch failure with completed per-hypothesis evidence."""
+
+    def __init__(
+        self,
+        failure: StageFailure,
+        completed_refs: Mapping[str, StoredDataRef],
+        missing_ids: tuple[str, ...],
+    ) -> None:
+        super().__init__(failure)
+        self.completed_refs = dict(completed_refs)
+        self.missing_ids = missing_ids
+
+
+class ProConBatchFailed(StageFailed):
+    """A terminal provider failure with completed per-hypothesis evidence."""
+
+    def __init__(
+        self,
+        failure: StageFailure,
+        completed_refs: Mapping[str, StoredDataRef],
+        missing_ids: tuple[str, ...],
+    ) -> None:
+        super().__init__(failure)
+        self.completed_refs = dict(completed_refs)
+        self.missing_ids = missing_ids
+
+
 class ProConStage:
     """Collect independent supporting and opposing evidence."""
 
@@ -963,7 +1203,12 @@ class ProConStage:
         self,
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
+        *,
+        store: SimpleCheckpointStore | None = None,
     ) -> None:
+        self._client = client
+        self._artifacts = artifacts
+        self._store = store
         schema = _object_schema(
             {
                 "claims": _string_array(),
@@ -1000,14 +1245,504 @@ use `requested_paths` for repository-relative files needed later.
             kind="simple_con_evidence",
         )
 
+    async def run_pro_batch(
+        self,
+        checkpoints: Mapping[str, StageCheckpoint],
+        shared_ref: StoredDataRef,
+        *,
+        existing: Mapping[str, StoredDataRef] | None = None,
+    ) -> dict[str, StoredDataRef]:
+        """Call the Pro role once per bounded set, then fan out exact-ID evidence."""
+
+        return await self._run_batch("pro", checkpoints, shared_ref, existing)
+
+    async def run_con_batch(
+        self,
+        checkpoints: Mapping[str, StageCheckpoint],
+        shared_ref: StoredDataRef,
+        *,
+        existing: Mapping[str, StoredDataRef] | None = None,
+    ) -> dict[str, StoredDataRef]:
+        """Call the independent Con role with the same bounded input contract."""
+
+        return await self._run_batch("con", checkpoints, shared_ref, existing)
+
+    async def _run_batch(
+        self,
+        role: Literal["pro", "con"],
+        checkpoints: Mapping[str, StageCheckpoint],
+        shared_ref: StoredDataRef,
+        existing: Mapping[str, StoredDataRef] | None,
+    ) -> dict[str, StoredDataRef]:
+        ordered_ids = tuple(checkpoints)
+        if not 1 <= len(ordered_ids) <= _PRO_CON_BATCH_MAX_SIZE:
+            raise ValueError("PRO_CON_BATCH_SIZE_INVALID")
+        if existing is not None and not set(existing).issubset(checkpoints):
+            raise ValueError("PRO_CON_BATCH_EXISTING_INVALID")
+        identity = self._artifacts.identity
+        self._artifacts.read(shared_ref)
+        for hypothesis_id, checkpoint in checkpoints.items():
+            child = checkpoint.identity
+            if (
+                not hypothesis_id
+                or child.hypothesis_id != hypothesis_id
+                or child.analysis_id != identity.analysis_id
+                or child.workspace_id != identity.workspace_id
+                or child.commit_id != identity.commit_id
+                or checkpoint.stage is not SimpleStage.PRO_CON_DONE
+                or not checkpoint.input_refs
+            ):
+                raise ValueError("PRO_CON_BATCH_INPUT_INVALID")
+            try:
+                proposal = json.loads(
+                    self._artifacts.read_prompt_proposal(checkpoint.input_refs[0])
+                )
+            except (OSError, ValueError) as error:
+                raise ValueError("PRO_CON_BATCH_INPUT_INVALID") from error
+            if (
+                not isinstance(proposal, dict)
+                or proposal.get("analysis_id") != identity.analysis_id
+                or proposal.get("hypothesis_id") != hypothesis_id
+            ):
+                raise ValueError("PRO_CON_BATCH_INPUT_INVALID")
+            static_ref = proposal.get("static_bundle_ref")
+            try:
+                if static_ref is not None:
+                    saved_static = StoredDataRef.model_validate(static_ref)
+                    self._artifacts.read(saved_static)
+                    if (
+                        proposal.get("shared_context_ref") is None
+                        and proposal.get("surface_context_ref") is None
+                        and (
+                            len(checkpoint.input_refs) < 2
+                            or saved_static != checkpoint.input_refs[1]
+                        )
+                    ):
+                        raise ValueError("static ref mismatch")
+                for context_field in ("shared_context_ref", "surface_context_ref"):
+                    expected_context = proposal.get(context_field)
+                    if expected_context is not None and (
+                        len(checkpoint.input_refs) < 2
+                        or StoredDataRef.model_validate(expected_context) != shared_ref
+                        or shared_ref != checkpoint.input_refs[1]
+                    ):
+                        raise ValueError("shared context mismatch")
+            except (OSError, ValueError) as error:
+                raise ValueError("PRO_CON_BATCH_INPUT_INVALID") from error
+        completed = dict(existing or {})
+        kind = f"simple_{role}_evidence"
+        for hypothesis_id, ref in completed.items():
+            checkpoint = checkpoints[hypothesis_id]
+            try:
+                envelope = json.loads(self._artifacts.read(ref))
+                response_ref = StoredDataRef.model_validate(
+                    envelope["batch_response_ref"]
+                )
+                response = json.loads(self._artifacts.read(response_ref))
+                response_rows = response["result"]["results"]
+                matches = [
+                    row
+                    for row in response_rows
+                    if isinstance(row, dict)
+                    and row.get("hypothesis_id") == hypothesis_id
+                ]
+                expected_result = {
+                    field: matches[0][field]
+                    for field in (
+                        "claims",
+                        "evidence_refs",
+                        "limitations",
+                        "requested_paths",
+                    )
+                }
+            except (OSError, ValueError, KeyError, TypeError, IndexError) as error:
+                raise ValueError("PRO_CON_BATCH_EXISTING_INVALID") from error
+            if (
+                not isinstance(envelope, dict)
+                or envelope.get("kind") != kind
+                or envelope.get("analysis_id") != identity.analysis_id
+                or envelope.get("workspace_id") != identity.workspace_id
+                or envelope.get("commit_id") != identity.commit_id
+                or envelope.get("hypothesis_id") != hypothesis_id
+                or envelope.get("input_hash") != checkpoint.input_hash
+                or envelope.get("shared_context_ref")
+                != shared_ref.model_dump(mode="json")
+                or envelope.get("result") != expected_result
+                or envelope.get("source_refs")
+                != [
+                    item.model_dump(mode="json")
+                    for item in _unique_refs(checkpoint.input_refs + (shared_ref,))
+                ]
+                or not isinstance(response, dict)
+                or response.get("kind") != f"simple_{role}_batch_response"
+                or response.get("analysis_id") != identity.analysis_id
+                or response.get("workspace_id") != identity.workspace_id
+                or response.get("commit_id") != identity.commit_id
+                or response.get("shared_context_ref")
+                != shared_ref.model_dump(mode="json")
+                or not isinstance(response.get("requested_ids"), list)
+                or hypothesis_id not in response["requested_ids"]
+                or not isinstance(response.get("input_hashes"), dict)
+                or response["input_hashes"].get(hypothesis_id) != checkpoint.input_hash
+                or not isinstance(response_rows, list)
+                or len(matches) != 1
+                or envelope.get("prompt_digest") != response.get("prompt_digest")
+                or envelope.get("output_digest") != response.get("output_digest")
+            ):
+                raise ValueError("PRO_CON_BATCH_EXISTING_INVALID")
+        instructions = (
+            (self._pro._instructions if role == "pro" else self._con._instructions)
+            + """
+Return a `results` array. Each row must use exactly one supplied
+`hypothesis_id` and contain `claims`, `evidence_refs`, `limitations`, and
+`requested_paths` for only that hypothesis. Do not combine evidence across
+hypotheses. If a row cannot be completed, omit only that row; it will be
+requested again separately. The shared file context applies to every row.
+"""
+        )
+        while len(completed) < len(ordered_ids):
+            pending = tuple(item for item in ordered_ids if item not in completed)
+            if not pending:
+                break
+            for attempt in range(_PRO_CON_BATCH_MAX_ATTEMPTS):
+                if not pending:
+                    break
+                schema = _object_schema(
+                    {
+                        "results": {
+                            "type": "array",
+                            "maxItems": len(pending),
+                            "items": _object_schema(
+                                {
+                                    "hypothesis_id": {
+                                        "type": "string",
+                                        "enum": list(pending),
+                                    },
+                                    "claims": _string_array(),
+                                    "evidence_refs": _string_array(),
+                                    "limitations": _string_array(),
+                                    "requested_paths": _string_array(),
+                                },
+                                [
+                                    "hypothesis_id",
+                                    "claims",
+                                    "evidence_refs",
+                                    "limitations",
+                                    "requested_paths",
+                                ],
+                            ),
+                        }
+                    },
+                    ["results"],
+                )
+                refs = (shared_ref,) + tuple(
+                    checkpoints[item].input_refs[0] for item in pending
+                )
+                try:
+                    context = self._artifacts.prompt_context_strict(refs)
+                except ValueError as error:
+                    if str(error) == "SIMPLE_RUNTIME_CONTEXT_TOO_LARGE":
+                        try:
+                            for item in pending:
+                                self._artifacts.prompt_context_strict(
+                                    (shared_ref, checkpoints[item].input_refs[0])
+                                )
+                        except ValueError:
+                            raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID") from error
+                        raise ValueError("PRO_CON_BATCH_CONTEXT_OVERFLOW") from error
+                    raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID") from error
+                prompt = _prompt(instructions, context)
+                if (
+                    len(prompt) + len(canonical_bytes(schema))
+                    > _PRO_CON_BATCH_MAX_PROMPT_BYTES
+                ):
+                    raise ValueError("PRO_CON_BATCH_CONTEXT_OVERFLOW")
+                batch_id = hashlib.sha256(
+                    canonical_bytes(
+                        {
+                            "role": role,
+                            "shared_context_ref": shared_ref,
+                            "input_hashes": {
+                                item: checkpoints[item].input_hash for item in pending
+                            },
+                        }
+                    )
+                ).hexdigest()
+                shared_bytes = len(self._artifacts.read(shared_ref))
+                specific_bytes = sum(
+                    len(self._artifacts.read(checkpoints[item].input_refs[0]))
+                    for item in pending
+                )
+                result = await self._client.call(
+                    prompt=prompt,
+                    output_schema=schema,
+                    timeout_ms=_LOCAL_TIMEOUT_MS,
+                    agent_name=f"{role}_evidence",
+                    owner=AttemptOwner(
+                        analysis_id=identity.analysis_id,
+                        stage=SimpleStage.PRO_CON_DONE.value,
+                        batch_id=batch_id,
+                        context_id=shared_ref.content_hash,
+                    ),
+                    prompt_bytes=PromptByteCounts(
+                        shared_context_bytes=shared_bytes,
+                        candidate_specific_bytes=specific_bytes,
+                        fixed_prompt_bytes=max(
+                            0, len(prompt) - shared_bytes - specific_bytes
+                        ),
+                    ),
+                )
+                if isinstance(result, StageFailure):
+                    failure = result.model_copy(
+                        update={"evidence_refs": tuple(completed.values())}
+                    )
+                    if failure.retryable:
+                        raise ProConBatchBlocked(failure, completed, pending)
+                    raise ProConBatchFailed(failure, completed, pending)
+                try:
+                    _validate_schema(result.value, schema)
+                    rows = cast(list[dict[str, JsonValue]], result.value["results"])
+                    seen: set[str] = set()
+                    for row in rows:
+                        hypothesis_id = cast(str, row["hypothesis_id"])
+                        if hypothesis_id in seen:
+                            raise ValueError("duplicate hypothesis")
+                        seen.add(hypothesis_id)
+                        for field in (
+                            "claims",
+                            "evidence_refs",
+                            "limitations",
+                            "requested_paths",
+                        ):
+                            values = cast(list[str], row[field])
+                            if any(not value.strip() for value in values):
+                                raise ValueError("empty evidence field")
+                        allowed_evidence = _trusted_batch_evidence_hashes(
+                            self._artifacts,
+                            shared_ref,
+                            checkpoints[hypothesis_id].input_refs[0],
+                        )
+                        if any(
+                            ref not in allowed_evidence
+                            for ref in cast(list[str], row["evidence_refs"])
+                        ):
+                            raise ValueError("evidence ref is not a supplied hash")
+                        for path in cast(list[str], row["requested_paths"]):
+                            parts = PurePosixPath(path)
+                            if (
+                                parts.is_absolute()
+                                or ".." in parts.parts
+                                or "\\" in path
+                                or "\x00" in path
+                                or (
+                                    len(path) >= 2
+                                    and path[0].isalpha()
+                                    and path[1] == ":"
+                                )
+                            ):
+                                raise ValueError("unsafe requested path")
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ProConBatchBlocked(
+                        StageFailure(
+                            code="PRO_CON_BATCH_RESPONSE_INVALID",
+                            retryable=True,
+                            safe_message="Pro/Con batch response was invalid",
+                            invalid_field="results",
+                            evidence_refs=tuple(completed.values()),
+                        ),
+                        completed,
+                        pending,
+                    ) from error
+                response_ref = self._artifacts.put_json(
+                    {
+                        "kind": f"simple_{role}_batch_response",
+                        "analysis_id": identity.analysis_id,
+                        "workspace_id": identity.workspace_id,
+                        "commit_id": identity.commit_id,
+                        "batch_id": batch_id,
+                        "attempt_number": attempt + 1,
+                        "shared_context_ref": shared_ref.model_dump(mode="json"),
+                        "requested_ids": list(pending),
+                        "input_hashes": {
+                            item: checkpoints[item].input_hash for item in pending
+                        },
+                        "source_refs": [ref.model_dump(mode="json") for ref in refs],
+                        "result": result.value,
+                        "prompt_digest": result.prompt_digest,
+                        "output_digest": result.output_digest,
+                        "llm_request_ref": (
+                            result.request_ref.model_dump(mode="json")
+                            if result.request_ref is not None
+                            else None
+                        ),
+                        "llm_response_ref": (
+                            result.response_ref.model_dump(mode="json")
+                            if result.response_ref is not None
+                            else None
+                        ),
+                    }
+                )
+                for row in rows:
+                    hypothesis_id = cast(str, row["hypothesis_id"])
+                    checkpoint = checkpoints[hypothesis_id]
+                    source_refs = _unique_refs(checkpoint.input_refs + (shared_ref,))
+                    evidence_ref = self._artifacts.put_json(
+                        {
+                            "kind": kind,
+                            "analysis_id": identity.analysis_id,
+                            "workspace_id": identity.workspace_id,
+                            "commit_id": identity.commit_id,
+                            "hypothesis_id": hypothesis_id,
+                            "input_hash": checkpoint.input_hash,
+                            "shared_context_ref": shared_ref.model_dump(mode="json"),
+                            "batch_response_ref": response_ref.model_dump(mode="json"),
+                            "source_refs": [
+                                ref.model_dump(mode="json") for ref in source_refs
+                            ],
+                            "result": {
+                                field: row[field]
+                                for field in (
+                                    "claims",
+                                    "evidence_refs",
+                                    "limitations",
+                                    "requested_paths",
+                                )
+                            },
+                            "prompt_digest": result.prompt_digest,
+                            "output_digest": result.output_digest,
+                            "llm_request_ref": (
+                                result.request_ref.model_dump(mode="json")
+                                if result.request_ref is not None
+                                else None
+                            ),
+                            "llm_response_ref": (
+                                result.response_ref.model_dump(mode="json")
+                                if result.response_ref is not None
+                                else None
+                            ),
+                            "attempt_id": checkpoint.attempt_id,
+                        }
+                    )
+                    if self._store is not None:
+                        self._store.save_pro_con_batch_evidence(
+                            checkpoint.identity,
+                            role,
+                            checkpoint.input_hash,
+                            evidence_ref,
+                        )
+                    completed[hypothesis_id] = evidence_ref
+                pending = tuple(item for item in ordered_ids if item not in completed)
+            if pending:
+                raise ProConBatchBlocked(
+                    StageFailure(
+                        code="PRO_CON_BATCH_INCOMPLETE",
+                        retryable=True,
+                        safe_message="Pro/Con batch omitted hypothesis evidence",
+                        invalid_field="results",
+                        evidence_refs=tuple(completed.values()),
+                    ),
+                    completed,
+                    pending,
+                )
+        return completed
+
+    async def _cached_role_result(
+        self,
+        role: Literal["pro", "con"],
+        checkpoint: StageCheckpoint,
+        refs: tuple[StoredDataRef, ...],
+        evidence_ref: StoredDataRef,
+    ) -> SimpleLLMCallResult:
+        try:
+            envelope = json.loads(self._artifacts.read(evidence_ref))
+            if not isinstance(envelope, dict):
+                raise ValueError("evidence envelope")
+            if "batch_response_ref" in envelope:
+                shared_ref = StoredDataRef.model_validate(
+                    envelope["shared_context_ref"]
+                )
+                hypothesis_id = checkpoint.identity.hypothesis_id
+                if hypothesis_id is None:
+                    raise ValueError("missing child ID")
+                await self._run_batch(
+                    role,
+                    {hypothesis_id: checkpoint},
+                    shared_ref,
+                    {hypothesis_id: evidence_ref},
+                )
+            else:
+                stage = self._pro if role == "pro" else self._con
+                if envelope.get("kind") != f"simple_{role}_evidence" or envelope.get(
+                    "source_refs"
+                ) != [ref.model_dump(mode="json") for ref in refs]:
+                    raise ValueError("legacy evidence mismatch")
+                _validate_schema(envelope.get("result"), stage._schema)
+            value = envelope["result"]
+            if not isinstance(value, dict):
+                raise ValueError("evidence result")
+            request_data = envelope.get("llm_request_ref")
+            response_data = envelope.get("llm_response_ref")
+            return SimpleLLMCallResult(
+                value=cast(dict[str, JsonValue], value),
+                prompt_digest=envelope["prompt_digest"],
+                output_digest=envelope["output_digest"],
+                request_ref=(
+                    StoredDataRef.model_validate(request_data)
+                    if request_data is not None
+                    else None
+                ),
+                response_ref=(
+                    StoredDataRef.model_validate(response_data)
+                    if response_data is not None
+                    else None
+                ),
+            )
+        except (OSError, ValueError, KeyError, TypeError, ProConBatchBlocked) as error:
+            raise StageBlocked(
+                StageFailure(
+                    code="PRO_CON_BATCH_EXISTING_INVALID",
+                    retryable=True,
+                    safe_message="Stored Pro/Con evidence does not match the child",
+                    evidence_refs=(evidence_ref,),
+                )
+            ) from error
+
     async def __call__(
         self,
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
         refs = _unique_refs(checkpoint.input_refs + _prior_refs(prior))
-        pro, pro_ref = await self._pro.call(checkpoint, refs)
-        con, con_ref = await self._con.call(checkpoint, refs)
+        pro_ref = (
+            self._store.get_pro_con_batch_evidence(
+                checkpoint.identity, "pro", checkpoint.input_hash
+            )
+            if self._store is not None
+            else None
+        )
+        if pro_ref is None:
+            pro, pro_ref = await self._pro.call(checkpoint, refs)
+            if self._store is not None:
+                self._store.save_pro_con_batch_evidence(
+                    checkpoint.identity, "pro", checkpoint.input_hash, pro_ref
+                )
+        else:
+            pro = await self._cached_role_result("pro", checkpoint, refs, pro_ref)
+        con_ref = (
+            self._store.get_pro_con_batch_evidence(
+                checkpoint.identity, "con", checkpoint.input_hash
+            )
+            if self._store is not None
+            else None
+        )
+        if con_ref is None:
+            con, con_ref = await self._con.call(checkpoint, refs)
+            if self._store is not None:
+                self._store.save_pro_con_batch_evidence(
+                    checkpoint.identity, "con", checkpoint.input_hash, con_ref
+                )
+        else:
+            con = await self._cached_role_result("con", checkpoint, refs, con_ref)
         return StageResult(
             output_refs=(pro_ref, con_ref),
             activity_events=(
@@ -1048,6 +1783,16 @@ Pro and Con evidence. Return an initial TRUE, FALSE, or HOLD assessment, but do
 not call it the final verdict. Define one concrete reproduction goal and the
 minimal environment requirements needed to obtain decisive evidence. Provider
 or tool errors are not vulnerability FALSE.
+For Python dependencies, use `pip:<PEP 508 requirement>`; for the Python 3.12
+runtime use `python:3.12`. Do not invent dependency versions or tools.
+The source is already provided by the pinned checkout; do not list that checkout
+as an environment requirement. Describe in-process PoC fixtures (objects, temp
+files, local test clients) and how the PoC creates them in reproduction_goal,
+not in environment_requirements. Put only installable runtime requirements in
+environment_requirements. List external services, credentials, attacker control
+of another process, network callers, or other unprovided attack prerequisites
+in unmet_external_prerequisites. Never assume they exist just to make a PoC
+run. If this list is nonempty, the hypothesis is inconclusive, not verified.
 """,
             schema=_object_schema(
                 {
@@ -1055,6 +1800,7 @@ or tool errors are not vulnerability FALSE.
                     "rationale": _string(),
                     "reproduction_goal": _string(),
                     "environment_requirements": _string_array(),
+                    "unmet_external_prerequisites": _string_array(),
                     "supporting_refs": _string_array(),
                     "limitations": _string_array(),
                 },
@@ -1063,6 +1809,7 @@ or tool errors are not vulnerability FALSE.
                     "rationale",
                     "reproduction_goal",
                     "environment_requirements",
+                    "unmet_external_prerequisites",
                     "supporting_refs",
                     "limitations",
                 ],
@@ -1083,6 +1830,30 @@ or tool errors are not vulnerability FALSE.
         if not isinstance(raw_requirements, list):
             raise ValueError("ENVIRONMENT_REQUIREMENTS_INVALID")
         requirements = tuple(str(value) for value in raw_requirements)
+        raw_external = result.value["unmet_external_prerequisites"]
+        if not isinstance(raw_external, list) or any(
+            not isinstance(value, str) or not value.strip() for value in raw_external
+        ):
+            raise ValueError("EXTERNAL_PREREQUISITES_INVALID")
+        if raw_external:
+            return StageResult(
+                output_refs=(output_ref,),
+                external_prerequisites_ref=output_ref,
+                verdict="HOLD",
+                activity_events=(
+                    _activity_event(
+                        checkpoint,
+                        ActivityKind.DECISION_RECORDED,
+                        offset=10,
+                        summary_ko=(
+                            "미입증 외부 공격 전제를 기록하고 "
+                            "가설을 미확정으로 종료했습니다."
+                        ),
+                        output_refs=(output_ref,),
+                        llm=result,
+                    ),
+                ),
+            )
         try:
             environment = await self._environments.prepare(
                 checkpoint,
@@ -1104,7 +1875,7 @@ or tool errors are not vulnerability FALSE.
             raise StageBlocked(
                 StageFailure(
                     code=code[:160],
-                    retryable=True,
+                    retryable=not code.startswith(("POC_OFFLINE_", "WHEEL_")),
                     safe_message="Reproduction environment did not complete",
                     evidence_refs=(output_ref, *attempt_refs, *failed_recipe_refs),
                 )
@@ -2193,7 +2964,7 @@ def build_stage_handlers(
 ) -> dict[SimpleStage, SimpleStageHandler]:
     environment_preparer = environments or _UnavailableEnvironmentPreparer()
     handlers: dict[SimpleStage, SimpleStageHandler] = {
-        SimpleStage.PRO_CON_DONE: ProConStage(client, artifacts),
+        SimpleStage.PRO_CON_DONE: ProConStage(client, artifacts, store=store),
         SimpleStage.VERIFICATION_INITIAL_DONE: InitialVerificationStage(
             client,
             artifacts,

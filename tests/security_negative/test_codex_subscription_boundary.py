@@ -1,7 +1,11 @@
+import asyncio
 import hashlib
 import json
+import os
+import tempfile
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import JsonValue
@@ -160,6 +164,66 @@ def approved_runner() -> CodexCliProcessRunner:
         runtime_environment="PERSONAL_LOCAL",
     )
     return CodexCliProcessRunner(binding=binding)
+
+
+def test_current_child_identity_is_not_mistaken_for_exited_process() -> None:
+    pid = os.getpid()
+    start_identity = codex_subscription._child_start_identity(pid)
+    assert start_identity is not None
+    assert codex_subscription._child_identity_matches(pid, start_identity) is True
+
+
+@pytest.mark.asyncio
+async def test_spawn_observer_binds_actual_child_to_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    events: list[tuple[str, str, str, int, str]] = []
+    runner._on_child_spawning = lambda call, phase: events.append(
+        ("spawning", call, phase, 0, "")
+    )
+    runner._on_child_started = lambda call, phase, pid, start: events.append(
+        ("start", call, phase, pid, start)
+    )
+    runner._on_child_stopped = lambda call, phase, pid, start: events.append(
+        ("stop", call, phase, pid, start)
+    )
+
+    class FakeProcess:
+        pid = 4242
+
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.returncode: int | None = None
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    async def fake_spawn(*_args: object, **_kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    monkeypatch.setattr(
+        codex_subscription, "_child_start_identity", lambda _pid: "started-4242"
+    )
+    result = await runner._run_child(
+        ("fake-codex",),
+        stdin=None,
+        cwd=Path.cwd(),
+        environment={},
+        invocation_id="call-1",
+        phase="EXEC",
+    )
+    assert result.returncode == 0
+    assert events == [
+        ("spawning", "call-1", "EXEC", 0, ""),
+        ("start", "call-1", "EXEC", 4242, "started-4242"),
+        ("stop", "call-1", "EXEC", 4242, "started-4242"),
+    ]
 
 
 def test_command_is_pinned_isolated_and_prompt_is_stdin_only() -> None:
@@ -435,6 +499,267 @@ def test_execution_binding_rechecks_codex_home_before_use(
 
     with pytest.raises(ProviderExecutableBindingError):
         runner.verify_binding(request())
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_child_cleanup_has_distinct_process_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+
+    async def cleanup_unconfirmed(*_args: object, **_kwargs: object) -> _ChildResult:
+        raise codex_subscription._ProcessTreeTerminationError
+
+    monkeypatch.setattr(runner, "_run_child", cleanup_unconfirmed)
+    result = await runner.execute(request())
+
+    assert result.status == "FAILED"
+    assert result.cleanup_unconfirmed
+
+
+@pytest.mark.asyncio
+async def test_cleanup_os_error_is_not_treated_as_retryable_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def cleanup_fails(_process: object) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(codex_subscription, "_terminate_process_tree", cleanup_fails)
+    with pytest.raises(codex_subscription._ProcessTreeTerminationError):
+        await codex_subscription._terminate_process_tree_checked(
+            cast(asyncio.subprocess.Process, object())
+        )
+
+
+@pytest.mark.asyncio
+async def test_temporary_cleanup_cannot_hide_unconfirmed_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner = approved_runner()
+
+    class FailingTemporaryDirectory:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> str:
+            return str(tmp_path)
+
+        def __exit__(self, *_args: object) -> None:
+            raise PermissionError
+
+    async def cleanup_unconfirmed(*_args: object, **_kwargs: object) -> _ChildResult:
+        raise codex_subscription._ProcessTreeTerminationError
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", FailingTemporaryDirectory)
+    monkeypatch.setattr(runner, "_run_child", cleanup_unconfirmed)
+    result = await runner.execute(request())
+
+    assert result.status == "FAILED"
+    assert result.cleanup_unconfirmed
+
+
+@pytest.mark.asyncio
+async def test_temporary_setup_error_before_child_is_not_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+
+    class FailingTemporaryDirectory:
+        def __init__(self, **_kwargs: object) -> None:
+            raise PermissionError
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", FailingTemporaryDirectory)
+    result = await runner.execute(request())
+
+    assert result.status == "FAILED"
+    assert not result.cleanup_unconfirmed
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deadline_does_not_wait_for_ignored_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def slow_to_cancel(_process: object) -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.25)
+
+    monkeypatch.setattr(codex_subscription, "_terminate_process_tree", slow_to_cancel)
+    monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(codex_subscription._ProcessTreeTerminationError):
+        await codex_subscription._terminate_process_tree_checked(
+            cast(asyncio.subprocess.Process, object())
+        )
+    assert asyncio.get_running_loop().time() - started < 0.15
+    await asyncio.sleep(0.3)
+
+
+@pytest.mark.asyncio
+async def test_stalled_spawn_returns_unconfirmed_cleanup_and_cleans_late_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    spawn_started = asyncio.Event()
+    release_spawn = asyncio.Event()
+    late_child_cleanup = asyncio.Event()
+    late_child = object()
+
+    async def delayed_spawn(*_args: object, **_kwargs: object) -> object:
+        spawn_started.set()
+        await release_spawn.wait()
+        return late_child
+
+    async def terminate_late_child(process: object) -> None:
+        assert process is late_child
+        late_child_cleanup.set()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(
+        codex_subscription, "_terminate_process_tree_checked", terminate_late_child
+    )
+    monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
+    invocation = asyncio.create_task(runner.execute(replace(request(), timeout_ms=200)))
+    await asyncio.wait_for(spawn_started.wait(), timeout=1)
+
+    try:
+        done, _pending = await asyncio.wait((invocation,), timeout=0.5)
+        assert invocation in done
+        result = invocation.result()
+        assert result.status == "FAILED"
+        assert result.cleanup_unconfirmed
+        release_spawn.set()
+        await asyncio.wait_for(late_child_cleanup.wait(), timeout=1)
+    finally:
+        release_spawn.set()
+        await asyncio.wait_for(
+            asyncio.gather(invocation, return_exceptions=True), timeout=1
+        )
+
+
+@pytest.mark.asyncio
+async def test_late_spawn_observer_records_child_before_checked_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    events: list[tuple[str, str, int | None]] = []
+    stopped = asyncio.Event()
+    release_spawn = asyncio.Event()
+    spawn_started = asyncio.Event()
+    runner._on_child_spawning = lambda call, phase: events.append((call, phase, None))
+    runner._on_child_started = lambda call, phase, pid, _start: events.append(
+        (call, phase, pid)
+    )
+
+    def record_stopped(call: str, phase: str, pid: int, _start: str) -> None:
+        events.append((call, phase, -pid))
+        stopped.set()
+
+    runner._on_child_stopped = record_stopped
+
+    class FakeProcess:
+        pid = 5151
+        returncode: int | None = None
+
+    process = FakeProcess()
+
+    async def delayed_spawn(*_args: object, **_kwargs: object) -> FakeProcess:
+        spawn_started.set()
+        await release_spawn.wait()
+        return process
+
+    async def terminate_late_child(value: object) -> None:
+        assert value is process
+        process.returncode = -9
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(
+        codex_subscription, "_child_start_identity", lambda _pid: "started-5151"
+    )
+    monkeypatch.setattr(
+        codex_subscription, "_terminate_process_tree_checked", terminate_late_child
+    )
+    monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
+    invocation = asyncio.create_task(runner.execute(replace(request(), timeout_ms=200)))
+    await asyncio.wait_for(spawn_started.wait(), timeout=1)
+    try:
+        result = await asyncio.wait_for(invocation, timeout=1)
+        assert result.cleanup_unconfirmed
+        release_spawn.set()
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+        assert events == [
+            ("call-1", "VERSION", None),
+            ("call-1", "VERSION", 5151),
+            ("call-1", "VERSION", -5151),
+        ]
+    finally:
+        release_spawn.set()
+        await asyncio.wait_for(
+            asyncio.gather(invocation, return_exceptions=True), timeout=1
+        )
+
+
+@pytest.mark.asyncio
+async def test_late_spawn_blocks_new_codex_process_until_cleanup_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = approved_runner()
+    spawn_started = asyncio.Event()
+    release_spawn = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+    spawn_count = 0
+    late_child = object()
+
+    async def delayed_spawn(*_args: object, **_kwargs: object) -> object:
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 1:
+            spawn_started.set()
+            await release_spawn.wait()
+            return late_child
+        raise OSError("second spawn reached subprocess boundary")
+
+    async def terminate_late_child(process: object) -> None:
+        assert process is late_child
+        cleanup_started.set()
+        await release_cleanup.wait()
+        cleanup_finished.set()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(
+        codex_subscription, "_terminate_process_tree_checked", terminate_late_child
+    )
+    monkeypatch.setattr(codex_subscription, "_TREE_KILLER_TIMEOUT_SECONDS", 0.01)
+    first = asyncio.create_task(runner.execute(replace(request(), timeout_ms=200)))
+    await asyncio.wait_for(spawn_started.wait(), timeout=1)
+
+    try:
+        first_result = await asyncio.wait_for(first, timeout=1)
+        assert first_result.cleanup_unconfirmed
+        second_result = await asyncio.to_thread(
+            lambda: asyncio.run(runner.execute(replace(request(), timeout_ms=200)))
+        )
+        assert second_result.cleanup_unconfirmed
+        assert spawn_count == 1
+
+        release_spawn.set()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+        third_result = await runner.execute(replace(request(), timeout_ms=200))
+        assert third_result.cleanup_unconfirmed
+        assert spawn_count == 1
+
+        release_cleanup.set()
+        await asyncio.wait_for(cleanup_finished.wait(), timeout=1)
+        await asyncio.sleep(0.02)
+        await runner.execute(replace(request(), timeout_ms=200))
+        assert spawn_count == 2
+    finally:
+        release_spawn.set()
+        release_cleanup.set()
+        await asyncio.wait_for(asyncio.gather(first, return_exceptions=True), 1)
 
 
 @pytest.mark.parametrize(

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
@@ -16,6 +17,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.bundle_files import PublishedBundle, parse_bundle_manifest
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attack_surfaces import AttackSurface, SurfaceIndex
 from sastsimi.simple_runtime.candidates import normalize_candidate_page
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -183,6 +185,124 @@ def test_dashboard_marks_unleased_candidate_run_interrupted_without_rewriting_it
     checkpoint = store.get(identity, SimpleStage.STATIC_DONE)
     assert checkpoint is not None
     assert checkpoint.status is StageStatus.RUNNING
+
+
+def test_dashboard_prioritizes_unresolved_codex_call_over_interrupted_resume(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 1}))
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    store.mark_running(identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1")
+    assert store.begin_codex_call("unresolved-call", "analysis-a")
+
+    query = DashboardQuery(tmp_path)
+    with analysis_run_lease(tmp_path, "analysis-a"):
+        active = query.get_analysis("A-001")
+        assert active.status == "RUNNING"
+        assert active.error_code != "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+        assert query.list_analyses()[0].status == "RUNNING"
+
+    detail = query.get_analysis("A-001")
+
+    assert detail.status == "BLOCKED"
+    assert detail.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert detail.resume_action == "MANUAL_CODEX_CLEANUP_REVIEW"
+    assert query.list_analyses()[0].status == "BLOCKED"
+
+
+def test_dashboard_requires_review_for_unconfirmed_codex_cleanup(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 1}))
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    running = store.mark_running(
+        identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1"
+    )
+    store.save_checkpoint(
+        running.model_copy(
+            update={
+                "status": StageStatus.BLOCKED,
+                "error_code": "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                "retryable": False,
+            }
+        )
+    )
+
+    detail = DashboardQuery(tmp_path).get_analysis("A-001")
+    assert detail.status == "BLOCKED"
+    assert detail.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert detail.resume_action == "MANUAL_CODEX_CLEANUP_REVIEW"
+
+
+def test_dashboard_shows_resume_only_after_exact_codex_cleanup_confirmation(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 1}))
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    running = store.mark_running(
+        identity, SimpleStage.STATIC_DONE, (), attempt_id="static-1"
+    )
+    blocked = running.model_copy(
+        update={
+            "status": StageStatus.BLOCKED,
+            "error_code": "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+            "retryable": False,
+        }
+    )
+    store.save_checkpoint(blocked)
+    call_id = "confirmed-call"
+    assert store.begin_codex_call(call_id, identity.analysis_id)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    confirmation = artifacts.put_json(
+        {
+            "kind": "simple_codex_cleanup_confirmation",
+            "analysis_id": identity.analysis_id,
+            "stage": blocked.stage.value,
+            "attempt_id": blocked.attempt_id,
+            "checkpoint_sha256": hashlib.sha256(canonical_bytes(blocked)).hexdigest(),
+            "call_id": call_id,
+            "process_tree_stopped": True,
+            "verification_method": "windows_process_inventory",
+            "former_parent_pid": 12345,
+            "observed_matching_process_count": 0,
+            "observed_at": (blocked.updated_at + timedelta(seconds=1)).isoformat(),
+        }
+    )
+    query = DashboardQuery(tmp_path)
+    assert query.get_analysis("A-001").resume_action == "MANUAL_CODEX_CLEANUP_REVIEW"
+    store.confirm_codex_cleanup(blocked, confirmation, artifacts)
+
+    with analysis_run_lease(tmp_path, identity.analysis_id):
+        assert query.get_analysis("A-001").resume_action != "RESUME_INTERRUPTED"
+    resumed = query.get_analysis("A-001")
+    assert resumed.status == "PAUSED"
+    assert resumed.error_code == "INTERRUPTED_RESUME_REQUIRED"
+    assert resumed.resume_action == "RESUME_INTERRUPTED"
+    assert query.list_analyses()[0].resume_action == "RESUME_INTERRUPTED"
 
 
 def test_dashboard_complete_requires_matching_candidate_terminal_marker(
@@ -524,12 +644,180 @@ def test_dashboard_candidate_counts_are_scope_bound_and_not_duplicated(
     store.save_analysis_run(
         run.model_copy(
             update={
+                "candidate_pipeline_version": 2,
+                "candidate_scope_fingerprint": "scope-1",
+            }
+        )
+    )
+    v2 = query.get_analysis("analysis-a")
+    assert v2.candidate_total_count == 3
+    assert v2.percentage_kind == "known_checkpoint_fraction"
+    assert v2.phase_counts["triage"] == {"completed": 2, "known": 3}
+
+    store.save_analysis_run(
+        run.model_copy(
+            update={
                 "candidate_pipeline_version": 1,
                 "candidate_scope_fingerprint": "different-scope",
             }
         )
     )
     assert query.get_analysis("analysis-a").candidate_total_count == 0
+
+
+def test_v2_dashboard_does_not_complete_a_partially_recorded_surface(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    identity = _static_identity()
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    bundle_ref = artifacts.put_json({"kind": "simple_static_fact_bundle"})
+    surfaces = tuple(
+        AttackSurface(
+            surface_id=f"surface-{index}",
+            type="AUTHORIZATION",
+            path=f"pkg/item_{index}.py",
+            symbol="check_access" + "x" * (1024 * 1024)
+            if index == 0
+            else "check_access",
+            line=index + 1,
+            linked_candidate_ids=(),
+            evidence_refs=(),
+            detector="AST",
+        )
+        for index in range(2)
+    )
+    index = SurfaceIndex(
+        scope_fingerprint="scope-1",
+        static_bundle_hash=bundle_ref.content_hash,
+        ast_manifest_hash="ast-hash",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        candidate_inventory_hash="inventory-hash",
+        candidate_count=0,
+        surfaces=surfaces,
+        static_gaps=(),
+    )
+    index_ref = artifacts.put_json(index.to_json())
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_pipeline_version": 2,
+                "candidate_scope_fingerprint": "scope-1",
+                "static_bundle_ref": bundle_ref,
+            }
+        )
+    )
+    store.save_attack_surface_index(
+        identity,
+        "scope-1",
+        static_bundle_hash=bundle_ref.content_hash,
+        ast_manifest_hash="ast-hash",
+        candidate_inventory_hash="inventory-hash",
+        candidate_count=0,
+        index_ref=index_ref,
+    )
+    for context_id in ("part-1", "part-2"):
+        result_ref = artifacts.put_json(
+            {
+                "kind": "simple_surface_hypothesis_result_v1",
+                "context_id": context_id,
+            }
+        )
+        store.commit_surface_exploration(
+            identity,
+            "scope-1",
+            "surface-0",
+            context_id,
+            static_bundle_hash=bundle_ref.content_hash,
+            index_hash=index_ref.content_hash,
+            context_hash=context_id,
+            source_sha256=None,
+            status="NO_HYPOTHESIS",
+            result_ref=result_ref,
+            registrations=(),
+        )
+        partial = DashboardQuery(tmp_path).get_analysis("analysis-a")
+        assert partial.phase_counts["surface"] == {
+            "recorded_contexts": 1 if context_id == "part-1" else 2,
+            "completed": 0,
+            "total": 2,
+        }
+
+    query = DashboardQuery(tmp_path)
+    detail = query.get_analysis("analysis-a")
+    assert detail.phase_counts["surface"] == {
+        "recorded_contexts": 2,
+        "completed": 0,
+        "total": 2,
+    }
+    assert query.list_analyses()[0].phase_counts["surface"] == {
+        "recorded_contexts": 2,
+        "completed": 0,
+        "total": 2,
+    }
+
+    coverage_ref = artifacts.put_json(
+        {
+            **index.to_json(),
+            "kind": "simple_attack_surface_coverage_v1",
+            "surfaces": [
+                {**surfaces[0].to_json(), "coverage_status": "COVERED"},
+                surfaces[1].to_json(),
+            ],
+            "complete": False,
+        }
+    )
+    missing_coverage_ref = index_ref.model_copy(update={"content_hash": "0" * 64})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(index_ref, coverage_ref, missing_coverage_ref),
+        )
+    )
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash=bundle_ref.content_hash,
+        scope_fingerprint="scope-1",
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=1,
+        surface_index_hash=index_ref.content_hash,
+        surface_coverage_hash=coverage_ref.content_hash,
+        surface_counts={"COVERED": 1, "UNCOVERED": 1, "INSUFFICIENT": 0},
+        producer_finished=True,
+    )
+    store.save_analysis_run(
+        store.require_analysis_run("analysis-a").model_copy(
+            update={"candidate_terminal": terminal}
+        )
+    )
+    verified = query.get_analysis("analysis-a")
+    assert verified.phase_counts["surface"]["completed"] == 1
+    assert verified.phase_counts["surface"]["covered"] == 1
+    assert verified.phase_counts["surface"]["uncovered"] == 1
+
+    store.save_analysis_run(
+        store.require_analysis_run("analysis-a").model_copy(
+            update={
+                "candidate_terminal": terminal.model_copy(
+                    update={"surface_coverage_hash": "0" * 64}
+                )
+            }
+        )
+    )
+    unverified = query.get_analysis("analysis-a")
+    assert unverified.phase_counts["surface"] == {
+        "recorded_contexts": 2,
+        "completed": 0,
+        "total": 2,
+    }
 
 
 def test_dashboard_shows_test_exclusions_and_python_only_scope(
@@ -1108,7 +1396,64 @@ def test_claude_usage_shows_unknown_cost_and_generic_on_demand_warning(
         / "app.js"
     )
     assert "추가 사용량 과금 가능" in script.read_text(encoding="utf-8")
+
+
+def test_unknown_codex_token_usage_is_explicit_in_dashboard(tmp_path) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    store.record_llm_attempt(
+        attempt_id="unverified-codex-call",
+        analysis_id="analysis-a",
+        agent="hypothesis",
+        model="operator-model",
+        attempt_number=1,
+        status="CODEX_USAGE_UNAVAILABLE",
+        elapsed_ms=0,
+        input_tokens=None,
+        output_tokens=None,
+        cost_cents=None,
+        artifact_ref=ref("unverified-codex-usage"),
+    )
+
+    detail = DashboardQuery(tmp_path).get_analysis("analysis-a")
+
+    assert detail.llm_attempt_count == 1
+    assert detail.llm_input_tokens == 0
+    assert detail.llm_output_tokens == 0
+    assert detail.llm_unknown_token_calls == 1
+    script = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "sastsimi"
+        / "dashboard"
+        / "static"
+        / "app.js"
+    )
+    assert "토큰 미확인 호출" in script.read_text(encoding="utf-8")
     assert "Cursor 추가 사용량 과금 가능" not in script.read_text(encoding="utf-8")
+
+
+def test_in_flight_codex_call_without_attempt_is_visible_as_possible_usage(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    assert store.begin_codex_call("unrecorded-call", "analysis-a")
+
+    detail = DashboardQuery(tmp_path).get_analysis("analysis-a")
+    assert detail.llm_attempt_count == 1
+    assert detail.llm_unknown_token_calls == 1
+    assert detail.llm_unknown_cost_calls == 1
+    assert detail.llm_unrecorded_in_flight_codex_calls == 1
+    script = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "sastsimi"
+        / "dashboard"
+        / "static"
+        / "app.js"
+    )
+    assert "진행·종료 미확인 Codex 호출" in script.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

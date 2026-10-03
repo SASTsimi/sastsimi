@@ -24,6 +24,8 @@ from sastsimi.contracts.work import WorkExecutionState, WorkType
 
 type ExternalDispatchState = Literal["RETURNED", "UNRESOLVED"]
 
+CODEX_PROCESS_CLEANUP_UNCONFIRMED_ERROR = "FAILED: Codex process cleanup unconfirmed"
+
 
 @dataclass(frozen=True)
 class PersistedLLMInvocation:

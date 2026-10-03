@@ -58,7 +58,8 @@ function analysisButton(item) {
   button.append(el("strong", routeId));
   button.append(el("div", item.repository || "저장소 정보 없음", "meta truncate"));
   const row = el("div", undefined, "status-row");
-  row.append(badge(item.status), el("span", `${item.progress_percent}%`));
+  const percentLabel = item.percentage_kind === "known_checkpoint_fraction" ? "현재 알려진 checkpoint 비율 " : "";
+  row.append(badge(item.status), el("span", `${percentLabel}${item.progress_percent}%`));
   button.append(row);
   button.append(el("div", `현재 단계: ${item.current_stage}`, "meta"));
   if (item.static_disposition === "PARTIAL") button.append(el("div", "정적 분석 일부만 검증됨", "warning"));
@@ -194,8 +195,9 @@ function renderOverview(detail) {
   box.append(title);
   box.append(el("div", detail.repository || "저장소 정보 없음", "repository mono"));
   const metrics = el("div", undefined, "metric-grid");
+  const v2 = detail.percentage_kind === "known_checkpoint_fraction";
   const values = [
-    ["진행률", `${detail.progress_percent}%`],
+    [v2 ? "현재 알려진 checkpoint 비율" : "진행률", `${detail.progress_percent}%`],
     ["현재 단계", detail.current_stage],
     ["Commit", detail.commit_id || "-"],
     ["실행 프로필", detail.profile_ref || "미기록"],
@@ -210,8 +212,9 @@ function renderOverview(detail) {
     ["체이닝 자식", String(detail.child_hypothesis_count)],
     ["LLM 호출", String(detail.llm_attempt_count || 0)],
     ["LLM 토큰", `입력 ${detail.llm_input_tokens || 0} / 출력 ${detail.llm_output_tokens || 0}`],
+    ["토큰 미확인 호출", String(detail.llm_unknown_token_calls || 0)],
     ["확인된 비용", detail.llm_cost_minor_units == null ? "미제공" : `${detail.llm_cost_minor_units}¢`],
-    ["비용 미제공 호출", String(detail.llm_unknown_cost_calls || 0)],
+    ["비용 미확인 호출", String(detail.llm_unknown_cost_calls || 0)],
     ["경과 시간", formatDuration(detail.elapsed_ms)],
     ["마지막 갱신", formatTime(detail.last_updated_at)],
   ];
@@ -222,6 +225,34 @@ function renderOverview(detail) {
       ["선별", ["INCLUDE", "EXCLUDE", "UNDECIDED", "PENDING", "ERROR"].map((status) => `${status} ${decisions[status] || 0}`).join(" · ")],
       ["심층 분석", `진행 ${detail.deep_analysis_running_count || 0} · 완료 ${detail.deep_analysis_completed_count || 0} · 대기 ${detail.deep_analysis_pending_count || 0} · 오류 ${detail.deep_analysis_error_count || 0}`]
     );
+  }
+  if (v2) {
+    const phases = detail.phase_counts || {};
+    for (const [key, label] of [
+      ["static", "정적 단계"], ["triage", "후보 선별"],
+      ["candidate_deep", "후보 심층 처리"], ["verification", "가설 검증"],
+    ]) {
+      const phase = phases[key];
+      if (Number.isInteger(phase?.completed) && Number.isInteger(phase?.known)) {
+        values.push([label, `${phase.completed}/${phase.known}`]);
+      }
+    }
+    const poc = phases.poc;
+    if (Number.isInteger(poc?.attempted) && Number.isInteger(poc?.completed)) {
+      values.push(["PoC 시도", `${poc.attempted}건 · 완료 ${poc.completed}건`]);
+    }
+    const surface = phases.surface;
+    if (Number.isInteger(surface?.total)) {
+      if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) {
+        values.push(["보안 surface", `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`]);
+      } else if (Number.isInteger(surface.recorded_contexts)) {
+        values.push(["보안 surface", `저장된 context ${surface.recorded_contexts}건 · 인덱스 ${surface.total}개 · coverage 확인 전`]);
+      } else {
+        values.push(["보안 surface", "coverage 확인 불가"]);
+      }
+    } else {
+      values.push(["보안 surface", "coverage 확인 불가"]);
+    }
   }
   values.forEach(([label, value]) => {
     const metric = el("div", undefined, "metric");
@@ -234,17 +265,34 @@ function renderOverview(detail) {
   bar.style.width = `${detail.progress_percent}%`;
   progress.append(bar);
   box.append(progress);
+  if (v2) {
+    box.append(el("div", "진행률은 현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
+    if ((detail.phase_counts?.surface?.uncovered || 0) > 0 || (detail.phase_counts?.surface?.insufficient || 0) > 0) {
+      box.append(el("div", "부분 분석: 보안 surface 검토 범위가 남아 있습니다.", "warning"));
+    }
+  }
   staticCoverageNodes(detail).forEach((node) => box.append(node));
   if (detail.status === "PAUSED") {
-    const advice = detail.resume_action === "RESUME_INTERRUPTED"
-      ? `실행 중단 감지 (INTERRUPTED_RESUME_REQUIRED) · sastsimi resume ${detail.display_analysis_id || detail.analysis_id}`
-      : detail.resume_action === "CHECK_USAGE_TELEMETRY"
-        ? "사용량 정보가 없어 일시 중단됨 · 공급자 사용량과 한도 설정을 확인하세요."
-        : "예산 한도로 일시 중단됨 · 한도를 늘린 뒤 resume 하세요.";
+    const advice = detail.resume_action === "REVALIDATE_POC"
+      ? `이전 PoC 결과 재검증 필요 · sastsimi resume ${detail.display_analysis_id || detail.analysis_id}`
+      : detail.resume_action === "RESUME_INTERRUPTED"
+        ? `실행 중단 감지 (INTERRUPTED_RESUME_REQUIRED) · sastsimi resume ${detail.display_analysis_id || detail.analysis_id}`
+        : detail.resume_action === "CHECK_USAGE_TELEMETRY"
+          ? "사용량 정보가 없어 일시 중단됨 · 공급자 사용량과 한도 설정을 확인하세요."
+          : "예산 한도로 일시 중단됨 · 한도를 늘린 뒤 resume 하세요.";
     box.append(el("div", advice, "warning"));
   }
-  if (detail.status === "BLOCKED") box.append(el("div", "실행 오류로 중단됨 · 오류를 확인한 뒤 resume 하세요.", "warning"));
+  const codexCleanupReview = ["CODEX_CALL_IN_FLIGHT_UNRESOLVED", "CODEX_PROCESS_CLEANUP_UNCONFIRMED"].includes(detail.error_code);
+  if (detail.status === "BLOCKED" || (detail.status === "FAILED" && codexCleanupReview)) {
+    const advice = codexCleanupReview
+      ? "Codex 호출 또는 프로세스 정리 상태를 확인할 수 없습니다 · 운영자 수동 검토가 필요합니다. 현재 CLI에는 확인 명령이 없어 자동 재개할 수 없습니다."
+      : "실행 오류로 중단됨 · 오류를 확인한 뒤 resume 하세요.";
+    box.append(el("div", advice, "warning"));
+  }
   if (detail.on_demand_possible) box.append(el("div", "추가 사용량 과금 가능", "warning"));
+  if (detail.llm_unrecorded_in_flight_codex_calls > 0) {
+    box.append(el("div", `진행·종료 미확인 Codex 호출 ${detail.llm_unrecorded_in_flight_codex_calls}건 · 실제 사용량과 과금 여부는 미확인`, "warning"));
+  }
   if (detail.stale) box.append(el("div", "30초 넘게 갱신되지 않았습니다. 실행 상태와 터미널을 확인하세요.", "warning"));
   replace("overview", [box]);
   document.getElementById("overview").classList.remove("empty");

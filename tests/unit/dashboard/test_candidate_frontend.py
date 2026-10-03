@@ -101,6 +101,42 @@ for (const expected of [
 ]) {
   assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
 }
+detail.percentage_kind = "known_checkpoint_fraction";
+detail.phase_counts = {
+  static: { completed: 1, known: 1 },
+  triage: { completed: 2, known: 4 },
+  candidate_deep: { completed: 1, known: 2 },
+  verification: { completed: 0, known: 1 },
+  poc: { attempted: 1, completed: 0 },
+  surface: { recorded_contexts: 1, completed: 0, total: 2 },
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+assert.ok(shown.includes("저장된 context 1건 · 인덱스 2개 · coverage 확인 전"), shown);
+assert.ok(!shown.includes("탐색 기록 1/2"), shown);
+detail.phase_counts.surface = {
+  recorded_contexts: 1, completed: 1, total: 2,
+  covered: 1, uncovered: 1, insufficient: 0,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "현재 알려진 checkpoint 비율", "후보 선별", "가설 검증", "PoC 시도",
+  "보안 surface", "미검토 1", "저장소 전체 커버리지", "부분 분석",
+]) {
+  assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+}
+const listText = text(vm.runInContext("analysisButton(state.detail)", context));
+assert.ok(listText.includes("현재 알려진 checkpoint 비율"), listText);
+detail.llm_unrecorded_in_flight_codex_calls = 1;
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+assert.ok(shown.includes("진행·종료 미확인 Codex 호출 1건"), shown);
+assert.ok(shown.includes("실제 사용량과 과금 여부는 미확인"), shown);
+detail.llm_unrecorded_in_flight_codex_calls = 0;
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+assert.ok(!shown.includes("진행·종료 미확인 Codex 호출 1건"), shown);
 const ledgers = [];
 const collectLedgers = (item) => {
   if (item.className === "coverage-ledger") ledgers.push(item);
@@ -160,6 +196,28 @@ Promise.all([task, unavailableTask]).then(() => {
   shown = text(nodes.get("overview"));
   assert.ok(shown.includes("INTERRUPTED_RESUME_REQUIRED"), shown);
   assert.ok(shown.includes("sastsimi resume A-001"), shown);
+  detail.resume_action = "REVALIDATE_POC";
+  detail.error_code = "POC_REVALIDATION_REQUIRED";
+  vm.runInContext("renderOverview(state.detail)", context);
+  shown = text(nodes.get("overview"));
+  assert.ok(shown.includes("PoC 결과 재검증 필요"), shown);
+  assert.ok(shown.includes("sastsimi resume A-001"), shown);
+  assert.ok(!shown.includes("INTERRUPTED_RESUME_REQUIRED"), shown);
+  assert.ok(!shown.includes("예산 한도"), shown);
+  detail.status = "BLOCKED";
+  detail.resume_action = "MANUAL_CODEX_CLEANUP_REVIEW";
+  detail.error_code = "CODEX_CALL_IN_FLIGHT_UNRESOLVED";
+  vm.runInContext("renderOverview(state.detail)", context);
+  shown = text(nodes.get("overview"));
+  assert.ok(shown.includes("수동 검토"), shown);
+  assert.ok(shown.includes("CLI에는"), shown);
+  assert.ok(!shown.includes("종료 확인을 기록한 뒤"), shown);
+  assert.ok(!shown.includes("resume"), shown);
+  detail.error_code = "CODEX_PROCESS_CLEANUP_UNCONFIRMED";
+  vm.runInContext("renderOverview(state.detail)", context);
+  shown = text(nodes.get("overview"));
+  assert.ok(shown.includes("수동 검토"), shown);
+  assert.ok(!shown.includes("resume"), shown);
 }).catch((error) => { console.error(error); process.exitCode = 1; });
 """
     result = subprocess.run(

@@ -8,7 +8,9 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import ProgressProjector
+from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
@@ -41,9 +43,11 @@ def _save(
     status: StageStatus = StageStatus.SUCCEEDED,
     verdict: Literal["TRUE", "FALSE", "HOLD"] | None = None,
     attempt_number: int = 0,
+    attempt_id: str | None = None,
     error_code: str | None = None,
     gate_decision: Literal["ACCEPT", "REVISE", "REJECT"] | None = None,
     gate_revision_count: int = 0,
+    output_refs: tuple[StoredDataRef, ...] | None = None,
 ) -> None:
     checkpoint = StageCheckpoint(
         identity=identity,
@@ -52,11 +56,16 @@ def _save(
         status=status,
         input_refs=(),
         input_hash=input_reference_hash(()),
-        output_refs=(_ref(f"{identity.hypothesis_id}-{stage.value}"),)
-        if status is StageStatus.SUCCEEDED
-        else (),
+        output_refs=(
+            output_refs
+            if output_refs is not None
+            else (_ref(f"{identity.hypothesis_id}-{stage.value}"),)
+            if status is StageStatus.SUCCEEDED
+            else ()
+        ),
         verdict=verdict,
         attempt_number=attempt_number,
+        attempt_id=attempt_id,
         error_code=error_code,
         gate_decision=gate_decision,
         gate_revision_count=gate_revision_count,
@@ -102,6 +111,64 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(
     assert complete.percent == 100
 
 
+def test_unmet_external_prerequisite_counts_as_inconclusive_terminal(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    analysis = CheckpointIdentity(
+        analysis_id="external-prerequisite-analysis",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    hypothesis = analysis.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    _save(store, analysis, SimpleStage.STATIC_DONE)
+    _save(store, analysis, SimpleStage.HYPOTHESIS_DONE)
+    _save(store, hypothesis, SimpleStage.PRO_CON_DONE)
+    data_dir = tmp_path / "data"
+    artifacts = SimpleArtifactRepository(data_dir, hypothesis)
+    ref = artifacts.put_json(
+        {
+            "kind": "simple_initial_verification",
+            "attempt_id": "initial-attempt",
+            "result": {
+                "initial_assessment": "HOLD",
+                "unmet_external_prerequisites": ["attacker control unproven"],
+            },
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=hypothesis,
+            stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(ref,),
+            attempt_id="initial-attempt",
+            verdict="HOLD",
+            external_prerequisites_ref=ref,
+        )
+    )
+
+    snapshot = ProgressProjector(store, artifact_data_dir=data_dir).snapshot(
+        "external-prerequisite-analysis"
+    )
+
+    assert snapshot.status == "COMPLETE"
+    assert snapshot.percent == 100
+    assert snapshot.inconclusive_hypothesis_count == 1
+    assert snapshot.finding_count == 0
+    artifacts.artifacts.path_for(ref.content_hash).unlink()
+    corrupted = ProgressProjector(store, artifact_data_dir=data_dir).snapshot(
+        "external-prerequisite-analysis"
+    )
+    assert corrupted.status == "BLOCKED"
+    assert corrupted.error_code == "INITIAL_VERIFICATION_EVIDENCE_INVALID"
+    assert corrupted.inconclusive_hypothesis_count == 0
+
+
 def test_candidate_progress_counts_decisions_and_deep_work_separately(
     tmp_path: Path,
 ) -> None:
@@ -137,6 +204,399 @@ def test_candidate_progress_counts_decisions_and_deep_work_separately(
     assert snapshot.completed_units == 7
     assert snapshot.known_units == 10
     assert snapshot.percent == 70
+
+
+def test_v2_inconclusive_candidate_does_not_hide_blocked_stage(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="inconclusive-candidate",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="HYPOTHESIS_SURFACE_OUTPUT_INVALID",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        "inconclusive-candidate",
+        candidate_pipeline_version=2,
+        candidate_counts={"INCLUDE": 1},
+        candidate_deep_counts={"INCONCLUSIVE": 1},
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "HYPOTHESIS_SURFACE_OUTPUT_INVALID"
+    assert snapshot.deep_analysis_completed_count == 1
+    assert snapshot.phase_counts["candidate_deep"] == {"completed": 1, "known": 1}
+
+
+def test_v2_root_child_block_displays_actual_failed_hypothesis(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="blocked-child",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    child = identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        child,
+        SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="POC_EXECUTION_FAILED",
+        attempt_id="attempt-1",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CANDIDATE_CHILD_ERROR_BOUND:POC_EXECUTION_FAILED:hypothesis-1:attempt-1",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.current_stage == SimpleStage.POC_EXECUTION_DONE.value
+    assert snapshot.current_hypothesis_id == "hypothesis-1"
+    assert snapshot.error_code == "POC_EXECUTION_FAILED"
+
+
+def test_v2_direct_root_error_is_not_misattributed_to_old_child(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="direct-root-error",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    child = identity.model_copy(update={"hypothesis_id": "old-hypothesis"})
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        child,
+        SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="INVALID_OUTPUT",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="INVALID_OUTPUT",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.current_stage == SimpleStage.HYPOTHESIS_DONE.value
+    assert snapshot.current_hypothesis_id is None
+    assert snapshot.error_code == "INVALID_OUTPUT"
+
+
+def test_v2_child_marker_preserves_colon_in_error_code(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="colon-child-error",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    child = identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        child,
+        SimpleStage.PRO_CON_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="REQUIRED_TOOL_MISSING:FOO",
+        attempt_id="attempt-1",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CANDIDATE_CHILD_ERROR_BOUND:REQUIRED_TOOL_MISSING:FOO:hypothesis-1:attempt-1",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.error_code == "REQUIRED_TOOL_MISSING:FOO"
+    assert snapshot.current_hypothesis_id == "hypothesis-1"
+
+
+def test_v2_unbound_child_marker_preserves_full_colon_error(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="unbound-colon-error",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CANDIDATE_CHILD_ERROR:ENV_ERROR:A:B",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.error_code == "ENV_ERROR:A:B"
+    assert snapshot.current_hypothesis_id is None
+
+
+def test_v2_missing_codex_child_remains_manual_cleanup_block(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="missing-codex-child",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    old_child = identity.model_copy(update={"hypothesis_id": "old-hypothesis"})
+    _save(
+        store,
+        old_child,
+        SimpleStage.PRO_CON_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+    )
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.BLOCKED,
+        error_code="CANDIDATE_CHILD_CODEX_STATE_PENDING",
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id, candidate_pipeline_version=2
+    )
+
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert snapshot.current_hypothesis_id is None
+
+
+def test_v2_progress_is_phase_counted_and_replay_stable(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="v2-progress",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+    _save(
+        store,
+        identity.model_copy(update={"hypothesis_id": "hypothesis-1"}),
+        SimpleStage.POC_EXECUTION_DONE,
+    )
+
+    def snapshot() -> ProgressSnapshot:
+        return ProgressProjector(store).snapshot(
+            "v2-progress",
+            candidate_pipeline_version=2,
+            candidate_counts={"INCLUDE": 1, "EXCLUDE": 1, "PENDING": 1},
+            candidate_deep_counts={"COMPLETE": 1},
+            registered_hypothesis_count=1,
+            surface_counts={"CONTEXT_RECORDS": 1, "TOTAL": 2},
+        )
+
+    first = snapshot()
+    assert first.percentage_kind == "known_checkpoint_fraction"
+    assert first.phase_counts == {
+        "static": {"completed": 1, "known": 1},
+        "triage": {"completed": 2, "known": 3},
+        "candidate_deep": {"completed": 1, "known": 1},
+        "verification": {"completed": 0, "known": 1},
+        "poc": {"attempted": 1, "completed": 1},
+        "surface": {"recorded_contexts": 1, "completed": 0, "total": 2},
+    }
+    assert first.percent < 100
+    assert snapshot() == first
+
+
+def test_v2_partial_surface_context_has_no_surface_completion_credit(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="v2-partial-surface",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+
+    snapshot = ProgressProjector(store).snapshot(
+        "v2-partial-surface",
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 1},
+    )
+
+    assert snapshot.phase_counts["surface"] == {
+        "recorded_contexts": 1,
+        "completed": 0,
+        "total": 1,
+    }
+    assert snapshot.completed_units == 2
+    assert snapshot.known_units == 3
+    assert snapshot.status == "RUNNING"
+
+
+def test_v2_does_not_accept_v1_terminal_without_surface_proof(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="v2-no-surface-proof",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+
+    snapshot = ProgressProjector(store).snapshot(
+        "v2-no-surface-proof",
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=CandidateTerminal(
+            status="COMPLETE",
+            bundle_hash="a" * 64,
+            scope_fingerprint="scope-1",
+            decision_counts={},
+            deep_counts={},
+            hypothesis_count=0,
+        ),
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+    )
+
+    assert snapshot.status == "RUNNING"
+    assert snapshot.percent < 100
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "coverage_counts"),
+    [
+        ("COMPLETE", {"COVERED": 1, "UNCOVERED": 0, "INSUFFICIENT": 0}),
+        ("PARTIAL", {"COVERED": 0, "UNCOVERED": 1, "INSUFFICIENT": 0}),
+    ],
+)
+def test_v2_terminal_uses_exact_surface_proof_and_partial_status(
+    tmp_path: Path,
+    terminal_status: Literal["COMPLETE", "PARTIAL"],
+    coverage_counts: dict[str, int],
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="v2-terminal",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        output_refs=(
+            _ref("surface-index").model_copy(update={"content_hash": "b" * 64}),
+            _ref("surface-coverage").model_copy(update={"content_hash": "c" * 64}),
+        ),
+    )
+    terminal = CandidateTerminal(
+        status=terminal_status,
+        bundle_hash="a" * 64,
+        scope_fingerprint="scope-1",
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=0,
+        surface_index_hash="b" * 64,
+        surface_coverage_hash="c" * 64,
+        surface_counts=coverage_counts,
+        producer_finished=True,
+        pending_child_count=0,
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        "v2-terminal",
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 0, **coverage_counts},
+        surface_index_hash="b" * 64,
+    )
+
+    assert snapshot.status == terminal_status
+    assert snapshot.phase_counts["surface"]["completed"] == coverage_counts["COVERED"]
+    assert snapshot.phase_counts["surface"]["uncovered"] == coverage_counts["UNCOVERED"]
+    if terminal_status == "COMPLETE":
+        assert snapshot.percent == 100
+    else:
+        assert snapshot.percent < 100
+
+    unbound = ProgressProjector(store).snapshot(
+        "v2-terminal",
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal.model_copy(
+            update={"surface_coverage_hash": "d" * 64}
+        ),
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 0, **coverage_counts},
+        surface_index_hash="b" * 64,
+    )
+    assert unbound.status == "RUNNING"
+
+    unverified_counts = ProgressProjector(store).snapshot(
+        "v2-terminal",
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 0},
+        surface_index_hash="b" * 64,
+    )
+    assert unverified_counts.status == "RUNNING"
 
 
 def test_registered_hypotheses_without_checkpoints_expand_progress_denominator(
@@ -397,12 +857,31 @@ def test_false_is_terminal_without_becoming_a_failed_analysis(tmp_path: Path) ->
 def test_executed_inconclusive_poc_is_complete_but_not_reportable(
     tmp_path: Path,
 ) -> None:
-    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    store = SimpleCheckpointStore(
+        tmp_path / "db" / "sastsimi.sqlite3", artifact_data_dir=tmp_path
+    )
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",
         commit_id="commit-1",
         hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    attempt_id = "terminal-poc-attempt-3"
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "attempt_id": attempt_id,
+            "timed_out": False,
+            "exit_code": 0,
+        }
+    )
+    interpretation_ref = artifacts.put_json(
+        {
+            "kind": "simple_dynamic_interpretation",
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "result": {"outcome": "INCONCLUSIVE"},
+        }
     )
     for stage in (
         SimpleStage.PRO_CON_DONE,
@@ -418,13 +897,16 @@ def test_executed_inconclusive_poc_is_complete_but_not_reportable(
             status=StageStatus.SUCCEEDED,
             input_refs=(),
             input_hash=input_reference_hash(()),
-            output_refs=(_ref("execution"), _ref("interpretation")),
+            output_refs=(execution_ref, interpretation_ref),
             verdict="HOLD",
             attempt_number=3,
+            attempt_id=attempt_id,
         )
     )
 
-    snapshot = ProgressProjector(store).snapshot("analysis-1")
+    snapshot = ProgressProjector(store, artifact_data_dir=tmp_path).snapshot(
+        "analysis-1"
+    )
 
     assert snapshot.status == "COMPLETE"
     assert snapshot.percent == 100

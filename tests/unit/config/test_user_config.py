@@ -312,17 +312,20 @@ def test_hypothesis_feed_is_opt_in_and_round_trips(tmp_path: Path) -> None:
         "max_parallel_containers",
     ):
         legacy_text = legacy_text.replace(f"{name} = 1\n", "")
+    legacy_text = legacy_text.replace("max_pending_candidate_children = 128\n", "")
     old.write_text(
         legacy_text,
         encoding="utf-8",
     )
     assert load_simple_execution_profile(old).hypothesis_feed == "current"
     assert load_simple_execution_profile(old).max_parallel_hypotheses == 1
+    assert load_simple_execution_profile(old).max_pending_candidate_children == 128
 
     selected = profile.model_copy(
         update={
             "hypothesis_feed": "facts_survey",
             "max_parallel_hypotheses": 2,
+            "max_pending_candidate_children": 256,
             "max_parallel_builds": 2,
             "max_parallel_containers": 3,
         }
@@ -331,5 +334,61 @@ def test_hypothesis_feed_is_opt_in_and_round_trips(tmp_path: Path) -> None:
     selected.write(new)
     assert load_simple_execution_profile(new).hypothesis_feed == "facts_survey"
     assert load_simple_execution_profile(new).max_parallel_hypotheses == 2
+    assert load_simple_execution_profile(new).max_pending_candidate_children == 256
     assert load_simple_execution_profile(new).max_parallel_builds == 2
     assert load_simple_execution_profile(new).max_parallel_containers == 3
+
+
+def test_old_profile_without_bundle_round_trips(tmp_path: Path) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="configured-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        docker_network="NONE",
+        tools={},
+    )
+    path = tmp_path / "profile.toml"
+    profile.write(path)
+
+    assert load_simple_execution_profile(path) == profile
+    assert "poc_wheel_archive" not in path.read_text(encoding="utf-8")
+
+
+def test_profile_requires_path_and_digest_together(tmp_path: Path) -> None:
+    base = dict(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="configured-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        docker_network="NONE",
+        tools={},
+    )
+    for extra in (
+        {"poc_wheel_archive_path": tmp_path / "wheels.tar"},
+        {"poc_wheel_archive_sha256": "a" * 64},
+        {
+            "poc_wheel_archive_path": tmp_path / "wheels.tar",
+            "poc_wheel_archive_sha256": "A" * 64,
+        },
+    ):
+        with pytest.raises(ValueError, match="POC_WHEEL_ARCHIVE"):
+            SimpleExecutionProfile.model_validate(base | extra)
+    selected = SimpleExecutionProfile.model_validate(
+        base
+        | {
+            "poc_wheel_archive_path": tmp_path / "wheels.tar",
+            "poc_wheel_archive_sha256": "a" * 64,
+        }
+    )
+    path = tmp_path / "selected.toml"
+    selected.write(path)
+    assert load_simple_execution_profile(path) == selected

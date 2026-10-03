@@ -22,6 +22,7 @@ from sastsimi.contracts.prompt_redaction import (
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.providers.base import CodexProcessRequest, CodexProcessRunner
 
+from .attempt_owner import AttemptOwner, PromptByteCounts
 from .models import StageFailure
 
 
@@ -53,6 +54,9 @@ class SimpleLLMClient(Protocol):
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure: ...
 
 
@@ -280,9 +284,13 @@ class SimpleCodexClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
+        del owner, prompt_bytes
         prompt_digest = hashlib.sha256(prompt).hexdigest()
-        invocation_id = f"simple-{uuid4().hex}"
+        invocation_id = invocation_id or f"simple-{uuid4().hex}"
         request_ref = _request_artifact(
             self._artifacts,
             invocation_id=invocation_id,
@@ -305,6 +313,13 @@ class SimpleCodexClient:
             result = await self._runner.execute(request)
         finished_at = datetime.now(UTC)
         elapsed_ms = max(0, int((monotonic() - started) * 1000))
+        if result.cleanup_unconfirmed:
+            return StageFailure(
+                code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                retryable=False,
+                safe_message="Codex child process cleanup could not be confirmed",
+                evidence_refs=((request_ref,) if request_ref is not None else ()),
+            )
         if result.status == "INVALID_OUTPUT" or (
             result.status == "SUCCEEDED" and result.final_message is None
         ):
@@ -435,7 +450,11 @@ class SimpleOpenAIClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
+        del owner, prompt_bytes, invocation_id
         credential = os.environ.get(self._variable)
         if credential is None or not credential or credential != credential.strip():
             return StageFailure(

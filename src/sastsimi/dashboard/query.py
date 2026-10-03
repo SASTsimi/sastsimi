@@ -17,7 +17,10 @@ from sastsimi.contracts.prompt_redaction import (
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import AgentActivityEvent
-from sastsimi.progress.projector import ProgressProjector
+from sastsimi.progress.projector import (
+    ProgressProjector,
+    verified_surface_coverage_counts,
+)
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.bundle_files import (
     MAX_BUNDLE_FILE_BYTES,
@@ -25,7 +28,11 @@ from sastsimi.reporting.bundle_files import (
     read_bundle_file,
 )
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
-from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.artifacts import (
+    SimpleArtifactRepository,
+    verified_terminal_projection,
+)
+from sastsimi.simple_runtime.attack_surfaces import surface_index_from_json
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -36,7 +43,12 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
     terminal_gate_outcome,
+    terminal_initial_outcome,
     terminal_poc_outcome,
+)
+from sastsimi.simple_runtime.poc_currentness import (
+    completed_before_poc_count,
+    stale_successful_poc,
 )
 from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.scope_policy import (
@@ -64,6 +76,7 @@ _DISPLAY_ID = re.compile(r"F-[0-9]{3,}\Z")
 _RULE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 1024 * 1024
+_MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACTS = 512
 _MAX_PROJECTED_ARTIFACT_BYTES = 64 * 1024 * 1024
 _STALE_SECONDS = 30
@@ -103,6 +116,20 @@ class _CheckpointProjection:
             for item in self._checkpoints
             if item.identity.analysis_id == analysis_id
         )
+
+
+class _ReadOnlyCheckpointStore(SimpleCheckpointStore):
+    """Reuse exact cleanup audit checks without initializing or writing the DB."""
+
+    def __init__(self, database_path: Path) -> None:
+        self._database_path = database_path
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            f"file:{self._database_path.as_posix()}?mode=ro", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
 
 
 class DashboardQuery:
@@ -796,6 +823,11 @@ class DashboardQuery:
         )
         if finding is None:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        if any(
+            checkpoint.identity == finding.identity and stale_successful_poc(checkpoint)
+            for checkpoint in checkpoints
+        ):
+            raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
         report = next(
             (
                 checkpoint
@@ -996,6 +1028,7 @@ class DashboardQuery:
         *,
         detail: bool = False,
     ) -> AnalysisSummaryView | AnalysisDetailView:
+        values = list(verified_terminal_projection(tuple(values), self._data_dir))
         hypothesis_groups: dict[str, list[StageCheckpoint]] = defaultdict(list)
         for checkpoint in values:
             if checkpoint.identity.hypothesis_id is not None:
@@ -1004,21 +1037,30 @@ class DashboardQuery:
         candidate_counts, candidate_deep_counts, registered_hypotheses = (
             self._candidate_metrics(run)
         )
+        surface_counts, surface_index_hash = self._surface_metrics(run, values)
         usage = self._usage_summary(analysis_id)
+        lease_state = analysis_run_lease_active(self._data_dir, analysis_id)
         hypotheses = tuple(
             self._project_hypothesis(
                 analysis_id,
                 hypothesis_id,
                 checkpoints,
                 run,
+                analysis_active=lease_state is True,
             )
             for hypothesis_id, checkpoints in sorted(hypothesis_groups.items())
         )
         latest = max(values, key=lambda item: item.updated_at)
         started = min(values, key=lambda item: item.updated_at).updated_at
-        completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
+        completed = sum(
+            item.status is StageStatus.SUCCEEDED
+            for item in values
+            if item.identity.hypothesis_id is None
+        ) + sum(item.completed_count for item in hypotheses)
         reports = self._reports(analysis_id)
-        progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
+        progress = ProgressProjector(
+            _CheckpointProjection(tuple(values)), artifact_data_dir=self._data_dir
+        ).snapshot(
             analysis_id,
             static_disposition=run.static_disposition if run else "FULL",
             candidate_pipeline_version=(run.candidate_pipeline_version or 0)
@@ -1036,12 +1078,23 @@ class DashboardQuery:
             candidate_scope_fingerprint=(
                 run.candidate_scope_fingerprint if run else None
             ),
+            surface_counts=surface_counts,
+            surface_index_hash=surface_index_hash,
+            analysis_active=lease_state is True,
         )
-        if (
+        lease_inactive = lease_state is False
+        if lease_inactive and self._unresolved_codex_call(analysis_id):
+            progress = progress.model_copy(
+                update={
+                    "status": "BLOCKED",
+                    "error_code": "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+                }
+            )
+        elif (
             run is not None
-            and run.candidate_pipeline_version == 1
+            and run.candidate_pipeline_version in {1, 2}
             and progress.status == "RUNNING"
-            and analysis_run_lease_active(self._data_dir, analysis_id) is False
+            and lease_inactive
         ):
             progress = progress.model_copy(
                 update={
@@ -1050,6 +1103,26 @@ class DashboardQuery:
                     "resume_action": "RESUME_INTERRUPTED",
                 }
             )
+        if progress.status in {"BLOCKED", "FAILED"} and progress.error_code in {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }:
+            if (
+                lease_inactive
+                and self._confirmed_cleanup_resume_ready(analysis_id, values)
+                and analysis_run_lease_active(self._data_dir, analysis_id) is False
+            ):
+                progress = progress.model_copy(
+                    update={
+                        "status": "PAUSED",
+                        "error_code": "INTERRUPTED_RESUME_REQUIRED",
+                        "resume_action": "RESUME_INTERRUPTED",
+                    }
+                )
+            else:
+                progress = progress.model_copy(
+                    update={"resume_action": "MANUAL_CODEX_CLEANUP_REVIEW"}
+                )
         admissions = [
             item
             for item in values
@@ -1091,6 +1164,10 @@ class DashboardQuery:
                 else None
             ),
             llm_unknown_cost_calls=int(usage["unknown_cost_calls"] or 0),
+            llm_unknown_token_calls=int(usage.get("unknown_token_calls") or 0),
+            llm_unrecorded_in_flight_codex_calls=int(
+                usage.get("unrecorded_in_flight_codex_calls") or 0
+            ),
             cursor_input_tokens=int(usage["input_tokens"] or 0),
             cursor_output_tokens=int(usage["output_tokens"] or 0),
             cursor_cost_cents=(
@@ -1099,6 +1176,8 @@ class DashboardQuery:
                 else None
             ),
             progress_percent=progress.percent,
+            percentage_kind=progress.percentage_kind,
+            phase_counts=progress.phase_counts,
             completed_units=progress.completed_units,
             known_units=progress.known_units,
             admitted_primitive_count=sum(
@@ -1676,19 +1755,27 @@ class DashboardQuery:
         hypothesis_id: str,
         values: list[StageCheckpoint],
         run: SimpleAnalysisRun | None,
+        *,
+        analysis_active: bool = False,
     ) -> HypothesisProgressView:
+        values = list(verified_terminal_projection(tuple(values), self._data_dir))
         latest = max(values, key=lambda item: item.updated_at)
-        completed = sum(item.status is StageStatus.SUCCEEDED for item in values)
+        execution = next(
+            (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
+            None,
+        )
+        poc_revalidation_required = stale_successful_poc(execution)
+        completed = (
+            completed_before_poc_count(values)
+            if poc_revalidation_required
+            else sum(item.status is StageStatus.SUCCEEDED for item in values)
+        )
         final = next(
             (
                 item
                 for item in values
                 if item.stage is SimpleStage.VERIFICATION_FINAL_DONE
             ),
-            None,
-        )
-        execution = next(
-            (item for item in values if item.stage is SimpleStage.POC_EXECUTION_DONE),
             None,
         )
         gate = next(
@@ -1702,9 +1789,9 @@ class DashboardQuery:
         review = self._scope_review(latest.identity, scope, run)
         source = review["policy_source"]
         assert isinstance(source, dict)
-        progress = ProgressProjector(_CheckpointProjection(tuple(values))).snapshot(
-            analysis_id
-        )
+        progress = ProgressProjector(
+            _CheckpointProjection(tuple(values)), artifact_data_dir=self._data_dir
+        ).snapshot(analysis_id, analysis_active=analysis_active)
         return HypothesisProgressView(
             analysis_id=analysis_id,
             hypothesis_id=hypothesis_id,
@@ -1713,8 +1800,25 @@ class DashboardQuery:
             completed_count=completed,
             stage_count=len(values),
             error_code=progress.error_code,
-            verdict=final.verdict if final else None,
-            disposition=terminal_poc_outcome(execution) or terminal_gate_outcome(gate),
+            verdict=final.verdict if final and not poc_revalidation_required else None,
+            disposition=(
+                None
+                if poc_revalidation_required
+                else (
+                    terminal_initial_outcome(
+                        next(
+                            (
+                                item
+                                for item in values
+                                if item.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+                            ),
+                            None,
+                        )
+                    )
+                    or terminal_poc_outcome(execution)
+                    or terminal_gate_outcome(gate)
+                )
+            ),
             scope_status=str(review["status"]),
             scope_collection_status=str(source.get("collection_status", "UNVERIFIED")),
             scope_source_url=(
@@ -1744,7 +1848,8 @@ class DashboardQuery:
                 progress.status in {"BLOCKED", "FAILED"}
                 and any(item.retryable for item in values)
             ),
-            validated_poc=any(item.validated_poc_ref is not None for item in values),
+            validated_poc=not poc_revalidation_required
+            and any(item.validated_poc_ref is not None for item in values),
             parent_hypothesis_ids=(
                 run.parent_hypothesis_ids.get(hypothesis_id, ()) if run else ()
             ),
@@ -1787,7 +1892,7 @@ class DashboardQuery:
     ) -> tuple[dict[str, int] | None, dict[str, int] | None, int | None]:
         if (
             run is None
-            or run.candidate_pipeline_version != 1
+            or run.candidate_pipeline_version not in {1, 2}
             or not run.candidate_scope_fingerprint
         ):
             return None, None, None
@@ -1834,6 +1939,153 @@ class DashboardQuery:
                 registered = int(row[0]) if row is not None else 0
         return decisions, deep, registered
 
+    def _surface_metrics(
+        self, run: SimpleAnalysisRun | None, checkpoints: list[StageCheckpoint]
+    ) -> tuple[dict[str, int] | None, str | None]:
+        if (
+            run is None
+            or run.candidate_pipeline_version != 2
+            or not run.candidate_scope_fingerprint
+            or run.static_bundle_ref is None
+        ):
+            return None, None
+        key = (
+            run.analysis_id,
+            run.workspace_id,
+            run.commit_id,
+            run.candidate_scope_fingerprint,
+        )
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_attack_surface_indexes"):
+                return None, None
+            row = connection.execute(
+                "SELECT static_bundle_hash, ast_manifest_hash, "
+                "candidate_inventory_hash, candidate_count, index_ref_json "
+                "FROM simple_attack_surface_indexes WHERE analysis_id = ? "
+                "AND workspace_id = ? AND commit_id = ? AND scope_fingerprint = ?",
+                key,
+            ).fetchone()
+            if row is None:
+                return None, None
+            try:
+                index_ref = StoredDataRef.model_validate_json(row["index_ref_json"])
+                identity = CheckpointIdentity(
+                    analysis_id=run.analysis_id,
+                    workspace_id=run.workspace_id,
+                    commit_id=run.commit_id,
+                    hypothesis_id=None,
+                )
+                repository = SimpleArtifactRepository(self._data_dir, identity)
+                raw = repository.read_bounded(index_ref, _MAX_SURFACE_PROGRESS_BYTES)
+                index = surface_index_from_json(json.loads(raw))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                return None, None
+            if (
+                index_ref.workspace_id.root != run.workspace_id
+                or index_ref.commit_id.root != run.commit_id
+                or row["static_bundle_hash"] != run.static_bundle_ref.content_hash
+                or index.scope_fingerprint != run.candidate_scope_fingerprint
+                or index.workspace_id != run.workspace_id
+                or index.commit_id != run.commit_id
+                or index.static_bundle_hash != row["static_bundle_hash"]
+                or index.ast_manifest_hash != row["ast_manifest_hash"]
+                or index.candidate_inventory_hash != row["candidate_inventory_hash"]
+                or index.candidate_count != row["candidate_count"]
+            ):
+                return None, None
+            rows = (
+                connection.execute(
+                    "SELECT surface_id, context_id FROM "
+                    "simple_surface_exploration_progress "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? AND static_bundle_hash = ? "
+                    "AND index_hash = ?",
+                    (*key, row["static_bundle_hash"], index_ref.content_hash),
+                ).fetchall()
+                if self._table_exists(connection, "simple_surface_exploration_progress")
+                else ()
+            )
+        indexed = {surface.surface_id for surface in index.surfaces}
+        recorded_contexts = sum(str(item["surface_id"]) in indexed for item in rows)
+        counts = {"TOTAL": len(indexed), "CONTEXT_RECORDS": recorded_contexts}
+        terminal = run.candidate_terminal
+        if (
+            terminal is not None
+            and terminal.surface_index_hash == index_ref.content_hash
+            and terminal.surface_coverage_hash
+        ):
+            coverage_ref = next(
+                (
+                    ref
+                    for checkpoint in checkpoints
+                    if checkpoint.identity.hypothesis_id is None
+                    and checkpoint.stage is SimpleStage.HYPOTHESIS_DONE
+                    and checkpoint.status is StageStatus.SUCCEEDED
+                    for ref in checkpoint.output_refs
+                    if ref.content_hash == terminal.surface_coverage_hash
+                ),
+                None,
+            )
+            if coverage_ref is not None:
+                try:
+                    coverage = json.loads(
+                        repository.read_bounded(
+                            coverage_ref, _MAX_SURFACE_PROGRESS_BYTES
+                        )
+                    )
+                    verified = verified_surface_coverage_counts(
+                        coverage, index, terminal
+                    )
+                except (OSError, ValueError, TypeError, sqlite3.Error):
+                    verified = None
+                if verified is not None:
+                    counts.update(verified)
+        return counts, index_ref.content_hash
+
+    def _unresolved_codex_call(self, analysis_id: str) -> bool:
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_codex_calls"):
+                return False
+            row = connection.execute(
+                "SELECT 1 FROM simple_codex_calls "
+                "WHERE analysis_id = ? AND status = 'IN_FLIGHT' LIMIT 1",
+                (analysis_id,),
+            ).fetchone()
+        return row is not None
+
+    def _confirmed_cleanup_resume_ready(
+        self, analysis_id: str, checkpoints: list[StageCheckpoint]
+    ) -> bool:
+        cleanup_errors = {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }
+        affected = [
+            checkpoint
+            for checkpoint in checkpoints
+            if checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+            and checkpoint.error_code in cleanup_errors
+        ]
+        if not affected:
+            return False
+        try:
+            store = _ReadOnlyCheckpointStore(self._database)
+            if store.unresolved_codex_call(analysis_id) is not None:
+                return False
+            return all(
+                store.has_codex_cleanup_confirmation(
+                    checkpoint,
+                    SimpleArtifactRepository(self._data_dir, checkpoint.identity),
+                )
+                if checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                else store.confirmed_codex_call_covering(
+                    analysis_id, checkpoint.updated_at
+                )
+                for checkpoint in affected
+            )
+        except (OSError, ValueError, LookupError, sqlite3.Error):
+            return False
+
     def _usage_summary(self, analysis_id: str) -> dict[str, int | float | None]:
         with self._connect() as connection:
             if not self._table_exists(connection, "simple_llm_attempts"):
@@ -1843,6 +2095,8 @@ class DashboardQuery:
                     "output_tokens": 0,
                     "cost_minor_units": None,
                     "unknown_cost_calls": 0,
+                    "unknown_token_calls": 0,
+                    "unrecorded_in_flight_codex_calls": 0,
                 }
             return SimpleCheckpointStore.usage_summary_from_connection(
                 connection, analysis_id

@@ -1,9 +1,11 @@
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -27,6 +29,7 @@ from sastsimi.simple_runtime.models import (
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
     PortableDockerRuntime,
+    build_pinned_context,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -90,6 +93,462 @@ async def test_failed_docker_build_keeps_diagnostic_output() -> None:
     assert "--quiet" not in docker.calls[1]
     assert failure.value.outcome is not None
     assert b"Git executable not found" in failure.value.outcome.stderr
+
+
+class _ArchiveDocker(PortableDockerRuntime):
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[str, ...], bytes | None]] = []
+        self._network = "none"
+        self._timeout = 60
+
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_seconds
+        call = tuple(args)
+        self.calls.append((call, input_bytes))
+        if call[:2] == ("buildx", "inspect"):
+            return DockerCommandOutcome(
+                0, b"Name: desktop-linux\nDriver: docker\n", b"", False
+            )
+        if call[:2] == ("image", "inspect"):
+            return DockerCommandOutcome(1, b"", b"not found", False)
+        return DockerCommandOutcome(0, b"", b"", False)
+
+
+class _TargetProbeDocker(_ArchiveDocker):
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_seconds
+        call = tuple(args)
+        self.calls.append((call, input_bytes))
+        if call[:2] == ("image", "inspect"):
+            return DockerCommandOutcome(
+                0, b"linux|amd64|sha256:" + b"a" * 64 + b"\n", b"", False
+            )
+        if call[0] == "run":
+            return DockerCommandOutcome(
+                0,
+                b'["cp312-cp312-manylinux_2_17_x86_64", "py3-none-any"]\n',
+                b"",
+                False,
+            )
+        raise AssertionError(call)
+
+
+@pytest.mark.asyncio
+async def test_target_tags_are_probed_inside_local_networkless_linux_image() -> None:
+    docker = _TargetProbeDocker()
+
+    tags = await docker.target_wheel_tags("python:3.12-slim")
+
+    assert tags is not None
+    assert "cp312-cp312-manylinux_2_17_x86_64" in tags
+    run = docker.calls[1][0]
+    assert run[:3] == ("run", "--pull", "never")
+    assert ("--network", "none") == run[
+        run.index("--network") : run.index("--network") + 2
+    ]
+    assert "--mount" not in run
+
+
+def _committed_workspace(tmp_path: Path) -> tuple[Path, str]:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('pinned')\n", encoding="utf-8")
+    (workspace / "requirements.txt").write_text("sample-pkg==1.0\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(workspace)), check=True)
+    subprocess.run(("git", "-C", str(workspace), "add", "."), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ),
+        check=True,
+    )
+    commit = subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+    return workspace, commit.decode("ascii").strip()
+
+
+def test_archive_context_has_only_pinned_checkout_and_wheels(tmp_path: Path) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    (workspace / "untracked-secret.txt").write_text("do not include", encoding="utf-8")
+    wheel = b"wheel-bytes"
+
+    raw = build_pinned_context(
+        workspace,
+        commit,
+        b"FROM python:3.12-slim\n",
+        {"sample_pkg-1.0-py3-none-any.whl": wheel},
+    )
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = {member.name for member in archive}
+        assert names == {
+            "Dockerfile",
+            "app.py",
+            "requirements.txt",
+            "wheels/sample_pkg-1.0-py3-none-any.whl",
+        }
+        app_file = archive.extractfile("app.py")
+        wheel_file = archive.extractfile("wheels/sample_pkg-1.0-py3-none-any.whl")
+        assert app_file is not None
+        assert wheel_file is not None
+        assert app_file.read() == b"print('pinned')\n"
+        assert wheel_file.read() == wheel
+
+
+def test_archive_context_rejects_source_symlink_or_changed_content(
+    tmp_path: Path,
+) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    (workspace / "app.py").write_text("print('modified')\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_CHANGED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+    (workspace / "app.py").unlink()
+    try:
+        (workspace / "app.py").symlink_to(workspace / "requirements.txt")
+    except OSError:
+        pytest.skip("Windows symlink creation is unavailable")
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_UNSAFE"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def _commit_fixture(workspace: Path, message: str) -> str:
+    subprocess.run(("git", "-C", str(workspace), "add", "."), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            message,
+        ),
+        check=True,
+    )
+    return (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+
+
+def test_archive_context_honors_dockerignore_and_blocks_tracked_secret(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    (workspace / ".env").write_text("SECRET=private\n", encoding="utf-8")
+    (workspace / ".dockerignore").write_text(".env\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "ignore")
+
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        assert ".env" not in archive.getnames()
+        assert ".dockerignore" not in archive.getnames()
+
+    (workspace / ".dockerignore").write_text("# no exclusions\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "unignore")
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_omits_test_only_secret_fixture(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    package = workspace / "src" / "sample"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0.0"\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n',
+        encoding="utf-8",
+    )
+    fixture = workspace / "tests" / "test_apps" / ".env"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("SECRET=fixture-only\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "test fixture")
+
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        assert "app.py" in archive.getnames()
+        assert "tests/test_apps/.env" not in archive.getnames()
+        assert b"fixture-only" not in raw
+
+
+def test_archive_context_blocks_test_secret_inside_package(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    package = workspace / "src" / "sample"
+    (package / "tests").mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "tests" / ".env").write_text("SECRET=packaged\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0.0"\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n',
+        encoding="utf-8",
+    )
+    commit = _commit_fixture(workspace, "packaged test data")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_blocks_ambiguous_test_secret_package_data(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    fixture = workspace / "tests" / ".env"
+    fixture.parent.mkdir()
+    fixture.write_text("SECRET=maybe-packaged\n", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0.0"\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n'
+        '[tool.flit.external-data]\ndirectory = "tests"\n',
+        encoding="utf-8",
+    )
+    package = workspace / "src" / "sample"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    commit = _commit_fixture(workspace, "ambiguous data")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_blocks_secret_in_nested_project(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    package = workspace / "src" / "sample"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0.0"\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n',
+        encoding="utf-8",
+    )
+    nested = workspace / "examples" / "tool"
+    nested.mkdir(parents=True)
+    (nested / "pyproject.toml").write_text(
+        '[build-system]\nbuild-backend = "setuptools.build_meta"\n',
+        encoding="utf-8",
+    )
+    secret = nested / "tests" / ".env"
+    secret.parent.mkdir()
+    secret.write_text("SECRET=nested-product-data\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "nested project")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        'readme = "tests/.env"',
+        'license = {file = "tests/.env"}',
+        'license-files = ["tests/*.env"]',
+        'license-files = ["./tests/*.env"]',
+    ),
+)
+def test_archive_context_blocks_test_secret_referenced_by_project_metadata(
+    tmp_path: Path, metadata: str
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    package = workspace / "src" / "sample"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (workspace / "pyproject.toml").write_text(
+        f'[project]\nname = "sample"\nversion = "1.0.0"\n{metadata}\n'
+        '[build-system]\nbuild-backend = "flit_core.buildapi"\n'
+        '[tool.flit.module]\nname = "sample"\n',
+        encoding="utf-8",
+    )
+    secret = workspace / "tests" / ".env"
+    secret.parent.mkdir()
+    secret.write_text("SECRET=metadata-input\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "metadata input")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_uses_reproducible_zip_compatible_mtime(
+    tmp_path: Path,
+) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        assert {member.mtime for member in archive} == {315532800}
+
+
+def test_archive_context_blocks_declared_product_secret_under_tests(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    product = workspace / "tests" / ".env.prod.js"
+    product.parent.mkdir(parents=True)
+    product.write_text("export const value = 'dummy';\n", encoding="utf-8")
+    (workspace / "package.json").write_text(
+        '{"main":"./tests/.env.prod.js"}\n', encoding="utf-8"
+    )
+    commit = _commit_fixture(workspace, "declared product")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_preserves_executable_bit_and_rejects_filter(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    (workspace / "app.py").chmod(0o755)
+    subprocess.run(
+        ("git", "-C", str(workspace), "update-index", "--chmod=+x", "app.py"),
+        check=True,
+    )
+    commit = _commit_fixture(workspace, "executable")
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        assert archive.getmember("app.py").mode == 0o755
+
+    (workspace / ".gitattributes").write_text("app.py filter=lfs\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "filter")
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_FILTER_UNSUPPORTED"):
+        build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+@pytest.mark.asyncio
+async def test_tar_build_uses_network_none(tmp_path: Path) -> None:
+    docker = _ArchiveDocker()
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
+
+    with pytest.raises(DockerOperationError, match="DOCKER_IMAGE_INSPECT_FAILED"):
+        await docker.build_or_reuse(
+            workspace=tmp_path,
+            dockerfile=dockerfile,
+            cache_key="archive-build",
+            labels={},
+            context_archive=raw,
+        )
+
+    args, input_bytes = next(
+        (args, payload) for args, payload in docker.calls if args[0] == "build"
+    )
+    assert docker.calls[0][0] == ("buildx", "inspect")
+    assert args[:3] == ("build", "--builder", "desktop-linux")
+    assert ("--network", "none") == args[
+        args.index("--network") : args.index("--network") + 2
+    ]
+    assert args[-3:] == ("--file", "Dockerfile", "-")
+    assert input_bytes == raw
+
+
+@pytest.mark.asyncio
+async def test_tar_build_rejects_unverified_archive(tmp_path: Path) -> None:
+    docker = _ArchiveDocker()
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_UNSAFE"):
+        await docker.build_or_reuse(
+            workspace=tmp_path,
+            dockerfile=b"FROM python:3.12-slim\n",
+            cache_key="invalid",
+            labels={},
+            context_archive=b"not a tar",
+        )
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_archive_cache_hit_requires_matching_recipe_label(tmp_path: Path) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
+
+    class _WrongCache(_ArchiveDocker):
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds
+            self.calls.append((tuple(args), input_bytes))
+            if tuple(args)[:2] == ("buildx", "inspect"):
+                return DockerCommandOutcome(
+                    0, b"Name: default\nDriver: docker\n", b"", False
+                )
+            return DockerCommandOutcome(
+                0, b"0" * 64 + b"|sha256:" + b"a" * 64 + b"\n", b"", False
+            )
+
+    docker = _WrongCache()
+    with pytest.raises(ValueError, match="POC_OFFLINE_CACHE_MISMATCH"):
+        await docker.build_or_reuse(
+            workspace=workspace,
+            dockerfile=dockerfile,
+            cache_key="offline",
+            labels={},
+            context_archive=raw,
+        )
+    assert len(docker.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_archive_build_rejects_non_engine_builder(tmp_path: Path) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
+
+    class _ContainerBuilder(_ArchiveDocker):
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds
+            self.calls.append((tuple(args), input_bytes))
+            return DockerCommandOutcome(
+                0, b"Name: default\nDriver: docker-container\n", b"", False
+            )
+
+    docker = _ContainerBuilder()
+    with pytest.raises(ValueError, match="POC_OFFLINE_BUILDER_UNSUPPORTED"):
+        await docker.build_or_reuse(
+            workspace=workspace,
+            dockerfile=dockerfile,
+            cache_key="offline",
+            labels={},
+            context_archive=raw,
+        )
+    assert len(docker.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -202,6 +661,7 @@ async def test_dependency_failure_uses_recorded_source_only_fallback(
     assert len(recipe["build_attempt_refs"]) == 2
     assert b"pip install" not in docker.dockerfiles[1]
     assert json.loads(artifacts.read(result.recipe_ref))["status"] == "BUILT"
+    assert recipe["image_digest"] == result.image_digest
 
 
 @pytest.mark.asyncio
@@ -413,6 +873,7 @@ async def test_reproduction_container_keeps_baked_workspace_writable() -> None:
     assert create[0] == "create"
     assert "--read-only" not in create
     assert "--network" in create
+    assert create[create.index("--network") + 1] == "none"
     assert "no-new-privileges" in create
 
 

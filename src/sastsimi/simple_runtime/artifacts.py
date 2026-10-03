@@ -6,8 +6,9 @@ import os
 import sqlite3
 import stat
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from sastsimi.config.runtime_paths import RuntimePaths
@@ -18,6 +19,7 @@ from sastsimi.contracts.prompt_redaction import (
     redact_untrusted_text,
 )
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.bundle_files import (
     MAX_BUNDLE_ARCHIVE_BYTES,
     MAX_BUNDLE_FILE_BYTES,
@@ -35,9 +37,25 @@ from .models import (
     SimpleStage,
     StageCheckpoint,
     StageStatus,
+    terminal_initial_outcome,
+    terminal_poc_outcome,
 )
 
 _MAX_CONTEXT_BYTES = 256 * 1024
+
+# Exact pre-origin provider fallback decisions; they were never Agent STOPs.
+LEGACY_RECOVERY_FALLBACK_STOPS = frozenset(
+    {
+        (
+            "recovery provider did not return a decision",
+            "preserve the failure for manual review",
+        ),
+        (
+            "recovery output failed policy validation",
+            "preserve the failure for manual review",
+        ),
+    }
+)
 
 
 class SimpleArtifactRepository:
@@ -58,6 +76,25 @@ class SimpleArtifactRepository:
 
     def put_json(self, value: object) -> StoredDataRef:
         return self.put_bytes(canonical_bytes(value), "application/json")
+
+    def put_prompt_proposal(self, value: Mapping[str, Any]) -> StoredDataRef:
+        """Keep the original locally while supplying a redacted proposal to agents."""
+
+        if value.get("kind") != "simple_hypothesis_proposal":
+            raise ValueError("HYPOTHESIS_PROPOSAL_KIND_INVALID")
+        raw = canonical_bytes(value)
+        safe = redact_projected_json(raw).data
+        if safe == raw:
+            return self.put_bytes(raw, "application/json")
+        original_ref = self.put_bytes(raw, "application/json")
+        projected = json.loads(safe)
+        if not isinstance(projected, dict):
+            raise ValueError("HYPOTHESIS_PROPOSAL_REDACTION_INVALID")
+        projected["original_proposal_ref"] = original_ref.model_dump(mode="json")
+        prompt_bytes = canonical_bytes(projected)
+        if redact_projected_json(prompt_bytes).data != prompt_bytes:
+            raise ValueError("HYPOTHESIS_PROPOSAL_REDACTION_INVALID")
+        return self.put_bytes(prompt_bytes, "application/json")
 
     def read(self, ref: StoredDataRef) -> bytes:
         self._require_scope(ref)
@@ -81,6 +118,41 @@ class SimpleArtifactRepository:
         if hashlib.sha256(payload).hexdigest() != ref.content_hash:
             raise ValueError("SIMPLE_RUNTIME_EXACT_REFERENCE_MISMATCH")
         return payload
+
+    def read_prompt_proposal(self, ref: StoredDataRef) -> bytes:
+        """Verify both the prompt-safe proposal and its original CAS evidence."""
+
+        payload = self.read(ref)
+        try:
+            proposal = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID") from error
+        if (
+            not isinstance(proposal, dict)
+            or proposal.get("kind") != "simple_hypothesis_proposal"
+        ):
+            raise ValueError("HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID")
+        self._require_proposal_original(proposal, payload)
+        return payload
+
+    def _require_proposal_original(
+        self, proposal: Mapping[str, Any], safe_payload: bytes
+    ) -> None:
+        if "original_proposal_ref" not in proposal:
+            return  # Existing unredacted proposals have no secondary CAS object.
+        try:
+            original_ref = StoredDataRef.model_validate(
+                proposal["original_proposal_ref"]
+            )
+            original = self.read(original_ref)
+            projected = json.loads(redact_projected_json(original).data)
+            if not isinstance(projected, dict):
+                raise ValueError("Invalid original proposal")
+            projected["original_proposal_ref"] = original_ref.model_dump(mode="json")
+            if canonical_bytes(projected) != safe_payload:
+                raise ValueError("Proposal projection mismatch")
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            raise ValueError("HYPOTHESIS_PROPOSAL_ORIGINAL_INVALID") from error
 
     def quarantine_corrupt(
         self, ref: StoredDataRef, *, max_bytes: int | None = None
@@ -137,6 +209,226 @@ class SimpleArtifactRepository:
         self._require_scope(ref)
         with self.artifacts.open_verified_bounded(ref, max_bytes) as stream:
             return stream.read()
+
+    def verified_terminal_initial_outcome(
+        self, checkpoint: StageCheckpoint | None
+    ) -> Literal["INCONCLUSIVE"] | None:
+        """Verify the exact Agent evidence before accepting an early HOLD."""
+
+        if terminal_initial_outcome(checkpoint) is None:
+            return None
+        assert checkpoint is not None
+        if (
+            checkpoint.identity != self.identity
+            or checkpoint.stage_version
+            != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+        ):
+            raise ValueError("INITIAL_VERIFICATION_EVIDENCE_INVALID")
+        ref = checkpoint.external_prerequisites_ref
+        assert ref is not None
+        try:
+            payload = json.loads(self.read_bounded(ref, 1024 * 1024))
+            result = payload.get("result") if isinstance(payload, dict) else None
+            prerequisites = (
+                result.get("unmet_external_prerequisites")
+                if isinstance(result, dict)
+                else None
+            )
+            if (
+                not isinstance(payload, dict)
+                or payload.get("kind") != "simple_initial_verification"
+                or payload.get("attempt_id") != checkpoint.attempt_id
+                or not isinstance(prerequisites, list)
+                or not prerequisites
+                or any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in prerequisites
+                )
+            ):
+                raise ValueError("INITIAL_VERIFICATION_EVIDENCE_INVALID")
+        except (OSError, ValueError, TypeError, UnicodeError) as error:
+            raise ValueError("INITIAL_VERIFICATION_EVIDENCE_INVALID") from error
+        return "INCONCLUSIVE"
+
+    def verified_terminal_poc_outcome(
+        self, checkpoint: StageCheckpoint | None
+    ) -> Literal["INCONCLUSIVE"] | None:
+        """Fail closed if an inconclusive terminal PoC loses its exact evidence."""
+
+        if checkpoint is None:
+            return None
+        if checkpoint.poc_stop_decision_ref is None:
+            if terminal_poc_outcome(checkpoint) is None:
+                return None
+            self._verified_poc_observation(checkpoint)
+            return "INCONCLUSIVE"
+        if (
+            terminal_poc_outcome(checkpoint) is None
+            or checkpoint.identity != self.identity
+        ):
+            raise ValueError("POC_STOP_EVIDENCE_INVALID")
+        if checkpoint.attempt_id is None or len(checkpoint.output_refs) != 2:
+            raise ValueError("POC_STOP_EVIDENCE_INVALID")
+        execution_ref, interpretation_ref = checkpoint.output_refs
+        try:
+            decision = json.loads(
+                self.read_bounded(checkpoint.poc_stop_decision_ref, 1024 * 1024)
+            )
+            execution = json.loads(self.read(execution_ref))
+            interpretation = json.loads(self.read(interpretation_ref))
+            original_error = (
+                decision.get("original_error") if isinstance(decision, dict) else None
+            )
+            stop = decision.get("decision") if isinstance(decision, dict) else None
+            result = (
+                interpretation.get("result")
+                if isinstance(interpretation, dict)
+                else None
+            )
+            if (
+                not isinstance(decision, dict)
+                or not isinstance(original_error, dict)
+                or not isinstance(stop, dict)
+                or not isinstance(execution, dict)
+                or not isinstance(interpretation, dict)
+                or decision.get("kind") != "simple_recovery_decision"
+                or decision.get("identity")
+                != checkpoint.identity.model_dump(mode="json")
+                or decision.get("stage") != checkpoint.stage.value
+                or decision.get("attempt") != checkpoint.attempt_number
+                or decision.get("attempt_id") != checkpoint.attempt_id
+                or decision.get("decision_origin") not in {None, "AGENT"}
+                or decision.get("decision_origin") is None
+                and (
+                    "decision_origin" in decision
+                    or (stop.get("diagnosis"), stop.get("guidance"))
+                    in LEGACY_RECOVERY_FALLBACK_STOPS
+                )
+                or original_error.get("code") != "POC_INCONCLUSIVE"
+                or original_error.get("retryable") is not True
+                or not isinstance(original_error.get("safe_message"), str)
+                or original_error.get("invalid_field") is not None
+                and not isinstance(original_error.get("invalid_field"), str)
+                or original_error.get("evidence_refs")
+                != [ref.model_dump(mode="json") for ref in checkpoint.output_refs]
+                or stop.get("action") != "STOP"
+                or stop.get("category")
+                not in {
+                    "TRANSIENT_TOOL",
+                    "GENERATED_INPUT",
+                    "ENVIRONMENT",
+                    "TERMINAL",
+                }
+                or not isinstance(stop.get("diagnosis"), str)
+                or not isinstance(stop.get("guidance"), str)
+                or stop.get("environment_patch") != ""
+                or execution.get("kind") != "simple_poc_execution"
+                or execution.get("attempt_id") != checkpoint.attempt_id
+                or checkpoint.container_id is not None
+                and execution.get("container_id") != checkpoint.container_id
+                or execution.get("timed_out") is not False
+                or type(execution.get("exit_code")) is not int
+                or execution.get("exit_code") != 0
+                or interpretation.get("kind") != "simple_dynamic_interpretation"
+                or interpretation.get("execution_ref")
+                != execution_ref.model_dump(mode="json")
+                or not isinstance(result, dict)
+                or result.get("outcome") != "INCONCLUSIVE"
+            ):
+                raise ValueError("POC_STOP_EVIDENCE_INVALID")
+            with closing(
+                sqlite3.connect(
+                    f"file:{self.paths.database.as_posix()}?mode=ro", uri=True
+                )
+            ) as connection:
+                rows = connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ?",
+                    (
+                        checkpoint.identity.analysis_id,
+                        checkpoint.identity.hypothesis_id or "",
+                        checkpoint.attempt_id,
+                    ),
+                ).fetchall()
+            if not any(
+                self._matches_poc_stop_event(
+                    row[0], checkpoint, checkpoint.poc_stop_decision_ref
+                )
+                for row in rows
+            ):
+                raise ValueError("POC_STOP_EVIDENCE_INVALID")
+        except (OSError, ValueError, TypeError, UnicodeError, sqlite3.Error) as error:
+            raise ValueError("POC_STOP_EVIDENCE_INVALID") from error
+        return "INCONCLUSIVE"
+
+    def _verified_poc_observation(self, checkpoint: StageCheckpoint) -> None:
+        if (
+            checkpoint.identity != self.identity
+            or checkpoint.attempt_id is None
+            or len(checkpoint.output_refs) not in {2, 3}
+        ):
+            raise ValueError("POC_TERMINAL_EVIDENCE_INVALID")
+        execution_ref, interpretation_ref = checkpoint.output_refs[:2]
+        try:
+            execution = json.loads(self.read(execution_ref))
+            interpretation = json.loads(self.read(interpretation_ref))
+            cleanup = (
+                json.loads(self.read(checkpoint.output_refs[2]))
+                if len(checkpoint.output_refs) == 3
+                else None
+            )
+            result = (
+                interpretation.get("result")
+                if isinstance(interpretation, dict)
+                else None
+            )
+            if (
+                not isinstance(execution, dict)
+                or not isinstance(interpretation, dict)
+                or execution.get("kind") != "simple_poc_execution"
+                or execution.get("attempt_id") != checkpoint.attempt_id
+                or checkpoint.container_id is not None
+                and execution.get("container_id") != checkpoint.container_id
+                or execution.get("timed_out") is not False
+                or type(execution.get("exit_code")) is not int
+                or execution.get("exit_code") != 0
+                or interpretation.get("kind") != "simple_dynamic_interpretation"
+                or interpretation.get("execution_ref")
+                != execution_ref.model_dump(mode="json")
+                or not isinstance(result, dict)
+                or result.get("outcome") != "INCONCLUSIVE"
+                or len(checkpoint.output_refs) == 3
+                and (
+                    not isinstance(cleanup, dict)
+                    or cleanup.get("kind") != "simple_container_cleanup"
+                    or cleanup.get("attempt_id") != checkpoint.attempt_id
+                    or cleanup.get("container_id") != checkpoint.container_id
+                    or cleanup.get("status") != "REMOVED"
+                )
+            ):
+                raise ValueError("POC_TERMINAL_EVIDENCE_INVALID")
+        except (OSError, ValueError, TypeError, UnicodeError, sqlite3.Error) as error:
+            raise ValueError("POC_TERMINAL_EVIDENCE_INVALID") from error
+
+    @staticmethod
+    def _matches_poc_stop_event(
+        raw: str, checkpoint: StageCheckpoint, decision_ref: StoredDataRef
+    ) -> bool:
+        try:
+            event = AgentActivityEvent.model_validate_json(raw)
+        except (ValueError, TypeError):
+            return False
+        return (
+            event.kind is ActivityKind.DECISION_RECORDED
+            and event.stage == checkpoint.stage.value
+            and event.analysis_id == checkpoint.identity.analysis_id
+            and event.workspace_id == checkpoint.identity.workspace_id
+            and event.commit_id == checkpoint.identity.commit_id
+            and event.hypothesis_id == checkpoint.identity.hypothesis_id
+            and event.attempt_id == checkpoint.attempt_id
+            and event.error_code == "POC_INCONCLUSIVE"
+            and event.output_refs == (decision_ref,)
+        )
 
     def verified_report_bundle(
         self,
@@ -430,6 +722,16 @@ class SimpleArtifactRepository:
         used = 0
         for ref in refs:
             raw = self.read(ref)
+            if not items:
+                try:
+                    first = json.loads(raw)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    first = None
+                if (
+                    isinstance(first, dict)
+                    and first.get("kind") == "simple_hypothesis_proposal"
+                ):
+                    self._require_proposal_original(first, raw)
             redacted = self._redacted(raw)
             if not items and redacted != raw:
                 raise ValueError("SIMPLE_RUNTIME_CONTEXT_REDACTED")
@@ -539,4 +841,49 @@ class SimpleArtifactRepository:
             raise ValueError("SIMPLE_RUNTIME_REFERENCE_SCOPE_MISMATCH")
 
 
-__all__ = ["SimpleArtifactRepository"]
+def verified_terminal_projection(
+    checkpoints: tuple[StageCheckpoint, ...], data_dir: str | Path | None
+) -> tuple[StageCheckpoint, ...]:
+    """Fail closed in read-only status views when terminal evidence is lost."""
+
+    projected: list[StageCheckpoint] = []
+    for checkpoint in checkpoints:
+        initial = terminal_initial_outcome(checkpoint) is not None
+        terminal_poc = (
+            checkpoint.poc_stop_decision_ref is not None
+            or terminal_poc_outcome(checkpoint) is not None
+        )
+        if not initial and not terminal_poc:
+            projected.append(checkpoint)
+            continue
+        error_code = (
+            "INITIAL_VERIFICATION_EVIDENCE_INVALID"
+            if initial
+            else "POC_STOP_EVIDENCE_INVALID"
+            if checkpoint.poc_stop_decision_ref is not None
+            else "POC_TERMINAL_EVIDENCE_INVALID"
+        )
+        try:
+            if data_dir is None:
+                raise ValueError(error_code)
+            artifacts = SimpleArtifactRepository(data_dir, checkpoint.identity)
+            if initial:
+                artifacts.verified_terminal_initial_outcome(checkpoint)
+            else:
+                artifacts.verified_terminal_poc_outcome(checkpoint)
+        except (OSError, ValueError, sqlite3.Error):
+            projected.append(
+                checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.BLOCKED,
+                        "error_code": error_code,
+                        "retryable": False,
+                    }
+                )
+            )
+        else:
+            projected.append(checkpoint)
+    return tuple(projected)
+
+
+__all__ = ["SimpleArtifactRepository", "verified_terminal_projection"]

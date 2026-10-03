@@ -123,6 +123,8 @@ sastsimi setup --non-interactive --auth api-key --provider openai --model <model
 
 설정 파일은 운영체제의 사용자 설정 폴더에, 실행 데이터는 사용자 데이터 폴더에 생성됩니다. 파일에는 환경변수 이름이나 공식 로그인 사용 여부만 저장하며 key·token·cookie를 저장하지 않습니다.
 
+선택형 오프라인 PoC 의존성이 필요하면 `setup` 출력의 실행 프로필 `profile.toml`에 승인한 wheel TAR의 `poc_wheel_archive_path`와 소문자 SHA-256인 `poc_wheel_archive_sha256`을 함께 지정하고, 기존 `docker_network`을 `NONE`으로 유지합니다. 이 두 필드는 `setup` 옵션이 아니며 `setup`을 다시 실행하면 프로필에 다시 지정해야 합니다. 평탄한 TAR 생성과 로컬 Docker base image 확인 방법은 [Docker 또는 PoC 실패](troubleshooting.md#docker-또는-poc-실패)에 있습니다.
+
 `READY`는 현재 컴퓨터에서 필요한 실행 파일과 인증 상태를 확인했다는 뜻입니다. 실제 model 접근, 저장소 의존성 설치와 Docker build는 첫 분석에서 추가로 확인될 수 있습니다.
 
 ## 5. 새 환경 확인

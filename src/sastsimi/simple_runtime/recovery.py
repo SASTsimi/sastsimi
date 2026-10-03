@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import ValidationError
 
@@ -266,18 +266,23 @@ class SimpleRecoveryCoordinator:
                 "recovery provider did not return a decision",
                 "preserve the failure for manual review",
             )
+            decision_origin: Literal["AGENT", "FALLBACK"] = "FALLBACK"
         else:
             try:
                 decision = RecoveryDecision.model_validate_json(
                     canonical_bytes(response.value)
                 )
                 decision = self._validate_decision(decision)
+                decision_origin = "AGENT"
             except (ValidationError, ValueError):
                 decision = self._stop(
                     "recovery output failed policy validation",
                     "preserve the failure for manual review",
                 )
-        return self._store(checkpoint, failure, decision)
+                decision_origin = "FALLBACK"
+        return self._store(
+            checkpoint, failure, decision, decision_origin=decision_origin
+        )
 
     def _missing_playwright_browser(
         self, checkpoint: StageCheckpoint, failure: StageFailure
@@ -359,6 +364,8 @@ class SimpleRecoveryCoordinator:
         checkpoint: StageCheckpoint,
         failure: StageFailure,
         decision: RecoveryDecision,
+        *,
+        decision_origin: Literal["AGENT", "RULE", "FALLBACK"] = "RULE",
     ) -> RecoveryResolution:
         decision_ref = self._artifacts.put_json(
             {
@@ -369,6 +376,7 @@ class SimpleRecoveryCoordinator:
                 "attempt_id": checkpoint.attempt_id,
                 "original_error": failure.model_dump(mode="json"),
                 "decision": decision.model_dump(mode="json"),
+                "decision_origin": decision_origin,
             }
         )
         return RecoveryResolution(decision=decision, decision_ref=decision_ref)

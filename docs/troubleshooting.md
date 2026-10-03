@@ -98,12 +98,12 @@ OpenGrep의 `PartialParsing`·구문 오류는 `paths.scanned`에 파일이 보�
 python -m pip install semgrep
 semgrep --version
 sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile full --docker-network none --semgrep-fallback
-sastsimi resume A-001
+sastsimi status A-001
 ```
 
-Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. Semgrep fallback을 켠 경우 OpenGrep의 검증된 부분 결과만 재사용하고 파싱 경고·미검사·시간 초과 등 미검증 파일·규칙 조합만 Semgrep에 넘깁니다. Semgrep도 확인하지 못한 조합은 누락 이유와 함께 남습니다. `PARTIAL` 분석의 `resume`은 같은 범위의 미검증 조합을 재시도하되 완료된 Agent의 원래 입력 참조는 바꾸지 않습니다.
+Semgrep 미설정은 `SEMGREP_TOOL_UNAVAILABLE`, 실행 실패는 `SEMGREP_EXECUTION_FAILED`, 잘못되거나 잘린 JSON은 `SEMGREP_RESULT_INVALID`로 남습니다. 실행 오류는 취약점 반증이 아닙니다. Semgrep fallback을 켠 경우 OpenGrep의 검증된 부분 결과만 재사용하고 파싱 경고·미검사·시간 초과 등 미검증 파일·규칙 조합만 Semgrep에 넘깁니다. Semgrep도 확인하지 못한 조합은 누락 이유와 함께 남습니다. 기존 v1의 `PARTIAL` 분석은 같은 범위의 미검증 조합을 `resume`에서 재시도하되 완료된 Agent의 원래 입력 참조는 바꾸지 않습니다. 이미 `STATIC_DONE`이 성공한 v2 `PARTIAL` 분석은 같은 ID에서 정적 누락을 재검사하지 않으므로, 원인을 해결한 뒤 새 분석 ID로 시작하세요.
 
-결정적 파싱 오류 외에 Semgrep 실행 오류나 설정된 CodeQL 오류가 남아 있으면 coverage에 제한 사항을 유지합니다. 같은 commit·제품 범위·규칙·도구 지문에서 `resume`하면 완료된 증거는 재사용하고 미검증 조합을 다시 시도합니다. 지문이 바뀌는 수정은 새 분석 ID가 필요합니다. 해결되지 않은 범위를 `COMPLETE`로 표시하지 않습니다.
+결정적 파싱 오류 외에 Semgrep 실행 오류나 설정된 CodeQL 오류가 남아 있으면 coverage에 제한 사항을 유지합니다. 기존 v1 분석을 같은 commit·제품 범위·규칙·도구 지문에서 `resume`하면 완료된 증거는 재사용하고 미검증 조합을 다시 시도합니다. 성공한 정적 근거가 `PARTIAL`로 저장된 v2 분석은 같은 ID로 후보·표면·가설 작업만 이어가며 정적 누락은 다시 검사하지 않습니다. 지문이 바뀌는 수정과 v2 정적 누락의 재검사는 새 분석 ID가 필요합니다. 해결되지 않은 범위를 `COMPLETE`로 표시하지 않습니다.
 
 OpenGrep은 Python 제품 코드만 최대 64파일·소스 합계 512 KiB의 명시적 묶음으로 검사하며, 각 호출은 최대 120초입니다. 시간 초과된 다중 파일 묶음은 단일 파일까지 나눕니다. 선택형 Semgrep에는 미검증 Python 파일·규칙만 넘깁니다. Semgrep은 최대 128파일·512 KiB, Windows 명령줄 24,000 UTF-16 단위를 지키고 호출당 최대 120초입니다. 파일 하나의 시간 초과나 JSON `Timeout`은 `--timeout 30`으로 한 번 더 시험합니다. 명령 길이·재시도·출력 크기 제한에 걸린 조합은 완료가 아니라 명시적인 누락입니다. 전체 미검증 경로·규칙·이유는 coverage artifact에 남고 대시보드에서 페이지 단위로 조회할 수 있습니다. 검증된 부분이 있으면 `STATIC_DONE`은 후속 Agent에 안전한 근거를 게시하며, 정적 범위가 불완전한 분석은 모든 Agent가 끝나도 `PARTIAL`입니다.
 
@@ -136,7 +136,7 @@ DB의 누적 LLM 호출시간에 더해지지 않습니다. Python 소스가 없
 
 `NO_PYTHON_SOURCE`는 선택된 비테스트 `.py` 제품 소스가 없는 경우의 명시적 중단입니다. `NO_PYTHON_RULES`는 `.py` 소스는 있지만 적용 가능한 Python 규칙이 없는 설정 오류입니다. 둘 다 `COMPLETE`가 아니며, 저장소·commit·규칙 설정을 확인해야 합니다. 테스트 파일을 정적 검사에 다시 넣는 옵션은 없습니다.
 
-정적 Python 범위 선정에 JS `package.json` 파싱은 필요하지 않습니다. Python AST 파싱 오류나 입력 크기 초과는 coverage artifact의 제한 사항으로 남습니다. 다른 검증 부분이 사용 가능하면 `PARTIAL`로 진행할 수 있으며 AST 사실 목록이 잘리면 누락을 기록하고 전체 완료로 계산하지 않습니다.
+정적 Python 범위 선정에 JS `package.json` 파싱은 필요하지 않습니다. Python AST 파싱 오류나 입력 크기 초과는 coverage artifact의 제한 사항으로 남습니다. 다른 검증 부분이 사용 가능하면 `PARTIAL`로 진행할 수 있습니다. 파싱에 성공한 파일의 AST 사실은 파일별로 모두 보존하며, 프롬프트에서 일부만 선택해 전달한 것을 저장 누락으로 간주하지 않습니다.
 
 시간 초과나 취소 시 하위 프로세스 트리 정리를 시도하고 `EXTERNAL_TOOL_TIMEOUT`을
 취약점 반증으로 취급하지 않습니다. 정확한 분석·저장소·commit·도구 지문과 CAS를
@@ -174,16 +174,44 @@ docker version
 docker info
 ```
 
-Docker Desktop은 Linux container 모드여야 합니다. 저장소 Dockerfile이 있으면 우선 사용하고, 없으면 Python package 파일을 바탕으로 기본 Dockerfile을 만듭니다. 가설의 제품 파일이 하위 Python 프로젝트에 있으면 가장 가까운 `requirements.txt` 또는 `pyproject.toml`을 찾아 일회용 이미지 안에 의존성을 설치하며, 로컬 패키지 소스를 지정한 uv 프로젝트는 lock 파일과 소스 경로를 사용합니다. 하위 프로젝트 설치가 실패하면 의존성 없는 이미지로 성공을 가장하지 않고 빌드 오류와 시도 기록을 남깁니다. 그 외 의존성 설치 단계의 빌드 실패가 확인된 경우에만 설치를 생략한 Python 소스 전용 image를 한 번 더 시도합니다. 이 경우 recipe의 `dockerfile_source`가 `GENERATED_NO_INSTALL`, `degraded`가 `true`가 되고 두 빌드 시도와 원본 진단이 artifact에 남습니다. 소스 전용 image가 만들어졌다는 사실만으로 PoC 검증이나 취약점 판정이 성공한 것은 아닙니다. 두 빌드가 모두 실패하거나 실패 원인이 의존성 설치가 아니면 `DOCKER_BUILD_FAILED`로 중단하고 환경을 확인한 뒤 `sastsimi resume A-001`을 실행합니다.
+Docker Desktop은 Linux container 모드여야 합니다. 승인된 Python wheel을 미리 준비했다면 선택형 오프라인 PoC 환경을 사용할 수 있습니다. 다음 PowerShell 명령은 지정한 폴더의 `.whl` 파일만 평탄한 TAR로 묶고 SHA-256을 출력합니다. `C:\approved-wheels`는 실제 wheel 폴더로 바꾸고, 그 폴더에는 필요한 직접·전이·빌드 의존성 wheel을 모두 준비하세요. 빈 폴더나 하위 폴더를 포함한 TAR는 사용할 수 없습니다.
+
+```powershell
+$wheelDir = (Resolve-Path 'C:\approved-wheels').Path
+$wheelNames = @(Get-ChildItem -LiteralPath $wheelDir -File -Filter '*.whl' | Sort-Object Name | Select-Object -ExpandProperty Name)
+tar -cf (Join-Path $wheelDir 'poc-wheels.tar') --format ustar -C $wheelDir @wheelNames
+$archive = (Resolve-Path (Join-Path $wheelDir 'poc-wheels.tar')).Path
+(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+docker image inspect python:3.12-slim --format '{{.Id}}'
+```
+
+`sastsimi setup` 출력의 실행 프로필 `profile.toml`에서 기존 `docker_network`을 `NONE`으로 확인하고, 아래 wheel 관련 최상위 필드 두 개를 추가합니다. `docker_network`을 중복해서 추가하지 마세요. Windows 경로는 TOML에서 `/`로 적고, 출력된 SHA-256을 소문자 64자리로 붙여 넣으세요. 두 wheel 필드는 반드시 함께 있어야 하고 `setup` 옵션으로는 입력할 수 없습니다. `setup`을 다시 실행하면 `profile.toml`이 새로 쓰이므로 두 필드를 다시 지정해야 합니다.
+
+```toml
+docker_network = "NONE"
+poc_wheel_archive_path = "C:/approved-wheels/poc-wheels.tar"
+poc_wheel_archive_sha256 = "<소문자 SHA-256 64자리>"
+```
+
+이 모드는 로컬에 이미 있는 Linux `python:3.12-slim` 이미지와 검증된 wheel만 사용합니다. TAR 크기와 TAR 안의 wheel 데이터는 각각 최대 64 MiB이고, wheel은 최대 20,000개입니다. 대상 Linux 이미지와 호환되는 wheel이어야 하며 대상 태그를 확인할 수 없으면 범용 `py3-none-any` wheel만 허용합니다. 저장소 Dockerfile 대신 생성된 Dockerfile과 고정 commit의 파일로 분리된 빌드 문맥을 만들고, `pip --no-index --find-links`로 설치합니다. Docker build와 PoC 컨테이너는 모두 `--network none`입니다. 제품 패키지를 wheel로 만들 때 ZIP 형식의 최소 시각보다 오래된 파일 때문에 실패하지 않도록, 이미지 안에 복사된 소스 파일의 수정 시각만 고정된 1980년 값으로 맞춥니다. 파일 내용과 대상 commit은 변경하지 않습니다. 현재 선택된 Buildx 빌더가 로컬 Docker 엔진 드라이버인지 `docker buildx inspect`로 확인하며, 지원되지 않는 빌더면 `POC_OFFLINE_BUILDER_UNSUPPORTED`로 중단합니다. 고정 저장소에 추적된 비밀파일은 Docker 문맥에 넣지 않습니다. 공통 테스트 파일 판정과 지원하는 Flit 패키지 경계를 통해 제품 데이터가 아니라고 확인된 테스트용 비밀파일만 제외합니다. 패키지 데이터 여부가 불명확하거나 그 밖의 비밀파일이면 `PINNED_CONTEXT_SECRET_FILE_DENIED`로 차단합니다. 필요한 wheel·전이 의존성·빌드 의존성 또는 로컬 base image가 없으면 명시적으로 `BLOCKED`로 남습니다. sdist, VCS·apt 설치, uv/Poetry lock 및 지원되지 않는 manifest는 이 모드에서 설치하지 않습니다. 실패를 PoC 반증이나 `confirmed` Finding으로 바꾸지 않습니다.
+
+wheel 묶음을 지정하지 않은 기존 경로에서는 저장소 Dockerfile이 있으면 우선 사용하고, 없으면 Python package 파일을 바탕으로 기본 Dockerfile을 만듭니다. 가설의 제품 파일이 하위 Python 프로젝트에 있으면 가장 가까운 `requirements.txt` 또는 `pyproject.toml`을 찾아 일회용 이미지 안에 의존성을 설치하며, 로컬 패키지 소스를 지정한 uv 프로젝트는 lock 파일과 소스 경로를 사용합니다. 하위 프로젝트 설치가 실패하면 의존성 없는 이미지로 성공을 가장하지 않고 빌드 오류와 시도 기록을 남깁니다. 그 외 의존성 설치 단계의 빌드 실패가 확인된 경우에만 설치를 생략한 Python 소스 전용 image를 한 번 더 시도합니다. 이 경우 recipe의 `dockerfile_source`가 `GENERATED_NO_INSTALL`, `degraded`가 `true`가 되고 두 빌드 시도와 원본 진단이 artifact에 남습니다. 소스 전용 image가 만들어졌다는 사실만으로 PoC 검증이나 취약점 판정이 성공한 것은 아닙니다. 두 빌드가 모두 실패하거나 실패 원인이 의존성 설치가 아니면 `DOCKER_BUILD_FAILED`로 중단하고 환경을 확인한 뒤 `sastsimi resume A-001`을 실행합니다.
+
+소스 전용 image만 만들 수 있고 제품 의존성이 재현되지 않았다면 PoC 실행 전에 `POC_ENVIRONMENT_UNVERIFIED`로 차단합니다. 이 환경의 결과를 검증된 PoC나 취약점 부재의 근거로 승격하지 않습니다. wheel 묶음을 지정하지 않은 경로는 임의 저장소의 빌드 의존성을 네트워크 없이 자동 공급하지 못하며, 선택형 묶음도 승인된 wheel로 해결 가능한 설치에만 적용됩니다. 네트워크 정책을 자동으로 완화하지 않습니다. 이미 재시도 불가로 저장된 이 PoC는 profile에 wheel 묶음을 추가해도 같은 ID의 `resume`으로 다시 실행되지 않습니다. 기존 분석을 보존하고 검증 가능한 의존성 환경을 준비한 뒤 새 분석을 시작해야 합니다.
+
+이 안전 검사보다 앞서 완료된 PoC는 DB와 아티팩트를 보존하되 현재 검증으로 표시하지 않습니다. 상태가 `POC_REVALIDATION_REQUIRED`라면 같은 분석 ID를 `sastsimi resume A-001`로 재개하세요. 완료된 정적 검사·후보 선별·Pro/Con·초기 검증·PoC 후보는 재사용하고 PoC 실행과 후속 판정만 새 기준으로 확인합니다. 필요한 의존성을 오프라인에서 구할 수 없으면 재검증도 `BLOCKED`로 남으며, 이전 보고서를 제보 근거로 다시 사용해서는 안 됩니다.
 
 PoC 종료 후에는 현재 가설·시도에 정확히 속한 컨테이너만 확인하고 정리합니다. `OWNED_CONTAINER_CLEANUP_FAILED`나 `DOCKER_CONTAINER_LIMIT_REACHED`가 나오면 소유 라벨이 확인되지 않은 컨테이너를 임의로 지우지 말고 상태를 확인하세요. Windows에서 종료된 프로세스의 PID 소유 여부를 확실히 증명할 수 없는 오래된 컨테이너는 자동 정리하지 않습니다. Docker 실행 오류는 가설 반증(`FALSE`)으로 처리하지 않습니다.
 
 Windows에서 Docker 소유 리소스 journal 파일의 원자적 교체가 일시적인 공유 거부로 실패하면 최대 5회 재시도합니다. 계속 `Access denied`가 나면 권한이나 보안 프로그램 점유를 확인하세요. 이때 다른 분석의 컨테이너를 임의로 정리하지 않습니다.
 
-Python Playwright가 PoC 실행 중 `BrowserType.launch: Executable doesn't exist`
-오류를 내고 실제 실행 stderr가 누락된 Chromium·Firefox·WebKit 바이너리를 가리키면,
-해당 가설의 일회용 Docker 이미지에만 공식 브라우저와 시스템 의존성을 설치해
-재시도합니다. 설치 경로는 비루트 PoC 사용자도 읽을 수 있는 이미지 내부의 공유
+wheel 묶음을 지정하지 않은 기존 경로에서 Python Playwright가 PoC 실행 중
+`BrowserType.launch: Executable doesn't exist` 오류를 내고 실제 실행 stderr가
+누락된 Chromium·Firefox·WebKit 바이너리를 가리키면, 해당 가설의 일회용 Docker
+이미지에만 공식 브라우저와 시스템 의존성을 설치해 재시도합니다. 오프라인 wheel
+모드는 브라우저 다운로드 복구를 지원하지 않으므로 이 오류를 `BLOCKED`로 남깁니다.
+지원되는 환경을 준비한 뒤 새 분석을 시작해야 하며, 네트워크 차단을 자동으로 풀지
+않습니다. 기존 경로의 설치 위치는 비루트 PoC 사용자도 읽을 수 있는 이미지 내부의 공유
 경로로 고정합니다. [Playwright 공식 문서](https://playwright.dev/python/docs/browsers)의
 설치·공유 경로 방식을 따르며, Docker 빌드에서 다운로드가 불가능하거나 이미지가
 지원되지 않으면 실행 오류로 `BLOCKED`에 남깁니다. 대상 저장소나 호스트 파일은
@@ -193,12 +221,23 @@ Python Playwright가 PoC 실행 중 `BrowserType.launch: Executable doesn't exis
 반증할 수 없다는 뜻입니다. 제한된 횟수 안에서 PoC 입력을 보강하고,
 복구 상한에 이른 마지막 실행이 종료 코드 0이면서 여전히 근거 부족이면
 가설을 `INCONCLUSIVE`·제보 불가로 종료합니다.
+상한 전이라도 복구 Agent가 `STOP`을 결정했다면, 같은 시도의 실행 성공·해석
+`INCONCLUSIVE`·결정 기록이 정확히 연결된 경우에만 미확정으로 종료합니다.
+근거 연결이 없거나 실행 자체가 실패했다면 `BLOCKED`를 유지합니다.
 전체 가설이 분석상 종료되고 다른 실행 오류가 없으면 정적 범위에 따라
 `COMPLETE` 또는 `PARTIAL`입니다.
 반면 `POC_EXECUTION_FAILED`와 Docker/Provider 오류는 완료된 관찰이 아니므로
 계속 `BLOCKED` 또는 판정 없는 `FAILED`로 남습니다.
 
 PoC 초안은 validated PoC가 아닙니다. 같은 attempt에서 실제 실행이 성공하고 가설을 지지해야만 validated PoC가 됩니다.
+
+초기 Verification의 `environment_requirements`에는 설치 가능한 Python 실행환경과 패키지만 넣습니다. 공격자가 대상 프로세스 설정을 바꿀 권한, 외부 서비스·자격 증명·네트워크 호출처럼 별도로 입증해야 하는 조건은 `unmet_external_prerequisites`로 기록합니다. 이 조건이 남으면 해당 가설은 환경 준비·PoC·Finding·보고서를 실행하지 않고 `INCONCLUSIVE`(제보 불가)로 끝납니다. 검증하지 못한 공격 표면은 여전히 미검증이며 전체 분석이 `PARTIAL`일 수 있습니다. 반대로 설치 요구 자체가 지원되지 않아 `POC_OFFLINE_REQUIREMENT_UNSUPPORTED`가 발생했다면 이를 미확정으로 위장하지 않고 `BLOCKED`로 남깁니다. 과거 형식 때문에 이 오류로 멈춘 같은 분석은 완료된 앞 단계를 보존하고 초기 Verification만 최대 3회까지 재평가할 수 있습니다.
+
+`INITIAL_VERIFICATION_EVIDENCE_INVALID`는 이 조기 종료의 Agent 근거 아티팩트가 없거나 내용·해시·시도 ID가 일치하지 않는다는 뜻입니다. CLI와 대시보드는 이를 완료로 계산하지 않고 `BLOCKED`로 표시하며, `resume`도 손상된 근거를 미확정 판정으로 재사용하지 않습니다. 원본 분석 데이터를 지우거나 임의로 복구했다고 표시하지 마세요.
+
+`POC_STOP_EVIDENCE_INVALID`는 상한 전에 복구 Agent가 중단하기로 한 결정이나 같은 시도의 PoC 실행·해석 근거가 삭제·손상됐다는 뜻입니다. CLI·대시보드와 `resume`은 이 가설을 완료로 계산하지 않고 `BLOCKED`로 표시합니다. 기록된 STOP 결정을 무시하고 같은 PoC를 다시 실행하지 마세요.
+
+`POC_TERMINAL_EVIDENCE_INVALID`는 복구 상한에 이른 PoC의 실행·해석 근거가 삭제·손상됐다는 뜻입니다. 이 경우에도 완료된 미확정 판정으로 세지 않고 `BLOCKED`로 표시합니다.
 
 PoC Agent에는 Pro·Con Agent가 요청한 저장소 상대 경로 중 고정 commit의 Git 추적 파일만 전달합니다. 본문은 현재 작업 폴더가 아니라 고정 commit의 Git blob에서 읽어 재개 중 파일 변경의 영향을 받지 않습니다. 경로 이탈, 심볼릭 링크, 비추적 파일과 크기 한도 초과 파일은 거부하고 `simple_requested_sources` artifact에 제공·거부 내역을 남깁니다. PoC 단계는 원본 소스 총량 128,000바이트, 요청 경로 32개, JSON 변환 후 프롬프트 source artifact 96,000바이트로 제한합니다. 큰 파일은 내용을 읽기 전에 거부하고, 포장 후 한도를 넘는 파일은 `PROMPT_BUDGET_EXHAUSTED`로 남깁니다. 이 근거 제공은 재현 코드의 성공을 보장하지 않습니다.
 

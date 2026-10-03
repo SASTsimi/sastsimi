@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -12,13 +14,16 @@ import pytest
 
 from sastsimi.composition.simple_runtime_composition import SimpleClientFactory
 from sastsimi.config.user_config import SimpleExecutionProfile
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.providers.base import CodexProcessRequest, CodexProcessResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
-from sastsimi.simple_runtime.call_queue import RunLimitedClient
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
+from sastsimi.simple_runtime.call_queue import RunLimitedClient, RunUsageBudget
 from sastsimi.simple_runtime.cursor_provider import CursorProvider
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
+    SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
@@ -31,6 +36,7 @@ from sastsimi.simple_runtime.provider import (
     SimpleLLMClient,
     SimpleOpenAIClient,
 )
+from sastsimi.simple_runtime.run_lease import analysis_run_lease
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -48,8 +54,12 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
-        del prompt, output_schema, timeout_ms, agent_name
+        del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+        del invocation_id
         self.calls += 1
         self.active += 1
         self.peak = max(self.peak, self.active)
@@ -64,9 +74,11 @@ class _CodexRunner:
     def __init__(self, outcomes: list[CodexProcessResult]) -> None:
         self.outcomes = outcomes
         self.calls = 0
+        self.requests: list[CodexProcessRequest] = []
 
-    async def execute(self, _request: CodexProcessRequest) -> CodexProcessResult:
+    async def execute(self, request: CodexProcessRequest) -> CodexProcessResult:
         self.calls += 1
+        self.requests.append(request)
         return self.outcomes.pop(0)
 
 
@@ -78,6 +90,64 @@ def _success() -> SimpleLLMCallResult:
         input_tokens=5,
         output_tokens=2,
     )
+
+
+@pytest.mark.asyncio
+async def test_owned_retry_rows_link_logical_attempts(tmp_path: Path) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    inner = _Client(
+        [
+            StageFailure(
+                code="RATE_LIMITED",
+                retryable=True,
+                safe_message="try again",
+            ),
+            _success(),
+        ]
+    )
+    client = _wrapper(
+        tmp_path,
+        inner,
+        asyncio.Semaphore(1),
+        max_retries=1,
+        max_tokens="unlimited",
+        sleep=no_sleep,
+    )
+    owner = AttemptOwner(
+        analysis_id="analysis-queue",
+        stage="DISCOVERY",
+        candidate_ids=("C-1", "C-2"),
+        batch_id="batch-1",
+        file_path="app/main.py",
+    )
+    result = await client.call(
+        prompt=b"prompt",
+        output_schema={"type": "object"},
+        timeout_ms=10_000,
+        agent_name="discovery",
+        owner=owner,
+        prompt_bytes=PromptByteCounts(fixed_prompt_bytes=6),
+    )
+    assert isinstance(result, SimpleLLMCallResult)
+    with sqlite3.connect(client._store.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT a.attempt_id, a.status, m.stage, m.candidate_ids_json, "
+            "m.batch_id, m.file_path, m.retry_of, m.fixed_prompt_bytes "
+            "FROM simple_llm_attempts AS a JOIN simple_llm_attempt_metadata AS m "
+            "ON m.attempt_id = a.attempt_id ORDER BY a.attempt_number"
+        ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["status"] == "RATE_LIMITED"
+    assert rows[1]["status"] == "SUCCEEDED"
+    assert rows[0]["stage"] == rows[1]["stage"] == "DISCOVERY"
+    assert rows[0]["candidate_ids_json"] == '["C-1","C-2"]'
+    assert rows[1]["retry_of"] == rows[0]["attempt_id"]
+    assert rows[1]["batch_id"] == "batch-1"
+    assert rows[1]["file_path"] == "app/main.py"
+    assert rows[1]["fixed_prompt_bytes"] == 6
 
 
 def _wrapper(
@@ -109,6 +179,511 @@ def _wrapper(
         max_elapsed_seconds=3600,
         sleep=sleep,
     )
+
+
+def _codex_client(
+    tmp_path: Path, runner: _CodexRunner, *, max_retries: int = 0
+) -> tuple[RunLimitedClient, SimpleCheckpointStore]:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-queue",
+        workspace_id="workspace-queue",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+    client = _wrapper(
+        tmp_path,
+        inner,
+        asyncio.Semaphore(1),
+        max_retries=max_retries,
+        max_tokens="unlimited",
+    )
+    return client, SimpleCheckpointStore(artifacts.paths.database)
+
+
+def _cleanup_confirmation(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    *,
+    call_id: str | None = None,
+) -> StoredDataRef:
+    return artifacts.put_json(
+        {
+            "kind": "simple_codex_cleanup_confirmation",
+            "analysis_id": checkpoint.identity.analysis_id,
+            "stage": checkpoint.stage.value,
+            "attempt_id": checkpoint.attempt_id,
+            "checkpoint_sha256": hashlib.sha256(
+                canonical_bytes(checkpoint)
+            ).hexdigest(),
+            "process_tree_stopped": True,
+            "verification_method": "windows_process_inventory",
+            "former_parent_pid": 12345,
+            "observed_matching_process_count": 0,
+            "observed_at": (checkpoint.updated_at + timedelta(seconds=1)).isoformat(),
+            **({"call_id": call_id} if call_id is not None else {}),
+        }
+    )
+
+
+def test_codex_cleanup_confirmation_rejects_active_analysis_lease(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-active-call",
+        workspace_id="workspace-active-call",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            candidate_pipeline_version=1,
+        )
+    )
+    checkpoint = store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="active-attempt"
+    )
+    call_id = "call-active"
+    assert store.begin_codex_call(call_id, identity.analysis_id)
+    confirmation = _cleanup_confirmation(artifacts, checkpoint, call_id=call_id)
+
+    with analysis_run_lease(tmp_path, identity.analysis_id):
+        with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_ACTIVE_RUN"):
+            store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+        assert store.unresolved_codex_call(identity.analysis_id) == call_id
+
+    store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    assert store.unresolved_codex_call(identity.analysis_id) is None
+
+
+def test_v2_cleanup_confirmation_requires_captured_child_identity(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-exact-child",
+        workspace_id="workspace-exact-child",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            candidate_pipeline_version=2,
+        )
+    )
+    checkpoint = store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="exact-attempt"
+    )
+    call_id = "exact-call"
+    assert store.begin_codex_call(call_id, identity.analysis_id)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "DELETE FROM simple_analysis_runs WHERE analysis_id = ?",
+            (identity.analysis_id,),
+        )
+    store.begin_codex_child_spawn(
+        call_id=call_id, analysis_id=identity.analysis_id, phase="EXEC"
+    )
+    arbitrary = _cleanup_confirmation(artifacts, checkpoint, call_id=call_id)
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, arbitrary, artifacts)
+    store.record_codex_child_spawn(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="EXEC",
+        pid=4242,
+        start_identity="started-4242",
+    )
+    store.begin_codex_child_spawn(
+        call_id=call_id, analysis_id=identity.analysis_id, phase="LOGIN"
+    )
+    store.record_codex_child_spawn(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="LOGIN",
+        pid=4141,
+        start_identity="started-4141",
+    )
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, arbitrary, artifacts)
+    assert store.unresolved_codex_call(identity.analysis_id) == call_id
+    exact_marker = artifacts.put_json(
+        json.loads(artifacts.read(arbitrary))
+        | {
+            "former_parent_pid": 4242,
+            "observed_children": [
+                {
+                    "phase": "EXEC",
+                    "pid": 4242,
+                    "start_identity": "started-4242",
+                },
+                {
+                    "phase": "LOGIN",
+                    "pid": 4141,
+                    "start_identity": "started-4141",
+                },
+            ],
+        }
+    )
+    wrong_identity = artifacts.put_json(
+        json.loads(artifacts.read(exact_marker))
+        | {
+            "observed_children": [
+                {
+                    "phase": "EXEC",
+                    "pid": 4242,
+                    "start_identity": "another-process",
+                },
+                {
+                    "phase": "LOGIN",
+                    "pid": 4141,
+                    "start_identity": "started-4141",
+                },
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, wrong_identity, artifacts)
+    store.confirm_codex_cleanup(checkpoint, exact_marker, artifacts)
+    assert store.unresolved_codex_call(identity.analysis_id) is None
+
+
+@pytest.mark.asyncio
+async def test_codex_timeout_keeps_exact_child_owned(
+    tmp_path: Path,
+) -> None:
+    runner = _CodexRunner(
+        [
+            CodexProcessResult("FAILED", None, None, cleanup_unconfirmed=True),
+            CodexProcessResult("SUCCEEDED", b'{"ok":true}', None, 5, 2),
+        ]
+    )
+    client, store = _codex_client(tmp_path, runner)
+
+    first = await client.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+    reopened = SimpleCheckpointStore(store.database_path)
+    call_id = reopened.unresolved_codex_call("analysis-queue")
+    second = await client.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert isinstance(first, StageFailure)
+    assert first.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert isinstance(call_id, str) and call_id
+    assert isinstance(second, StageFailure)
+    assert second.code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert not second.retryable
+    assert runner.calls == 1
+    assert runner.requests[0].invocation_id == call_id
+    assert store.usage_summary("analysis-queue")["calls"] == 1
+    with sqlite3.connect(store.database_path) as connection:
+        attempt = connection.execute(
+            "SELECT attempt_id, input_tokens FROM simple_llm_attempts "
+            "WHERE analysis_id = ?",
+            ("analysis-queue",),
+        ).fetchone()
+    assert attempt == (call_id, None)
+
+
+@pytest.mark.asyncio
+async def test_codex_confirmed_timeout_retries_with_new_owned_call(
+    tmp_path: Path,
+) -> None:
+    runner = _CodexRunner(
+        [
+            CodexProcessResult("TIMED_OUT", None, None),
+            CodexProcessResult("SUCCEEDED", b'{"ok":true}', None, 5, 2),
+        ]
+    )
+    client, store = _codex_client(tmp_path, runner, max_retries=1)
+    result = await client.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+    assert isinstance(result, SimpleLLMCallResult)
+    assert runner.calls == 2
+    with sqlite3.connect(store.database_path) as connection:
+        rows = connection.execute(
+            "SELECT c.call_id, c.status, a.input_tokens, m.retry_of "
+            "FROM simple_codex_calls AS c "
+            "JOIN simple_llm_attempts AS a ON a.attempt_id = c.call_id "
+            "LEFT JOIN simple_llm_attempt_metadata AS m "
+            "ON m.attempt_id = c.call_id ORDER BY c.started_at"
+        ).fetchall()
+    assert len(rows) == 2
+    assert [row[1] for row in rows] == ["SAFE", "SAFE"]
+    assert rows[0][2] is None
+    assert rows[1][2] == 5
+    assert rows[1][3] == rows[0][0]
+    assert [request.invocation_id for request in runner.requests] == [
+        row[0] for row in rows
+    ]
+
+
+@pytest.mark.asyncio
+async def test_codex_ledger_failure_leaves_durable_unresolved_call(
+    tmp_path: Path,
+) -> None:
+    runner = _CodexRunner(
+        [
+            CodexProcessResult("SUCCEEDED", b'{"ok":true}', None, 5, 2),
+            CodexProcessResult("SUCCEEDED", b'{"ok":true}', None, 5, 2),
+        ]
+    )
+    client, store = _codex_client(tmp_path, runner)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "CREATE TRIGGER reject_llm_attempt BEFORE INSERT ON simple_llm_attempts "
+            "BEGIN SELECT RAISE(FAIL, 'ledger unavailable'); END"
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="ledger unavailable"):
+        await client.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+    blocked = await client.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert isinstance(blocked, StageFailure)
+    assert blocked.code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert runner.calls == 1
+    assert SimpleCheckpointStore(store.database_path).unresolved_codex_call(
+        "analysis-queue"
+    )
+    unresolved_usage = store.usage_summary("analysis-queue")
+    assert unresolved_usage["calls"] == 1
+    assert unresolved_usage["unknown_token_calls"] == 1
+    assert unresolved_usage["unknown_cost_calls"] == 1
+    assert unresolved_usage["unrecorded_in_flight_codex_calls"] == 1
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-queue",
+        workspace_id="workspace-queue",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            candidate_pipeline_version=1,
+        )
+    )
+    checkpoint = store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="stage-attempt"
+    )
+    call_id = store.unresolved_codex_call(identity.analysis_id)
+    assert call_id is not None
+    confirmation = _cleanup_confirmation(artifacts, checkpoint, call_id=call_id)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute("DROP TRIGGER reject_llm_attempt")
+
+    store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+
+    with sqlite3.connect(store.database_path) as connection:
+        reconciled = connection.execute(
+            "SELECT status, input_tokens, output_tokens, cost_cents, "
+            "artifact_ref_json FROM simple_llm_attempts WHERE attempt_id = ?",
+            (call_id,),
+        ).fetchone()
+    assert reconciled == (
+        "CODEX_USAGE_UNAVAILABLE",
+        None,
+        None,
+        None,
+        confirmation.model_dump_json(),
+    )
+    summary = store.usage_summary(identity.analysis_id)
+    assert summary["calls"] == 1
+    assert summary["unknown_token_calls"] == 1
+    assert summary["unknown_cost_calls"] == 1
+    assert store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+    finite = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens=100,
+        max_cost_minor_units=100,
+        max_elapsed_seconds="unlimited",
+    )
+    assert (failure := finite.check()) is not None
+    assert failure.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+    unlimited = RunUsageBudget(
+        store=store,
+        analysis_id=identity.analysis_id,
+        max_tokens="unlimited",
+        max_cost_minor_units=100,
+        max_elapsed_seconds="unlimited",
+    )
+    assert unlimited.check() is None
+
+
+@pytest.mark.parametrize(
+    ("stage", "status"),
+    [
+        (SimpleStage.PRO_CON_DONE, StageStatus.BLOCKED),
+        (SimpleStage.POC_CANDIDATE_DONE, StageStatus.BLOCKED),
+        (SimpleStage.REPORT_DONE, StageStatus.FAILED),
+    ],
+)
+def test_legacy_child_cleanup_confirmation_accepts_exact_persisted_checkpoint(
+    tmp_path: Path, stage: SimpleStage, status: StageStatus
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-legacy-child",
+        workspace_id="workspace-legacy-child",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            candidate_pipeline_version=1,
+        )
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=stage,
+        status=status,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="legacy-child-attempt",
+        attempt_number=1,
+        error_code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        retryable=False,
+        updated_at=datetime.now(UTC) - timedelta(seconds=2),
+    )
+    store.save_checkpoint(checkpoint)
+    confirmation = _cleanup_confirmation(artifacts, checkpoint)
+
+    reopened = SimpleCheckpointStore(store.database_path)
+    reopened.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    reopened.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+
+    assert reopened.has_codex_cleanup_confirmation(checkpoint, artifacts)
+    assert (
+        len(reopened.stage_activity(identity, stage, checkpoint.attempt_id or "")) == 1
+    )
+    summary = reopened.usage_summary(identity.analysis_id)
+    assert summary["calls"] == 1
+    assert summary["unlinked_codex_usage_calls"] == 1
+    assert summary["unknown_token_calls"] == 1
+    assert summary["unknown_cost_calls"] == 1
+    finite = RunUsageBudget(
+        store=reopened,
+        analysis_id=identity.analysis_id,
+        max_tokens=100,
+        max_cost_minor_units=100,
+        max_elapsed_seconds="unlimited",
+    )
+    assert (failure := finite.check()) is not None
+    assert failure.code == "LLM_TOKEN_USAGE_UNAVAILABLE"
+    unlimited = RunUsageBudget(
+        store=reopened,
+        analysis_id=identity.analysis_id,
+        max_tokens="unlimited",
+        max_cost_minor_units=100,
+        max_elapsed_seconds="unlimited",
+    )
+    assert unlimited.check() is None
+
+
+def test_confirmed_codex_call_covers_only_its_recorded_interval(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-queue",
+        workspace_id="workspace-queue",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    audit = artifacts.put_json({"kind": "simple_codex_cleanup_confirmation"})
+    started = datetime.now(UTC) - timedelta(seconds=10)
+    resolved = started + timedelta(seconds=5)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "INSERT INTO simple_codex_calls "
+            "(call_id, analysis_id, status, started_at, resolved_at, "
+            "confirmation_ref_json) VALUES (?, ?, 'CONFIRMED', ?, ?, ?)",
+            (
+                "confirmed-call",
+                identity.analysis_id,
+                started.isoformat(),
+                resolved.isoformat(),
+                audit.model_dump_json(),
+            ),
+        )
+
+    reopened = SimpleCheckpointStore(store.database_path)
+    assert reopened.confirmed_codex_call_covering(identity.analysis_id, started)
+    assert reopened.confirmed_codex_call_covering(
+        identity.analysis_id, started + timedelta(seconds=3)
+    )
+    assert reopened.confirmed_codex_call_covering(identity.analysis_id, resolved)
+    assert not reopened.confirmed_codex_call_covering(
+        identity.analysis_id, started - timedelta(microseconds=1)
+    )
+    assert not reopened.confirmed_codex_call_covering(
+        identity.analysis_id, resolved + timedelta(microseconds=1)
+    )
+    assert not reopened.confirmed_codex_call_covering(
+        "another-analysis", started + timedelta(seconds=3)
+    )
+    store.begin_codex_call("new-unresolved-call", identity.analysis_id)
+    assert not reopened.confirmed_codex_call_covering(
+        identity.analysis_id, started + timedelta(seconds=3)
+    )
+
+
+@pytest.mark.asyncio
+async def test_codex_process_crash_leaves_durable_unresolved_call(
+    tmp_path: Path,
+) -> None:
+    class ProcessCrash(BaseException):
+        pass
+
+    class CrashingRunner(_CodexRunner):
+        async def execute(self, _request: CodexProcessRequest) -> CodexProcessResult:
+            self.calls += 1
+            raise ProcessCrash
+
+    runner = CrashingRunner([])
+    client, store = _codex_client(tmp_path, runner)
+
+    with pytest.raises(ProcessCrash):
+        await client.call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert runner.calls == 1
+    assert SimpleCheckpointStore(store.database_path).unresolved_codex_call(
+        "analysis-queue"
+    )
+    unresolved_usage = store.usage_summary("analysis-queue")
+    assert unresolved_usage["calls"] == 1
+    assert unresolved_usage["unknown_token_calls"] == 1
+    assert unresolved_usage["unknown_cost_calls"] == 1
+    assert unresolved_usage["unrecorded_in_flight_codex_calls"] == 1
 
 
 @pytest.mark.asyncio
@@ -358,6 +933,139 @@ async def test_codex_terminal_failure_is_not_retried(
 
 
 @pytest.mark.asyncio
+async def test_unconfirmed_codex_process_cleanup_is_not_retried(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(
+        tmp_path,
+        CheckpointIdentity(
+            analysis_id="analysis-queue",
+            workspace_id="workspace-queue",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+    )
+    runner = _CodexRunner(
+        [CodexProcessResult("FAILED", None, None, cleanup_unconfirmed=True)]
+    )
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+
+    result = await _wrapper(
+        tmp_path, inner, asyncio.Semaphore(1), max_tokens="unlimited"
+    ).call(prompt=b"safe", output_schema={}, timeout_ms=5000)
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert not result.retryable
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_codex_runner_reports_unconfirmed_cleanup_after_its_own_timeout(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(
+        tmp_path,
+        CheckpointIdentity(
+            analysis_id="analysis-queue",
+            workspace_id="workspace-queue",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+    )
+
+    class CleanupAfterTimeoutRunner:
+        calls = 0
+        requested_timeout_ms = 0
+        cancelled_during_cleanup = False
+
+        async def execute(self, request: CodexProcessRequest) -> CodexProcessResult:
+            self.calls += 1
+            self.requested_timeout_ms = request.timeout_ms
+            try:
+                async with asyncio.timeout(request.timeout_ms / 1000):
+                    await asyncio.Event().wait()
+            except TimeoutError:
+                pass
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                self.cancelled_during_cleanup = True
+                raise
+            return CodexProcessResult("FAILED", None, None, cleanup_unconfirmed=True)
+
+    runner = CleanupAfterTimeoutRunner()
+    inner = SimpleCodexClient(
+        runner=runner,
+        provider_profile_ref=artifacts.put_json({"kind": "provider_profile"}),
+        model="test-model",
+        artifacts=artifacts,
+    )
+
+    result = await asyncio.wait_for(
+        _wrapper(tmp_path, inner, asyncio.Semaphore(1), max_tokens="unlimited").call(
+            prompt=b"safe", output_schema={}, timeout_ms=100
+        ),
+        timeout=1,
+    )
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert not result.retryable
+    assert runner.calls == 1
+    assert 1 <= runner.requested_timeout_ms <= 100
+    assert not runner.cancelled_during_cleanup
+
+
+@pytest.mark.asyncio
+async def test_non_codex_short_deadline_still_cancels_slow_inner(
+    tmp_path: Path,
+) -> None:
+    class SlowClient:
+        requested_timeout_ms = 0
+        cancelled = False
+
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
+        ) -> SimpleLLMCallResult | StageFailure:
+            del prompt, output_schema, agent_name, owner, prompt_bytes
+            del invocation_id
+            self.requested_timeout_ms = timeout_ms
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            raise AssertionError("deadline should cancel the inner call")
+
+    inner = SlowClient()
+    result = await asyncio.wait_for(
+        _wrapper(tmp_path, inner, asyncio.Semaphore(1), max_retries=0).call(
+            prompt=b"safe", output_schema={}, timeout_ms=50
+        ),
+        timeout=1,
+    )
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "TIMED_OUT"
+    assert 1 <= inner.requested_timeout_ms <= 50
+    assert inner.cancelled
+
+
+@pytest.mark.asyncio
 async def test_shared_queue_limits_concurrent_agents(tmp_path: Path) -> None:
     inner = _Client([_success() for _ in range(4)])
     gate = asyncio.Semaphore(2)
@@ -493,8 +1201,12 @@ async def test_unmeasured_api_cost_blocks_next_billable_call(tmp_path: Path) -> 
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult:
-            del prompt, output_schema, timeout_ms, agent_name
+            del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+            del invocation_id
             self.calls += 1
             return _success()
 
@@ -535,8 +1247,12 @@ async def test_api_cost_guard_survives_resume_without_blocking_first_fallback(
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult:
-            del prompt, output_schema, timeout_ms, agent_name
+            del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+            del invocation_id
             self.calls += 1
             return _success()
 
@@ -714,8 +1430,12 @@ async def test_context_limit_rejection_allows_smaller_resumed_api_call(
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
-            del prompt, output_schema, timeout_ms, agent_name
+            del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+            del invocation_id
             self.calls += 1
             if self.calls == 1:
                 return StageFailure(

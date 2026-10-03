@@ -16,6 +16,7 @@ from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
+from .attempt_owner import AttemptOwner, PromptByteCounts
 from .models import StageFailure
 from .provider import (
     SimpleCodexClient,
@@ -52,9 +53,35 @@ _NO_MODEL_RESPONSE_STATUSES = (
     "CLAUDE_RATE_LIMITED",
 )
 _LOG = logging.getLogger(__name__)
+_CODEX_CLEANUP_GRACE_SECONDS = 15.0
 _BUDGET_GATES: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
     WeakValueDictionary()
 )
+
+
+def effective_hypothesis_concurrency(
+    provider: str,
+    configured: int,
+    *,
+    atomic_budget_reservations: bool = False,
+    exact_child_claims: bool = False,
+) -> int:
+    """Bound child scheduling to independently established safety guarantees.
+
+    The API allowance is for child tasks, not simultaneous billable requests:
+    ``RunLimitedClient`` still holds its analysis budget gate through each call.
+    The caller must hold the analysis run lease when asserting that gate provides
+    atomic budget reservation, and must claim each child in the checkpoint store.
+    """
+    if type(configured) is not int or not 1 <= configured <= 32:
+        raise ValueError("HYPOTHESIS_CONCURRENCY_INVALID")
+    if (
+        provider.strip().casefold() in {"openai", "openai-api"}
+        and atomic_budget_reservations is True
+        and exact_child_claims is True
+    ):
+        return configured
+    return 1
 
 
 def _analysis_budget_gate(
@@ -77,6 +104,14 @@ def _final_failure(failure: StageFailure) -> StageFailure:
     if failure.code == "INVALID_OUTPUT":
         return failure.model_copy(update={"retryable": False})
     return failure
+
+
+def _unresolved_codex_call_failure() -> StageFailure:
+    return StageFailure(
+        code="CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+        retryable=False,
+        safe_message="A prior Codex call requires process cleanup confirmation",
+    )
 
 
 class RunUsageBudget:
@@ -123,23 +158,15 @@ class RunUsageBudget:
                 retryable=False,
                 safe_message="Analysis elapsed-time ceiling has been reached",
             )
-        if self._max_tokens != "unlimited":
-            with sqlite3.connect(self._store.database_path) as connection:
-                unknown_tokens = connection.execute(
-                    "SELECT 1 FROM simple_llm_attempts "
-                    "WHERE analysis_id = ? "
-                    "AND (input_tokens IS NULL OR output_tokens IS NULL) "
-                    "AND status NOT IN ("
-                    f"{','.join('?' for _ in _NO_MODEL_RESPONSE_STATUSES)}) "
-                    "LIMIT 1",
-                    (self._analysis_id, *_NO_MODEL_RESPONSE_STATUSES),
-                ).fetchone()
-            if unknown_tokens is not None:
-                return StageFailure(
-                    code="LLM_TOKEN_USAGE_UNAVAILABLE",
-                    retryable=False,
-                    safe_message="A previous LLM attempt did not report token usage",
-                )
+        if (
+            self._max_tokens != "unlimited"
+            and int(summary["unknown_token_calls"] or 0) > 0
+        ):
+            return StageFailure(
+                code="LLM_TOKEN_USAGE_UNAVAILABLE",
+                retryable=False,
+                safe_message="A previous LLM attempt did not report token usage",
+            )
         return None
 
 
@@ -226,7 +253,17 @@ class RunLimitedClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
+        if invocation_id is not None:
+            raise ValueError("CODEX_CALL_ID_EXTERNALLY_SUPPLIED")
+        if (
+            owner is not None
+            and owner.analysis_id != self._artifacts.identity.analysis_id
+        ):
+            raise ValueError("LLM_ATTEMPT_OWNER_INVALID")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(1, timeout_ms) / 1000
         last_failure = StageFailure(
@@ -234,27 +271,96 @@ class RunLimitedClient:
             retryable=True,
             safe_message="LLM call deadline reached",
         )
+        previous_attempt_id: str | None = None
         for attempt in range(1, self._max_retries + 2):
             async with self._budget_gate, self._semaphore:
+                analysis_id = self._artifacts.identity.analysis_id
+                if (
+                    self._provider == "codex-cli"
+                    and self._store.unresolved_codex_call(analysis_id) is not None
+                ):
+                    return _unresolved_codex_call_failure()
                 budget_failure = self.budget_failure()
                 if budget_failure is not None:
                     return budget_failure
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     return _final_failure(last_failure)
+                call_id = uuid4().hex if self._provider == "codex-cli" else None
+                if call_id is not None and not self._store.begin_codex_call(
+                    call_id, analysis_id
+                ):
+                    return _unresolved_codex_call_failure()
+
+                def record_attempt(
+                    agent: str,
+                    attempt_number: int,
+                    started_at: float,
+                    status: str,
+                    result: SimpleLLMCallResult | None,
+                    failure: StageFailure | None = None,
+                    *,
+                    codex_call_id: str | None = call_id,
+                ) -> None:
+                    nonlocal previous_attempt_id
+                    recorded_id = codex_call_id or uuid4().hex
+                    self._record_attempt(
+                        agent,
+                        attempt_number,
+                        started_at,
+                        status,
+                        result,
+                        failure,
+                        attempt_id=recorded_id,
+                        owner=owner,
+                        retry_of=previous_attempt_id,
+                        prompt_bytes=prompt_bytes,
+                    )
+                    previous_attempt_id = recorded_id
+
                 started = monotonic()
+                inner_returned = False
                 try:
-                    result = await asyncio.wait_for(
-                        self._inner.call(
+                    if call_id is not None:
+                        call = self._inner.call(
                             prompt=prompt,
                             output_schema=output_schema,
                             timeout_ms=max(1, int(remaining * 1000)),
                             agent_name=agent_name,
+                            owner=owner,
+                            prompt_bytes=prompt_bytes,
+                            invocation_id=call_id,
+                        )
+                    elif owner is None and prompt_bytes is None:
+                        call = self._inner.call(
+                            prompt=prompt,
+                            output_schema=output_schema,
+                            timeout_ms=max(1, int(remaining * 1000)),
+                            agent_name=agent_name,
+                        )
+                    else:
+                        call = self._inner.call(
+                            prompt=prompt,
+                            output_schema=output_schema,
+                            timeout_ms=max(1, int(remaining * 1000)),
+                            agent_name=agent_name,
+                            owner=owner,
+                            prompt_bytes=prompt_bytes,
+                        )
+                    result = await asyncio.wait_for(
+                        call,
+                        # The Codex runner owns its request timeout and may still
+                        # need to confirm child-process cleanup after it expires.
+                        timeout=remaining
+                        + (
+                            _CODEX_CLEANUP_GRACE_SECONDS
+                            if self._provider == "codex-cli"
+                            else 0.0
                         ),
-                        timeout=remaining,
                     )
+                    inner_returned = True
                 except asyncio.CancelledError:
-                    self._record_attempt(
+                    record_attempt(
                         agent_name,
                         attempt,
                         started,
@@ -275,13 +381,15 @@ class RunLimitedClient:
                         safe_message="LLM request did not complete",
                     )
                 if isinstance(result, SimpleLLMCallResult):
-                    self._record_attempt(
+                    record_attempt(
                         agent_name,
                         attempt,
                         started,
                         "SUCCEEDED",
                         result,
                     )
+                    if call_id is not None:
+                        self._store.mark_codex_call_safe(call_id, analysis_id)
                     return result
                 terminal = _terminal(result)
                 failure = (
@@ -291,9 +399,27 @@ class RunLimitedClient:
                 )
                 if failure.code == "INVALID_OUTPUT" and attempt > self._max_retries:
                     failure = failure.model_copy(update={"retryable": False})
-                self._record_attempt(
-                    agent_name, attempt, started, failure.code, None, failure
+                if failure.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED":
+                    failure = failure.model_copy(update={"retryable": False})
+                record_attempt(
+                    agent_name,
+                    attempt,
+                    started,
+                    failure.code,
+                    None,
+                    failure,
                 )
+                if call_id is not None:
+                    if (
+                        not inner_returned
+                        or failure.code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                    ):
+                        return (
+                            failure
+                            if inner_returned
+                            else _unresolved_codex_call_failure()
+                        )
+                    self._store.mark_codex_call_safe(call_id, analysis_id)
                 if failure.retryable and attempt <= self._max_retries:
                     # A billable failure without usage must block a retry even when
                     # the call deadline expires before the backoff can begin.
@@ -317,6 +443,11 @@ class RunLimitedClient:
         status: str,
         result: SimpleLLMCallResult | None,
         failure: StageFailure | None = None,
+        *,
+        attempt_id: str | None = None,
+        owner: AttemptOwner | None = None,
+        retry_of: str | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
     ) -> None:
         elapsed = max(0, int((monotonic() - started) * 1000))
         input_tokens = token_count(result.input_tokens) if result is not None else None
@@ -364,7 +495,7 @@ class RunLimitedClient:
         }
         ref = self._artifacts.put_json(metadata)
         self._store.record_llm_attempt(
-            attempt_id=uuid4().hex,
+            attempt_id=attempt_id or uuid4().hex,
             analysis_id=self._artifacts.identity.analysis_id,
             agent=agent,
             model=self._model,
@@ -375,4 +506,7 @@ class RunLimitedClient:
             output_tokens=output_tokens,
             cost_cents=cost,
             artifact_ref=ref,
+            owner=owner,
+            retry_of=retry_of,
+            prompt_bytes=prompt_bytes,
         )

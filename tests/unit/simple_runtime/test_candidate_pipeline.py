@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.application import (
+    BatchProposalResult,
+    CandidateProposalOutcome,
+    HypothesisBootstrap,
     HypothesisSeed,
     SimpleAnalysisApplication,
     SimpleAnalysisRequest,
@@ -16,6 +24,18 @@ from sastsimi.simple_runtime.application import (
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
+from sastsimi.simple_runtime.attack_surfaces import (
+    ReviewPart,
+    build_attack_surface_index,
+    evaluate_surface_coverage,
+)
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
+from sastsimi.simple_runtime.bootstrap_stages import (
+    SurfaceProposalResult,
+)
+from sastsimi.simple_runtime.candidate_batches import CandidateBatch
+from sastsimi.simple_runtime.candidates import ingest_static_candidates
+from sastsimi.simple_runtime.chaining import SimpleChainingStage
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -27,8 +47,17 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner
+from sastsimi.simple_runtime.runner import (
+    RunOutcome,
+    SimpleRuntimeRunner,
+    SimpleStageHandler,
+)
+from sastsimi.simple_runtime.stages import ProConBatchBlocked
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.simple_runtime.surface_contexts import (
+    SurfaceContext,
+    iter_uncovered_surface_contexts,
+)
 
 
 class _Static:
@@ -77,10 +106,145 @@ class _PagedHypotheses:
         *,
         after_cursor: str | None,
         page_budget_bytes: int = 32_768,
-    ) -> tuple[tuple[HypothesisSeed, ...], str | None]:
+    ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
         del page_budget_bytes
         self.cursors.append(after_cursor)
         return (), {None: "page-1", "page-1": "page-2", "page-2": None}[after_cursor]
+
+
+class _SecondLookHypotheses:
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        second_status: str = "NO_HYPOTHESIS",
+        fail_second_once: bool = False,
+    ) -> None:
+        self.data_dir = data_dir
+        self.second_status = second_status
+        self.fail_second_once = fail_second_once
+        self.context_kinds: list[str] = []
+        self.primary_surface_id: str | None = None
+
+    async def propose_batch(
+        self,
+        identity: CheckpointIdentity,
+        _static: StaticBootstrapResult,
+        batch: CandidateBatch,
+        *,
+        requested_ids: tuple[str, ...] | None = None,
+    ) -> BatchProposalResult:
+        ids = requested_ids or batch.candidate_ids
+        artifacts = SimpleArtifactRepository(self.data_dir, identity)
+        ref = artifacts.put_json(
+            {
+                "kind": "simple_candidate_batch_response_v1",
+                "batch_id": batch.batch_id,
+                "requested_ids": ids,
+                "candidate_results": [
+                    {"candidate_id": item, "status": "NO_HYPOTHESIS"} for item in ids
+                ],
+            }
+        )
+        return BatchProposalResult(
+            results={
+                item: CandidateProposalOutcome(
+                    status="NO_HYPOTHESIS",
+                    reason="No candidate path",
+                    seeds=(),
+                    result_ref=ref,
+                )
+                for item in ids
+            },
+            missing_ids=(),
+            attempt_refs=(ref,),
+        )
+
+    async def propose_surface(
+        self,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        context: SurfaceContext,
+    ) -> SurfaceProposalResult | StageFailure:
+        artifacts = SimpleArtifactRepository(self.data_dir, identity)
+        payload = json.loads(artifacts.read(context.context_ref))
+        kind = str(payload["kind"])
+        self.context_kinds.append(kind)
+        if self.primary_surface_id is None:
+            self.primary_surface_id = context.surface_id
+        if kind == "simple_surface_context_v2" and self.fail_second_once:
+            self.fail_second_once = False
+            return StageFailure(
+                code="LLM_TOKEN_BUDGET_EXHAUSTED",
+                retryable=False,
+                safe_message="Temporary test budget",
+            )
+        status = (
+            self.second_status
+            if kind == "simple_surface_context_v2"
+            else "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+            if context.surface_id == self.primary_surface_id
+            else "NO_HYPOTHESIS"
+        )
+        parts: frozenset[ReviewPart] = (
+            frozenset({"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"})
+            if status == "NO_HYPOTHESIS"
+            else frozenset()
+        )
+        location = f"{payload['path']}:{payload['line']}"
+        locations = (location,) if parts else ()
+        ref = artifacts.put_json(
+            {
+                "kind": (
+                    "simple_surface_hypothesis_result_v2"
+                    if kind == "simple_surface_context_v2"
+                    else "simple_surface_hypothesis_result_v1"
+                ),
+                "analysis_id": identity.analysis_id,
+                "surface_id": context.surface_id,
+                "context_id": context.context_id,
+                "part_index": context.part_index,
+                "part_count": context.part_count,
+                "context_hash": context.context_hash,
+                "static_bundle_hash": static.static_bundle_ref.content_hash,
+                "status": status,
+                "reason": "Fixture review",
+                "reviewed_parts": sorted(parts),
+                "evidence_locations": list(locations),
+                "seed_ids": [],
+            }
+        )
+        return SurfaceProposalResult(
+            surface_id=context.surface_id,
+            context_id=context.context_id,
+            part_index=context.part_index,
+            part_count=context.part_count,
+            status=status,
+            reason="Fixture review",
+            seeds=(),
+            result_ref=ref,
+            reviewed_parts=parts,
+            evidence_locations=locations,
+        )
+
+
+def _enable_chaining_pool(
+    app: SimpleAnalysisApplication, store: SimpleCheckpointStore, data_dir: Path
+) -> None:
+    class PoolRunner(_SuccessRunner):
+        def __init__(
+            self, backing: SimpleCheckpointStore, root: CheckpointIdentity
+        ) -> None:
+            super().__init__(backing)
+            self.handlers = {
+                SimpleStage.CHAINING_DONE: SimpleChainingStage(
+                    store=backing,
+                    client=_Client(),
+                    artifacts=SimpleArtifactRepository(data_dir, root),
+                )
+            }
+
+    app._runner_factory = lambda backing, root, _static: PoolRunner(backing, root)
 
 
 class _Client:
@@ -105,8 +269,11 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult:
-        del output_schema, timeout_ms
+        del output_schema, timeout_ms, owner, prompt_bytes, invocation_id
         assert agent_name == "discovery"
         self.calls += 1
         rows = json.loads(prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0])
@@ -136,12 +303,17 @@ def _setup(
     partial: bool = False,
     with_ast_summary: bool = False,
     evidence_excerpt: str | None = None,
+    pipeline_version: int = 1,
+    source_padding: int = 0,
 ) -> tuple[SimpleAnalysisApplication, SimpleCheckpointStore, _Client, _Hypotheses]:
     data_dir = tmp_path / "data"
     workspace = tmp_path / "checkout"
     workspace.mkdir()
     (workspace / "app.py").write_text(
-        "def route(x):\n" + "    eval(x)\n" * result_count, encoding="utf-8"
+        "def route(x):\n"
+        + "    # padding\n" * source_padding
+        + "    eval(x)\n" * result_count,
+        encoding="utf-8",
     )
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
@@ -157,8 +329,8 @@ def _setup(
                     {
                         "check_id": "python.eval",
                         "path": "app.py",
-                        "start": {"line": i + 2},
-                        "end": {"line": i + 2},
+                        "start": {"line": i + 2 + source_padding},
+                        "end": {"line": i + 2 + source_padding},
                         "extra": {
                             "message": "eval call",
                             **(
@@ -261,9 +433,149 @@ def _setup(
         runner_factory=lambda *_: (_ for _ in ()).throw(AssertionError("runner")),
         id_factory=lambda: next(ids),
         candidate_pipeline_enabled=True,
+        candidate_pipeline_version=pipeline_version,
         candidate_client_factory=lambda *_: client,
     )
     return app, store, client, hypotheses
+
+
+def test_candidate_terminal_rejects_legacy_v2_poc_with_newer_report(
+    tmp_path: Path,
+) -> None:
+    app, store, _, _ = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="H-legacy",
+    )
+    for stage in (
+        SimpleStage.POC_EXECUTION_DONE,
+        SimpleStage.VERIFICATION_FINAL_DONE,
+        SimpleStage.REPORT_DONE,
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=(
+                    "2"
+                    if stage is SimpleStage.POC_EXECUTION_DONE
+                    else STAGE_VERSION[stage]
+                ),
+                status=StageStatus.SUCCEEDED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                verdict=(
+                    "TRUE" if stage is SimpleStage.VERIFICATION_FINAL_DONE else None
+                ),
+            )
+        )
+
+    assert not app._candidate_hypothesis_terminal(
+        identity.model_copy(update={"hypothesis_id": None}), "H-legacy"
+    )
+
+
+def _cleanup_audit(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    *,
+    process_tree_stopped: bool = True,
+    observed_at: datetime | None = None,
+    call_id: str | None = None,
+) -> StoredDataRef:
+    return artifacts.put_json(
+        {
+            "kind": "simple_codex_cleanup_confirmation",
+            "analysis_id": checkpoint.identity.analysis_id,
+            "stage": checkpoint.stage.value,
+            "attempt_id": checkpoint.attempt_id,
+            "checkpoint_sha256": hashlib.sha256(
+                canonical_bytes(checkpoint)
+            ).hexdigest(),
+            "process_tree_stopped": process_tree_stopped,
+            "verification_method": "windows_process_inventory",
+            "former_parent_pid": 12345,
+            "observed_matching_process_count": 0,
+            "observed_at": (
+                observed_at or checkpoint.updated_at + timedelta(seconds=1)
+            ).isoformat(),
+            **({"call_id": call_id} if call_id is not None else {}),
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_pro_con_batch_marks_all_requested_ids_attempted_this_turn(
+    tmp_path: Path,
+) -> None:
+    """A blocked batch cannot retry its missing IDs via the individual runner."""
+
+    app, store, _client, _hypotheses = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    shared = artifacts.put_json({"kind": "shared_context"})
+    static_ref = artifacts.put_json({"kind": "static_bundle"})
+    hypothesis_ids = ("batch-child-one", "batch-child-two")
+    for hypothesis_id in hypothesis_ids:
+        store.upsert_hypothesis(identity, hypothesis_id)
+        proposal = artifacts.put_prompt_proposal(
+            {
+                "kind": "simple_hypothesis_proposal",
+                "analysis_id": identity.analysis_id,
+                "hypothesis_id": hypothesis_id,
+                "proposal": {"summary": "test"},
+            }
+        )
+        refs = (proposal, shared, static_ref)
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity.model_copy(update={"hypothesis_id": hypothesis_id}),
+                stage=SimpleStage.PRO_CON_DONE,
+                status=StageStatus.PENDING,
+                input_refs=refs,
+                input_hash=input_reference_hash(refs),
+            )
+        )
+
+    class _BlockedBatch:
+        async def run_pro_batch(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise ProConBatchBlocked(
+                StageFailure(
+                    code="PRO_CON_BATCH_RESPONSE_INVALID",
+                    retryable=True,
+                    safe_message="invalid batch",
+                ),
+                {},
+                hypothesis_ids,
+            )
+
+        async def run_con_batch(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("Con must not run after a blocked Pro batch")
+
+    app._runner_factory = lambda *_: cast(
+        SimpleRuntimeRunner,
+        SimpleNamespace(handlers={SimpleStage.PRO_CON_DONE: _BlockedBatch()}),
+    )
+    attempted: set[str] = set()
+    outcome = await app._prewarm_pro_con_batches(
+        identity,
+        cast(_Static, app._static).result,
+        hypothesis_ids,
+        attempted,
+    )
+
+    assert outcome is not None
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.hypothesis_id == hypothesis_ids[0]
+    assert outcome.attempt_id is not None
+    assert attempted == set(hypothesis_ids)
 
 
 @pytest.mark.asyncio
@@ -284,6 +596,529 @@ async def test_free_exploration_pages_are_checkpointed_and_not_repeated(
 
     assert first.status == second.status == "COMPLETE"
     assert paged.cursors == [None, "page-1", "page-2"]
+
+
+@pytest.mark.asyncio
+async def test_retryable_free_page_failure_retries_only_that_page(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    request_ref = artifacts.put_json({"kind": "failed_free_page_request"})
+    diagnostic_ref = artifacts.put_json({"kind": "failed_free_page_diagnostic"})
+
+    class FlakyPages(_PagedHypotheses):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failed_once = False
+
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            if after_cursor == "page-1" and not self.failed_once:
+                self.failed_once = True
+                self.cursors.append(after_cursor)
+                return StageFailure(
+                    code="FAILED",
+                    retryable=True,
+                    safe_message="Transient provider failure",
+                    evidence_refs=(request_ref, diagnostic_ref),
+                )
+            return await super().propose_page(
+                identity,
+                static,
+                after_cursor=after_cursor,
+                page_budget_bytes=page_budget_bytes,
+            )
+
+    paged = FlakyPages()
+    app._hypotheses = paged
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    second = await app.resume("analysis-1")
+
+    assert first.status == second.status == "COMPLETE"
+    assert paged.cursors == [None, "page-1", "page-1", "page-2"]
+    bundle_hash = cast(_Static, app._static).result.static_bundle_ref.content_hash
+    progress = store.survey_progress("analysis-1", bundle_hash)
+    assert set(progress) == {
+        "__candidate_free_page_00000000__",
+        "__candidate_free_page_00000001__",
+        "__candidate_free_page_00000002__",
+        "__candidate_free_done__",
+    }
+    retried_page = json.loads(
+        artifacts.read(progress["__candidate_free_page_00000001__"])
+    )
+    assert retried_page["retry_failure_refs"] == [
+        request_ref.model_dump(mode="json"),
+        diagnostic_ref.model_dump(mode="json"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_historical_invalid_free_page_resumes_without_repeating_prior_work(
+    tmp_path: Path,
+) -> None:
+    app, store, candidate_client, _hypotheses = _setup(
+        tmp_path, decision="INCLUDE", with_ast_summary=True
+    )
+    focused = _ManyHypotheses(tmp_path / "data")
+    app._candidate_hypotheses = focused
+    app._runner_factory = lambda *_: _SuccessRunner(store)
+
+    class InvalidSecondPage(_PagedHypotheses):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repair_available = False
+
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            if after_cursor == "page-1" and not self.repair_available:
+                return StageFailure(
+                    code="HYPOTHESIS_PAGE_OUTPUT_INVALID",
+                    retryable=False,
+                    safe_message="One location was outside the source page",
+                )
+            return (), {None: "page-1", "page-1": None}[after_cursor]
+
+    pages = InvalidSecondPage()
+    app._hypotheses = pages
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert (first.status, first.error_code) == (
+        "BLOCKED",
+        "HYPOTHESIS_PAGE_OUTPUT_INVALID",
+    )
+    run = store.require_analysis_run("analysis-1")
+    assert run.static_bundle_ref is not None
+    progress_before = store.survey_progress(
+        "analysis-1", run.static_bundle_ref.content_hash
+    )
+    first_page_ref = progress_before["__candidate_free_page_00000000__"]
+    prior_id = store.list_hypotheses(first.identity, limit=1)[0]
+    prior_child = first.identity.model_copy(update={"hypothesis_id": prior_id})
+    completed_job = StageCheckpoint(
+        identity=prior_child,
+        stage=SimpleStage.VERIFICATION_FINAL_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE],
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        verdict="FALSE",
+    )
+    store.save_checkpoint(completed_job)
+    pages.repair_available = True
+
+    resumed = await app.resume("analysis-1")
+
+    assert resumed.status == "COMPLETE", resumed.error_code
+    assert resumed.identity.analysis_id == first.identity.analysis_id
+    assert pages.cursors == [None, "page-1", "page-1"]
+    assert candidate_client.calls == focused.calls == 1
+    progress_after = store.survey_progress(
+        "analysis-1", run.static_bundle_ref.content_hash
+    )
+    assert progress_after["__candidate_free_page_00000000__"] == first_page_ref
+    assert (
+        store.require(prior_child, SimpleStage.VERIFICATION_FINAL_DONE) == completed_job
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_free_page_preserves_both_attempt_refs_on_running_stage(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    first_ref = artifacts.put_json({"kind": "first_page_failure"})
+    second_ref = artifacts.put_json({"kind": "second_page_failure"})
+
+    class FailedPages(_PagedHypotheses):
+        def __init__(self) -> None:
+            super().__init__()
+            self.running_attempt_id: str | None = None
+
+        async def propose_page(
+            self,
+            _identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del page_budget_bytes
+            self.cursors.append(after_cursor)
+            checkpoint = store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+            assert checkpoint is not None
+            assert checkpoint.status is StageStatus.RUNNING
+            if self.running_attempt_id is None:
+                self.running_attempt_id = checkpoint.attempt_id
+                return StageFailure(
+                    code="FAILED",
+                    retryable=True,
+                    safe_message="First page attempt failed",
+                    evidence_refs=(first_ref,),
+                )
+            assert checkpoint.attempt_id == self.running_attempt_id
+            return StageFailure(
+                code="FAILED",
+                retryable=False,
+                safe_message="Second page attempt failed",
+                evidence_refs=(second_ref,),
+            )
+
+    paged = FailedPages()
+    app._hypotheses = paged
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    failed = store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+    assert outcome.status == "BLOCKED"
+    assert paged.cursors == [None, None]
+    assert failed is not None
+    assert failed.attempt_id == paged.running_attempt_id
+    assert failed.output_refs == (first_ref, second_ref)
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_repeat_unconfirmed_codex_process_cleanup(
+    tmp_path: Path,
+) -> None:
+    app, _store, _client, _hypotheses = _setup(tmp_path)
+
+    class UnconfirmedCleanup(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            return StageFailure(
+                code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                retryable=False,
+                safe_message="Codex child process cleanup could not be confirmed",
+            )
+
+    paged = UnconfirmedCleanup()
+    app._hypotheses = paged
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    second = await app.resume("analysis-1")
+
+    assert first.status == second.status == "BLOCKED"
+    assert second.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+    assert paged.cursors == [None]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_source_page_timeout_is_not_retried_at_full_size(
+    tmp_path: Path,
+) -> None:
+    app, _store, _client, _hypotheses = _setup(tmp_path)
+
+    class ExhaustedPages(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            return StageFailure(
+                code="HYPOTHESIS_PAGE_TIMEOUT_EXHAUSTED",
+                retryable=False,
+                safe_message="Source page timed out at the minimum size",
+            )
+
+    paged = ExhaustedPages()
+    app._hypotheses = paged
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status == "BLOCKED"
+    assert outcome.error_code == "HYPOTHESIS_PAGE_TIMEOUT_EXHAUSTED"
+    assert paged.cursors == [None]
+
+
+@pytest.mark.asyncio
+async def test_verified_codex_cleanup_can_resume_without_repeating_completed_work(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+
+    class RecoveredPages(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            if len(self.cursors) == 2:
+                return StageFailure(
+                    code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                    retryable=False,
+                    safe_message="Codex child process cleanup could not be confirmed",
+                )
+            return (), {None: "page-1", "page-1": None}[after_cursor]
+
+    paged = RecoveredPages()
+    app._hypotheses = paged
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"
+    checkpoint = store.get(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert checkpoint is not None
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    audit = _cleanup_audit(artifacts, checkpoint)
+
+    store.confirm_codex_cleanup(checkpoint, audit, artifacts)
+    second = await app.resume("analysis-1")
+
+    assert second.status == "COMPLETE"
+    assert paged.cursors == [None, "page-1", "page-1"]
+    assert store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+
+
+@pytest.mark.asyncio
+async def test_resume_blocks_unresolved_codex_call_without_changing_running_checkpoint(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "COMPLETE"
+    prior = store.get(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert prior is not None
+    running = store.mark_running(
+        first.identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        prior.input_refs,
+        attempt_id="crashed-stage-attempt",
+    )
+    store.begin_codex_call("crashed-call", first.identity.analysis_id)
+    before_events = store.stage_activity(
+        first.identity, SimpleStage.HYPOTHESIS_DONE, "crashed-stage-attempt"
+    )
+
+    blocked = await app.resume("analysis-1")
+
+    assert blocked.status == "BLOCKED"
+    assert blocked.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert blocked.current_stage is SimpleStage.HYPOTHESIS_DONE
+    assert store.get(first.identity, SimpleStage.HYPOTHESIS_DONE) == running
+    assert (
+        store.stage_activity(
+            first.identity, SimpleStage.HYPOTHESIS_DONE, "crashed-stage-attempt"
+        )
+        == before_events
+    )
+
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    audit = _cleanup_audit(artifacts, running, call_id="crashed-call")
+    store.confirm_codex_cleanup(running, audit, artifacts)
+
+    assert store.unresolved_codex_call("analysis-1") is None
+    assert store.get(first.identity, SimpleStage.HYPOTHESIS_DONE) == running
+    assert store.has_codex_cleanup_confirmation(running, artifacts)
+    after_events = store.stage_activity(
+        first.identity, SimpleStage.HYPOTHESIS_DONE, "crashed-stage-attempt"
+    )
+    assert len(after_events) == len(before_events) + 1
+    assert after_events[-1].kind.value == "DECISION_RECORDED"
+
+
+@pytest.mark.asyncio
+async def test_tracked_codex_cleanup_confirmation_resolves_exact_call_only(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+
+    class UnconfirmedPages(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, page_budget_bytes
+            self.cursors.append(after_cursor)
+            if len(self.cursors) == 2:
+                return StageFailure(
+                    code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                    retryable=False,
+                    safe_message="Codex cleanup could not be confirmed",
+                )
+            return (), {None: "page-1", "page-1": None}[after_cursor]
+
+    pages = UnconfirmedPages()
+    app._hypotheses = pages
+    call_id = "tracked-call"
+    store.begin_codex_call(call_id, "analysis-1")
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"
+    checkpoint = store.get(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert checkpoint is not None
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    wrong = _cleanup_audit(artifacts, checkpoint, call_id="other-call")
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, wrong, artifacts)
+    assert store.unresolved_codex_call("analysis-1") == call_id
+
+    blocked = await app.resume("analysis-1")
+    assert blocked.status == "BLOCKED"
+    assert blocked.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert store.get(first.identity, SimpleStage.HYPOTHESIS_DONE) == checkpoint
+
+    audit = _cleanup_audit(artifacts, checkpoint, call_id=call_id)
+    usage_before = store.usage_summary("analysis-1")
+    assert usage_before["calls"] == 1
+    assert usage_before["unknown_token_calls"] == 1
+    assert usage_before["unknown_cost_calls"] == 1
+    assert usage_before["unrecorded_in_flight_codex_calls"] == 1
+    store.confirm_codex_cleanup(checkpoint, audit, artifacts)
+    assert store.unresolved_codex_call("analysis-1") is None
+    assert store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+    usage = store.usage_summary("analysis-1")
+    assert usage["calls"] == usage_before["calls"]
+    assert usage["unknown_token_calls"] == 1
+    assert usage["unknown_cost_calls"] == 1
+    assert usage["unrecorded_in_flight_codex_calls"] == 0
+    assert usage["unlinked_codex_usage_calls"] == 0
+
+    resumed = await app.resume("analysis-1")
+    assert resumed.status == "COMPLETE"
+    assert pages.cursors == [None, "page-1", "page-1"]
+
+
+@pytest.mark.asyncio
+async def test_codex_cleanup_confirmation_rejects_unverified_process_tree(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _hypotheses = _setup(tmp_path)
+
+    class UnconfirmedCleanup(_PagedHypotheses):
+        async def propose_page(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            *,
+            after_cursor: str | None,
+            page_budget_bytes: int = 32_768,
+        ) -> tuple[tuple[HypothesisSeed, ...], str | None] | StageFailure:
+            del identity, static, after_cursor, page_budget_bytes
+            return StageFailure(
+                code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+                retryable=False,
+                safe_message="Codex child process cleanup could not be confirmed",
+            )
+
+    app._hypotheses = UnconfirmedCleanup()
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    checkpoint = store.get(first.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert checkpoint is not None
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    audit = _cleanup_audit(artifacts, checkpoint, process_tree_stopped=False)
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, audit, artifacts)
+    stale = _cleanup_audit(
+        artifacts,
+        checkpoint,
+        observed_at=checkpoint.updated_at - timedelta(seconds=1),
+    )
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, stale, artifacts)
+    second = await app.resume("analysis-1")
+
+    assert second.status == "BLOCKED"
+    assert second.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
 
 
 @pytest.mark.asyncio
@@ -782,6 +1617,910 @@ async def test_new_pipeline_persists_excluded_candidate_and_finishes_without_fin
 
 
 @pytest.mark.asyncio
+async def test_v2_batch_resume_reuses_zero_seed_candidates(tmp_path: Path) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=2,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class V2Hypotheses:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: CandidateBatch,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            ids = requested_ids or batch.candidate_ids
+            self.calls.append(ids)
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            result_ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "NO_HYPOTHESIS"}
+                        for item in ids
+                    ],
+                }
+            )
+            return BatchProposalResult(
+                results={
+                    candidate_id: CandidateProposalOutcome(
+                        status="NO_HYPOTHESIS",
+                        reason="No demonstrated input path",
+                        seeds=(),
+                        result_ref=result_ref,
+                    )
+                    for candidate_id in ids
+                },
+                missing_ids=(),
+                attempt_refs=(result_ref,),
+            )
+
+    hypotheses = V2Hypotheses()
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
+    request = SimpleAnalysisRequest(
+        data_dir=tmp_path / "data",
+        repository="https://github.com/example/repo",
+        commit="a" * 40,
+    )
+    first = await app.analyze(request)
+    second = await app.resume("analysis-1")
+    identity = first.identity
+    assert store.require_analysis_run("analysis-1").candidate_pipeline_version == 2
+    assert first.status != "COMPLETE"
+    assert second.status != "COMPLETE"
+    assert len(hypotheses.calls) == 1
+    progress = store.list_candidate_batch_outcomes(identity, "scope-1")
+    assert len(progress) == 2
+    assert all(record.status == "NO_HYPOTHESIS" for record in progress.values())
+    assert store.hypothesis_count(identity) == 0
+    surface_record = store.get_attack_surface_index(identity, "scope-1")
+    assert surface_record is not None
+    surface_data = json.loads(
+        SimpleArtifactRepository(tmp_path / "data", identity).read(
+            surface_record.index_ref
+        )
+    )
+    assert surface_data["kind"] == "simple_attack_surface_index_v2"
+    assert surface_data["candidate_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("reviewed_parts", "expected_status"),
+    [
+        (frozenset({"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}), "COMPLETE"),
+        (frozenset({"ENTRY"}), "PARTIAL"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_pages(
+    tmp_path: Path,
+    reviewed_parts: frozenset[ReviewPart],
+    expected_status: str,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class TargetedOnly:
+        def __init__(self) -> None:
+            self.batch_calls = 0
+            self.surface_calls: list[str] = []
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: CandidateBatch,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            self.batch_calls += 1
+            ids = requested_ids or batch.candidate_ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "NO_HYPOTHESIS"}
+                        for item in ids
+                    ],
+                }
+            )
+            return BatchProposalResult(
+                results={
+                    item: CandidateProposalOutcome(
+                        status="NO_HYPOTHESIS",
+                        reason="No supported attack path",
+                        seeds=(),
+                        result_ref=ref,
+                    )
+                    for item in ids
+                },
+                missing_ids=(),
+                attempt_refs=(ref,),
+            )
+
+        async def propose_surface(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            context: SurfaceContext,
+        ) -> SurfaceProposalResult:
+            self.surface_calls.append(context.context_id)
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            payload = json.loads(artifacts.read(context.context_ref))
+            location = f"{payload['path']}:{payload['line']}"
+            ref = artifacts.put_json(
+                {
+                    "kind": "simple_surface_hypothesis_result_v1",
+                    "analysis_id": identity.analysis_id,
+                    "surface_id": context.surface_id,
+                    "context_id": context.context_id,
+                    "part_index": context.part_index,
+                    "part_count": context.part_count,
+                    "context_hash": context.context_hash,
+                    "static_bundle_hash": static.static_bundle_ref.content_hash,
+                    "status": "NO_HYPOTHESIS",
+                    "reason": "Reviewed the visible call site",
+                    "reviewed_parts": sorted(reviewed_parts),
+                    "evidence_locations": [location],
+                    "seed_ids": [],
+                }
+            )
+            return SurfaceProposalResult(
+                surface_id=context.surface_id,
+                context_id=context.context_id,
+                part_index=context.part_index,
+                part_count=context.part_count,
+                status="NO_HYPOTHESIS",
+                reason="Reviewed the visible call site",
+                seeds=(),
+                result_ref=ref,
+                reviewed_parts=reviewed_parts,
+                evidence_locations=(location,),
+            )
+
+    targeted = TargetedOnly()
+    paged = _PagedHypotheses()
+    app._candidate_hypotheses = cast(HypothesisBootstrap, targeted)
+    app._hypotheses = paged
+
+    class PoolRunner(_SuccessRunner):
+        def __init__(
+            self, backing: SimpleCheckpointStore, root: CheckpointIdentity
+        ) -> None:
+            super().__init__(backing)
+            self.handlers = {
+                SimpleStage.CHAINING_DONE: SimpleChainingStage(
+                    store=backing,
+                    client=_Client(),
+                    artifacts=SimpleArtifactRepository(tmp_path / "data", root),
+                )
+            }
+
+    app._runner_factory = lambda backing, root, _static: PoolRunner(backing, root)
+    request = SimpleAnalysisRequest(
+        data_dir=tmp_path / "data",
+        repository="https://github.com/example/repo",
+        commit="a" * 40,
+    )
+    first = await app.analyze(request)
+    second = await app.resume("analysis-1")
+
+    assert paged.cursors == []
+    assert targeted.batch_calls == 1
+    assert targeted.surface_calls
+    assert len(targeted.surface_calls) == len(set(targeted.surface_calls))
+    assert first.status == second.status == expected_status, (
+        first.error_code,
+        second.error_code,
+    )
+    terminal = store.require_analysis_run("analysis-1").candidate_terminal
+    assert terminal is not None
+    assert terminal.surface_counts["UNCOVERED"] == 0
+    assert terminal.surface_counts["INSUFFICIENT"] == (
+        0 if expected_status == "COMPLETE" else len(targeted.surface_calls)
+    )
+    assert terminal.surface_coverage_hash
+    assert len(
+        store.list_surface_exploration_progress(first.identity, "scope-1")
+    ) == len(targeted.surface_calls)
+
+
+def test_v2_targeted_exploration_keeps_candidate_surface_without_role_bound_proof(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    static = cast(_Static, app._static).result
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    bundle = json.loads(artifacts.read(static.static_bundle_ref))
+    ast_summary = bundle["ast_summary"]
+    ingest_static_candidates(
+        identity,
+        "scope-1",
+        static.static_bundle_ref,
+        artifacts,
+        store,
+        workspace=static.workspace_path,
+    )
+    candidate = store.list_candidates(identity, "scope-1")[0]
+    store.save_candidate_decision(
+        identity, "scope-1", candidate.candidate_id, "INCLUDE", "verified path"
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": "hypothesis-covered",
+            "candidate_id": candidate.candidate_id,
+            "qualification": {
+                "attacker_control": "YES",
+                "sensitive_operation": "YES",
+                "reachability": "YES",
+                "trust_boundary": "request reaches eval",
+                "evidence_locations": ["app.py:2"],
+            },
+            "proposal": {"code_locations": ["app.py:2"]},
+        }
+    )
+    child = identity.model_copy(update={"hypothesis_id": "hypothesis-covered"})
+    inputs = (proposal_ref, static.static_bundle_ref)
+    store.register_candidate_hypothesis(
+        identity,
+        "scope-1",
+        candidate.candidate_id,
+        "hypothesis-covered",
+        proposal_ref,
+        checkpoint=StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.PRO_CON_DONE,
+            status=StageStatus.PENDING,
+            input_refs=inputs,
+            input_hash=input_reference_hash(inputs),
+        ),
+    )
+    proof_ref = artifacts.put_json({"kind": "terminal-review"})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.VERIFICATION_FINAL_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(proof_ref,),
+            verdict="FALSE",
+        )
+    )
+    index = build_attack_surface_index(
+        bundle,
+        ast_summary,
+        store.list_candidates(identity, "scope-1"),
+        artifacts=artifacts,
+    )
+    reviews = app._candidate_surface_reviews(identity, "scope-1", index, artifacts)
+    coverage = evaluate_surface_coverage(index, reviews)
+    linked = [surface for surface in coverage.surfaces if surface.linked_candidate_ids]
+    assert linked
+    assert all(surface.coverage_status == "INSUFFICIENT" for surface in linked)
+    contexts = tuple(
+        iter_uncovered_surface_contexts(
+            index,
+            coverage,
+            64 * 1024,
+            artifacts=artifacts,
+            ast_summary=ast_summary,
+            workspace=static.workspace_path,
+        )
+    )
+    assert contexts
+    assert {context.surface_id for context in contexts} >= {
+        surface.surface_id for surface in linked
+    }
+
+
+@pytest.mark.parametrize(
+    ("source_padding", "second_status", "expected_calls"),
+    [
+        (0, "NO_HYPOTHESIS", 3),
+        (20, "NO_HYPOTHESIS", 4),
+        (20, "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS", 4),
+    ],
+)
+@pytest.mark.asyncio
+async def test_second_look_only_after_omitted_insufficient_evidence(
+    tmp_path: Path,
+    source_padding: int,
+    second_status: str,
+    expected_calls: int,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+        source_padding=source_padding,
+    )
+    proposer = _SecondLookHypotheses(tmp_path / "data", second_status=second_status)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, proposer)
+    _enable_chaining_pool(app, store, tmp_path / "data")
+
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    calls_after_first = tuple(proposer.context_kinds)
+    second = await app.resume("analysis-1")
+    progress = store.list_surface_exploration_progress(first.identity, "scope-1")
+
+    assert len(calls_after_first) == expected_calls
+    assert proposer.context_kinds == list(calls_after_first)
+    assert len(progress) == expected_calls
+    assert sum(record.proposal_version == 2 for record in progress.values()) == (
+        1 if source_padding else 0
+    )
+    if source_padding and second_status == "NO_HYPOTHESIS":
+        assert first.status == second.status == "COMPLETE", (
+            first.error_code,
+            second.error_code,
+        )
+    else:
+        assert first.status == second.status == "PARTIAL", (
+            first.error_code,
+            second.error_code,
+        )
+
+
+@pytest.mark.asyncio
+async def test_resume_after_first_decision_reuses_first_response(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+        source_padding=20,
+    )
+    proposer = _SecondLookHypotheses(tmp_path / "data", fail_second_once=True)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, proposer)
+    _enable_chaining_pool(app, store, tmp_path / "data")
+    request = SimpleAnalysisRequest(
+        data_dir=tmp_path / "data",
+        repository="https://github.com/example/repo",
+        commit="a" * 40,
+    )
+
+    first = await app.analyze(request)
+    initial_progress = store.list_surface_exploration_progress(
+        first.identity, "scope-1"
+    )
+    resumed = await app.resume("analysis-1")
+    final_progress = store.list_surface_exploration_progress(first.identity, "scope-1")
+
+    assert first.status == "PAUSED", (first.status, first.error_code)
+    assert len(initial_progress) == 1
+    assert resumed.status == "COMPLETE", resumed.error_code
+    assert proposer.context_kinds == [
+        "simple_surface_context_v1",
+        "simple_surface_context_v2",
+        "simple_surface_context_v2",
+        "simple_surface_context_v1",
+        "simple_surface_context_v1",
+    ]
+    assert len(final_progress) == 4
+
+
+@pytest.mark.asyncio
+async def test_v2_surface_seed_is_verified_before_next_surface(tmp_path: Path) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+    events: list[str] = []
+
+    class StreamingSurface:
+        async def propose_batch(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Excluded candidates must not be proposed")
+
+        async def propose_surface(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            context: SurfaceContext,
+        ) -> SurfaceProposalResult:
+            events.append(f"surface:{context.surface_id}")
+            first = (
+                len([event for event in events if event.startswith("surface:")]) == 1
+            )
+            hypothesis_id = "hypothesis-streamed"
+            status = "HYPOTHESES" if first else "NO_HYPOTHESIS"
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            ref = artifacts.put_json(
+                {
+                    "kind": "simple_surface_hypothesis_result_v1",
+                    "analysis_id": identity.analysis_id,
+                    "surface_id": context.surface_id,
+                    "context_id": context.context_id,
+                    "part_index": context.part_index,
+                    "part_count": context.part_count,
+                    "context_hash": context.context_hash,
+                    "static_bundle_hash": static.static_bundle_ref.content_hash,
+                    "status": status,
+                    "reason": "Visible qualified path" if first else "No path",
+                    "reviewed_parts": [],
+                    "evidence_locations": [],
+                    "seed_ids": [hypothesis_id] if first else [],
+                }
+            )
+            seeds: tuple[HypothesisSeed, ...] = ()
+            if first:
+                proposal_ref = artifacts.put_prompt_proposal(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "analysis_id": identity.analysis_id,
+                        "hypothesis_id": hypothesis_id,
+                        "surface_id": context.surface_id,
+                        "context_id": context.context_id,
+                        "part_index": context.part_index,
+                        "part_count": context.part_count,
+                        "static_bundle_ref": static.static_bundle_ref.model_dump(
+                            mode="json"
+                        ),
+                        "surface_context_ref": context.context_ref.model_dump(
+                            mode="json"
+                        ),
+                        "surface_result_ref": ref.model_dump(mode="json"),
+                        "proposal": {"code_locations": []},
+                        "qualification": {"evidence_locations": []},
+                    }
+                )
+                seeds = (
+                    HypothesisSeed(
+                        hypothesis_id=hypothesis_id, proposal_ref=proposal_ref
+                    ),
+                )
+            return SurfaceProposalResult(
+                surface_id=context.surface_id,
+                context_id=context.context_id,
+                part_index=context.part_index,
+                part_count=context.part_count,
+                status=status,
+                reason="Visible qualified path" if first else "No path",
+                seeds=seeds,
+                result_ref=ref,
+                reviewed_parts=frozenset(),
+                evidence_locations=(),
+            )
+
+    class RecordingRunner(_SuccessRunner):
+        async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
+            events.append(f"child:{identity.hypothesis_id}")
+            return await super().resume_hypothesis(identity)
+
+    app._candidate_hypotheses = cast(HypothesisBootstrap, StreamingSurface())
+    app._runner_factory = lambda *_: RecordingRunner(store)
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert outcome.status != "COMPLETE"
+    surface_positions = [
+        index for index, event in enumerate(events) if event.startswith("surface:")
+    ]
+    assert len(surface_positions) >= 2
+    assert surface_positions[0] < events.index("child:hypothesis-streamed")
+    assert events.index("child:hypothesis-streamed") < surface_positions[1]
+
+
+@pytest.mark.asyncio
+async def test_v2_shared_candidate_context_batches_pro_and_con(tmp_path: Path) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=2,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    class TwoSeeds:
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: CandidateBatch,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            ids = requested_ids or batch.candidate_ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            response = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "HYPOTHESES"} for item in ids
+                    ],
+                }
+            )
+            outcomes: dict[str, CandidateProposalOutcome] = {}
+            for number, candidate_id in enumerate(ids):
+                hypothesis_id = f"hypothesis-batched-{number}"
+                proposal = artifacts.put_prompt_proposal(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "analysis_id": identity.analysis_id,
+                        "hypothesis_id": hypothesis_id,
+                        "candidate_id": candidate_id,
+                        "proposal": {"summary": "Shared source context"},
+                    }
+                )
+                outcomes[candidate_id] = CandidateProposalOutcome(
+                    status="HYPOTHESES",
+                    reason="shared context",
+                    seeds=(
+                        HypothesisSeed(
+                            hypothesis_id=hypothesis_id, proposal_ref=proposal
+                        ),
+                    ),
+                    result_ref=response,
+                )
+            return BatchProposalResult(
+                results=outcomes,
+                missing_ids=(),
+                attempt_refs=(response,),
+            )
+
+    class BatchHandler:
+        async def run_pro_batch(
+            self,
+            checkpoints: Mapping[str, StageCheckpoint],
+            shared_ref: StoredDataRef,
+            *,
+            existing: Mapping[str, StoredDataRef] | None = None,
+        ) -> dict[str, StoredDataRef]:
+            del shared_ref, existing
+            ids = tuple(checkpoints)
+            calls.append(("pro", ids))
+            return {
+                item: SimpleArtifactRepository(
+                    tmp_path / "data", checkpoints[item].identity
+                ).put_json({"kind": "simple_pro_evidence", "hypothesis_id": item})
+                for item in ids
+            }
+
+        async def run_con_batch(
+            self,
+            checkpoints: Mapping[str, StageCheckpoint],
+            shared_ref: StoredDataRef,
+            *,
+            existing: Mapping[str, StoredDataRef] | None = None,
+        ) -> dict[str, StoredDataRef]:
+            del shared_ref, existing
+            ids = tuple(checkpoints)
+            calls.append(("con", ids))
+            return {
+                item: SimpleArtifactRepository(
+                    tmp_path / "data", checkpoints[item].identity
+                ).put_json({"kind": "simple_con_evidence", "hypothesis_id": item})
+                for item in ids
+            }
+
+    handler = BatchHandler()
+
+    class BatchRunner(_SuccessRunner):
+        def __init__(self, backing: SimpleCheckpointStore) -> None:
+            super().__init__(backing)
+            self.handlers = {
+                SimpleStage.PRO_CON_DONE: cast(SimpleStageHandler, handler)
+            }
+
+    app._candidate_hypotheses = cast(HypothesisBootstrap, TwoSeeds())
+    app._runner_factory = lambda *_: BatchRunner(store)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"  # This test does not supply a surface proposer.
+    assert [role for role, _ids in calls] == ["pro", "con"]
+    assert calls[0][1] == calls[1][1]
+    assert len(calls[0][1]) == 2
+    for hypothesis_id in calls[0][1]:
+        child = first.identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        checkpoint = store.require(child, SimpleStage.PRO_CON_DONE)
+        assert store.get_pro_con_batch_evidence(child, "pro", checkpoint.input_hash)
+        assert store.get_pro_con_batch_evidence(child, "con", checkpoint.input_hash)
+
+
+@pytest.mark.asyncio
+async def test_v2_partial_batch_retries_only_uncommitted_candidate(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=2,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class PartialV2Hypotheses:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: CandidateBatch,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            ids = requested_ids or batch.candidate_ids
+            self.calls.append(ids)
+            accepted = ids[:1] if len(self.calls) == 1 else ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            result_ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "NO_HYPOTHESIS"}
+                        for item in accepted
+                    ],
+                }
+            )
+            missing = tuple(item for item in ids if item not in accepted)
+            return BatchProposalResult(
+                results={
+                    candidate_id: CandidateProposalOutcome(
+                        status="NO_HYPOTHESIS",
+                        reason="No demonstrated input path",
+                        seeds=(),
+                        result_ref=result_ref,
+                    )
+                    for candidate_id in accepted
+                },
+                missing_ids=missing,
+                attempt_refs=(result_ref,),
+                failure=(
+                    StageFailure(
+                        code="HYPOTHESIS_BATCH_OUTPUT_INVALID",
+                        retryable=False,
+                        safe_message="missing candidate",
+                    )
+                    if missing
+                    else None
+                ),
+            )
+
+    hypotheses = PartialV2Hypotheses()
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "BLOCKED"
+    assert len(store.list_candidate_batch_outcomes(first.identity, "scope-1")) == 1
+    second = await app.resume("analysis-1")
+    assert second.status != "COMPLETE"
+    assert len(store.list_candidate_batch_outcomes(first.identity, "scope-1")) == 2
+    assert len(hypotheses.calls) == 2
+    assert len(hypotheses.calls[0]) == 2
+    assert len(hypotheses.calls[1]) == 1
+    assert hypotheses.calls[1][0] != hypotheses.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_v2_batch_resume_preserves_pending_seed_without_reproposal(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class OneSeed:
+        calls = 0
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: CandidateBatch,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            self.calls += 1
+            ids = requested_ids or batch.candidate_ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            proposal_ref = artifacts.put_prompt_proposal(
+                {
+                    "kind": "simple_hypothesis_proposal",
+                    "analysis_id": identity.analysis_id,
+                    "hypothesis_id": "hypothesis-one",
+                    "candidate_id": ids[0],
+                    "proposal": {"summary": "Qualified candidate"},
+                }
+            )
+            response_ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": ids[0], "status": "HYPOTHESES"}
+                    ],
+                }
+            )
+            return BatchProposalResult(
+                results={
+                    ids[0]: CandidateProposalOutcome(
+                        status="HYPOTHESES",
+                        reason="Visible reachable sensitive operation",
+                        seeds=(
+                            HypothesisSeed(
+                                hypothesis_id="hypothesis-one",
+                                proposal_ref=proposal_ref,
+                            ),
+                        ),
+                        result_ref=response_ref,
+                    )
+                },
+                missing_ids=(),
+                attempt_refs=(response_ref,),
+            )
+
+    hypotheses = OneSeed()
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
+    app._runner_factory = lambda *_: _SuccessRunner(store)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    child = first.identity.model_copy(update={"hypothesis_id": "hypothesis-one"})
+    pending = store.require(child, SimpleStage.PRO_CON_DONE)
+    assert pending.status is StageStatus.PENDING
+    assert (
+        pending.input_refs[1]
+        != store.require_analysis_run("analysis-1").static_bundle_ref
+    )
+    second = await app.resume("analysis-1")
+    assert first.status == second.status == "BLOCKED"
+    assert second.error_code == "HYPOTHESIS_SURFACE_UNAVAILABLE"
+    assert hypotheses.calls == 1
+    assert store.require(child, SimpleStage.PRO_CON_DONE) == pending
+    assert store.list_candidate_hypothesis_ids(
+        first.identity,
+        "scope-1",
+        next(iter(store.list_candidate_batch_outcomes(first.identity, "scope-1"))),
+    ) == ("hypothesis-one",)
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_rejects_changed_candidate_source_hash(tmp_path: Path) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=2,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class ZeroSeeds:
+        calls = 0
+
+        async def propose_batch(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            batch: CandidateBatch,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            self.calls += 1
+            ids = requested_ids or batch.candidate_ids
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            ref = artifacts.put_json(
+                {
+                    "kind": "simple_candidate_batch_response_v1",
+                    "batch_id": batch.batch_id,
+                    "requested_ids": ids,
+                    "candidate_results": [
+                        {"candidate_id": item, "status": "NO_HYPOTHESIS"}
+                        for item in ids
+                    ],
+                }
+            )
+            return BatchProposalResult(
+                results={
+                    item: CandidateProposalOutcome(
+                        status="NO_HYPOTHESIS",
+                        reason="No source path",
+                        seeds=(),
+                        result_ref=ref,
+                    )
+                    for item in ids
+                },
+                missing_ids=(),
+                attempt_refs=(ref,),
+            )
+
+    hypotheses = ZeroSeeds()
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_candidate_batch_outcomes SET source_sha256 = ? "
+            "WHERE candidate_id = (SELECT MIN(candidate_id) "
+            "FROM simple_candidate_batch_outcomes)",
+            ("0" * 64,),
+        )
+    second = await app.resume("analysis-1")
+    assert first.status == "BLOCKED"
+    assert first.error_code == "HYPOTHESIS_SURFACE_UNAVAILABLE"
+    assert second.status == "BLOCKED"
+    assert second.error_code == "CANDIDATE_BATCH_SCOPE_CHANGED"
+    assert hypotheses.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_budget_pause_and_unchanged_resume_submit_no_llm_call(
     tmp_path: Path,
 ) -> None:
@@ -923,6 +2662,120 @@ async def test_one_candidate_with_two_hypotheses_registers_as_one_batch(
         )
         == 2
     )
+
+
+@pytest.mark.asyncio
+async def test_completed_candidate_resume_rejects_missing_original_proposal(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(tmp_path, decision="INCLUDE")
+    data_dir = tmp_path / "data"
+
+    class RedactedHypotheses(_ManyHypotheses):
+        async def propose(
+            self, identity: CheckpointIdentity, static: StaticBootstrapResult
+        ) -> tuple[HypothesisSeed, ...]:
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(data_dir, identity)
+            bundle = json.loads(artifacts.read(static.static_bundle_ref))
+            hypothesis_id = "hypothesis-" + bundle["candidate_focus"]["candidate_id"]
+            ref = artifacts.put_prompt_proposal(
+                {
+                    "kind": "simple_hypothesis_proposal",
+                    "analysis_id": identity.analysis_id,
+                    "hypothesis_id": hypothesis_id,
+                    "proposal": {
+                        "title": "Credential flow",
+                        "source": "access_token = request.args.get('token')",
+                        "code_locations": ["app.py:2"],
+                    },
+                }
+            )
+            return (HypothesisSeed(hypothesis_id=hypothesis_id, proposal_ref=ref),)
+
+    app._candidate_hypotheses = RedactedHypotheses(data_dir)
+    app._runner_factory = lambda *_: _SuccessRunner(store)
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=data_dir,
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "COMPLETE"
+    identity = first.identity
+    hypothesis_id = store.list_hypotheses(identity, limit=1)[0]
+    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+    checkpoint = store.require(child, SimpleStage.PRO_CON_DONE)
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    safe = json.loads(artifacts.read(checkpoint.input_refs[0]))
+    original_ref = StoredDataRef.model_validate(safe["original_proposal_ref"])
+    artifacts.artifacts.path_for(original_ref.content_hash).unlink()
+
+    resumed = await app.resume(identity.analysis_id)
+
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "HYPOTHESIS_EVIDENCE_INVALID"
+
+
+def test_completed_free_page_rejects_foreign_analysis_proposal(tmp_path: Path) -> None:
+    app, _store, _client, _hypotheses = _setup(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    static = app._static
+    assert isinstance(static, _Static)
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    page_input_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_source_page",
+            "analysis_id": identity.analysis_id,
+            "cursor": None,
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": "other-analysis",
+            "hypothesis_id": "hypothesis-1",
+            "page_input_ref": page_input_ref.model_dump(mode="json"),
+            "proposal": {"title": "Different analysis"},
+        }
+    )
+    page_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_free_exploration_page",
+            "analysis_id": identity.analysis_id,
+            "static_bundle_hash": static.result.static_bundle_ref.content_hash,
+            "cursor": None,
+            "next_cursor": None,
+            "seeds": [
+                HypothesisSeed(
+                    hypothesis_id="hypothesis-1", proposal_ref=proposal_ref
+                ).model_dump(mode="json")
+            ],
+        }
+    )
+    done_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_free_exploration_complete",
+            "analysis_id": identity.analysis_id,
+            "static_bundle_hash": static.result.static_bundle_ref.content_hash,
+            "page_count": 1,
+        }
+    )
+    with pytest.raises(ValueError, match="HYPOTHESIS_PAGE_CHECKPOINT_INVALID"):
+        app._candidate_free_done_valid(
+            identity,
+            static.result,
+            {
+                "__candidate_free_page_00000000__": page_ref,
+                "__candidate_free_done__": done_ref,
+            },
+        )
 
 
 @pytest.mark.asyncio

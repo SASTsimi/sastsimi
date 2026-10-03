@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal, Protocol
 
+from sastsimi.simple_runtime.artifacts import verified_terminal_projection
+from sastsimi.simple_runtime.attack_surfaces import SurfaceIndex
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     CandidateTerminal,
@@ -13,14 +16,28 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageStatus,
     terminal_gate_outcome,
+    terminal_initial_outcome,
     terminal_poc_outcome,
+)
+from sastsimi.simple_runtime.poc_currentness import (
+    completed_before_poc_count,
+    stale_poc_hypothesis_ids,
+    stale_successful_poc,
 )
 
 from .models import ProgressSnapshot
 
 _ANALYSIS_STAGES = (SimpleStage.STATIC_DONE, SimpleStage.HYPOTHESIS_DONE)
 _CANDIDATE_DECISIONS = ("PENDING", "INCLUDE", "EXCLUDE", "UNDECIDED", "ERROR")
-_DEEP_STATUSES = ("PENDING", "RUNNING", "COMPLETE", "NO_HYPOTHESIS", "ERROR")
+_DEEP_STATUSES = (
+    "PENDING",
+    "RUNNING",
+    "COMPLETE",
+    "NO_HYPOTHESIS",
+    "INCONCLUSIVE",
+    "ERROR",
+)
+_SURFACE_STATUSES = ("COVERED", "UNCOVERED", "INSUFFICIENT")
 _BUDGET_CODES = frozenset(
     {
         "LLM_TOKEN_BUDGET_EXHAUSTED",
@@ -30,6 +47,58 @@ _BUDGET_CODES = frozenset(
         "LLM_COST_USAGE_UNAVAILABLE",
     }
 )
+_CHILD_ERROR_PREFIX = "CANDIDATE_CHILD_ERROR:"
+_BOUND_CHILD_ERROR_PREFIX = "CANDIDATE_CHILD_ERROR_BOUND:"
+
+
+def _visible_child_error(
+    checkpoints: list[StageCheckpoint], selected: StageCheckpoint
+) -> StageCheckpoint:
+    if (
+        selected.stage is not SimpleStage.HYPOTHESIS_DONE
+        or selected.identity.hypothesis_id is not None
+        or selected.error_code is None
+    ):
+        return selected
+    child_id = ""
+    attempt_id = ""
+    if selected.error_code.startswith("CANDIDATE_CHILD_CODEX_STATE_PENDING"):
+        parts = selected.error_code.split(":", 2)
+        if len(parts) == 3:
+            child_id, attempt_id = parts[1:]
+        codes = {"CODEX_CALL_IN_FLIGHT_UNRESOLVED", "CODEX_PROCESS_CLEANUP_UNCONFIRMED"}
+    elif selected.error_code.startswith(_BOUND_CHILD_ERROR_PREFIX):
+        payload = selected.error_code.removeprefix(_BOUND_CHILD_ERROR_PREFIX)
+        parts = payload.rsplit(":", 2)
+        codes = {parts[0] if len(parts) == 3 else payload}
+        if len(parts) == 3:
+            child_id, attempt_id = parts[1:]
+    elif selected.error_code.startswith(_CHILD_ERROR_PREFIX):
+        codes = {selected.error_code.removeprefix(_CHILD_ERROR_PREFIX)}
+    else:
+        return selected
+    children = [
+        item
+        for item in checkpoints
+        if item.identity.hypothesis_id is not None
+        and child_id != ""
+        and attempt_id != ""
+        and item.identity.hypothesis_id == child_id
+        and item.attempt_id == attempt_id
+        and item.identity.analysis_id == selected.identity.analysis_id
+        and item.identity.workspace_id == selected.identity.workspace_id
+        and item.identity.commit_id == selected.identity.commit_id
+        and item.error_code in codes
+    ]
+    if children:
+        return max(children, key=lambda item: item.updated_at)
+    if selected.error_code.startswith("CANDIDATE_CHILD_CODEX_STATE_PENDING"):
+        return selected.model_copy(
+            update={"error_code": "CODEX_PROCESS_CLEANUP_UNCONFIRMED"}
+        )
+    if selected.error_code.startswith((_CHILD_ERROR_PREFIX, _BOUND_CHILD_ERROR_PREFIX)):
+        return selected.model_copy(update={"error_code": next(iter(codes))})
+    return selected
 
 
 def _normalized_counts(
@@ -45,13 +114,66 @@ def _normalized_counts(
     return {status: counts.get(status, 0) for status in statuses}
 
 
+def verified_surface_coverage_counts(
+    payload: object, index: SurfaceIndex, terminal: CandidateTerminal
+) -> dict[str, int] | None:
+    """Count only a scope-bound coverage artifact that agrees with terminal proof."""
+
+    if not isinstance(payload, dict):
+        return None
+    if (
+        payload.get("kind") != "simple_attack_surface_coverage_v1"
+        or payload.get("scope_fingerprint") != index.scope_fingerprint
+        or payload.get("static_bundle_hash") != index.static_bundle_hash
+        or payload.get("ast_manifest_hash") != index.ast_manifest_hash
+        or payload.get("candidate_inventory_hash") != index.candidate_inventory_hash
+        or payload.get("candidate_count") != index.candidate_count
+        or payload.get("static_gaps") != index.to_json()["static_gaps"]
+    ):
+        return None
+    rows = payload.get("surfaces")
+    if not isinstance(rows, list):
+        return None
+    indexed_ids = {surface.surface_id for surface in index.surfaces}
+    seen: set[str] = set()
+    counts = {status: 0 for status in _SURFACE_STATUSES}
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        surface_id = row.get("surface_id")
+        status = row.get("coverage_status")
+        if (
+            not isinstance(surface_id, str)
+            or surface_id not in indexed_ids
+            or surface_id in seen
+            or not isinstance(status, str)
+            or status not in counts
+        ):
+            return None
+        seen.add(surface_id)
+        counts[status] += 1
+    complete = not index.static_gaps and counts["COVERED"] == len(indexed_ids)
+    if (
+        seen != indexed_ids
+        or payload.get("complete") is not complete
+        or counts != terminal.surface_counts
+        or terminal.status == "COMPLETE"
+        and not complete
+    ):
+        return None
+    return counts
+
+
 class CheckpointQuery(Protocol):
     def list_checkpoints(self, analysis_id: str) -> tuple[StageCheckpoint, ...]: ...
 
 
 class ProgressProjector:
-    def __init__(self, store: CheckpointQuery) -> None:
+    def __init__(
+        self, store: CheckpointQuery, *, artifact_data_dir: str | Path | None = None
+    ) -> None:
         self._store = store
+        self._artifact_data_dir = artifact_data_dir
 
     def snapshot(
         self,
@@ -65,8 +187,13 @@ class ProgressProjector:
         candidate_terminal: CandidateTerminal | None = None,
         candidate_bundle_hash: str | None = None,
         candidate_scope_fingerprint: str | None = None,
+        surface_counts: Mapping[str, int] | None = None,
+        surface_index_hash: str | None = None,
+        analysis_active: bool = False,
     ) -> ProgressSnapshot:
-        checkpoints = self._store.list_checkpoints(analysis_id)
+        checkpoints = verified_terminal_projection(
+            self._store.list_checkpoints(analysis_id), self._artifact_data_dir
+        )
         if not checkpoints:
             raise LookupError("ANALYSIS_PROGRESS_NOT_FOUND")
         by_hypothesis: dict[str, list[StageCheckpoint]] = defaultdict(list)
@@ -77,6 +204,8 @@ class ProgressProjector:
                 analysis_level.append(checkpoint)
             else:
                 by_hypothesis[hypothesis_id].append(checkpoint)
+        stale_hypothesis_ids = stale_poc_hypothesis_ids(checkpoints)
+        stale_pocs = [item for item in checkpoints if stale_successful_poc(item)]
 
         completed = sum(item.status is StageStatus.SUCCEEDED for item in analysis_level)
         known = len(_ANALYSIS_STAGES) if analysis_level else 0
@@ -86,6 +215,9 @@ class ProgressProjector:
         rejected_hypotheses = 0
         for values in by_hypothesis.values():
             known += len(HYPOTHESIS_STAGES)
+            if values[0].identity.hypothesis_id in stale_hypothesis_ids:
+                completed += completed_before_poc_count(values)
+                continue
             completed += sum(item.status is StageStatus.SUCCEEDED for item in values)
             final = next(
                 (
@@ -127,7 +259,27 @@ class ProgressProjector:
                 None,
             )
             gate_outcome = terminal_gate_outcome(gate)
-            if terminal_poc_outcome(execution) is not None:
+            initial = next(
+                (
+                    item
+                    for item in values
+                    if item.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+                ),
+                None,
+            )
+            if terminal_initial_outcome(initial) is not None:
+                initial_index = HYPOTHESIS_STAGES.index(
+                    SimpleStage.VERIFICATION_INITIAL_DONE
+                )
+                present_after = sum(
+                    item.stage in HYPOTHESIS_STAGES[initial_index + 1 :]
+                    and item.status is StageStatus.SUCCEEDED
+                    for item in values
+                )
+                skipped += len(HYPOTHESIS_STAGES[initial_index + 1 :]) - present_after
+                terminal_hypotheses += 1
+                inconclusive_hypotheses += 1
+            elif terminal_poc_outcome(execution) is not None:
                 execution_index = HYPOTHESIS_STAGES.index(
                     SimpleStage.POC_EXECUTION_DONE
                 )
@@ -187,15 +339,22 @@ class ProgressProjector:
         )
         candidate_total = sum(decisions.values())
         deep_eligible = decisions.get("INCLUDE", 0) + decisions.get("UNDECIDED", 0)
-        deep_completed = deep.get("COMPLETE", 0) + deep.get("NO_HYPOTHESIS", 0)
+        deep_completed = (
+            deep.get("COMPLETE", 0)
+            + deep.get("NO_HYPOTHESIS", 0)
+            + deep.get("INCONCLUSIVE", 0)
+        )
         terminal_valid = bool(
             candidate_mode
             and candidate_counts is not None
             and candidate_terminal is not None
             and candidate_bundle_hash is not None
             and candidate_scope_fingerprint is not None
-            and candidate_terminal.status
-            == ("PARTIAL" if static_disposition == "PARTIAL" else "COMPLETE")
+            and (
+                candidate_pipeline_version >= 2
+                or candidate_terminal.status
+                == ("PARTIAL" if static_disposition == "PARTIAL" else "COMPLETE")
+            )
             and candidate_terminal.bundle_hash == candidate_bundle_hash
             and candidate_terminal.scope_fingerprint == candidate_scope_fingerprint
             and _normalized_counts(
@@ -206,6 +365,77 @@ class ProgressProjector:
             == deep
             and candidate_terminal.hypothesis_count == registered_hypotheses
         )
+        surface_phase: dict[str, int] | None = None
+        if candidate_pipeline_version >= 2 and surface_counts is not None:
+            if any(
+                key not in {*_SURFACE_STATUSES, "CONTEXT_RECORDS", "TOTAL"}
+                or type(value) is not int
+                or value < 0
+                for key, value in surface_counts.items()
+            ):
+                raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
+            total = surface_counts.get("TOTAL", 0)
+            recorded_contexts = surface_counts.get("CONTEXT_RECORDS", 0)
+            surface_phase = {
+                "recorded_contexts": recorded_contexts,
+                "completed": 0,
+                "total": total,
+            }
+            known += total
+        if candidate_pipeline_version >= 2:
+            producer_output_hashes = {
+                ref.content_hash
+                for checkpoint in analysis_level
+                if checkpoint.stage is SimpleStage.HYPOTHESIS_DONE
+                and checkpoint.status is StageStatus.SUCCEEDED
+                for ref in checkpoint.output_refs
+            }
+            terminal_surface_counts = (
+                getattr(candidate_terminal, "surface_counts", {})
+                if candidate_terminal is not None
+                else {}
+            )
+            terminal_surface_total = sum(
+                terminal_surface_counts.get(status, 0) for status in _SURFACE_STATUSES
+            )
+            terminal_valid = bool(
+                terminal_valid
+                and candidate_terminal is not None
+                and surface_phase is not None
+                and surface_counts is not None
+                and surface_index_hash
+                and getattr(candidate_terminal, "surface_index_hash", None)
+                == surface_index_hash
+                and getattr(candidate_terminal, "surface_coverage_hash", None)
+                in producer_output_hashes
+                and surface_index_hash in producer_output_hashes
+                and getattr(candidate_terminal, "producer_finished", False)
+                and getattr(candidate_terminal, "pending_child_count", -1) == 0
+                and terminal_surface_total == surface_phase["total"]
+                and all(
+                    surface_counts.get(status) == terminal_surface_counts.get(status, 0)
+                    for status in _SURFACE_STATUSES
+                )
+                and (
+                    candidate_terminal.status != "COMPLETE"
+                    or (
+                        static_disposition == "FULL"
+                        and terminal_surface_counts.get("UNCOVERED", 0) == 0
+                        and terminal_surface_counts.get("INSUFFICIENT", 0) == 0
+                    )
+                )
+            )
+            if terminal_valid and surface_phase is not None:
+                covered = terminal_surface_counts.get("COVERED", 0)
+                completed += covered
+                surface_phase.update(
+                    {
+                        "completed": covered,
+                        "covered": covered,
+                        "uncovered": terminal_surface_counts.get("UNCOVERED", 0),
+                        "insufficient": terminal_surface_counts.get("INSUFFICIENT", 0),
+                    }
+                )
         if candidate_mode and candidate_counts is not None:
             known += candidate_total + deep_eligible
             completed += (
@@ -219,6 +449,7 @@ class ProgressProjector:
             and item.status is StageStatus.SUCCEEDED
             and item.verdict == "TRUE"
             and bool(item.output_refs)
+            and item.identity.hypothesis_id not in stale_hypothesis_ids
             for item in checkpoints
         )
         status, current = self._status(
@@ -230,14 +461,30 @@ class ProgressProjector:
             candidate_counts=decisions if candidate_counts is not None else None,
             candidate_deep_counts=deep,
             candidate_terminal_valid=terminal_valid,
+            candidate_terminal_status=(
+                candidate_terminal.status
+                if terminal_valid and candidate_terminal
+                else None
+            ),
         )
+        revalidation_pending = bool(
+            stale_pocs
+            and status in {"COMPLETE", "PARTIAL", "RUNNING"}
+            and not analysis_active
+            and not any(item.status is StageStatus.RUNNING for item in checkpoints)
+        )
+        if revalidation_pending:
+            status = "PAUSED"
+            current = max(stale_pocs, key=lambda item: item.updated_at)
         credited = completed + skipped
         percent = (
             100
             if status == "COMPLETE"
             else min(99, int(credited * 100 / max(known, 1)))
         )
-        error_code = current.error_code
+        error_code = (
+            "POC_REVALIDATION_REQUIRED" if revalidation_pending else current.error_code
+        )
         if status == "BLOCKED" and error_code is None:
             if decisions.get("ERROR", 0):
                 error_code = "CANDIDATE_DISCOVERY_ERROR"
@@ -250,6 +497,58 @@ class ProgressProjector:
             skipped_units=skipped,
             known_units=known,
             percent=percent,
+            percentage_kind=(
+                "known_checkpoint_fraction" if candidate_pipeline_version >= 2 else None
+            ),
+            phase_counts=(
+                {
+                    "static": {
+                        "completed": sum(
+                            item.stage is SimpleStage.STATIC_DONE
+                            and item.status is StageStatus.SUCCEEDED
+                            for item in analysis_level
+                        ),
+                        "known": 1,
+                    },
+                    "triage": {
+                        "completed": sum(
+                            decisions[status]
+                            for status in ("INCLUDE", "EXCLUDE", "UNDECIDED")
+                        ),
+                        "known": candidate_total,
+                    },
+                    "candidate_deep": {
+                        "completed": min(deep_completed, deep_eligible),
+                        "known": deep_eligible,
+                    },
+                    "verification": {
+                        "completed": terminal_hypotheses,
+                        "known": registered_hypotheses,
+                    },
+                    "poc": {
+                        "attempted": sum(
+                            any(
+                                item.stage is SimpleStage.POC_EXECUTION_DONE
+                                and item.status is not StageStatus.PENDING
+                                for item in values
+                            )
+                            for values in by_hypothesis.values()
+                        ),
+                        "completed": sum(
+                            any(
+                                item.stage is SimpleStage.POC_EXECUTION_DONE
+                                and item.status is StageStatus.SUCCEEDED
+                                and not stale_successful_poc(item)
+                                for item in values
+                            )
+                            for values in by_hypothesis.values()
+                        ),
+                    },
+                    **({"surface": surface_phase} if surface_phase is not None else {}),
+                }
+                if candidate_pipeline_version >= 2 and candidate_counts is not None
+                else {}
+            ),
             current_stage=current.stage.value,
             current_hypothesis_id=current.identity.hypothesis_id,
             error_code=error_code,
@@ -268,7 +567,9 @@ class ProgressProjector:
             hypothesis_count=registered_hypotheses,
             finding_count=finding_count,
             resume_action=(
-                "CHECK_USAGE_TELEMETRY"
+                "REVALIDATE_POC"
+                if revalidation_pending
+                else "CHECK_USAGE_TELEMETRY"
                 if status == "PAUSED"
                 and error_code
                 in {
@@ -295,6 +596,7 @@ class ProgressProjector:
         candidate_counts: Mapping[str, int] | None = None,
         candidate_deep_counts: Mapping[str, int] | None = None,
         candidate_terminal_valid: bool = False,
+        candidate_terminal_status: Literal["COMPLETE", "PARTIAL"] | None = None,
     ) -> tuple[
         Literal["RUNNING", "PAUSED", "BLOCKED", "FAILED", "COMPLETE", "PARTIAL"],
         StageCheckpoint,
@@ -313,7 +615,9 @@ class ProgressProjector:
                 and item.error_code not in _BUDGET_CODES
             ]
             if failed:
-                return "FAILED", max(failed, key=lambda item: item.updated_at)
+                return "FAILED", _visible_child_error(
+                    failed, max(failed, key=lambda item: item.updated_at)
+                )
             blocked = [
                 item
                 for item in checkpoints
@@ -321,7 +625,9 @@ class ProgressProjector:
                 and item.error_code not in _BUDGET_CODES
             ]
             if blocked:
-                return "BLOCKED", max(blocked, key=lambda item: item.updated_at)
+                return "BLOCKED", _visible_child_error(
+                    blocked, max(blocked, key=lambda item: item.updated_at)
+                )
             if (candidate_counts or {}).get("ERROR", 0) or (
                 candidate_deep_counts or {}
             ).get("ERROR", 0):
@@ -364,7 +670,11 @@ class ProgressProjector:
             deep_eligible = candidate_counts.get("INCLUDE", 0) + candidate_counts.get(
                 "UNDECIDED", 0
             )
-            deep_terminal = deep.get("COMPLETE", 0) + deep.get("NO_HYPOTHESIS", 0)
+            deep_terminal = (
+                deep.get("COMPLETE", 0)
+                + deep.get("NO_HYPOTHESIS", 0)
+                + deep.get("INCONCLUSIVE", 0)
+            )
             if (
                 candidate_counts.get("PENDING", 0)
                 or deep.get("PENDING", 0)
@@ -382,7 +692,11 @@ class ProgressProjector:
             ):
                 return "RUNNING", current
             return (
-                "PARTIAL" if static_disposition == "PARTIAL" else "COMPLETE"
+                candidate_terminal_status
+                if candidate_pipeline_version >= 2 and candidate_terminal_status
+                else "PARTIAL"
+                if static_disposition == "PARTIAL"
+                else "COMPLETE"
             ), current
         if hypothesis_count > 0 and terminal_hypotheses == hypothesis_count:
             return (
@@ -391,4 +705,4 @@ class ProgressProjector:
         return "RUNNING", current
 
 
-__all__ = ["ProgressProjector"]
+__all__ = ["ProgressProjector", "verified_surface_coverage_counts"]

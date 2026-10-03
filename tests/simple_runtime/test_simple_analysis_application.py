@@ -10,9 +10,21 @@ from typing import Any, Literal
 
 import pytest
 
-from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
+from sastsimi.composition.simple_runtime_composition import (
+    PublicSimpleRuntimeApplication,
+)
+from sastsimi.config.user_config import (
+    SimpleExecutionProfile,
+    SimpleToolBinding,
+    UserConfig,
+    UserConfigStore,
+)
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.dashboard.query import DashboardQuery
+from sastsimi.interfaces.cli.main import main
+from sastsimi.observability.agent_activity import ActivityKind
+from sastsimi.progress.projector import ProgressProjector
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
     ChainingEvidenceInvalid,
@@ -39,6 +51,7 @@ from sastsimi.simple_runtime.models import (
     StageResult,
     StageStatus,
     input_reference_hash,
+    terminal_poc_outcome,
 )
 from sastsimi.simple_runtime.recovery import (
     RecoveryAction,
@@ -48,6 +61,7 @@ from sastsimi.simple_runtime.recovery import (
 )
 from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner, StageBlocked
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.storage.agent_activity import AgentActivityStore
 
 
 class _RecoveryFactory:
@@ -78,6 +92,75 @@ class _RecoveryFactory:
             }
         )
         return RecoveryResolution(decision=decision, decision_ref=ref)
+
+
+@pytest.mark.asyncio
+async def test_resume_blocks_corrupt_initial_terminal_evidence(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    store = SimpleCheckpointStore(
+        data_dir / "db" / "sastsimi.sqlite3", artifact_data_dir=data_dir
+    )
+    analysis_id = "analysis-corrupt-initial"
+    display_id = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
+        analysis_id
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=analysis_id,
+            display_analysis_id=display_id,
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            repository="https://example.invalid/repo.git",
+            hypothesis_ids=("hypothesis-1",),
+        )
+    )
+    child = CheckpointIdentity(
+        analysis_id=analysis_id,
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(data_dir, child)
+    ref = artifacts.put_json(
+        {
+            "kind": "simple_initial_verification",
+            "attempt_id": "initial-attempt",
+            "result": {
+                "initial_assessment": "HOLD",
+                "unmet_external_prerequisites": ["attacker control unproven"],
+            },
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=child,
+            stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(ref,),
+            attempt_id="initial-attempt",
+            verdict="HOLD",
+            external_prerequisites_ref=ref,
+        )
+    )
+    artifacts.artifacts.path_for(ref.content_hash).unlink()
+    application = SimpleAnalysisApplication(
+        data_dir=data_dir,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+
+    outcome = await application.resume(analysis_id)
+
+    assert outcome.status == "BLOCKED"
+    assert outcome.error_code == "INITIAL_VERIFICATION_EVIDENCE_INVALID"
+    checkpoint = store.require(child, SimpleStage.VERIFICATION_INITIAL_DONE)
+    assert checkpoint.status is StageStatus.BLOCKED
+    assert checkpoint.retryable is False
 
 
 def _ref(name: str) -> StoredDataRef:
@@ -2994,6 +3077,944 @@ def test_resume_promotes_only_verified_legacy_poc_inconclusive_exhaustion(
     assert checkpoint.verdict == ("HOLD" if expected_promotions else None)
     assert checkpoint.validated_poc_ref is None
     assert checkpoint.output_refs == (execution_ref, interpretation_ref)
+
+
+def _seed_stopped_inconclusive_poc(
+    tmp_path: Path,
+    *,
+    invalidity: str | None = None,
+) -> tuple[SimpleAnalysisApplication, SimpleCheckpointStore, CheckpointIdentity]:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-stopped-poc",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-stopped-poc",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "exit_code": 1 if invalidity == "nonzero_exit" else 0,
+            "timed_out": invalidity == "timeout",
+            "attempt_id": "attempt-2",
+        }
+    )
+    interpretation_ref = artifacts.put_json(
+        {
+            "kind": "simple_dynamic_interpretation",
+            "execution_ref": (
+                artifacts.put_json({"kind": "unrelated"}).model_dump(mode="json")
+                if invalidity == "wrong_interpretation_ref"
+                else execution_ref.model_dump(mode="json")
+            ),
+            "result": {
+                "outcome": "SUPPORTED" if invalidity == "supported" else "INCONCLUSIVE"
+            },
+        }
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+        status=StageStatus.BLOCKED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(execution_ref, interpretation_ref),
+        attempt_number=2,
+        attempt_id="attempt-2",
+        error_code=(
+            "POC_EXECUTION_FAILED"
+            if invalidity == "execution_failure"
+            else "POC_INCONCLUSIVE"
+        ),
+        retryable=True,
+    )
+    store.save_checkpoint(checkpoint)
+    failure = StageFailure(
+        code="POC_INCONCLUSIVE",
+        retryable=True,
+        safe_message="Completed execution lacks proof",
+        evidence_refs=(
+            execution_ref,
+            artifacts.put_json({"kind": "unrelated"})
+            if invalidity == "wrong_decision_evidence"
+            else interpretation_ref,
+        ),
+    )
+    action = (
+        RecoveryAction.REGENERATE_INPUT
+        if invalidity == "regenerate_action"
+        else RecoveryAction.STOP
+    )
+    decision = RecoveryDecision(
+        category=(
+            RecoveryCategory.GENERATED_INPUT
+            if action is RecoveryAction.REGENERATE_INPUT
+            or invalidity == "nonterminal_stop_category"
+            else RecoveryCategory.TERMINAL
+        ),
+        action=action,
+        diagnosis=(
+            "recovery provider did not return a decision"
+            if invalidity == "legacy_provider_fallback"
+            else "recovery output failed policy validation"
+            if invalidity == "legacy_policy_fallback"
+            else "The observation does not establish the hypothesis"
+        ),
+        guidance=(
+            "preserve the failure for manual review"
+            if invalidity in {"legacy_provider_fallback", "legacy_policy_fallback"}
+            else "Stop without a finding"
+        ),
+        environment_patch="",
+    )
+    decision_data = {
+        "kind": "simple_recovery_decision",
+        "identity": (
+            identity.model_copy(update={"hypothesis_id": "another-hypothesis"})
+            if invalidity == "wrong_decision_identity"
+            else identity
+        ).model_dump(mode="json"),
+        "stage": SimpleStage.POC_EXECUTION_DONE.value,
+        "attempt": 1 if invalidity == "wrong_attempt" else 2,
+        "attempt_id": (
+            "another-attempt" if invalidity == "wrong_attempt_id" else "attempt-2"
+        ),
+        "original_error": failure.model_dump(mode="json"),
+        "decision": decision.model_dump(mode="json"),
+    }
+    if invalidity not in {
+        "legacy_agent_origin",
+        "legacy_provider_fallback",
+        "legacy_policy_fallback",
+    }:
+        decision_data["decision_origin"] = (
+            "FALLBACK" if invalidity == "fallback_stop_origin" else "AGENT"
+        )
+    if invalidity == "missing_decision_fields":
+        decision_data["decision"] = {"action": "STOP", "environment_patch": ""}
+    decision_ref = artifacts.put_json(decision_data)
+    if invalidity != "missing_decision_event":
+        resolution = RecoveryResolution(
+            decision=decision,
+            decision_ref=(
+                artifacts.put_json({"kind": "unrelated"})
+                if invalidity == "wrong_event_ref"
+                else decision_ref
+            ),
+        )
+        if action is RecoveryAction.STOP:
+            store.record_recovery_stop(checkpoint, resolution)
+        else:
+            store.record_recovery_decision(checkpoint, resolution)
+    return application, store, identity
+
+
+def test_same_id_resume_promotes_verified_early_poc_stop_to_hold(
+    tmp_path: Path,
+) -> None:
+    application, store, identity = _seed_stopped_inconclusive_poc(tmp_path)
+
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 1
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 0
+
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert checkpoint.status is StageStatus.SUCCEEDED
+    assert checkpoint.verdict == "HOLD"
+    assert checkpoint.attempt_number == 2
+    assert checkpoint.validated_poc_ref is None
+    assert terminal_poc_outcome(checkpoint) == "INCONCLUSIVE"
+    assert store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE) is None
+
+
+def _save_stopped_poc_run(
+    store: SimpleCheckpointStore, identity: CheckpointIdentity
+) -> str:
+    hypothesis_id = identity.hypothesis_id
+    assert hypothesis_id is not None
+    display_id = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
+        identity.analysis_id
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id=display_id,
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            hypothesis_ids=(hypothesis_id,),
+        )
+    )
+    return display_id
+
+
+def _seed_exhausted_inconclusive_poc(
+    tmp_path: Path,
+) -> tuple[SimpleAnalysisApplication, SimpleCheckpointStore, CheckpointIdentity]:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-exhausted-poc",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-exhausted-poc",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "exit_code": 0,
+            "timed_out": False,
+            "attempt_id": "attempt-3",
+        }
+    )
+    interpretation_ref = artifacts.put_json(
+        {
+            "kind": "simple_dynamic_interpretation",
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "result": {"outcome": "INCONCLUSIVE"},
+        }
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.POC_EXECUTION_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=(execution_ref, interpretation_ref),
+            error_code="RECOVERY_EXHAUSTED",
+            attempt_number=3,
+            attempt_id="attempt-3",
+        )
+    )
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 1
+    completed = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert completed.status is StageStatus.SUCCEEDED
+    assert completed.poc_stop_decision_ref is None
+    assert terminal_poc_outcome(completed) == "INCONCLUSIVE"
+    return application, store, identity
+
+
+@pytest.mark.parametrize("lost_output_index", (0, 1))
+def test_projection_blocks_promoted_exhausted_poc_after_artifact_loss(
+    tmp_path: Path, lost_output_index: int
+) -> None:
+    _, store, identity = _seed_exhausted_inconclusive_poc(tmp_path)
+    projector = ProgressProjector(store, artifact_data_dir=tmp_path)
+    assert projector.snapshot(identity.analysis_id).status == "COMPLETE"
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    artifacts.artifacts.path_for(
+        checkpoint.output_refs[lost_output_index].content_hash
+    ).unlink()
+
+    snapshot = projector.snapshot(identity.analysis_id)
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.inconclusive_hypothesis_count == 0
+    assert snapshot.error_code == "POC_TERMINAL_EVIDENCE_INVALID"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_output_index", (0, 1))
+async def test_resume_blocks_promoted_exhausted_poc_after_artifact_loss(
+    tmp_path: Path, lost_output_index: int
+) -> None:
+    application, store, identity = _seed_exhausted_inconclusive_poc(tmp_path)
+    _save_stopped_poc_run(store, identity)
+    completed = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    artifacts.artifacts.path_for(
+        completed.output_refs[lost_output_index].content_hash
+    ).unlink()
+
+    outcome = await application.resume(identity.analysis_id)
+
+    assert outcome.status == "BLOCKED"
+    assert outcome.current_stage is SimpleStage.POC_EXECUTION_DONE
+    assert outcome.error_code == "POC_TERMINAL_EVIDENCE_INVALID"
+    blocked = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert blocked.status is StageStatus.BLOCKED
+    assert blocked.retryable is False
+    assert blocked.attempt_number == completed.attempt_number == 3
+    assert blocked.error_code == "POC_TERMINAL_EVIDENCE_INVALID"
+    assert blocked.output_refs == completed.output_refs
+    assert store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE) is None
+
+
+def _seed_cap_three_hold_with_cleanup(
+    tmp_path: Path,
+) -> tuple[
+    SimpleCheckpointStore,
+    CheckpointIdentity,
+    SimpleArtifactRepository,
+    StageCheckpoint,
+]:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-cap-three-cleanup",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-cap-three-cleanup",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    for stage in (
+        SimpleStage.PRO_CON_DONE,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+    ):
+        inputs = store.input_refs_for(identity, stage)
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=STAGE_VERSION[stage],
+                status=StageStatus.SUCCEEDED,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                output_refs=(artifacts.put_json({"kind": stage.value}),),
+                attempt_id="attempt-3",
+            )
+        )
+    container_id = "container-cap-three"
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "candidate_ref": store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+            .output_refs[0]
+            .model_dump(mode="json"),
+            "content_ref": artifacts.put_json({"kind": "poc_content"}).model_dump(
+                mode="json"
+            ),
+            "stdout_ref": artifacts.put_bytes(b"", "text/plain").model_dump(
+                mode="json"
+            ),
+            "stderr_ref": artifacts.put_bytes(b"", "text/plain").model_dump(
+                mode="json"
+            ),
+            "exit_code": 0,
+            "timed_out": False,
+            "container_id": container_id,
+            "image_digest": "sha256:" + "a" * 64,
+            "attempt_id": "attempt-3",
+        }
+    )
+    interpretation_ref = artifacts.put_json(
+        {
+            "kind": "simple_dynamic_interpretation",
+            "execution_ref": execution_ref.model_dump(mode="json"),
+            "result": {"outcome": "INCONCLUSIVE"},
+        }
+    )
+    cleanup_ref = artifacts.put_json(
+        {
+            "kind": "simple_container_cleanup",
+            "container_id": container_id,
+            "attempt_id": "attempt-3",
+            "status": "REMOVED",
+        }
+    )
+    poc_inputs = store.input_refs_for(identity, SimpleStage.POC_EXECUTION_DONE)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+        status=StageStatus.SUCCEEDED,
+        input_refs=poc_inputs,
+        input_hash=input_reference_hash(poc_inputs),
+        output_refs=(execution_ref, interpretation_ref, cleanup_ref),
+        attempt_number=3,
+        attempt_id="attempt-3",
+        verdict="HOLD",
+        container_id=container_id,
+    )
+    store.save_checkpoint(checkpoint)
+    return store, identity, artifacts, checkpoint
+
+
+@pytest.mark.asyncio
+async def test_cap_three_hold_with_cleanup_remains_terminal_on_projection_and_resume(
+    tmp_path: Path,
+) -> None:
+    store, identity, artifacts, checkpoint = _seed_cap_three_hold_with_cleanup(tmp_path)
+
+    snapshot = ProgressProjector(store, artifact_data_dir=tmp_path).snapshot(
+        identity.analysis_id
+    )
+    runner = SimpleRuntimeRunner(store, {}, recovery=None, cleanup_artifacts=artifacts)
+    resumed = await runner.resume_hypothesis(identity)
+
+    assert snapshot.status == "COMPLETE"
+    assert snapshot.inconclusive_hypothesis_count == 1
+    assert resumed.status is StageStatus.SUCCEEDED
+    assert resumed.current_stage is SimpleStage.POC_EXECUTION_DONE
+    assert store.require(identity, SimpleStage.POC_EXECUTION_DONE) == checkpoint
+
+
+@pytest.mark.parametrize("damage", ("missing", "blocked"))
+def test_cap_three_cleanup_must_confirm_removal(tmp_path: Path, damage: str) -> None:
+    store, identity, artifacts, checkpoint = _seed_cap_three_hold_with_cleanup(tmp_path)
+    cleanup_ref = checkpoint.output_refs[2]
+    if damage == "missing":
+        artifacts.artifacts.path_for(cleanup_ref.content_hash).unlink()
+    else:
+        cleanup = json.loads(artifacts.read(cleanup_ref))
+        cleanup["status"] = "BLOCKED"
+        blocked_ref = artifacts.put_json(cleanup)
+        store.save_checkpoint(
+            checkpoint.model_copy(
+                update={
+                    "output_refs": (
+                        checkpoint.output_refs[0],
+                        checkpoint.output_refs[1],
+                        blocked_ref,
+                    )
+                }
+            )
+        )
+
+    snapshot = ProgressProjector(store, artifact_data_dir=tmp_path).snapshot(
+        identity.analysis_id
+    )
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "POC_TERMINAL_EVIDENCE_INVALID"
+    assert snapshot.inconclusive_hypothesis_count == 0
+
+
+def test_cap_three_cleanup_must_match_execution_container(tmp_path: Path) -> None:
+    store, identity, artifacts, checkpoint = _seed_cap_three_hold_with_cleanup(tmp_path)
+    execution = json.loads(artifacts.read(checkpoint.output_refs[0]))
+    execution["container_id"] = "another-container"
+    mismatched_execution_ref = artifacts.put_json(execution)
+    interpretation = json.loads(artifacts.read(checkpoint.output_refs[1]))
+    interpretation["execution_ref"] = mismatched_execution_ref.model_dump(mode="json")
+    matching_interpretation_ref = artifacts.put_json(interpretation)
+    store.save_checkpoint(
+        checkpoint.model_copy(
+            update={
+                "output_refs": (
+                    mismatched_execution_ref,
+                    matching_interpretation_ref,
+                    checkpoint.output_refs[2],
+                )
+            }
+        )
+    )
+
+    snapshot = ProgressProjector(store, artifact_data_dir=tmp_path).snapshot(
+        identity.analysis_id
+    )
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "POC_TERMINAL_EVIDENCE_INVALID"
+    assert snapshot.inconclusive_hypothesis_count == 0
+
+
+@pytest.mark.parametrize("ref_kind", ("execution", "interpretation", "decision"))
+@pytest.mark.parametrize("damage", ("missing", "corrupt"))
+def test_read_only_views_block_when_early_poc_stop_artifact_is_invalid(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    ref_kind: str,
+    damage: str,
+) -> None:
+    application, store, identity = _seed_stopped_inconclusive_poc(tmp_path)
+    display_id = _save_stopped_poc_run(store, identity)
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 1
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert checkpoint.poc_stop_decision_ref is not None
+
+    projector = ProgressProjector(store, artifact_data_dir=tmp_path)
+    assert projector.snapshot(identity.analysis_id).status == "COMPLETE"
+    assert DashboardQuery(tmp_path).get_analysis(display_id).status == "COMPLETE"
+
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    ref = {
+        "execution": checkpoint.output_refs[0],
+        "interpretation": checkpoint.output_refs[1],
+        "decision": checkpoint.poc_stop_decision_ref,
+    }[ref_kind]
+    path = artifacts.artifacts.path_for(ref.content_hash)
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b'{"kind":"tampered"}')
+
+    snapshot = projector.snapshot(identity.analysis_id)
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.inconclusive_hypothesis_count == 0
+    assert snapshot.error_code == "POC_STOP_EVIDENCE_INVALID"
+
+    config = UserConfig(
+        data_dir=tmp_path,
+        profile_path=tmp_path / "profile.toml",
+        auth_mode="API_KEY",
+        provider="openai",
+        model="configured-model",
+        credential_ref="env:OPENAI_API_KEY",
+        execution_profile="LIGHTWEIGHT",
+        max_cost_minor_units=10_000,
+        max_tokens=100_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+        enabled_tools=(),
+        detected_versions={},
+        setup_ready=True,
+    )
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="configured-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path,
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        max_tokens=100_000,
+        max_elapsed_seconds=3_600,
+        docker_network="NONE",
+        tools={},
+    )
+    config_store = UserConfigStore(tmp_path / "config.toml")
+    config_store.save(config)
+    public = PublicSimpleRuntimeApplication(config, profile)
+    cli_status = public.status(display_id)
+    dashboard = DashboardQuery(tmp_path).get_analysis(display_id)
+    assert cli_status["status"] == dashboard.status == "BLOCKED"
+    assert (
+        cli_status["error_code"] == dashboard.error_code == "POC_STOP_EVIDENCE_INVALID"
+    )
+    assert cli_status["inconclusive_hypothesis_count"] == 0
+    assert dashboard.hypotheses[0].disposition != "INCONCLUSIVE"
+    assert (
+        main(
+            ["status", display_id, "--format", "json"],
+            public_application=public,
+            user_config_store=config_store,
+        )
+        == 0
+    )
+    cli_payload = json.loads(capsys.readouterr().out)
+    assert cli_payload["data"]["status"] == "BLOCKED"
+    assert cli_payload["data"]["error_code"] == "POC_STOP_EVIDENCE_INVALID"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ref_kind", ("execution", "interpretation", "decision"))
+@pytest.mark.parametrize("damage", ("missing", "corrupt"))
+async def test_resume_blocks_invalid_early_poc_stop_artifact_without_replay(
+    tmp_path: Path, ref_kind: str, damage: str
+) -> None:
+    application, store, identity = _seed_stopped_inconclusive_poc(tmp_path)
+    _save_stopped_poc_run(store, identity)
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 1
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert checkpoint.poc_stop_decision_ref is not None
+    ref = {
+        "execution": checkpoint.output_refs[0],
+        "interpretation": checkpoint.output_refs[1],
+        "decision": checkpoint.poc_stop_decision_ref,
+    }[ref_kind]
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    path = artifacts.artifacts.path_for(ref.content_hash)
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b'{"kind":"tampered"}')
+
+    outcome = await application.resume(identity.analysis_id)
+
+    assert outcome.status == "BLOCKED"
+    assert outcome.error_code == "POC_STOP_EVIDENCE_INVALID"
+    blocked = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert blocked.status is StageStatus.BLOCKED
+    assert blocked.retryable is False
+    assert blocked.attempt_number == checkpoint.attempt_number
+    assert blocked.poc_stop_decision_ref == checkpoint.poc_stop_decision_ref
+    assert store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE) is None
+
+
+@pytest.mark.parametrize("invalid_origin", ("explicit_null", "legacy_fallback"))
+def test_projection_rejects_invalid_promoted_stop_origin_with_matching_event(
+    tmp_path: Path, invalid_origin: str
+) -> None:
+    application, store, identity = _seed_stopped_inconclusive_poc(tmp_path)
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 1
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert checkpoint.poc_stop_decision_ref is not None
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    assert artifacts.verified_terminal_poc_outcome(checkpoint) == "INCONCLUSIVE"
+
+    decision = json.loads(artifacts.read(checkpoint.poc_stop_decision_ref))
+    if invalid_origin == "explicit_null":
+        decision["decision_origin"] = None
+    else:
+        decision.pop("decision_origin")
+        decision["decision"]["diagnosis"] = (
+            "recovery provider did not return a decision"
+        )
+        decision["decision"]["guidance"] = "preserve the failure for manual review"
+    replacement_ref = artifacts.put_json(decision)
+    store.save_checkpoint(
+        checkpoint.model_copy(update={"poc_stop_decision_ref": replacement_ref})
+    )
+
+    activity = AgentActivityStore(store.database_path)
+    events = activity.list_analysis(
+        identity.analysis_id, hypothesis_id=identity.hypothesis_id
+    )
+    recorded_stop = next(
+        event
+        for event in events
+        if event.kind is ActivityKind.DECISION_RECORDED
+        and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+    )
+    activity.append(
+        recorded_stop.model_copy(
+            update={
+                "event_id": f"{recorded_stop.event_id}-{invalid_origin}",
+                "sequence": max(event.sequence for event in events) + 1,
+                "output_refs": (replacement_ref,),
+            }
+        )
+    )
+
+    mutated = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert terminal_poc_outcome(mutated) == "INCONCLUSIVE"
+    assert artifacts.read(replacement_ref)
+    snapshot = ProgressProjector(store, artifact_data_dir=tmp_path).snapshot(
+        identity.analysis_id
+    )
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "POC_STOP_EVIDENCE_INVALID"
+    assert snapshot.inconclusive_hypothesis_count == 0
+
+
+def test_projection_blocks_promoted_stop_without_recorded_decision_event(
+    tmp_path: Path,
+) -> None:
+    application, store, identity = _seed_stopped_inconclusive_poc(tmp_path)
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 1
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    assert artifacts.verified_terminal_poc_outcome(checkpoint) == "INCONCLUSIVE"
+
+    activity = AgentActivityStore(store.database_path)
+    events = activity.list_analysis(
+        identity.analysis_id, hypothesis_id=identity.hypothesis_id
+    )
+    recorded_stop = next(
+        event
+        for event in events
+        if event.kind is ActivityKind.DECISION_RECORDED
+        and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        deleted = connection.execute(
+            "DELETE FROM agent_activity_events WHERE event_id = ?",
+            (recorded_stop.event_id,),
+        )
+    assert deleted.rowcount == 1
+
+    snapshot = ProgressProjector(store, artifact_data_dir=tmp_path).snapshot(
+        identity.analysis_id
+    )
+    assert snapshot.status == "BLOCKED"
+    assert snapshot.error_code == "POC_STOP_EVIDENCE_INVALID"
+    assert snapshot.inconclusive_hypothesis_count == 0
+
+
+def test_nonterminal_stop_category_can_finish_executed_inconclusive_poc(
+    tmp_path: Path,
+) -> None:
+    application, store, identity = _seed_stopped_inconclusive_poc(
+        tmp_path, invalidity="nonterminal_stop_category"
+    )
+
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 1
+    assert (
+        terminal_poc_outcome(store.require(identity, SimpleStage.POC_EXECUTION_DONE))
+        == "INCONCLUSIVE"
+    )
+
+
+def test_legacy_agent_stop_can_finish_executed_inconclusive_poc(
+    tmp_path: Path,
+) -> None:
+    application, store, identity = _seed_stopped_inconclusive_poc(
+        tmp_path, invalidity="legacy_agent_origin"
+    )
+
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 1
+    assert (
+        terminal_poc_outcome(store.require(identity, SimpleStage.POC_EXECUTION_DONE))
+        == "INCONCLUSIVE"
+    )
+
+
+def test_stopped_poc_promotion_rejects_stale_checkpoint(tmp_path: Path) -> None:
+    _, store, identity = _seed_stopped_inconclusive_poc(tmp_path)
+    stale = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    changed = stale.model_copy(update={"attempt_number": stale.attempt_number + 1})
+    store.save_checkpoint(changed)
+
+    with pytest.raises(ValueError, match="POC_INCONCLUSIVE_PROMOTION_STALE"):
+        store.promote_inconclusive_execution(
+            stale, artifacts=SimpleArtifactRepository(tmp_path, identity)
+        )
+
+    assert store.require(identity, SimpleStage.POC_EXECUTION_DONE) == changed
+
+
+@pytest.mark.parametrize(
+    "invalidity",
+    [
+        "wrong_decision_identity",
+        "regenerate_action",
+        "wrong_decision_evidence",
+        "wrong_interpretation_ref",
+        "wrong_attempt",
+        "wrong_attempt_id",
+        "missing_decision_event",
+        "wrong_event_ref",
+        "nonzero_exit",
+        "timeout",
+        "supported",
+        "execution_failure",
+        "fallback_stop_origin",
+        "legacy_provider_fallback",
+        "legacy_policy_fallback",
+        "missing_decision_fields",
+    ],
+)
+def test_same_id_resume_keeps_unverified_early_poc_stop_blocked(
+    tmp_path: Path, invalidity: str
+) -> None:
+    application, store, identity = _seed_stopped_inconclusive_poc(
+        tmp_path, invalidity=invalidity
+    )
+
+    assert application._promote_legacy_inconclusive_pocs(identity.analysis_id) == 0
+
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert checkpoint.status is StageStatus.BLOCKED
+    assert checkpoint.verdict is None
+    assert checkpoint.attempt_number == 2
+    assert checkpoint.validated_poc_ref is None
+    assert terminal_poc_outcome(checkpoint) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalidity",
+    ("fallback_stop_origin", "legacy_provider_fallback", "wrong_event_ref"),
+)
+async def test_unverified_prior_poc_decision_does_not_recover_again(
+    tmp_path: Path, invalidity: str
+) -> None:
+    _, store, identity = _seed_stopped_inconclusive_poc(tmp_path, invalidity=invalidity)
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+
+    class _UnexpectedRecovery:
+        async def decide(
+            self, _checkpoint: StageCheckpoint, _failure: StageFailure
+        ) -> RecoveryResolution:
+            raise AssertionError("recorded decision must not trigger a new PoC")
+
+    runner = SimpleRuntimeRunner(
+        store,
+        {},
+        recovery=_UnexpectedRecovery(),
+        cleanup_artifacts=SimpleArtifactRepository(tmp_path, identity),
+    )
+    outcome = await runner._recover_existing(checkpoint)
+
+    assert isinstance(outcome, RunOutcome)
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == checkpoint.error_code
+    assert store.require(identity, SimpleStage.POC_EXECUTION_DONE) == checkpoint
+
+
+@pytest.mark.asyncio
+async def test_runner_without_recovery_preserves_recorded_stop_before_attempt_reset(
+    tmp_path: Path,
+) -> None:
+    _, store, identity = _seed_stopped_inconclusive_poc(tmp_path)
+    for stage in (
+        SimpleStage.PRO_CON_DONE,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+    ):
+        inputs = store.input_refs_for(identity, stage)
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=STAGE_VERSION[stage],
+                status=StageStatus.SUCCEEDED,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                output_refs=(_ref(stage.value.lower()),),
+                attempt_id="attempt-2",
+            )
+        )
+    original = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    runner = SimpleRuntimeRunner(
+        store,
+        {},
+        recovery=None,
+        cleanup_artifacts=SimpleArtifactRepository(tmp_path, identity),
+    )
+
+    outcome = await runner.resume_hypothesis(identity)
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert outcome.current_stage is SimpleStage.POC_EXECUTION_DONE
+    completed = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert completed.attempt_number == original.attempt_number == 2
+    assert completed.attempt_id == original.attempt_id
+    assert completed.poc_stop_decision_ref is not None
+    assert (
+        store.require(identity, SimpleStage.POC_CANDIDATE_DONE).attempt_id
+        == "attempt-2"
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_completes_early_inconclusive_stop_without_reexecuting_on_resume(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-runner-stop",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-runner-stop",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    for stage in (
+        SimpleStage.PRO_CON_DONE,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+    ):
+        inputs = store.input_refs_for(identity, stage)
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=STAGE_VERSION[stage],
+                status=StageStatus.SUCCEEDED,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                output_refs=(_ref(stage.value.lower()),),
+            )
+        )
+    poc_inputs = store.input_refs_for(identity, SimpleStage.POC_EXECUTION_DONE)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.POC_EXECUTION_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+            status=StageStatus.PENDING,
+            input_refs=poc_inputs,
+            input_hash=input_reference_hash(poc_inputs),
+            attempt_number=1,
+        )
+    )
+    execution_calls = 0
+
+    async def inconclusive(
+        checkpoint: StageCheckpoint, prior: Mapping[SimpleStage, StageCheckpoint]
+    ) -> StageResult:
+        nonlocal execution_calls
+        execution_calls += 1
+        execution_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_execution",
+                "exit_code": 0,
+                "timed_out": False,
+                "attempt_id": checkpoint.attempt_id,
+            }
+        )
+        interpretation_ref = artifacts.put_json(
+            {
+                "kind": "simple_dynamic_interpretation",
+                "execution_ref": execution_ref.model_dump(mode="json"),
+                "result": {"outcome": "INCONCLUSIVE"},
+            }
+        )
+        raise StageBlocked(
+            StageFailure(
+                code="POC_INCONCLUSIVE",
+                retryable=True,
+                safe_message="Completed execution lacks proof",
+                evidence_refs=(execution_ref, interpretation_ref),
+            )
+        )
+
+    class _StopRecovery:
+        calls = 0
+
+        async def decide(
+            self, checkpoint: StageCheckpoint, failure: StageFailure
+        ) -> RecoveryResolution:
+            self.calls += 1
+            decision = RecoveryDecision(
+                category=RecoveryCategory.TERMINAL,
+                action=RecoveryAction.STOP,
+                diagnosis="No further local reproduction path",
+                guidance="Record the observation without a finding",
+                environment_patch="",
+            )
+            decision_ref = artifacts.put_json(
+                {
+                    "kind": "simple_recovery_decision",
+                    "identity": checkpoint.identity.model_dump(mode="json"),
+                    "stage": checkpoint.stage.value,
+                    "attempt": checkpoint.attempt_number,
+                    "attempt_id": checkpoint.attempt_id,
+                    "original_error": failure.model_dump(mode="json"),
+                    "decision": decision.model_dump(mode="json"),
+                    "decision_origin": "AGENT",
+                }
+            )
+            return RecoveryResolution(decision=decision, decision_ref=decision_ref)
+
+    recovery = _StopRecovery()
+    runner = SimpleRuntimeRunner(
+        store,
+        {SimpleStage.POC_EXECUTION_DONE: inconclusive},
+        recovery=recovery,
+        cleanup_artifacts=artifacts,
+    )
+
+    first = await runner.resume_hypothesis(identity)
+    second = await runner.resume_hypothesis(identity)
+
+    assert first.status is second.status is StageStatus.SUCCEEDED
+    assert first.current_stage is second.current_stage is SimpleStage.POC_EXECUTION_DONE
+    checkpoint = store.require(identity, SimpleStage.POC_EXECUTION_DONE)
+    assert checkpoint.status is StageStatus.SUCCEEDED
+    assert checkpoint.verdict == "HOLD"
+    assert checkpoint.attempt_number == 2
+    assert checkpoint.validated_poc_ref is None
+    assert terminal_poc_outcome(checkpoint) == "INCONCLUSIVE"
+    assert store.get(identity, SimpleStage.VERIFICATION_FINAL_DONE) is None
+    assert execution_calls == recovery.calls == 1
 
 
 @pytest.mark.asyncio

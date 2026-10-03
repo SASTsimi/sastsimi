@@ -9,6 +9,7 @@ import pytest
 
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.chaining import SimpleChainingStage
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
@@ -42,8 +43,12 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult:
-        del prompt, output_schema, timeout_ms, agent_name
+        del prompt, output_schema, timeout_ms, agent_name, owner, prompt_bytes
+        del invocation_id
         return SimpleLLMCallResult(
             value={
                 "children": [

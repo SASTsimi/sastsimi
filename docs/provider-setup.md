@@ -130,7 +130,7 @@ sastsimi status A-001
 sastsimi resume A-001
 ```
 
-같은 파일의 `max_parallel_hypotheses`, `max_parallel_builds`, `max_parallel_containers`는 각각 동시에 처리할 가설, Docker 빌드, 실행 중인 소유 컨테이너 상한입니다. 모두 기본값 `1`이며, 가설 병렬 처리를 늘리면 LLM 사용량과 Docker 자원 사용이 빨라질 수 있습니다. `llm_max_concurrency`는 이와 별도의 전체 LLM 호출 상한입니다. 진행 중인 분석의 설정을 바꾸기보다 새 분석에서 시험하세요.
+같은 파일의 `max_parallel_hypotheses`, `max_parallel_builds`, `max_parallel_containers`는 각각 가설 작업, Docker 빌드, 실행 중인 소유 컨테이너의 설정상 상한이며 기본값은 모두 `1`입니다. 현재 신규 후보 파이프라인(v2)의 자식 검증은 순차 실행합니다. Codex CLI는 분석당 미해결 프로세스를 하나만 허용하고, OpenAI API의 실제 유료 요청도 분석별 예산 잠금이 호출·사용량 기록 전체를 직렬화합니다. 따라서 `max_parallel_hypotheses`나 별도 전체 LLM 호출 상한인 `llm_max_concurrency`를 높이는 것만으로 v2의 실제 Provider 호출이 병렬화되거나 분석이 빨라진다고 기대하지 마세요. Provider 사용량은 호출 뒤에 확인되며 토큰·비용 설정은 과금 하드 쿼터가 아닙니다. 진행 중인 분석의 설정을 바꾸기보다 새 분석에서 시험하세요.
 
 ## 호출 기록
 

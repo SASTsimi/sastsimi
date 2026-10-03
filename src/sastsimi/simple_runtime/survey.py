@@ -314,7 +314,7 @@ class HypothesisSurvey:
                         bundle_ref_json = static.static_bundle_ref.model_dump(
                             mode="json"
                         )
-                        proposal_ref = self._artifacts.put_json(
+                        proposal_ref = self._artifacts.put_prompt_proposal(
                             {
                                 "kind": "simple_hypothesis_proposal",
                                 "analysis_id": identity.analysis_id,
@@ -382,6 +382,7 @@ class HypothesisSurvey:
             record = json.loads(self._artifacts.read(ref))
             if record.get("status") == "PROPOSED":
                 proposal_ref = StoredDataRef.model_validate(record["proposal_ref"])
+                self._artifacts.read_prompt_proposal(proposal_ref)
                 seeds.append(
                     HypothesisSeed(
                         hypothesis_id=record["hypothesis_id"], proposal_ref=proposal_ref

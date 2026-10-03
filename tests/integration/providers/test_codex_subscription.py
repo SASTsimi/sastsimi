@@ -448,8 +448,23 @@ async def test_unconfirmed_tree_cleanup_never_claims_timeout_success() -> None:
     result = await asyncio.wait_for(provider.invoke(invocation), timeout=0.5)
 
     assert result.status == "FAILED"
-    assert result.safe_error == "FAILED: Codex subscription request failed"
+    assert result.safe_error == "FAILED: Codex process cleanup unconfirmed"
     assert "secret cleanup diagnostic" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_process_cleanup_uncertainty_is_distinct_from_ordinary_failure() -> None:
+    invocation = request()
+    runner = FakeCodexProcessRunner(
+        CodexProcessResult("FAILED", None, None, cleanup_unconfirmed=True)
+    )
+    provider, sessions = adapter(invocation, runner)
+
+    result = await provider.invoke(invocation)
+
+    assert result.status == "FAILED"
+    assert result.safe_error == "FAILED: Codex process cleanup unconfirmed"
+    assert sessions.registered == []
 
 
 @pytest.mark.asyncio

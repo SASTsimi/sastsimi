@@ -25,6 +25,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
+from .attempt_owner import AttemptOwner, PromptByteCounts
 from .models import StageFailure
 from .provider import (
     SimpleLLMCallResult,
@@ -420,7 +421,11 @@ class CursorProvider:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
+        del invocation_id
         key = "" if self._use_cli_login else os.environ.get("CURSOR_API_KEY", "")
         if not self._use_cli_login and (not key or key != key.strip()):
             return StageFailure(
@@ -448,11 +453,17 @@ class CursorProvider:
                 safe_message="Cursor model catalog could not be read",
             )
             if retryable and self._fallback is not None:
+                fallback_kwargs: dict[str, Any] = {}
+                if owner is not None:
+                    fallback_kwargs["owner"] = owner
+                if prompt_bytes is not None:
+                    fallback_kwargs["prompt_bytes"] = prompt_bytes
                 return await self._fallback.call(
                     prompt=prompt,
                     output_schema=output_schema,
                     timeout_ms=timeout_ms,
                     agent_name=agent_name,
+                    **fallback_kwargs,
                 )
             return failure
         if model not in models:
@@ -476,6 +487,7 @@ class CursorProvider:
         prompt_digest = hashlib.sha256(prompt).hexdigest()
         last_failure: StageFailure | None = None
         correction = ""
+        previous_attempt_id: str | None = None
         async with self._semaphore:
             for attempt in range(1, self._max_retries + 2):
                 if self._budget_check is not None:
@@ -528,7 +540,7 @@ class CursorProvider:
                         cost_minor_units=_cost_cents(usage.get("cost_minor_units")),
                         on_demand_possible=True,
                     )
-                    self._record_attempt(
+                    previous_attempt_id = self._record_attempt(
                         agent_name,
                         model,
                         attempt,
@@ -537,6 +549,9 @@ class CursorProvider:
                         raw_ref,
                         parsed_ref,
                         usage,
+                        owner=owner,
+                        retry_of=previous_attempt_id,
+                        prompt_bytes=prompt_bytes,
                     )
                     return result
                 except asyncio.CancelledError:
@@ -563,7 +578,7 @@ class CursorProvider:
                         safe_message="Cursor request did not complete",
                     )
                     if not retryable:
-                        self._record_attempt(
+                        previous_attempt_id = self._record_attempt(
                             agent_name,
                             model,
                             attempt,
@@ -572,9 +587,12 @@ class CursorProvider:
                             raw_ref,
                             parsed_ref,
                             usage,
+                            owner=owner,
+                            retry_of=previous_attempt_id,
+                            prompt_bytes=prompt_bytes,
                         )
                         break
-                self._record_attempt(
+                previous_attempt_id = self._record_attempt(
                     agent_name,
                     model,
                     attempt,
@@ -583,6 +601,9 @@ class CursorProvider:
                     raw_ref,
                     parsed_ref,
                     usage,
+                    owner=owner,
+                    retry_of=previous_attempt_id,
+                    prompt_bytes=prompt_bytes,
                 )
                 if attempt <= self._max_retries:
                     await asyncio.sleep(
@@ -590,11 +611,17 @@ class CursorProvider:
                     )
         assert last_failure is not None
         if self._fallback is not None and last_failure.retryable:
+            fallback_kwargs = {}
+            if owner is not None:
+                fallback_kwargs["owner"] = owner
+            if prompt_bytes is not None:
+                fallback_kwargs["prompt_bytes"] = prompt_bytes
             return await self._fallback.call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                **fallback_kwargs,
             )
         return last_failure
 
@@ -608,7 +635,11 @@ class CursorProvider:
         raw_ref: StoredDataRef | None,
         parsed_ref: StoredDataRef | None,
         usage: Mapping[str, int | float | None],
-    ) -> None:
+        *,
+        owner: AttemptOwner | None,
+        retry_of: str | None,
+        prompt_bytes: PromptByteCounts | None,
+    ) -> str:
         elapsed = int((monotonic() - started) * 1000)
         _LOG.info(
             "cursor_call analysis_id=%s agent=%s model=%s "
@@ -643,8 +674,9 @@ class CursorProvider:
                 "on_demand_possible": True,
             }
         )
+        attempt_id = uuid4().hex
         self._attempt_store.record_llm_attempt(
-            attempt_id=uuid4().hex,
+            attempt_id=attempt_id,
             analysis_id=self._artifacts.identity.analysis_id,
             agent=agent,
             model=model,
@@ -655,7 +687,11 @@ class CursorProvider:
             output_tokens=_token_count(usage.get("output_tokens")),
             cost_cents=_cost_cents(usage.get("cost_minor_units")),
             artifact_ref=artifact_ref,
+            owner=owner,
+            retry_of=retry_of,
+            prompt_bytes=prompt_bytes,
         )
+        return attempt_id
 
 
 __all__ = [

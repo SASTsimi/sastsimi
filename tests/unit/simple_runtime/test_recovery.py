@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from pydantic import JsonValue
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -45,8 +47,11 @@ class DecisionClient:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
-        del output_schema, timeout_ms
+        del output_schema, timeout_ms, owner, prompt_bytes, invocation_id
         assert agent_name == "recovery"
         self.calls += 1
         self.prompts.append(prompt)
@@ -113,6 +118,7 @@ async def test_non_retryable_failure_never_calls_recovery_llm(tmp_path: Path) ->
     assert result.decision.category is RecoveryCategory.TERMINAL
     assert result.decision.action is RecoveryAction.STOP
     assert b'"kind":"simple_recovery_decision"' in artifacts.read(result.decision_ref)
+    assert json.loads(artifacts.read(result.decision_ref))["decision_origin"] == "RULE"
     assert client.calls == 0
 
 
@@ -150,6 +156,7 @@ async def test_valid_environment_rebuild_is_stored_as_exact_artifact(
         "RUN python -m pip install -e '.[test]'"
     )
     assert b'"kind":"simple_recovery_decision"' in artifacts.read(result.decision_ref)
+    assert json.loads(artifacts.read(result.decision_ref))["decision_origin"] == "AGENT"
     assert client.calls == 1
 
 
@@ -454,6 +461,9 @@ async def test_provider_failure_becomes_stored_stop(tmp_path: Path) -> None:
     assert result.decision.category is RecoveryCategory.TERMINAL
     assert result.decision.action is RecoveryAction.STOP
     assert b'"action":"STOP"' in artifacts.read(result.decision_ref)
+    assert (
+        json.loads(artifacts.read(result.decision_ref))["decision_origin"] == "FALLBACK"
+    )
 
 
 @pytest.mark.asyncio
@@ -476,6 +486,9 @@ async def test_provider_exception_becomes_stored_stop(tmp_path: Path) -> None:
 
     assert result.decision.action is RecoveryAction.STOP
     assert b'"action":"STOP"' in artifacts.read(result.decision_ref)
+    assert (
+        json.loads(artifacts.read(result.decision_ref))["decision_origin"] == "FALLBACK"
+    )
     assert client.calls == 1
 
 

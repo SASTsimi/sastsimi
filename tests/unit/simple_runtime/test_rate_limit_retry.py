@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -81,9 +82,10 @@ async def test_unknown_usage_wins_even_when_retry_deadline_expires(
         status: str,
         result: SimpleLLMCallResult | None,
         failure: StageFailure | None = None,
+        **kwargs: Any,
     ) -> None:
         nonlocal offset
-        original_record(agent, attempt, started, status, result, failure)
+        original_record(agent, attempt, started, status, result, failure, **kwargs)
         offset = 10.0
 
     with monkeypatch.context() as patcher:

@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import re
 import shlex
 import socket
+import stat
+import subprocess
+import tarfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
+
+from packaging.requirements import InvalidRequirement, Requirement
 
 from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -22,9 +28,15 @@ from sastsimi.sandbox.docker_adapter import (
     DockerCommandOutcome,
     DockerOperationError,
 )
+from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
+from sastsimi.static_analysis.file_scope import (
+    build_static_file_scope,
+    is_test_only_path,
+)
 
 from .artifacts import SimpleArtifactRepository
 from .models import CheckpointIdentity, SimpleStage, StageCheckpoint
+from .offline_wheels import import_wheel_bundle
 from .recovery import (
     RecoveryAction,
     RecoveryDecision,
@@ -34,7 +46,52 @@ from .stages import ReproductionEnvironment
 
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _MAX_OUTPUT = 1024 * 1024
+_MAX_PINNED_CONTEXT_BYTES = 64 * 1024 * 1024
+_MAX_PINNED_FILES = 20_000
+_REPRODUCIBLE_SOURCE_MTIME = 315532800  # 1980-01-01 UTC; wheel ZIP minimum.
+_OFFLINE_BASE_IMAGE = "python:3.12-slim"
+_OFFLINE_PINNED_SOURCE = re.compile(
+    r"Source checkout at commit ((?:[0-9a-f]{40}|[0-9a-f]{64})) "
+    r"containing (.+\.py)"
+)
+_OFFLINE_PINNED_SOURCE_FILE_FIRST = re.compile(
+    r"Source checkout of (.+\.py) at commit ((?:[0-9a-f]{40}|[0-9a-f]{64}))"
+)
+_OFFLINE_MISSING = re.compile(
+    rb"(?i)(?:no matching distribution found|could not find a version that satisfies|"
+    rb"no matching distribution|package.*not found|missing build dependency|"
+    rb"ModuleNotFoundError: No module named)"
+)
+
+
+def offline_recipe_cache_key(
+    *,
+    archive_sha256: str,
+    manifest_sha256: str,
+    commit_id: str,
+    dockerfile_sha256: str,
+    base_image_digest: str,
+    network: str,
+) -> str:
+    """Keep every executable offline-build input in the cache identity."""
+
+    digest = hashlib.sha256(
+        canonical_bytes(
+            {
+                "archive_sha256": archive_sha256,
+                "manifest_sha256": manifest_sha256,
+                "commit_id": commit_id,
+                "dockerfile_sha256": dockerfile_sha256,
+                "base_image_digest": base_image_digest,
+                "network": network,
+            }
+        )
+    ).hexdigest()
+    return f"{archive_sha256}:{digest}"
+
+
 _DEPENDENCY_INSTALL = re.compile(
     rb"(?:pip3? install|python -m pip install|npm (?:ci|install)|"
     rb"apt-get install|yarn install|poetry install)",
@@ -52,6 +109,364 @@ class DockerBuildAttemptsError(DockerOperationError):
         super().__init__(error.code, error.outcome)
         self.attempt_refs = attempt_refs
         self.recipe_ref = recipe_ref
+
+
+def build_pinned_context(
+    workspace: Path,
+    commit_id: str,
+    dockerfile: bytes,
+    wheels: Mapping[str, bytes],
+    *,
+    git_executable: str = "git",
+) -> bytes:
+    """Build a bounded Docker context from a verified pinned Git snapshot."""
+
+    if _COMMIT_ID.fullmatch(commit_id) is None:
+        raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+    root = workspace.resolve(strict=True)
+
+    def git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        try:
+            return subprocess.run(
+                (git_executable, "-C", str(root), *args),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ValueError("PINNED_CONTEXT_UNAVAILABLE") from error
+
+    def require_unchanged() -> None:
+        diff = git("diff", "--quiet", "--no-ext-diff", "--no-textconv", commit_id, "--")
+        if diff.returncode == 1:
+            raise ValueError("PINNED_CONTEXT_CHANGED")
+        if diff.returncode != 0:
+            raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+
+    listed = git("ls-tree", "-r", "-z", commit_id)
+    if listed.returncode != 0 or len(listed.stdout) > 16 * 1024 * 1024:
+        raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+    index_flags = git("ls-files", "-v", "-z")
+    if index_flags.returncode != 0 or any(
+        item and not item.startswith(b"H ") for item in index_flags.stdout.split(b"\0")
+    ):
+        raise ValueError("PINNED_CONTEXT_UNSAFE")
+    entries = listed.stdout.split(b"\0")
+    if len(entries) > _MAX_PINNED_FILES + 1:
+        raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+    paths = [entry.split(b"\t", 1)[1] for entry in entries if entry and b"\t" in entry]
+    tracked_paths = frozenset(paths)
+
+    def in_nested_project(name: str) -> bool:
+        for parent in PurePosixPath(name).parents:
+            if parent == PurePosixPath("."):
+                break
+            prefix = f"{parent.as_posix()}/"
+            if any(
+                f"{prefix}{manifest}".encode() in tracked_paths
+                for manifest in (
+                    "pyproject.toml",
+                    "setup.py",
+                    "setup.cfg",
+                    "MANIFEST.in",
+                    "package.json",
+                )
+            ):
+                return True
+        return False
+
+    def flit_package_boundary() -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+        """Only omit test fixtures proven outside a simple Flit wheel package."""
+
+        if any(path in {b"setup.py", b"setup.cfg", b"MANIFEST.in"} for path in paths):
+            return None
+        for entry in entries:
+            if not entry or not entry.endswith(b"\tpyproject.toml"):
+                continue
+            try:
+                header, _path = entry.split(b"\t", 1)
+                mode, kind, object_id = header.split()
+            except ValueError:
+                return None
+            if mode != b"100644" or kind != b"blob":
+                return None
+            project_blob = git("cat-file", "blob", object_id.decode("ascii"))
+            if project_blob.returncode != 0 or len(project_blob.stdout) > 1024 * 1024:
+                return None
+            try:
+                project = tomllib.loads(project_blob.stdout.decode("utf-8"))
+            except (UnicodeError, tomllib.TOMLDecodeError):
+                return None
+            build = project.get("build-system")
+            metadata = project.get("project")
+            tool = project.get("tool")
+            flit = tool.get("flit") if isinstance(tool, dict) else None
+            module = flit.get("module") if isinstance(flit, dict) else None
+            module_name = module.get("name") if isinstance(module, dict) else None
+            if (
+                not isinstance(build, dict)
+                or build.get("build-backend") != "flit_core.buildapi"
+                or not isinstance(metadata, dict)
+                or not isinstance(flit, dict)
+                or "external-data" in flit
+                or "metadata" in flit
+                or not isinstance(module_name, str)
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module_name) is None
+            ):
+                return None
+            dynamic = metadata.get("dynamic", [])
+            if not isinstance(dynamic, list) or any(
+                not isinstance(field, str)
+                or field in {"readme", "license", "license-files"}
+                for field in dynamic
+            ):
+                return None
+            direct_refs: list[str] = []
+            readme = metadata.get("readme")
+            if isinstance(readme, str):
+                direct_refs.append(readme)
+            elif isinstance(readme, dict) and isinstance(readme.get("file"), str):
+                direct_refs.append(readme["file"])
+            elif readme is not None and not (
+                isinstance(readme, dict) and isinstance(readme.get("text"), str)
+            ):
+                return None
+            license_value = metadata.get("license")
+            if isinstance(license_value, dict):
+                if isinstance(license_value.get("file"), str):
+                    direct_refs.append(license_value["file"])
+                elif not isinstance(license_value.get("text"), str):
+                    return None
+            elif license_value is not None and not isinstance(license_value, str):
+                return None
+            license_files = metadata.get("license-files", [])
+            if not isinstance(license_files, list) or any(
+                not isinstance(pattern, str) for pattern in license_files
+            ):
+                return None
+            for reference in (*direct_refs, *license_files):
+                parsed = PurePosixPath(reference)
+                if (
+                    not reference
+                    or parsed.is_absolute()
+                    or "\\" in reference
+                    or ".." in parsed.parts
+                    or (reference in license_files and "**" in parsed.parts)
+                ):
+                    return None
+            for prefix in (f"src/{module_name}", module_name):
+                if f"{prefix}/__init__.py".encode() in tracked_paths:
+                    return (
+                        prefix,
+                        tuple(direct_refs),
+                        tuple(
+                            PurePosixPath(pattern).as_posix()
+                            for pattern in license_files
+                        ),
+                    )
+            return None
+        return None
+
+    flit_boundary = flit_package_boundary()
+    try:
+        attributes = subprocess.run(
+            (git_executable, "-C", str(root), "check-attr", "-z", "--stdin", "filter"),
+            input=b"\0".join(paths) + b"\0",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("PINNED_CONTEXT_UNAVAILABLE") from error
+    if attributes.returncode != 0 or len(attributes.stdout) > 16 * 1024 * 1024:
+        raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+    fields = attributes.stdout.split(b"\0")
+    if any(
+        fields[index] not in {b"unspecified", b"unset"}
+        for index in range(2, len(fields) - 1, 3)
+    ):
+        raise ValueError("PINNED_CONTEXT_FILTER_UNSUPPORTED")
+    dockerignore: bytes | None = None
+    for entry in entries:
+        if entry.endswith(b"\t.dockerignore"):
+            try:
+                header, _path = entry.split(b"\t", 1)
+                mode, kind, object_id = header.split()
+            except ValueError as error:
+                raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+            if mode != b"100644" or kind != b"blob":
+                raise ValueError("PINNED_CONTEXT_UNSAFE")
+            ignored = git("cat-file", "blob", object_id.decode("ascii"))
+            if ignored.returncode != 0 or len(ignored.stdout) > 1024 * 1024:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+            dockerignore = ignored.stdout
+            break
+    ignore_patterns = EnvironmentRecipeStore._dockerignore_patterns(
+        {".dockerignore": (dockerignore, 0o644)} if dockerignore is not None else {}
+    )
+    stream = io.BytesIO()
+    names = {"dockerfile", ".dockerignore"}
+    total_bytes = len(dockerfile)
+    excluded_test_paths: frozenset[str] | None = None
+
+    def add_member(
+        archive: tarfile.TarFile, name: str, raw: bytes, mode: int = 0o644
+    ) -> None:
+        nonlocal total_bytes
+        total_bytes += len(raw)
+        if total_bytes > _MAX_PINNED_CONTEXT_BYTES:
+            raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+        info = tarfile.TarInfo(name)
+        info.size = len(raw)
+        info.mode = mode
+        info.mtime = _REPRODUCIBLE_SOURCE_MTIME
+        archive.addfile(info, io.BytesIO(raw))
+
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        add_member(archive, "Dockerfile", dockerfile)
+        for entry in entries:
+            if not entry:
+                continue
+            try:
+                header, path_bytes = entry.split(b"\t", 1)
+                mode, kind, object_id = header.split()
+                name = path_bytes.decode("utf-8", errors="strict")
+                parts = PurePosixPath(name).parts
+            except (ValueError, UnicodeError) as error:
+                raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+            if (
+                not parts
+                or name.startswith("/")
+                or "\\" in name
+                or ":" in name
+                or any(part in {"", ".", ".."} for part in parts)
+                or (
+                    name.casefold() in names
+                    and name not in {"Dockerfile", ".dockerignore"}
+                )
+                or name == "wheels"
+                or name.startswith("wheels/")
+            ):
+                raise ValueError("PINNED_CONTEXT_UNSAFE")
+            if mode not in {b"100644", b"100755"} or kind != b"blob":
+                raise ValueError("PINNED_CONTEXT_UNSAFE")
+            if name in {"Dockerfile", ".dockerignore"}:
+                continue
+            if EnvironmentRecipeStore._dockerignored(name, ignore_patterns):
+                continue
+            if EnvironmentRecipeStore._looks_secret(name):
+                if is_test_only_path(root, name):
+                    if excluded_test_paths is None:
+                        try:
+                            tracked = tuple(path.decode("utf-8") for path in paths)
+                            scope = build_static_file_scope(root, tracked)
+                        except (UnicodeError, ValueError) as error:
+                            raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+                        excluded_test_paths = frozenset(
+                            path for path, _reason in scope.excluded_test_files
+                        )
+                    if (
+                        name in excluded_test_paths
+                        and flit_boundary is not None
+                        and not name.startswith(f"{flit_boundary[0]}/")
+                        and not in_nested_project(name)
+                        and all(
+                            PurePosixPath(reference).as_posix() != name
+                            for reference in flit_boundary[1]
+                        )
+                        and not any(
+                            fnmatchcase(name, pattern) for pattern in flit_boundary[2]
+                        )
+                    ):
+                        # Test-only credentials never enter a product PoC image.
+                        continue
+                raise ValueError("PINNED_CONTEXT_SECRET_FILE_DENIED")
+            target = root.joinpath(*parts)
+            try:
+                target.resolve(strict=True).relative_to(root)
+                if any(
+                    parent.is_symlink()
+                    for parent in target.parents
+                    if parent != root and parent.is_relative_to(root)
+                ):
+                    raise ValueError("PINNED_CONTEXT_UNSAFE")
+                before = target.lstat()
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_nlink != 1
+                    or getattr(before, "st_file_attributes", 0) & 0x400
+                ):
+                    raise ValueError("PINNED_CONTEXT_UNSAFE")
+            except OSError as error:
+                raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+            object_name = object_id.decode("ascii", errors="strict")
+            size = git("cat-file", "-s", object_name)
+            if size.returncode != 0:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+            try:
+                blob_size = int(size.stdout.strip())
+            except ValueError as error:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE") from error
+            if blob_size + total_bytes > _MAX_PINNED_CONTEXT_BYTES:
+                raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+            content = git("cat-file", "blob", object_name)
+            if content.returncode != 0 or len(content.stdout) != blob_size:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+            raw = content.stdout
+            add_member(archive, name, raw, 0o755 if mode == b"100755" else 0o644)
+            names.add(name.casefold())
+        for name, raw in sorted(wheels.items()):
+            if (
+                not name
+                or name != Path(name).name
+                or "/" in name
+                or "\\" in name
+                or not name.endswith(".whl")
+            ):
+                raise ValueError("WHEEL_ARCHIVE_INVALID")
+            add_member(archive, f"wheels/{name}", raw)
+    require_unchanged()
+    result = stream.getvalue()
+    if len(result) > _MAX_PINNED_CONTEXT_BYTES:
+        raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+    return result
+
+
+def _verify_context_archive(raw: bytes, dockerfile: bytes) -> None:
+    if len(raw) > _MAX_PINNED_CONTEXT_BYTES:
+        raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+    names: set[str] = set()
+    total = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            for member in archive:
+                name = member.name
+                parts = PurePosixPath(name).parts
+                if (
+                    not member.isfile()
+                    or not parts
+                    or name.startswith("/")
+                    or "\\" in name
+                    or ":" in name
+                    or any(part in {"", ".", ".."} for part in parts)
+                    or name.casefold() in names
+                    or len(names) >= _MAX_PINNED_FILES + 1
+                ):
+                    raise ValueError("PINNED_CONTEXT_UNSAFE")
+                total += member.size
+                if total > _MAX_PINNED_CONTEXT_BYTES:
+                    raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+                names.add(name.casefold())
+                if name == "Dockerfile":
+                    content = archive.extractfile(member)
+                    if content is None or content.read() != dockerfile:
+                        raise ValueError("PINNED_CONTEXT_UNSAFE")
+    except (OSError, EOFError, tarfile.TarError) as error:
+        raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+    if "dockerfile" not in names:
+        raise ValueError("PINNED_CONTEXT_UNSAFE")
 
 
 class PortableDockerRuntime:
@@ -78,6 +493,7 @@ class PortableDockerRuntime:
         dockerfile: bytes,
         cache_key: str,
         labels: Mapping[str, str],
+        context_archive: bytes | None = None,
     ) -> str:
         gate = getattr(self, "_build_slots", None)
         if gate is None:
@@ -86,6 +502,7 @@ class PortableDockerRuntime:
                 dockerfile=dockerfile,
                 cache_key=cache_key,
                 labels=labels,
+                context_archive=context_archive,
             )
         async with gate:
             return await self._build_or_reuse(
@@ -93,6 +510,7 @@ class PortableDockerRuntime:
                 dockerfile=dockerfile,
                 cache_key=cache_key,
                 labels=labels,
+                context_archive=context_archive,
             )
 
     async def _build_or_reuse(
@@ -102,35 +520,184 @@ class PortableDockerRuntime:
         dockerfile: bytes,
         cache_key: str,
         labels: Mapping[str, str],
+        context_archive: bytes | None = None,
     ) -> str:
-        tag = f"sastsimi-simple:{hashlib.sha256(cache_key.encode()).hexdigest()[:24]}"
+        builder_name: str | None = None
+        if context_archive is not None:
+            if self._network != "none":
+                raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
+            _verify_context_archive(context_archive, dockerfile)
+            builder = await self._run(("buildx", "inspect"), timeout_seconds=30)
+            name_match = re.search(
+                rb"(?m)^Name:[ \t]*([A-Za-z0-9][A-Za-z0-9_.-]{0,127})[ \t]*$",
+                builder.stdout,
+            )
+            if (
+                builder.exit_code != 0
+                or builder.timed_out
+                or name_match is None
+                or re.search(rb"(?m)^Driver:\s*docker\s*$", builder.stdout) is None
+            ):
+                raise ValueError("POC_OFFLINE_BUILDER_UNSUPPORTED")
+            builder_name = name_match.group(1).decode("ascii")
+            cache_key += ":" + hashlib.sha256(context_archive).hexdigest()
+        recipe_digest = hashlib.sha256(cache_key.encode()).hexdigest()
+        tag = f"sastsimi-simple:{recipe_digest[:24]}"
+        format_text = (
+            '{{index .Config.Labels "sastsimi.offline-recipe-sha256"}}|{{.Id}}'
+            if context_archive is not None
+            else "{{.Id}}"
+        )
         inspected = await self._run(
-            ("image", "inspect", "--format", "{{.Id}}", tag),
+            ("image", "inspect", "--format", format_text, tag),
             timeout_seconds=30,
         )
         if inspected.exit_code == 0:
-            return self._image_digest(inspected.stdout)
+            return (
+                self._offline_image_digest(inspected.stdout, recipe_digest)
+                if context_archive is not None
+                else self._image_digest(inspected.stdout)
+            )
         args: list[str] = [
             "build",
-            "--pull=false",
-            "--network",
-            self._network,
         ]
-        for key, value in sorted(labels.items()):
+        if builder_name is not None:
+            args.extend(("--builder", builder_name))
+        args.extend(("--pull=false", "--network", self._network))
+        build_labels = dict(labels)
+        if context_archive is not None:
+            build_labels["sastsimi.offline-recipe-sha256"] = recipe_digest
+        for key, value in sorted(build_labels.items()):
             args.extend(("--label", f"{key}={value}"))
-        args.extend(("--tag", tag, "--file", "-", str(workspace)))
+        args.extend(
+            ("--tag", tag, "--file", "Dockerfile", "-")
+            if context_archive is not None
+            else ("--tag", tag, "--file", "-", str(workspace))
+        )
         built = await self._run(
             tuple(args),
-            input_bytes=dockerfile,
+            input_bytes=context_archive if context_archive is not None else dockerfile,
             timeout_seconds=self._timeout,
         )
         self._require_success("DOCKER_BUILD_FAILED", built)
         inspected = await self._run(
-            ("image", "inspect", "--format", "{{.Id}}", tag),
+            ("image", "inspect", "--format", format_text, tag),
             timeout_seconds=30,
         )
         self._require_success("DOCKER_IMAGE_INSPECT_FAILED", inspected)
-        return self._image_digest(inspected.stdout)
+        return (
+            self._offline_image_digest(inspected.stdout, recipe_digest)
+            if context_archive is not None
+            else self._image_digest(inspected.stdout)
+        )
+
+    @staticmethod
+    def _offline_image_digest(raw: bytes, recipe_digest: str) -> str:
+        try:
+            recorded_recipe, image_id = raw.decode("ascii").strip().split("|")
+        except (UnicodeError, ValueError) as error:
+            raise ValueError("POC_OFFLINE_CACHE_MISMATCH") from error
+        if recorded_recipe != recipe_digest:
+            raise ValueError("POC_OFFLINE_CACHE_MISMATCH")
+        return PortableDockerRuntime._image_digest(image_id.encode("ascii"))
+
+    async def target_wheel_tags(self, base_image: str) -> frozenset[str] | None:
+        """Probe only an already-local Linux image, without network or mounts."""
+
+        inspected = await self._run(
+            (
+                "image",
+                "inspect",
+                "--format",
+                "{{.Os}}|{{.Architecture}}|{{.Id}}",
+                base_image,
+            ),
+            timeout_seconds=30,
+        )
+        if inspected.exit_code != 0 or inspected.timed_out:
+            return None
+        try:
+            os_name, _arch, image_id = (
+                inspected.stdout.decode("ascii").strip().split("|")
+            )
+        except (UnicodeError, ValueError):
+            return None
+        if os_name != "linux" or _IMAGE_DIGEST.fullmatch(image_id) is None:
+            return None
+        probed = await self._run(
+            (
+                "run",
+                "--pull",
+                "never",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,size=16m",
+                image_id,
+                "python",
+                "-c",
+                "import json; from pip._vendor.packaging import tags; "
+                "print(json.dumps([str(tag) for tag in tags.sys_tags()]))",
+            ),
+            timeout_seconds=60,
+        )
+        if probed.exit_code != 0 or probed.timed_out:
+            return None
+        try:
+            parsed = json.loads(probed.stdout)
+        except (UnicodeError, ValueError):
+            return None
+        if (
+            not isinstance(parsed, list)
+            or not parsed
+            or len(parsed) > 20_000
+            or any(not isinstance(tag, str) or len(tag) > 128 for tag in parsed)
+        ):
+            return None
+        return frozenset(parsed)
+
+    async def local_base_image_digest(self, base_image: str) -> str:
+        """Require an already-local Linux image; never trigger an implicit pull."""
+
+        inspected = await self._run(
+            ("image", "inspect", "--format", "{{.Os}}|{{.Id}}", base_image),
+            timeout_seconds=30,
+        )
+        if inspected.exit_code != 0 or inspected.timed_out:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
+        try:
+            os_name, image_id = inspected.stdout.decode("ascii").strip().split("|")
+        except (UnicodeError, ValueError) as error:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE") from error
+        if os_name != "linux" or _IMAGE_DIGEST.fullmatch(image_id) is None:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
+        return image_id
+
+    async def pin_local_base(self, image_digest: str) -> str:
+        """Give the inspected local image an immutable-by-content build reference."""
+
+        if _IMAGE_DIGEST.fullmatch(image_digest) is None:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
+        tag = f"sastsimi-offline-base:{image_digest.removeprefix('sha256:')}"
+        tagged = await self._run(
+            ("image", "tag", image_digest, tag), timeout_seconds=30
+        )
+        if tagged.exit_code != 0 or tagged.timed_out:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
+        inspected = await self._run(
+            ("image", "inspect", "--format", "{{.Id}}", tag),
+            timeout_seconds=30,
+        )
+        if (
+            inspected.exit_code != 0
+            or inspected.timed_out
+            or inspected.stdout.decode("ascii", errors="replace").strip()
+            != image_digest
+        ):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        return tag
 
     async def create_container(
         self,
@@ -550,10 +1117,16 @@ class DirectEnvironmentPreparer:
         docker: PortableDockerRuntime,
         artifacts: SimpleArtifactRepository,
         workspace: Path,
+        wheel_bundle_path: Path | None = None,
+        wheel_bundle_sha256: str | None = None,
+        git_executable: str = "git",
     ) -> None:
         self._docker = docker
         self._artifacts = artifacts
         self._workspace = workspace
+        self._wheel_bundle_path = wheel_bundle_path
+        self._wheel_bundle_sha256 = wheel_bundle_sha256
+        self._git_executable = git_executable
 
     async def prepare(
         self,
@@ -561,6 +1134,8 @@ class DirectEnvironmentPreparer:
         prior: Mapping[SimpleStage, StageCheckpoint],
         requirements: tuple[str, ...],
     ) -> ReproductionEnvironment:
+        if self._wheel_bundle_path is not None:
+            return await self._prepare_offline(checkpoint, prior, requirements)
         target_manifest = self._target_manifest_path(prior)
         if (
             target_manifest is None
@@ -657,9 +1232,330 @@ class DirectEnvironmentPreparer:
                     attempt_refs,
                     degraded,
                     status="BUILT",
+                    image_digest=image_digest,
                 )
             )
             return ReproductionEnvironment(recipe_ref, image_digest)
+
+    async def _prepare_offline(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        requirements: tuple[str, ...],
+    ) -> ReproductionEnvironment:
+        if self._docker._network != "none":
+            raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
+        if self._wheel_bundle_path is None or self._wheel_bundle_sha256 is None:
+            raise ValueError("POC_WHEEL_ARCHIVE_PAIR_REQUIRED")
+        if self._recovery_patch(checkpoint):
+            raise ValueError("POC_OFFLINE_RECOVERY_PATCH_UNSUPPORTED")
+        extra_python_requirements, required_source_paths = (
+            self._offline_agent_requirements(
+                requirements, commit_id=checkpoint.identity.commit_id
+            )
+        )
+        target_manifest = self._target_manifest_path(prior)
+        if target_manifest is None:
+            for name in ("requirements.txt", "pyproject.toml"):
+                if (self._workspace / name).is_file():
+                    target_manifest = name
+                    break
+        if target_manifest is None:
+            raise ValueError("POC_OFFLINE_MANIFEST_MISSING")
+        manifest_directory = PurePosixPath(target_manifest).parent
+        if all(
+            self._workspace.joinpath(*manifest_directory.parts, name).is_file()
+            for name in ("requirements.txt", "pyproject.toml")
+        ):
+            raise ValueError("POC_OFFLINE_MANIFEST_AMBIGUOUS")
+        base_digest = await self._docker.local_base_image_digest(_OFFLINE_BASE_IMAGE)
+        tags = await self._docker.target_wheel_tags(base_digest)
+        base_reference = await self._docker.pin_local_base(base_digest)
+        bundle = import_wheel_bundle(
+            self._wheel_bundle_path,
+            self._wheel_bundle_sha256,
+            self._artifacts,
+            target_tags=tags,
+        )
+        wheel_raw = self._artifacts.read(bundle.archive_ref)
+        wheels: dict[str, bytes] = {}
+        try:
+            with tarfile.open(fileobj=io.BytesIO(wheel_raw), mode="r:*") as archive:
+                for name in bundle.wheel_names:
+                    member = archive.getmember(name)
+                    stream = archive.extractfile(member)
+                    if stream is None:
+                        raise ValueError("POC_OFFLINE_WHEEL_ARTIFACT_INVALID")
+                    wheels[name] = stream.read()
+        except (KeyError, OSError, tarfile.TarError) as error:
+            raise ValueError("POC_OFFLINE_WHEEL_ARTIFACT_INVALID") from error
+        dockerfile = self._offline_dockerfile(
+            target_manifest, base_reference, extra_python_requirements
+        )
+        context = build_pinned_context(
+            self._workspace,
+            checkpoint.identity.commit_id,
+            dockerfile,
+            wheels,
+            git_executable=self._git_executable,
+        )
+        try:
+            with tarfile.open(fileobj=io.BytesIO(context), mode="r:") as archive:
+                manifest_member = archive.getmember(target_manifest)
+                manifest_stream = archive.extractfile(manifest_member)
+                if manifest_stream is None:
+                    raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED")
+                manifest = manifest_stream.read()
+                paths = {member.name for member in archive}
+        except KeyError as error:
+            raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED") from error
+        if any(path not in paths for path in required_source_paths):
+            raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+        self._validate_offline_manifest(target_manifest, manifest, paths)
+        dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
+        manifest_sha256 = hashlib.sha256(manifest).hexdigest()
+        context_sha256 = hashlib.sha256(context).hexdigest()
+        metadata = {
+            "wheel_archive_ref": bundle.archive_ref.model_dump(mode="json"),
+            "wheel_archive_sha256": bundle.archive_sha256,
+            "manifest_sha256": manifest_sha256,
+            "base_image_digest": base_digest,
+            "build_network": "none",
+            "context_sha256": context_sha256,
+        }
+        cache_key = offline_recipe_cache_key(
+            archive_sha256=bundle.archive_sha256,
+            manifest_sha256=manifest_sha256,
+            commit_id=checkpoint.identity.commit_id,
+            dockerfile_sha256=dockerfile_ref.content_hash,
+            base_image_digest=base_digest,
+            network="none",
+        )
+        labels = PortableDockerRuntime._owner_labels(
+            checkpoint.identity, checkpoint.attempt_id or "initial"
+        )
+        source = "GENERATED_OFFLINE_WHEELS"
+        if await self._docker.local_base_image_digest(base_reference) != base_digest:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        try:
+            image_digest = await self._docker.build_or_reuse(
+                workspace=self._workspace,
+                dockerfile=dockerfile,
+                cache_key=cache_key,
+                labels=labels,
+                context_archive=context,
+            )
+        except DockerOperationError as error:
+            if error.outcome is not None and _OFFLINE_MISSING.search(
+                error.outcome.stderr + b"\n" + error.outcome.stdout
+            ):
+                error = DockerOperationError(
+                    "POC_OFFLINE_DEPENDENCY_MISSING", error.outcome
+                )
+            attempt_refs = [
+                self._build_attempt_ref(
+                    checkpoint, source, dockerfile_ref, "FAILED", error
+                )
+            ]
+            recipe_ref = self._artifacts.put_json(
+                self._recipe(
+                    checkpoint,
+                    source,
+                    dockerfile_ref,
+                    target_manifest,
+                    requirements,
+                    attempt_refs,
+                    False,
+                    status="BLOCKED",
+                    offline=metadata,
+                )
+            )
+            raise DockerBuildAttemptsError(
+                error, tuple(attempt_refs), recipe_ref
+            ) from error
+        if (
+            await self._docker.local_base_image_digest(_OFFLINE_BASE_IMAGE)
+            != base_digest
+        ):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        if await self._docker.local_base_image_digest(base_reference) != base_digest:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        attempt_refs = [
+            self._build_attempt_ref(checkpoint, source, dockerfile_ref, "BUILT", None)
+        ]
+        recipe_ref = self._artifacts.put_json(
+            self._recipe(
+                checkpoint,
+                source,
+                dockerfile_ref,
+                target_manifest,
+                requirements,
+                attempt_refs,
+                False,
+                status="BUILT",
+                image_digest=image_digest,
+                offline=metadata,
+            )
+        )
+        return ReproductionEnvironment(recipe_ref, image_digest)
+
+    @staticmethod
+    def _offline_agent_requirements(
+        requirements: tuple[str, ...], *, commit_id: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        accepted: list[str] = []
+        source_paths: list[str] = []
+        for raw in requirements:
+            item = raw.strip()
+            if item.casefold() in {"python:3.12", "python 3.12"}:
+                continue
+            pinned_source = _OFFLINE_PINNED_SOURCE.fullmatch(item)
+            file_first_source = _OFFLINE_PINNED_SOURCE_FILE_FIRST.fullmatch(item)
+            if pinned_source is not None or file_first_source is not None:
+                if pinned_source is not None:
+                    source_commit, source_path = pinned_source.groups()
+                else:
+                    assert file_first_source is not None
+                    source_path, source_commit = file_first_source.groups()
+                if (
+                    source_commit != commit_id
+                    or len(source_path) > 512
+                    or source_path != source_path.strip()
+                    or source_path.startswith("/")
+                    or "\\" in source_path
+                    or ":" in source_path
+                    or any(ord(char) < 32 or ord(char) == 127 for char in source_path)
+                    or any(part in {"", ".", ".."} for part in source_path.split("/"))
+                ):
+                    raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+                source_paths.append(source_path)
+                continue
+            explicit_python = item.casefold().startswith("pip:")
+            if explicit_python:
+                item = item[4:].strip()
+            elif not any(
+                operator in item
+                for operator in ("==", ">=", "<=", "~=", "!=", ">", "<")
+            ):
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+            if any(character in item for character in "\r\n\x00\\"):
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+            try:
+                parsed = Requirement(item)
+            except InvalidRequirement as error:
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED") from error
+            if parsed.url is not None:
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+            accepted.append(item)
+        return tuple(accepted), tuple(source_paths)
+
+    @staticmethod
+    def _offline_dockerfile(
+        target_manifest: str,
+        base_reference: str,
+        extra_python_requirements: tuple[str, ...] = (),
+    ) -> bytes:
+        relative = PurePosixPath(target_manifest)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or any(character in target_manifest for character in "\\\r\n\x00")
+            or relative.name not in {"requirements.txt", "pyproject.toml"}
+        ):
+            raise ValueError("POC_OFFLINE_MANIFEST_UNSUPPORTED")
+        if not base_reference.startswith("sastsimi-offline-base:") or not re.fullmatch(
+            r"sastsimi-offline-base:[0-9a-f]{64}", base_reference
+        ):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
+        if relative.name == "requirements.txt":
+            target = f"-r {shlex.quote('/workspace/' + target_manifest)}"
+        else:
+            directory = "/workspace"
+            if relative.parent != PurePosixPath("."):
+                directory += "/" + relative.parent.as_posix()
+            target = shlex.quote(directory)
+        extra_install = (
+            "RUN python -m pip install --no-cache-dir --no-index "
+            "--find-links=/opt/sastsimi-wheels --only-binary=:all: "
+            + " ".join(
+                shlex.quote(requirement) for requirement in extra_python_requirements
+            )
+            + "\n"
+            if extra_python_requirements
+            else ""
+        )
+        return (
+            f"FROM {base_reference}\n"
+            "WORKDIR /workspace\n"
+            "COPY wheels/ /opt/sastsimi-wheels/\n"
+            "COPY . /workspace\n"
+            "RUN find /workspace -type f -exec touch -t 198001020000.00 {} +\n"
+            "RUN python -m pip install --no-cache-dir --no-index "
+            "--find-links=/opt/sastsimi-wheels --only-binary=:all: "
+            f"{target}\n"
+            f"{extra_install}"
+            "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
+            'CMD ["sleep", "infinity"]\n'
+        ).encode()
+
+    @staticmethod
+    def _validate_offline_manifest(
+        path: str, raw: bytes, context_paths: set[str]
+    ) -> None:
+        def check_requirement(value: str) -> None:
+            try:
+                requirement = Requirement(value)
+            except InvalidRequirement as error:
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED") from error
+            if requirement.url is not None:
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+
+        if path.endswith("requirements.txt"):
+            try:
+                lines = raw.decode("utf-8").splitlines()
+            except UnicodeError as error:
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED") from error
+            for line in lines:
+                item = line.strip()
+                if not item or item.startswith("#"):
+                    continue
+                if item.startswith("-") or "\\" in item:
+                    raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+                check_requirement(re.split(r"\s+#", item, maxsplit=1)[0])
+            return
+        try:
+            project = tomllib.loads(raw.decode("utf-8"))
+        except (UnicodeError, tomllib.TOMLDecodeError) as error:
+            raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED") from error
+        tool = project.get("tool")
+        if (
+            str(PurePosixPath(path).parent / "uv.lock") in context_paths
+            or isinstance(tool, dict)
+            and any(key in tool for key in ("uv", "poetry"))
+        ):
+            raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+        metadata = project.get("project")
+        if not isinstance(metadata, dict):
+            raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+        dynamic = metadata.get("dynamic", [])
+        if isinstance(dynamic, list) and "dependencies" in dynamic:
+            raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+        for section in (metadata.get("dependencies", []),):
+            if not isinstance(section, list):
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+            for item in section:
+                if not isinstance(item, str):
+                    raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+                check_requirement(item)
+        build = project.get("build-system")
+        if isinstance(build, dict):
+            required = build.get("requires", [])
+            if not isinstance(required, list):
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+            for item in required:
+                if not isinstance(item, str):
+                    raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+                check_requirement(item)
 
     def _build_attempt_ref(
         self,
@@ -731,6 +1627,8 @@ class DirectEnvironmentPreparer:
         degraded: bool,
         *,
         status: str,
+        image_digest: str | None = None,
+        offline: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         return {
             "kind": "simple_environment_recipe",
@@ -752,6 +1650,8 @@ class DirectEnvironmentPreparer:
             "build_attempt_refs": [ref.model_dump(mode="json") for ref in attempt_refs],
             "degraded": degraded,
             "status": status,
+            **(dict(offline) if offline is not None else {}),
+            **({"image_digest": image_digest} if image_digest is not None else {}),
         }
 
     def _recovery_patch(self, checkpoint: StageCheckpoint) -> bytes:
@@ -1129,6 +2029,8 @@ class DirectEnvironmentPreparer:
 
 
 __all__ = [
+    "build_pinned_context",
+    "offline_recipe_cache_key",
     "DirectEnvironmentPreparer",
     "PortableContainerFactory",
     "PortableDockerRuntime",

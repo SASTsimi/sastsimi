@@ -28,7 +28,10 @@ from sastsimi.policy.adapters.official_http import (
 )
 from sastsimi.ports.public_commands import PublicCommandApplication
 from sastsimi.progress.models import ProgressSnapshot
-from sastsimi.progress.projector import ProgressProjector
+from sastsimi.progress.projector import (
+    ProgressProjector,
+    verified_surface_coverage_counts,
+)
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
@@ -42,6 +45,7 @@ from sastsimi.simple_runtime.application import (
     StaticBootstrapResult,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.attack_surfaces import surface_index_from_json
 from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
@@ -64,7 +68,12 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
+    StageCheckpoint,
     StageStatus,
+)
+from sastsimi.simple_runtime.poc_currentness import (
+    stale_poc_hypothesis_ids,
+    stale_successful_poc,
 )
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
@@ -87,6 +96,8 @@ from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 from .simple_process import LocalProcessExecutor
+
+_MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 
 
 def _codex_home() -> Path:
@@ -118,7 +129,8 @@ class SimpleClientFactory:
         self._semaphore = asyncio.Semaphore(profile.llm_max_concurrency)
         self._cursor_models = CursorModelCatalog()
         self._store = SimpleCheckpointStore(
-            profile.data_dir / "db" / "sastsimi.sqlite3"
+            profile.data_dir / "db" / "sastsimi.sqlite3",
+            artifact_data_dir=profile.data_dir,
         )
 
     def _budget(self, identity: CheckpointIdentity) -> RunUsageBudget:
@@ -277,7 +289,34 @@ class SimpleClientFactory:
         if not isinstance(provider_ref, StoredDataRef):
             raise ValueError("SIMPLE_RUNTIME_PROVIDER_REFERENCE_INVALID")
         return SimpleCodexClient(
-            runner=CodexCliProcessRunner(binding=binding.binding),
+            runner=CodexCliProcessRunner(
+                binding=binding.binding,
+                on_child_spawning=lambda call_id, phase: (
+                    self._store.begin_codex_child_spawn(
+                        call_id=call_id,
+                        analysis_id=identity.analysis_id,
+                        phase=phase,
+                    )
+                ),
+                on_child_started=lambda call_id, phase, pid, start: (
+                    self._store.record_codex_child_spawn(
+                        call_id=call_id,
+                        analysis_id=identity.analysis_id,
+                        phase=phase,
+                        pid=pid,
+                        start_identity=start,
+                    )
+                ),
+                on_child_stopped=lambda call_id, phase, pid, start: (
+                    self._store.mark_codex_child_exited(
+                        call_id=call_id,
+                        analysis_id=identity.analysis_id,
+                        phase=phase,
+                        pid=pid,
+                        start_identity=start,
+                    )
+                ),
+            ),
             provider_profile_ref=provider_ref,
             model=model,
             artifacts=artifacts,
@@ -289,7 +328,9 @@ def build_analysis_application(
     profile: SimpleExecutionProfile,
 ) -> SimpleAnalysisApplication:
     data_dir = config.data_dir
-    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    store = SimpleCheckpointStore(
+        data_dir / "db" / "sastsimi.sqlite3", artifact_data_dir=data_dir
+    )
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
 
@@ -313,6 +354,13 @@ def build_analysis_application(
             docker=docker,
             artifacts=artifacts,
             workspace=static.workspace_path,
+            wheel_bundle_path=profile.poc_wheel_archive_path,
+            wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
+            git_executable=(
+                str(profile.tools["git"].executable_path)
+                if "git" in profile.tools
+                else "git"
+            ),
         )
         try:
             repository_url = runtime_store.require_analysis_run(
@@ -341,6 +389,7 @@ def build_analysis_application(
                 ),
             ),
             codex_invalid_output_resume=profile.provider == "codex",
+            cleanup_artifacts=artifacts,
             recovery=recovery_factory(identity),
             policy_snapshot_ref=static.policy_snapshot_ref,
         )
@@ -369,6 +418,7 @@ def build_analysis_application(
             client_factory=client_factory,
             feed=profile.hypothesis_feed,
             store=store,
+            llm_timeout_seconds=profile.llm_timeout_seconds,
         ),
         runner_factory=runner_factory,
         profile_ref=profile.provider_profile_ref,
@@ -376,6 +426,7 @@ def build_analysis_application(
         model=profile.model,
         recovery_factory=recovery_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
+        max_pending_candidate_children=profile.max_pending_candidate_children,
         max_elapsed_seconds=profile.max_elapsed_seconds,
         max_tokens=profile.max_tokens,
         max_cost_minor_units=profile.max_cost_minor_units,
@@ -386,6 +437,7 @@ def build_analysis_application(
             client_factory=client_factory,
             feed="current",
             store=store,
+            llm_timeout_seconds=profile.llm_timeout_seconds,
         ),
     )
 
@@ -394,7 +446,10 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def __init__(self, config: UserConfig, profile: SimpleExecutionProfile) -> None:
         self._config = config
         self._profile = profile
-        self._store = SimpleCheckpointStore(config.data_dir / "db" / "sastsimi.sqlite3")
+        self._store = SimpleCheckpointStore(
+            config.data_dir / "db" / "sastsimi.sqlite3",
+            artifact_data_dir=config.data_dir,
+        )
         self._display = AnalysisDisplayIdStore(self._store.database_path)
 
     def analyze(self, repository: str, commit: str) -> dict[str, object]:
@@ -506,8 +561,11 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             hypothesis_id=None,
         )
         scope = run.candidate_scope_fingerprint
-        candidate_mode = run.candidate_pipeline_version == 1
-        return ProgressProjector(self._store).snapshot(
+        candidate_mode = run.candidate_pipeline_version in {1, 2}
+        surface_counts, surface_index_hash = self._surface_metrics(run, identity, scope)
+        return ProgressProjector(
+            self._store, artifact_data_dir=self._config.data_dir
+        ).snapshot(
             run.analysis_id,
             static_disposition=run.static_disposition,
             candidate_pipeline_version=run.candidate_pipeline_version or 0,
@@ -531,29 +589,144 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 else None
             ),
             candidate_scope_fingerprint=scope if candidate_mode else None,
+            surface_counts=surface_counts,
+            surface_index_hash=surface_index_hash,
+            analysis_active=(
+                analysis_run_lease_active(self._config.data_dir, run.analysis_id)
+                is True
+            ),
         )
+
+    def _surface_metrics(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        scope: str | None,
+    ) -> tuple[dict[str, int] | None, str | None]:
+        if (
+            run.candidate_pipeline_version != 2
+            or scope is None
+            or run.static_bundle_ref is None
+        ):
+            return None, None
+        try:
+            record = self._store.get_attack_surface_index(identity, scope)
+            if record is None:
+                return None, None
+            repository = SimpleArtifactRepository(self._config.data_dir, identity)
+            raw = repository.read_bounded(record.index_ref, _MAX_SURFACE_PROGRESS_BYTES)
+            index = surface_index_from_json(json.loads(raw))
+            if (
+                record.static_bundle_hash != run.static_bundle_ref.content_hash
+                or index.scope_fingerprint != scope
+                or index.workspace_id != identity.workspace_id
+                or index.commit_id != identity.commit_id
+                or index.static_bundle_hash != record.static_bundle_hash
+                or index.ast_manifest_hash != record.ast_manifest_hash
+                or index.candidate_inventory_hash != record.candidate_inventory_hash
+                or index.candidate_count != record.candidate_count
+            ):
+                return None, None
+            progress = self._store.list_surface_exploration_progress(identity, scope)
+        except (OSError, ValueError, sqlite3.Error):
+            return None, None
+        indexed = {surface.surface_id for surface in index.surfaces}
+        recorded_contexts = sum(
+            1
+            for item in progress.values()
+            if item.surface_id in indexed
+            and item.static_bundle_hash == record.static_bundle_hash
+            and item.index_hash == record.index_ref.content_hash
+        )
+        counts = {"TOTAL": len(indexed), "CONTEXT_RECORDS": recorded_contexts}
+        terminal = run.candidate_terminal
+        if (
+            terminal is not None
+            and terminal.surface_index_hash == record.index_ref.content_hash
+            and terminal.surface_coverage_hash
+        ):
+            try:
+                coverage_ref = next(
+                    (
+                        ref
+                        for checkpoint in self._store.list_checkpoints(run.analysis_id)
+                        if checkpoint.identity == identity
+                        and checkpoint.stage is SimpleStage.HYPOTHESIS_DONE
+                        and checkpoint.status is StageStatus.SUCCEEDED
+                        for ref in checkpoint.output_refs
+                        if ref.content_hash == terminal.surface_coverage_hash
+                    ),
+                    None,
+                )
+                verified = (
+                    verified_surface_coverage_counts(
+                        json.loads(
+                            repository.read_bounded(
+                                coverage_ref, _MAX_SURFACE_PROGRESS_BYTES
+                            )
+                        ),
+                        index,
+                        terminal,
+                    )
+                    if coverage_ref is not None
+                    else None
+                )
+            except (OSError, ValueError, sqlite3.Error):
+                verified = None
+            if verified is not None:
+                counts.update(verified)
+        return counts, record.index_ref.content_hash
 
     def status(self, analysis_id: str) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
         snapshot = self._progress_snapshot(run)
-        if (
-            run.candidate_pipeline_version == 1
-            and snapshot.status == "RUNNING"
-            and analysis_run_lease_active(self._config.data_dir, exact) is False
-        ):
-            snapshot = snapshot.model_copy(
-                update={
-                    "status": "PAUSED",
-                    "error_code": "INTERRUPTED_RESUME_REQUIRED",
-                    "resume_action": "RESUME_INTERRUPTED",
-                }
-            )
+        lease_inactive = (
+            analysis_run_lease_active(self._config.data_dir, exact) is False
+        )
+        if run.candidate_pipeline_version in {1, 2} and lease_inactive:
+            if self._store.unresolved_codex_call(exact) is not None:
+                snapshot = snapshot.model_copy(
+                    update={
+                        "status": "BLOCKED",
+                        "error_code": "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+                    }
+                )
+            elif snapshot.status == "RUNNING":
+                snapshot = snapshot.model_copy(
+                    update={
+                        "status": "PAUSED",
+                        "error_code": "INTERRUPTED_RESUME_REQUIRED",
+                        "resume_action": "RESUME_INTERRUPTED",
+                    }
+                )
+        if snapshot.status in {"BLOCKED", "FAILED"} and snapshot.error_code in {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }:
+            if (
+                lease_inactive
+                and self._confirmed_cleanup_resume_ready(exact)
+                and analysis_run_lease_active(self._config.data_dir, exact) is False
+            ):
+                snapshot = snapshot.model_copy(
+                    update={
+                        "status": "PAUSED",
+                        "error_code": "INTERRUPTED_RESUME_REQUIRED",
+                        "resume_action": "RESUME_INTERRUPTED",
+                    }
+                )
+            else:
+                snapshot = snapshot.model_copy(
+                    update={"resume_action": "MANUAL_CODEX_CLEANUP_REVIEW"}
+                )
         return {
             "analysis_id": run.display_analysis_id,
             "exact_analysis_id": exact,
             "status": snapshot.status,
             "percent": snapshot.percent,
+            "percentage_kind": snapshot.percentage_kind,
+            "phase_counts": snapshot.phase_counts,
             "completed_units": snapshot.completed_units,
             "known_units": snapshot.known_units,
             "current_stage": snapshot.current_stage,
@@ -573,6 +746,39 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "resume_action": snapshot.resume_action,
             **self._static_coverage_status(run),
         }
+
+    def _confirmed_cleanup_resume_ready(self, analysis_id: str) -> bool:
+        cleanup_errors = {
+            "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+        }
+        try:
+            checkpoints: tuple[StageCheckpoint, ...] = self._store.list_checkpoints(
+                analysis_id
+            )
+            affected = [
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+                and checkpoint.error_code in cleanup_errors
+            ]
+            if not affected or self._store.unresolved_codex_call(analysis_id):
+                return False
+            return all(
+                self._store.has_codex_cleanup_confirmation(
+                    checkpoint,
+                    SimpleArtifactRepository(
+                        self._config.data_dir, checkpoint.identity
+                    ),
+                )
+                if checkpoint.error_code == "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                else self._store.confirmed_codex_call_covering(
+                    analysis_id, checkpoint.updated_at
+                )
+                for checkpoint in affected
+            )
+        except (OSError, ValueError, LookupError, sqlite3.Error):
+            return False
 
     def _static_coverage_status(self, run: SimpleAnalysisRun) -> dict[str, object]:
         """Expose only bounded, exact-verified static scope facts."""
@@ -744,11 +950,13 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
         checkpoints = self._store.list_checkpoints(exact)
+        stale_hypothesis_ids = stale_poc_hypothesis_ids(checkpoints)
         findings = [
             checkpoint
             for checkpoint in checkpoints
             if checkpoint.stage is SimpleStage.FINDING_DONE
             and checkpoint.output_refs
+            and checkpoint.identity.hypothesis_id not in stale_hypothesis_ids
             and technical_gate_accepted(
                 self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
                 SimpleArtifactRepository(self._config.data_dir, checkpoint.identity),
@@ -765,7 +973,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                         hypothesis_id=None,
                     )
                 )
-                if run.candidate_pipeline_version == 1
+                if run.candidate_pipeline_version in {1, 2}
                 else len(run.hypothesis_ids)
             ),
             "finding_count": len(findings),
@@ -782,7 +990,11 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         identity, _finding_ref = self._finding_identity(finding_id)
         candidate = self._store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
         dynamic = self._store.require(identity, SimpleStage.POC_EXECUTION_DONE)
-        if dynamic.validated_poc_ref is None or len(candidate.output_refs) < 2:
+        if (
+            stale_successful_poc(dynamic)
+            or dynamic.validated_poc_ref is None
+            or len(candidate.output_refs) < 2
+        ):
             raise LookupError("VALIDATED_POC_NOT_FOUND")
         return (
             SimpleArtifactRepository(self._config.data_dir, identity)
@@ -793,6 +1005,10 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def report(self, finding_id: str) -> str:
         identity, finding_ref = self._finding_identity(finding_id)
         checkpoint = self._store.require(identity, SimpleStage.REPORT_DONE)
+        if stale_successful_poc(
+            self._store.get(identity, SimpleStage.POC_EXECUTION_DONE)
+        ):
+            raise LookupError("CURRENT_REPORT_NOT_FOUND")
         if not technical_gate_accepted(
             self._store.get(identity, SimpleStage.TECH_GATE_DONE),
             SimpleArtifactRepository(self._config.data_dir, identity),

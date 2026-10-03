@@ -189,6 +189,165 @@ def test_duplicate_publication_never_overwrites_existing_artifact(
     assert not (first.database_root / "changed.txt").exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory rename sharing")
+@pytest.mark.parametrize("winerror", [5, 32])
+def test_windows_transient_rename_denial_retries_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int
+) -> None:
+    """Catches a temporary Windows share lock losing a valid publication."""
+
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    identity = _identity()
+    original_rename = os.rename
+    attempts = 0
+
+    def deny_once(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError(13, "Access is denied", str(source), winerror, str(target))
+        original_rename(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", deny_once)
+        published = publish_codeql_database(
+            registry_root=registry,
+            database_root=_database(tmp_path),
+            identity=identity,
+        )
+
+    assert 2 <= attempts <= 3
+    assert published.database_digest == EXPECTED_DATABASE_DIGEST
+    assert (
+        lookup_codeql_database(registry_root=registry, identity=identity) == published
+    )
+    assert tuple(registry.iterdir()) == (published.artifact_root,)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory rename sharing")
+def test_windows_persistent_rename_denial_stops_after_three_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches unbounded retries or swallowed permanent access denials."""
+
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    attempts = 0
+
+    def always_deny(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise OSError(13, "Access is denied", str(source), 5, str(target))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", always_deny)
+        with pytest.raises(PermissionError) as error:
+            publish_codeql_database(
+                registry_root=registry,
+                database_root=_database(tmp_path),
+                identity=_identity(),
+            )
+
+    assert getattr(error.value, "winerror", None) == 5
+    assert attempts == 3
+    assert tuple(registry.iterdir()) == ()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory rename sharing")
+def test_windows_unrelated_rename_permission_error_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches retries of permission errors other than transient share locks."""
+
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    attempts = 0
+
+    def deny_for_other_reason(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise OSError(13, "Privilege not held", str(source), 1314, str(target))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", deny_for_other_reason)
+        with pytest.raises(OSError) as error:
+            publish_codeql_database(
+                registry_root=registry,
+                database_root=_database(tmp_path),
+                identity=_identity(),
+            )
+
+    assert getattr(error.value, "winerror", None) == 1314
+    assert attempts == 1
+    assert tuple(registry.iterdir()) == ()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory rename sharing")
+def test_windows_rename_denial_does_not_retry_after_target_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches a retry that could replace another publisher's artifact."""
+
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    attempts = 0
+    collided: Path | None = None
+
+    def collide_then_deny(source: Path, target: Path) -> None:
+        nonlocal attempts, collided
+        attempts += 1
+        collided = target
+        target.mkdir()
+        (target / "owner.txt").write_text("keep", encoding="utf-8")
+        raise OSError(13, "Access is denied", str(source), 5, str(target))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", collide_then_deny)
+        with pytest.raises(FileExistsError, match="CODEQL_DATABASE_ALREADY_PUBLISHED"):
+            publish_codeql_database(
+                registry_root=registry,
+                database_root=_database(tmp_path),
+                identity=_identity(),
+            )
+
+    assert attempts == 1
+    assert collided is not None
+    assert (collided / "owner.txt").read_text(encoding="utf-8") == "keep"
+    assert tuple(registry.iterdir()) == (collided,)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory rename sharing")
+def test_windows_rename_denial_rechecks_cancellation_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches publication continuing after cancellation during a share lock."""
+
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    attempts = 0
+    cancelled = False
+
+    def deny_and_cancel(source: Path, target: Path) -> None:
+        nonlocal attempts, cancelled
+        attempts += 1
+        cancelled = True
+        raise OSError(13, "Access is denied", str(source), 5, str(target))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", deny_and_cancel)
+        with pytest.raises(ValueError, match="CODEQL_DATABASE_PROVISION_CANCELLED"):
+            publish_codeql_database(
+                registry_root=registry,
+                database_root=_database(tmp_path),
+                identity=_identity(),
+                cancellation_requested=lambda: cancelled,
+            )
+
+    assert attempts == 1
+    assert tuple(registry.iterdir()) == ()
+
+
 def test_lookup_rejects_identity_or_database_mismatch(tmp_path: Path) -> None:
     """Catches stale metadata and post-publication database mutation."""
 

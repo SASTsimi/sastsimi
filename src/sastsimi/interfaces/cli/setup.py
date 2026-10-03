@@ -95,6 +95,9 @@ def choices_from_args(
         hypothesis_feed=getattr(args, "hypothesis_feed", "current"),
         semgrep_fallback=bool(getattr(args, "semgrep_fallback", False)),
         max_parallel_hypotheses=getattr(args, "max_parallel_hypotheses", 1),
+        max_pending_candidate_children=getattr(
+            args, "max_pending_candidate_children", 128
+        ),
         max_parallel_builds=getattr(args, "max_parallel_builds", 1),
         max_parallel_containers=getattr(args, "max_parallel_containers", 1),
         cursor_allow_on_demand=bool(getattr(args, "cursor_allow_on_demand", False)),

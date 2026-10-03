@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pytest
 
+from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.discovery import CandidateDiscovery
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
@@ -32,13 +35,25 @@ class _Candidate:
     origins: tuple[_Origin, ...] = (_Origin(),)
     evidence_ref: Any = None
     decision: str = "PENDING"
+    decision_evidence_refs: tuple[StoredDataRef, ...] = ()
+    decision_attempt_ref: StoredDataRef | None = None
 
 
 class _Store:
     def __init__(self, items: list[_Candidate]) -> None:
         self.items = {item.candidate_id: item for item in items}
-        self.decisions: dict[str, str] = {}
+        self.decisions: dict[str, str] = {
+            item.candidate_id: item.decision
+            for item in items
+            if item.decision != "PENDING"
+        }
         self.reasons: dict[str, str] = {}
+        self.evidence_refs: dict[str, tuple[StoredDataRef, ...]] = {
+            item.candidate_id: item.decision_evidence_refs for item in items
+        }
+        self.attempt_refs: dict[str, StoredDataRef | None] = {
+            item.candidate_id: item.decision_attempt_ref for item in items
+        }
 
     def list_candidates(
         self,
@@ -50,7 +65,12 @@ class _Store:
         limit: int = 100,
     ) -> tuple[_Candidate, ...]:
         return tuple(
-            item
+            replace(
+                item,
+                decision=self.decisions.get(key, "PENDING"),
+                decision_evidence_refs=self.evidence_refs.get(key, ()),
+                decision_attempt_ref=self.attempt_refs.get(key),
+            )
             for key, item in sorted(self.items.items())
             if self.decisions.get(key, "PENDING") == status
             and (after_id is None or key > after_id)
@@ -63,12 +83,13 @@ class _Store:
         candidate_id: str,
         decision: str,
         reason: str,
-        evidence_refs: tuple[object, ...] = (),
-        attempt_ref: object = None,
+        evidence_refs: tuple[StoredDataRef, ...] = (),
+        attempt_ref: StoredDataRef | None = None,
     ) -> None:
-        del evidence_refs, attempt_ref
         self.decisions[candidate_id] = decision
         self.reasons[candidate_id] = reason
+        self.evidence_refs[candidate_id] = evidence_refs
+        self.attempt_refs[candidate_id] = attempt_ref
 
     def candidate_counts(self, _identity: object, _scope: str) -> dict[str, int]:
         out = {
@@ -112,12 +133,14 @@ class _Client:
         max_items: int = 10,
         budget: bool = False,
         fatal_code: str | None = None,
+        fatal_refs: tuple[StoredDataRef, ...] = (),
     ) -> None:
         self.invalid_once = invalid_once
         self.invalid_failure_once = invalid_failure_once
         self.max_items = max_items
         self.budget = budget
         self.fatal_code = fatal_code
+        self.fatal_refs = fatal_refs
         self.calls: list[bytes] = []
         self.batch_sizes: list[int] = []
 
@@ -137,13 +160,19 @@ class _Client:
         output_schema: Mapping[str, Any],
         timeout_ms: int,
         agent_name: str = "agent",
+        owner: AttemptOwner | None = None,
+        prompt_bytes: PromptByteCounts | None = None,
+        invocation_id: str | None = None,
     ) -> SimpleLLMCallResult | StageFailure:
-        del output_schema, timeout_ms
+        del output_schema, timeout_ms, owner, prompt_bytes, invocation_id
         assert agent_name == "discovery"
         self.calls.append(prompt)
         if self.fatal_code is not None:
             return StageFailure(
-                code=self.fatal_code, retryable=False, safe_message="fatal"
+                code=self.fatal_code,
+                retryable=False,
+                safe_message="fatal",
+                evidence_refs=self.fatal_refs,
             )
         rows = json.loads(prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0])
         self.batch_sizes.append(len(rows))
@@ -189,6 +218,90 @@ def _identity() -> CheckpointIdentity:
     )
 
 
+def _ref(name: str) -> StoredDataRef:
+    return StoredDataRef(
+        stored_data_id=StoredDataId(name),
+        data_kind="simple_runtime_artifact",
+        content_hash="a" * 64,
+        workspace_id=WorkspaceId("workspace-1"),
+        commit_id=CommitId("a" * 40),
+        record_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fatal_provider_failure_keeps_checkpoint_and_audit_refs() -> None:
+    candidate_ref = _ref("candidate-source")
+    request_ref = _ref("provider-request")
+    diagnostic_ref = _ref("provider-diagnostic")
+    store = _Store([_Candidate("candidate-1", evidence_ref=candidate_ref)])
+
+    outcome = await CandidateDiscovery(
+        store=store,
+        artifacts=_Artifacts(),
+        client=_Client(
+            fatal_code="INVALID_CREDENTIAL",
+            fatal_refs=(request_ref, diagnostic_ref),
+        ),
+    ).run(_identity(), "scope")
+
+    assert outcome.status == "ERROR"
+    assert outcome.error_code == "INVALID_CREDENTIAL"
+    assert outcome.evidence_refs == (request_ref, diagnostic_ref)
+    assert store.evidence_refs["candidate-1"] == (
+        candidate_ref,
+        request_ref,
+        diagnostic_ref,
+    )
+    assert store.attempt_refs["candidate-1"] == diagnostic_ref
+
+
+@pytest.mark.asyncio
+async def test_recovered_provider_failure_keeps_failed_attempt_ref_in_decision() -> (
+    None
+):
+    request_ref = _ref("provider-request")
+
+    class RecoveringClient(_Client):
+        async def call(
+            self,
+            *,
+            prompt: bytes,
+            output_schema: Mapping[str, Any],
+            timeout_ms: int,
+            agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
+        ) -> SimpleLLMCallResult | StageFailure:
+            if not self.calls:
+                self.calls.append(prompt)
+                return StageFailure(
+                    code="TIMED_OUT",
+                    retryable=True,
+                    safe_message="timed out",
+                    evidence_refs=(request_ref,),
+                )
+            return await super().call(
+                prompt=prompt,
+                output_schema=output_schema,
+                timeout_ms=timeout_ms,
+                agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
+            )
+
+    store = _Store([_Candidate("candidate-1")])
+    outcome = await CandidateDiscovery(
+        store=store, artifacts=_Artifacts(), client=RecoveringClient()
+    ).run(_identity(), "scope")
+
+    assert outcome.status == "COMPLETE"
+    assert store.decisions["candidate-1"] == "INCLUDE"
+    assert request_ref in store.evidence_refs["candidate-1"]
+
+
 @pytest.mark.asyncio
 async def test_reviews_all_six_hundred_candidates_in_bounded_batches() -> None:
     store = _Store([_Candidate(f"candidate-{i:04d}") for i in range(600)])
@@ -224,6 +337,70 @@ async def test_resume_retries_prior_error_once_without_looping() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resume_error_keeps_prior_decision_and_attempt_refs() -> None:
+    source_ref = _ref("candidate-source")
+    prior_diagnostic = _ref("prior-diagnostic")
+    prior_attempt = _ref("prior-attempt")
+    current_diagnostic = _ref("current-diagnostic")
+    store = _Store(
+        [
+            _Candidate(
+                "candidate-1",
+                evidence_ref=source_ref,
+                decision="ERROR",
+                decision_evidence_refs=(source_ref, prior_diagnostic),
+                decision_attempt_ref=prior_attempt,
+            )
+        ]
+    )
+
+    outcome = await CandidateDiscovery(
+        store=store,
+        artifacts=_Artifacts(),
+        client=_Client(fatal_code="TIMED_OUT", fatal_refs=(current_diagnostic,)),
+    ).run(_identity(), "scope", retry_errors=True)
+
+    assert outcome.status == "ERROR"
+    assert store.evidence_refs["candidate-1"] == (
+        source_ref,
+        prior_diagnostic,
+        prior_attempt,
+        current_diagnostic,
+    )
+    assert store.attempt_refs["candidate-1"] == current_diagnostic
+
+
+@pytest.mark.asyncio
+async def test_resume_success_keeps_prior_failure_refs() -> None:
+    source_ref = _ref("candidate-source")
+    prior_diagnostic = _ref("prior-diagnostic")
+    prior_attempt = _ref("prior-attempt")
+    store = _Store(
+        [
+            _Candidate(
+                "candidate-1",
+                evidence_ref=source_ref,
+                decision="ERROR",
+                decision_evidence_refs=(source_ref, prior_diagnostic),
+                decision_attempt_ref=prior_attempt,
+            )
+        ]
+    )
+
+    outcome = await CandidateDiscovery(
+        store=store, artifacts=_Artifacts(), client=_Client()
+    ).run(_identity(), "scope", retry_errors=True)
+
+    assert outcome.status == "COMPLETE"
+    assert store.evidence_refs["candidate-1"] == (
+        source_ref,
+        prior_diagnostic,
+        prior_attempt,
+    )
+    assert store.attempt_refs["candidate-1"] == prior_attempt
+
+
+@pytest.mark.asyncio
 async def test_invalid_ids_retry_with_schema_and_error() -> None:
     store = _Store([_Candidate("candidate-1")])
     client = _Client(invalid_once=True)
@@ -255,6 +432,9 @@ async def test_schema_requires_exact_batch_ids_and_decision_count() -> None:
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             self.schemas.append(output_schema)
             return await super().call(
@@ -262,6 +442,9 @@ async def test_schema_requires_exact_batch_ids_and_decision_count() -> None:
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
 
     client = CapturingClient()
@@ -290,12 +473,18 @@ async def test_exhausted_invalid_batch_splits_and_isolates_bad_singleton() -> No
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             result = await super().call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
             assert isinstance(result, SimpleLLMCallResult)
             rows = result.value["decisions"]
@@ -324,6 +513,8 @@ async def test_exhausted_invalid_batch_splits_and_isolates_bad_singleton() -> No
 
 @pytest.mark.asyncio
 async def test_provider_invalid_output_splits_and_isolates_bad_singleton() -> None:
+    failure_ref = _ref("invalid-output-diagnostic")
+
     class InvalidOutputClient(_Client):
         async def call(
             self,
@@ -332,12 +523,18 @@ async def test_provider_invalid_output_splits_and_isolates_bad_singleton() -> No
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             result = await super().call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
             rows = json.loads(
                 prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0]
@@ -347,6 +544,7 @@ async def test_provider_invalid_output_splits_and_isolates_bad_singleton() -> No
                     code="INVALID_OUTPUT",
                     retryable=False,
                     safe_message="schema mismatch",
+                    evidence_refs=(failure_ref,),
                 )
             return result
 
@@ -361,6 +559,10 @@ async def test_provider_invalid_output_splits_and_isolates_bad_singleton() -> No
         "candidate-bad": "ERROR",
         "candidate-good": "INCLUDE",
     }
+    assert failure_ref in outcome.evidence_refs
+    assert failure_ref in store.evidence_refs["candidate-bad"]
+    assert failure_ref in store.evidence_refs["candidate-good"]
+    assert store.attempt_refs["candidate-bad"] == failure_ref
     assert client.batch_sizes == [2, 2, 2, 1, 1, 1, 1]
 
 
@@ -374,12 +576,18 @@ async def test_timeout_then_invalid_output_splits_without_stale_failure() -> Non
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             result = await super().call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
             rows = json.loads(
                 prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0]
@@ -421,12 +629,18 @@ async def test_resume_retries_only_isolated_error_without_duplicate_decision() -
             output_schema: Mapping[str, Any],
             timeout_ms: int,
             agent_name: str = "agent",
+            owner: AttemptOwner | None = None,
+            prompt_bytes: PromptByteCounts | None = None,
+            invocation_id: str | None = None,
         ) -> SimpleLLMCallResult | StageFailure:
             result = await super().call(
                 prompt=prompt,
                 output_schema=output_schema,
                 timeout_ms=timeout_ms,
                 agent_name=agent_name,
+                owner=owner,
+                prompt_bytes=prompt_bytes,
+                invocation_id=invocation_id,
             )
             assert isinstance(result, SimpleLLMCallResult)
             rows = result.value["decisions"]

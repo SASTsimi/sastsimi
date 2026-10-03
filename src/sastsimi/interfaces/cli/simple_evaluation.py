@@ -157,7 +157,9 @@ async def resume(
     """Import immutable earlier results and resume only unfinished hypotheses."""
 
     profile = load_local_evaluation_profile(profile_path)
-    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    store = SimpleCheckpointStore(
+        data_dir / "db" / "sastsimi.sqlite3", artifact_data_dir=data_dir
+    )
     identities = import_existing_analysis(data_dir, analysis_id, store)
     repair_inputs: dict[str, tuple[StoredDataRef, ...]] = {}
     for identity in identities:
@@ -276,6 +278,7 @@ async def resume(
             ),
             policy_snapshot_ref=policy_snapshot_ref,
             codex_invalid_output_resume=True,
+            cleanup_artifacts=artifacts,
         )
         outcome = await runner.resume_hypothesis(identity)
         final = store.get(identity, outcome.current_stage)

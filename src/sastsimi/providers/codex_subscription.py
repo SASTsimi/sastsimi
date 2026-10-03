@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import JsonValue
 
@@ -30,6 +31,7 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import CancellationResult, CapabilityProbeResult
+from sastsimi.ports.llm_invocation import CODEX_PROCESS_CLEANUP_UNCONFIRMED_ERROR
 
 from .base import (
     CODEX_PVD_RUNNER_MARKER,
@@ -60,6 +62,8 @@ _TREE_KILLER_TIMEOUT_SECONDS = 2.0
 _ARRAY_ENVELOPE_KEY = "items"
 _CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
 _PROCESS_LOCK = Lock()
+_LATE_SPAWN_LOCK = Lock()
+_LATE_SPAWN_PENDING = 0
 _RATE_LIMIT_MARKERS = (
     b"rate limit",
     b"rate_limit",
@@ -78,6 +82,94 @@ _AUTH_FAILURE_MARKERS = (
 )
 
 
+class _WindowsFileTime(ctypes.Structure):
+    _fields_ = [
+        ("low", ctypes.c_uint32),
+        ("high", ctypes.c_uint32),
+    ]
+
+
+def _child_identity_observation(
+    pid: int,
+) -> tuple[Literal["RUNNING", "EXITED", "MISSING", "UNKNOWN"], str | None]:
+    """Observe one OS process without treating access denial as proof of exit."""
+
+    if type(pid) is not int or pid <= 0:
+        return "UNKNOWN", None
+    if os.name == "nt":
+        load_library = cast(Callable[..., Any], vars(ctypes)["WinDLL"])
+        kernel32 = load_library("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int,
+            ctypes.c_uint32,
+        ]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        # GetProcessTimes needs QUERY_LIMITED_INFORMATION; the zero-time wait
+        # also needs SYNCHRONIZE to distinguish a live PID from an exited one.
+        handle = kernel32.OpenProcess(0x1000 | 0x00100000, 0, pid)
+        if not handle:
+            get_last_error = cast(Callable[[], int], vars(ctypes)["get_last_error"])
+            return (
+                ("MISSING", None)
+                if get_last_error() in {87, 1168}
+                else ("UNKNOWN", None)
+            )
+        try:
+            created = _WindowsFileTime()
+            exited = _WindowsFileTime()
+            kernel = _WindowsFileTime()
+            user = _WindowsFileTime()
+            if not kernel32.GetProcessTimes(
+                ctypes.c_void_p(handle),
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                return "UNKNOWN", None
+            token = f"windows:{created.high:08x}{created.low:08x}"
+            wait_result = kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 0)
+            if wait_result == 0:
+                return "EXITED", token
+            if wait_result == 0x102:
+                return "RUNNING", token
+            return "UNKNOWN", token
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    try:
+        raw = (Path("/proc") / str(pid) / "stat").read_text(encoding="ascii")
+        boot = (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        )
+    except FileNotFoundError:
+        return "MISSING", None
+    except OSError:
+        return "UNKNOWN", None
+    end = raw.rfind(")")
+    fields = raw[end + 2 :].split() if end >= 0 else []
+    if len(fields) <= 19 or not boot:
+        return "UNKNOWN", None
+    token = f"linux:{boot}:{fields[19]}"
+    return ("EXITED" if fields[0] in {"Z", "X"} else "RUNNING"), token
+
+
+def _child_start_identity(pid: int) -> str | None:
+    return _child_identity_observation(pid)[1]
+
+
+def child_identity_matches(pid: int, start_identity: str) -> bool | None:
+    """Check the exact child process identity; unknown observations stay unknown."""
+    status, observed = _child_identity_observation(pid)
+    if status == "UNKNOWN":
+        return None
+    return status == "RUNNING" and observed == start_identity
+
+
+# Keep the historical module-local name used by provider boundary tests.
+_child_identity_matches = child_identity_matches
+
+
 def _invalid_process_output(
     category: str,
     source: bytes,
@@ -91,6 +183,12 @@ def _invalid_process_output(
         invalid_output_sha256=hashlib.sha256(source).hexdigest(),
         invalid_output_source=source_name,
     )
+
+
+def _late_spawn_resolved() -> None:
+    global _LATE_SPAWN_PENDING
+    with _LATE_SPAWN_LOCK:
+        _LATE_SPAWN_PENDING -= 1
 
 
 @asynccontextmanager
@@ -233,11 +331,17 @@ class CodexCliProcessRunner:
         binding: ApprovedCodexExecutionBinding,
         binding_validator: Callable[[ApprovedCodexExecutionBinding], None]
         | None = None,
+        on_child_spawning: Callable[[str, str], None] | None = None,
+        on_child_started: Callable[[str, str, int, str], None] | None = None,
+        on_child_stopped: Callable[[str, str, int, str], None] | None = None,
     ) -> None:
         self.binding = binding
         self.executable = binding.executable
         self.codex_home = binding.codex_home
         self._binding_validator = binding_validator
+        self._on_child_spawning = on_child_spawning
+        self._on_child_started = on_child_started
+        self._on_child_stopped = on_child_stopped
         self._verify_approval()
         self.verify_executable()
 
@@ -335,6 +439,7 @@ class CodexCliProcessRunner:
         return tuple(arguments)
 
     async def execute(self, request: CodexProcessRequest) -> CodexProcessResult:
+        child_may_exist = False
         try:
             self.verify_binding(request)
             environment = self.child_environment(os.environ)
@@ -352,11 +457,14 @@ class CodexCliProcessRunner:
                     raise ProviderInputMismatchError
                 schema_path.write_bytes(canonical_bytes(_codex_output_schema(schema)))
                 async with asyncio.timeout(request.timeout_ms / 1_000):
+                    child_may_exist = True
                     version = await self._run_child(
                         (str(self.executable.path), "--version"),
                         stdin=None,
                         cwd=auth_check_directory,
                         environment=environment,
+                        invocation_id=request.invocation_id,
+                        phase="VERSION",
                     )
                     _require_codex_cli_version(
                         version, self.binding.provider_profile.client_version
@@ -370,6 +478,8 @@ class CodexCliProcessRunner:
                         stdin=None,
                         cwd=auth_check_directory,
                         environment=environment,
+                        invocation_id=request.invocation_id,
+                        phase="LOGIN",
                     )
                     if login.returncode != 0:
                         return CodexProcessResult(
@@ -389,6 +499,8 @@ class CodexCliProcessRunner:
                         stdin=request.prompt,
                         cwd=work_directory,
                         environment=environment,
+                        invocation_id=request.invocation_id,
+                        phase="EXEC",
                     )
                 if execution.returncode != 0:
                     return CodexProcessResult(
@@ -431,11 +543,19 @@ class CodexCliProcessRunner:
                 )
         except asyncio.CancelledError:
             raise
+        except _ProcessTreeTerminationError:
+            return CodexProcessResult("FAILED", None, None, cleanup_unconfirmed=True)
         except TimeoutError:
             return CodexProcessResult("TIMED_OUT", None, None)
         except ProviderInvalidOutputError:
             return CodexProcessResult("INVALID_OUTPUT", None, None)
-        except (ProviderExecutableBindingError, ProviderInputMismatchError, OSError):
+        except OSError:
+            # A filesystem error can mask an earlier child-cleanup failure while
+            # the temporary workspace unwinds. Fail closed before another call.
+            return CodexProcessResult(
+                "FAILED", None, None, cleanup_unconfirmed=child_may_exist
+            )
+        except (ProviderExecutableBindingError, ProviderInputMismatchError):
             return CodexProcessResult("FAILED", None, None)
 
     async def _run_child(
@@ -445,30 +565,94 @@ class CodexCliProcessRunner:
         stdin: bytes | None,
         cwd: Path,
         environment: Mapping[str, str],
+        invocation_id: str | None = None,
+        phase: str | None = None,
     ) -> _ChildResult:
+        global _LATE_SPAWN_PENDING
         self.verify_executable()
-        spawn_task = asyncio.create_task(
-            asyncio.create_subprocess_exec(
-                *argv,
-                stdin=(
-                    asyncio.subprocess.DEVNULL
-                    if stdin is None
-                    else asyncio.subprocess.PIPE
-                ),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=dict(environment),
-                creationflags=_windows_creation_flags(),
-                start_new_session=os.name != "nt",
+        if self._on_child_spawning is not None:
+            if invocation_id is None or phase is None:
+                raise _ProcessTreeTerminationError
+            self._on_child_spawning(invocation_id, phase)
+        with _LATE_SPAWN_LOCK:
+            if _LATE_SPAWN_PENDING:
+                raise _ProcessTreeTerminationError
+            spawn_task = asyncio.create_task(
+                asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=(
+                        asyncio.subprocess.DEVNULL
+                        if stdin is None
+                        else asyncio.subprocess.PIPE
+                    ),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=dict(environment),
+                    creationflags=_windows_creation_flags(),
+                    start_new_session=os.name != "nt",
+                )
             )
-        )
+
+        def observe_started(
+            process: asyncio.subprocess.Process,
+        ) -> tuple[int, str] | None:
+            if self._on_child_started is None:
+                return None
+            if invocation_id is None or phase is None or process.pid is None:
+                raise _ProcessTreeTerminationError
+            start_identity = _child_start_identity(process.pid)
+            if not start_identity:
+                raise _ProcessTreeTerminationError
+            self._on_child_started(invocation_id, phase, process.pid, start_identity)
+            return process.pid, start_identity
+
+        def observe_stopped(identity: tuple[int, str] | None) -> None:
+            if identity is not None and self._on_child_stopped is not None:
+                assert invocation_id is not None and phase is not None
+                self._on_child_stopped(invocation_id, phase, identity[0], identity[1])
+
         try:
             process = await asyncio.shield(spawn_task)
         except asyncio.CancelledError:
-            process = await asyncio.shield(spawn_task)
-            await _terminate_process_tree(process)
+            with _LATE_SPAWN_LOCK:
+                _LATE_SPAWN_PENDING += 1
+            try:
+                done, _pending = await asyncio.wait(
+                    (spawn_task,), timeout=3 * _TREE_KILLER_TIMEOUT_SECONDS
+                )
+            except asyncio.CancelledError:
+                spawn_task.add_done_callback(
+                    lambda task: _terminate_late_spawn(
+                        task, observe_started, observe_stopped
+                    )
+                )
+                raise _ProcessTreeTerminationError from None
+            if not done:
+                spawn_task.add_done_callback(
+                    lambda task: _terminate_late_spawn(
+                        task, observe_started, observe_stopped
+                    )
+                )
+                raise _ProcessTreeTerminationError from None
+            try:
+                process = spawn_task.result()
+            except BaseException:
+                raise _ProcessTreeTerminationError from None
+            try:
+                captured = observe_started(process)
+            except Exception:
+                await _terminate_process_tree_checked(process)
+                raise _ProcessTreeTerminationError from None
+            await _terminate_process_tree_checked(process)
+            observe_stopped(captured)
+            _late_spawn_resolved()
             raise
+        try:
+            captured = observe_started(process)
+        except Exception:
+            await _terminate_process_tree_checked(process)
+            raise _ProcessTreeTerminationError from None
         assert process.stdout is not None
         assert process.stderr is not None
         stdout_task = asyncio.create_task(
@@ -486,17 +670,21 @@ class CodexCliProcessRunner:
             returncode = await process.wait()
             if stdin_task is not None:
                 await stdin_task
-            return _ChildResult(
+            result = _ChildResult(
                 returncode,
                 await stdout_task,
                 await stderr_task,
             )
+            observe_stopped(captured)
+            return result
         except asyncio.CancelledError:
-            await _terminate_process_tree(process)
+            await _terminate_process_tree_checked(process)
+            observe_stopped(captured)
             raise
         finally:
             if process.returncode is None:
-                await _terminate_process_tree(process)
+                await _terminate_process_tree_checked(process)
+                observe_stopped(captured)
             for task in (stdin_task, stdout_task, stderr_task):
                 if task is not None and not task.done():
                     task.cancel()
@@ -604,16 +792,20 @@ class CodexSubscriptionAdapter:
                 try:
                     return await work_task
                 except _ProcessTreeTerminationError:
-                    normalized = codex_failure("FAILED")
+                    normalized = _cleanup_unconfirmed_failure()
             else:
                 cleanup_error = await _cancel_and_wait(work_task)
-                normalized = codex_failure(
-                    "FAILED" if cleanup_error is not None else "TIMED_OUT"
+                normalized = (
+                    _cleanup_unconfirmed_failure()
+                    if cleanup_error is not None
+                    else codex_failure("TIMED_OUT")
                 )
         except asyncio.CancelledError:
             cleanup_error = await _cancel_and_wait(work_task)
-            normalized = codex_failure(
-                "FAILED" if cleanup_error is not None else "CANCELLED"
+            normalized = (
+                _cleanup_unconfirmed_failure()
+                if cleanup_error is not None
+                else codex_failure("CANCELLED")
             )
         return self._build_checked(
             request,
@@ -646,7 +838,14 @@ class CodexSubscriptionAdapter:
                         timeout_ms=request.timeout_ms,
                     )
                 )
-            if process_result.status != "SUCCEEDED":
+            if process_result.cleanup_unconfirmed:
+                outcome = self._failure_outcome(
+                    request,
+                    _cleanup_unconfirmed_failure(),
+                    started_at=started_at,
+                    started_ms=started_ms,
+                )
+            elif process_result.status != "SUCCEEDED":
                 outcome = self._failure_outcome(
                     request,
                     codex_failure(process_result.status),
@@ -1147,6 +1346,76 @@ async def _drain_bounded(reader: asyncio.StreamReader, retain_limit: int) -> byt
         if remaining > 0:
             retained.extend(chunk[:remaining])
     return bytes(retained)
+
+
+async def _terminate_process_tree_checked(
+    process: asyncio.subprocess.Process,
+) -> None:
+    """Never retry a Codex call if child cleanup fails or cannot finish."""
+
+    cleanup_task = asyncio.create_task(_terminate_process_tree(process))
+    try:
+        done, _pending = await asyncio.wait(
+            (cleanup_task,), timeout=3 * _TREE_KILLER_TIMEOUT_SECONDS
+        )
+        if not done:
+            raise _ProcessTreeTerminationError
+        await cleanup_task
+    except (OSError, TimeoutError, asyncio.CancelledError):
+        raise _ProcessTreeTerminationError from None
+    finally:
+        if not cleanup_task.done():
+            cleanup_task.cancel()
+            cleanup_task.add_done_callback(_drain_cleanup_task)
+
+
+def _drain_cleanup_task(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+def _cleanup_unconfirmed_failure() -> NormalizedFailure:
+    return NormalizedFailure("FAILED", CODEX_PROCESS_CLEANUP_UNCONFIRMED_ERROR)
+
+
+def _terminate_late_spawn(
+    spawn_task: asyncio.Task[asyncio.subprocess.Process],
+    observe_started: Callable[[asyncio.subprocess.Process], tuple[int, str] | None]
+    | None = None,
+    observe_stopped: Callable[[tuple[int, str] | None], None] | None = None,
+) -> None:
+    """Attempt cleanup if a timed-out spawn later yields a process handle."""
+
+    try:
+        process = spawn_task.result()
+    except BaseException:
+        return
+
+    async def cleanup() -> None:
+        captured: tuple[int, str] | None = None
+        capture_failed = False
+        try:
+            if observe_started is not None:
+                captured = observe_started(process)
+        except Exception:
+            capture_failed = True
+        await _terminate_process_tree_checked(process)
+        if capture_failed:
+            raise _ProcessTreeTerminationError
+        if observe_stopped is not None:
+            observe_stopped(captured)
+
+    cleanup_task = asyncio.create_task(cleanup())
+
+    def confirm_cleanup(task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except BaseException:
+            pass
+        else:
+            _late_spawn_resolved()
+
+    cleanup_task.add_done_callback(confirm_cleanup)
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:

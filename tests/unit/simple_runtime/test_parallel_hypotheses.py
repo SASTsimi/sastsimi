@@ -41,6 +41,22 @@ class _ThreeHypotheses:
         )
 
 
+@pytest.mark.parametrize("provider", ["codex", "claude", "cursor", "openai"])
+def test_real_provider_does_not_schedule_unsafe_parallel_children(
+    tmp_path: Path, provider: str
+) -> None:
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3"),
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_ThreeHypotheses(),
+        runner_factory=lambda *_: object(),  # type: ignore[arg-type]
+        llm_provider=provider,
+        max_parallel_hypotheses=4,
+    )
+    assert application._max_parallel_hypotheses == 1
+
+
 @pytest.mark.asyncio
 async def test_parallel_hypotheses_never_exceed_configured_run_limit(
     tmp_path: Path,
