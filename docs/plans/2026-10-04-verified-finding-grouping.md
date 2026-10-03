@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, `ast`, Pydantic contracts, SQLite read-only queries, pytest, PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-10-04-verified-finding-grouping-design.md`
+**Spec:** `docs/decisions/ADR-018-verified-finding-grouping.md`
 
 ## Global Constraints
 

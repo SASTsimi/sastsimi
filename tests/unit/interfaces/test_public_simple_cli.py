@@ -70,7 +70,7 @@ def test_result_text_distinguishes_raw_findings_from_verified_groups() -> None:
     )
     output = stream.getvalue()
     assert "Finding: 3개" in output
-    assert "동일 경로 그룹: 1개" in output
+    assert "표시 묶음: 1개" in output
     assert "묶음 미확정: 0개" in output
 
 

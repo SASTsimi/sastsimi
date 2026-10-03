@@ -206,7 +206,7 @@ function renderOverview(detail) {
     ["종료", detail.finished_at ? formatTime(detail.finished_at) : "진행 중"],
     ["가설", String(detail.hypothesis_count)],
     ["Finding", String(detail.finding_count)],
-    ["동일 경로 그룹", detail.finding_group_count == null ? "검증 불가" : String(detail.finding_group_count)],
+    ["표시 묶음", detail.finding_group_count == null ? "검증 불가" : String(detail.finding_group_count)],
     ["묶음 미확정", detail.finding_group_undetermined_count == null ? "검증 불가" : String(detail.finding_group_undetermined_count)],
     ["미확정 / 근거 부족", `${detail.inconclusive_hypothesis_count} / ${detail.rejected_hypothesis_count}`],
     ["완료 작업", `${detail.completed_units}/${detail.known_units}`],

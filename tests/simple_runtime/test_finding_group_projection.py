@@ -20,6 +20,7 @@ from sastsimi.simple_runtime.candidates import CandidateOrigin, StaticCandidate
 from sastsimi.simple_runtime.finding_group_projection import (
     project_current_finding_groups,
 )
+from sastsimi.simple_runtime.finding_groups import FindingGroupProjection
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -65,7 +66,7 @@ def _checkpoint(
 
 
 def _case(
-    tmp_path: Path,
+    tmp_path: Path, *, second_final_verdict: str = "TRUE"
 ) -> tuple[
     SimpleAnalysisRun, list[StageCheckpoint], dict[str, StoredDataRef], Path, Path, Path
 ]:
@@ -99,14 +100,26 @@ def _case(
         candidate_scope_fingerprint="scope",
     )
     evidence_ref = artifacts.put_json({"kind": "evidence"})
+    codeql_locations = [
+        {
+            "location": {
+                "physicalLocation": {
+                    "artifactLocation": {"uri": "app.py"},
+                    "region": {"startLine": line},
+                }
+            }
+        }
+        for line in (1, 10, 11)
+    ]
     candidate = StaticCandidate(
         candidate_id="candidate-1",
         kind="FLOW",
         path="app.py",
-        line=7,
-        end_line=8,
+        line=10,
+        end_line=11,
         evidence_ref=evidence_ref,
         evidence_key="key",
+        flow_trace={"codeFlows": [{"threadFlows": [{"locations": codeql_locations}]}]},
         origins=(
             CandidateOrigin(
                 engine="codeql",
@@ -147,7 +160,7 @@ def _case(
                     else {"surface_id": "surface-1"}
                 ),
                 "proposal": {
-                    "code_locations": ["app.py:8"],
+                    "code_locations": ["app.py:11"],
                     "title": f"proposal {index}",
                 },
             }
@@ -168,6 +181,8 @@ def _case(
                 "attempt_id": f"attempt-{index}",
             }
         )
+        stdout = artifacts.put_bytes(b"ok", "text/plain")
+        stderr = artifacts.put_bytes(b"", "text/plain")
         validated = artifacts.put_json(
             {
                 "kind": "simple_validated_poc",
@@ -177,7 +192,16 @@ def _case(
                 "attempt_id": f"attempt-{index}",
             }
         )
-        final = artifacts.put_json({"kind": "simple_verification_final"})
+        final = artifacts.put_json(
+            {
+                "kind": "simple_verification_result",
+                "result": {"verdict": second_final_verdict if index == 2 else "TRUE"},
+                "source_refs": [
+                    validated.model_dump(mode="json"),
+                    execution.model_dump(mode="json"),
+                ],
+            }
+        )
         cwe = artifacts.put_json(
             {"kind": "simple_cwe_label", "result": {"primary_cwe": "CWE-78"}}
         )
@@ -195,7 +219,7 @@ def _case(
             _checkpoint(
                 current,
                 SimpleStage.POC_EXECUTION_DONE,
-                (execution,),
+                (execution, stdout, stderr),
                 validated=validated,
                 attempt_id=f"attempt-{index}",
             ),
@@ -248,7 +272,7 @@ def _project(
         Path,
         Path,
     ],
-):
+) -> FindingGroupProjection:
     run, checkpoints, eligible, data_dir, database, _workspace = case
     return project_current_finding_groups(
         run, checkpoints, eligible, data_dir=data_dir, database_path=database
@@ -301,6 +325,24 @@ def test_non_true_or_rejected_gate_never_groups(tmp_path: Path) -> None:
     assert result.raw_count == 1
 
 
+def test_mismatched_final_artifact_is_undetermined_singleton(tmp_path: Path) -> None:
+    case = _case(tmp_path, second_final_verdict="FALSE")
+    result = _project(case)
+    assert (
+        result.raw_count,
+        result.visible_group_count,
+        result.undetermined_count,
+    ) == (
+        2,
+        2,
+        1,
+    )
+    assert result.groups[1].member_ids == ("F-002",)
+    assert result.groups[1].members[0].undetermined_reason == (
+        "VERIFICATION_EVIDENCE_UNPROVEN"
+    )
+
+
 def test_stale_finding_and_legacy_proposal_do_not_join_group(tmp_path: Path) -> None:
     case = _case(tmp_path)
     run, checkpoints, eligible, data_dir, database, _ = case
@@ -329,7 +371,7 @@ def test_stale_finding_and_legacy_proposal_do_not_join_group(tmp_path: Path) -> 
             "kind": "simple_hypothesis_proposal",
             "analysis_id": "analysis",
             "hypothesis_id": "hyp-2",
-            "proposal": {"code_locations": ["app.py:8"]},
+            "proposal": {"code_locations": ["app.py:11"]},
         }
     )
     legacy = []
@@ -366,6 +408,25 @@ def test_changed_pinned_source_abstains_without_mutating_record(tmp_path: Path) 
         result.visible_group_count,
         result.undetermined_count,
     ) == (2, 2, 2)
+
+
+def test_malformed_trace_path_abstains_without_breaking_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _case(tmp_path)
+
+    def bad_path(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("symlink loop")
+
+    monkeypatch.setattr(
+        "sastsimi.simple_runtime.finding_group_projection._normalized_trace", bad_path
+    )
+    projected = _project(case)
+    assert (
+        projected.raw_count,
+        projected.visible_group_count,
+        projected.undetermined_count,
+    ) == (2, 2, 1)
 
 
 def test_corrupt_required_finding_reference_fails_closed(tmp_path: Path) -> None:

@@ -121,29 +121,249 @@ def _safe_source(workspace: Path, relative: str, expected_sha256: str) -> bytes 
 
 
 def _name(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _name(node.value)
-        return f"{parent}.{node.attr}" if parent else None
-    return None
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
 
 
-def _route(function: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    for decorator in function.decorator_list:
-        if not isinstance(decorator, ast.Call) or not decorator.args:
-            continue
-        method = _name(decorator.func)
-        first = decorator.args[0]
-        if (
-            method
-            and method.rsplit(".", 1)[-1]
-            in {"route", "get", "post", "put", "delete", "patch"}
-            and isinstance(first, ast.Constant)
-            and isinstance(first.value, str)
+def _root_name(node: ast.expr) -> str | None:
+    while isinstance(node, (ast.Attribute, ast.Subscript)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _route(
+    tree: ast.Module, function: ast.FunctionDef | ast.AsyncFunctionDef
+) -> str | None:
+    if len(function.decorator_list) != 1:
+        return None
+    decorator = function.decorator_list[0]
+    if not isinstance(decorator, ast.Call) or len(decorator.args) != 1:
+        return None
+    method = _name(decorator.func)
+    receiver = (
+        decorator.func.value if isinstance(decorator.func, ast.Attribute) else None
+    )
+    first = decorator.args[0]
+    if (
+        method is None
+        or not isinstance(receiver, ast.Name)
+        or not _flask_app_binding(tree, receiver.id)
+        or method.rsplit(".", 1)[-1]
+        not in {"route", "get", "post", "put", "delete", "patch"}
+        or not isinstance(first, ast.Constant)
+        or not isinstance(first.value, str)
+        or not first.value
+    ):
+        return None
+    for keyword in decorator.keywords:
+        if keyword.arg is None:
+            return None
+        if keyword.arg == "methods":
+            methods = keyword.value
+            if (
+                not isinstance(methods, (ast.List, ast.Tuple))
+                or len(methods.elts) != 1
+                or not isinstance(methods.elts[0], ast.Constant)
+                or not isinstance(methods.elts[0].value, str)
+            ):
+                return None
+        elif not _literal(keyword.value):
+            return None
+    return first.value
+
+
+def _flask_app_binding(tree: ast.Module, receiver: str) -> bool:
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id
+        in {
+            "globals",
+            "locals",
+            "vars",
+            "getattr",
+            "setattr",
+            "delattr",
+            "exec",
+            "__import__",
+        }
+        for node in ast.walk(tree)
+    ):
+        # Dynamic namespace access can register another path to this handler.
+        return False
+    constructors = [
+        item
+        for item in tree.body
+        if isinstance(item, ast.Assign)
+        and len(item.targets) == 1
+        and isinstance(item.targets[0], ast.Name)
+        and item.targets[0].id == receiver
+        and isinstance(item.value, ast.Call)
+        and isinstance(item.value.func, ast.Name)
+        and item.value.func.id == "Flask"
+    ]
+    flask_imports = [
+        (item.module, alias.name, alias.asname)
+        for item in tree.body
+        if isinstance(item, ast.ImportFrom)
+        for alias in item.names
+        if (alias.asname or alias.name) == "Flask"
+    ]
+    if len(constructors) != 1 or flask_imports != [("flask", "Flask", None)]:
+        return False
+    constructor = constructors[0]
+    allowed_receiver_refs = {
+        id(decorator.func.value)
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for decorator in statement.decorator_list
+        if isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and isinstance(decorator.func.value, ast.Name)
+        and decorator.func.value.id == receiver
+        and decorator.func.attr in {"route", "get", "post", "put", "delete", "patch"}
+    }
+    allowed_receiver_refs.update(
+        id(node.func.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == receiver
+        and node.func.attr == "run"
+    )
+    for statement in tree.body:
+        if statement is constructor or isinstance(
+            statement, (ast.Import, ast.ImportFrom)
         ):
-            return first.value
-    return f"function:{function.name}@{function.lineno}"
+            continue
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if statement.name in {receiver, "Flask"}:
+                return False
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Name)
+                and node.id == receiver
+                and id(node) not in allowed_receiver_refs
+            ):
+                return False
+            if (
+                isinstance(node, ast.Name)
+                and node.id in {receiver, "Flask"}
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                return False
+            if isinstance(node, ast.ExceptHandler) and node.name in {receiver, "Flask"}:
+                return False
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
+                targets = (
+                    node.targets
+                    if isinstance(node, (ast.Assign, ast.Delete))
+                    else (node.target,)
+                )
+                if any(_root_name(target) == receiver for target in targets):
+                    return False
+    return True
+
+
+def _stable_imports(tree: ast.Module, function: ast.AST, sink_root: str) -> bool:
+    bindings: dict[str, list[tuple[str, str]]] = {
+        "request": [],
+        sink_root: [],
+    }
+    for item in tree.body:
+        if isinstance(item, ast.Import):
+            for alias in item.names:
+                bound = alias.asname or alias.name.partition(".")[0]
+                if bound in bindings:
+                    bindings[bound].append(("import", alias.name))
+        elif isinstance(item, ast.ImportFrom):
+            for alias in item.names:
+                if alias.name == "*":
+                    return False
+                bound = alias.asname or alias.name
+                if bound in bindings:
+                    bindings[bound].append((item.module or "", alias.name))
+        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if item.name in bindings:
+                return False
+    if bindings["request"] != [("flask", "request")] or bindings[sink_root] != [
+        ("import", sink_root)
+    ]:
+        return False
+    if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+        arg.arg in {"request", sink_root}
+        for arg in (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+            *((function.args.vararg,) if function.args.vararg else ()),
+            *((function.args.kwarg,) if function.args.kwarg else ()),
+        )
+    ):
+        return False
+    protected = {"request", sink_root}
+    for statement in tree.body:
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            continue
+        for node in ast.walk(statement):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                return False
+            if (
+                isinstance(node, ast.Name)
+                and node.id in protected
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                return False
+            if isinstance(node, ast.ExceptHandler) and node.name in protected:
+                return False
+            if isinstance(
+                node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)
+            ):
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else (node.target,)
+                )
+                if any(_root_name(target) in protected for target in targets):
+                    return False
+    return True
+
+
+def _unsupported_writes(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, sink_line: int
+) -> bool:
+    if any(
+        getattr(node, "lineno", sink_line + 1) <= sink_line
+        and (
+            isinstance(
+                node, (ast.NamedExpr, ast.Delete, ast.Global, ast.Nonlocal, ast.Lambda)
+            )
+            or isinstance(node, (ast.Import, ast.ImportFrom))
+            or isinstance(node, ast.ExceptHandler)
+            and node.name is not None
+            or isinstance(node, ast.Assign)
+            and (len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name))
+            or isinstance(node, ast.AnnAssign)
+            and not isinstance(node.target, ast.Name)
+            or isinstance(node, ast.AugAssign)
+        )
+        for statement in function.body
+        for node in ast.walk(statement)
+    ):
+        return True
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.lineno <= sink_line
+        for statement in function.body
+        for node in ast.walk(statement)
+    )
 
 
 def _locations(proposal: Mapping[str, object], path: str) -> set[int]:
@@ -258,9 +478,8 @@ def _scan_statements(
             )
 
 
-def _single_source(items: list[_Source | None]) -> _Source | None:
-    sources = [item for item in items if item is not None]
-    return sources[0] if len(sources) == 1 else None
+def _literal(value: ast.expr) -> bool:
+    return isinstance(value, ast.Constant)
 
 
 def _trace_expression(
@@ -301,6 +520,9 @@ def _trace_expression(
         if callee in {"request.args.get", "request.form.get", "request.headers.get"}:
             if (
                 expression.args
+                and len(expression.args) <= 2
+                and (len(expression.args) == 1 or _literal(expression.args[1]))
+                and not expression.keywords
                 and isinstance(expression.args[0], ast.Constant)
                 and isinstance(expression.args[0].value, str)
             ):
@@ -320,6 +542,9 @@ def _trace_expression(
                 and receiver.access == "request.json"
                 and receiver.key == ""
                 and expression.args
+                and len(expression.args) <= 2
+                and (len(expression.args) == 1 or _literal(expression.args[1]))
+                and not expression.keywords
                 and isinstance(expression.args[0], ast.Constant)
                 and isinstance(expression.args[0].value, str)
             ):
@@ -330,6 +555,11 @@ def _trace_expression(
                     receiver.nodes,
                 )
         if callee == "request.get_json":
+            if expression.args or any(
+                keyword.arg is None or not _literal(keyword.value)
+                for keyword in expression.keywords
+            ):
+                return None
             return _Source(expression.lineno, "request.json", "", ())
         return None
     if isinstance(expression, ast.Subscript):
@@ -358,32 +588,91 @@ def _trace_expression(
             )
         return None
     if isinstance(expression, ast.JoinedStr):
-        return _single_source(
-            [
-                _trace_expression(value.value, definitions, before_line, branches, seen)
-                for value in expression.values
-                if isinstance(value, ast.FormattedValue)
-            ]
+        formatted = [
+            value
+            for value in expression.values
+            if isinstance(value, ast.FormattedValue)
+        ]
+        if len(formatted) != 1 or formatted[0].format_spec is not None:
+            return None
+        return _trace_expression(
+            formatted[0].value, definitions, before_line, branches, seen
         )
     if isinstance(expression, ast.BinOp) and isinstance(
         expression.op, (ast.Add, ast.Mod)
     ):
-        return _single_source(
-            [
-                _trace_expression(
-                    expression.left, definitions, before_line, branches, seen
-                ),
-                _trace_expression(
-                    expression.right, definitions, before_line, branches, seen
-                ),
-            ]
-        )
+        if _literal(expression.left):
+            return _trace_expression(
+                expression.right, definitions, before_line, branches, seen
+            )
+        if _literal(expression.right):
+            return _trace_expression(
+                expression.left, definitions, before_line, branches, seen
+            )
+        return None
     return None
 
 
-def _trace_agrees(flow_trace: Mapping[str, object] | None, anchor: FlowAnchor) -> bool:
+def _request_input_lines(tree: ast.AST) -> list[int]:
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Attribute)
+            and _name(node) in {"request.args", "request.form", "request.headers"}
+        )
+        or (isinstance(node, ast.Call) and _name(node.func) == "request.get_json")
+    ]
+
+
+def _only_supported_request_uses(function: ast.AST, sink_line: int) -> bool:
+    parents = {
+        id(child): parent
+        for parent in ast.walk(function)
+        for child in ast.iter_child_nodes(parent)
+    }
+    return all(
+        isinstance(parent := parents.get(id(node)), ast.Attribute)
+        and parent.value is node
+        and parent.attr in {"args", "form", "headers", "get_json"}
+        for node in ast.walk(function)
+        if isinstance(node, ast.Name)
+        and node.id == "request"
+        and node.lineno <= sink_line
+    )
+
+
+def _trace_agrees(
+    flow_trace: Mapping[str, object] | None, anchor: FlowAnchor, tree: ast.AST
+) -> bool:
     if flow_trace is None:
         return True
+    request_lines = _request_input_lines(tree)
+    if request_lines.count(anchor.source_line) != 1:
+        return False
+    steps = flow_trace.get("sarif_steps")
+    if isinstance(steps, list) and len(steps) >= 2:
+        if not all(
+            isinstance(step, Mapping) and step.get("path") == anchor.source_file
+            for step in steps
+        ):
+            return False
+        last = steps[-1]
+        if any(
+            isinstance(step, Mapping)
+            and step.get("line") in request_lines
+            and step.get("line") != anchor.source_line
+            for step in steps[:-1]
+        ):
+            return False
+        return (
+            isinstance(last, Mapping)
+            and last.get("line") == anchor.sink_line
+            and any(
+                isinstance(step, Mapping) and step.get("line") == anchor.source_line
+                for step in steps[:-1]
+            )
+        )
     for end, expected_line in (
         ("source", anchor.source_line),
         ("sink", anchor.sink_line),
@@ -414,7 +703,7 @@ def resolve_flow_anchor(
         return None
     try:
         tree = ast.parse(raw.decode("utf-8"), filename=path)
-    except (UnicodeError, SyntaxError):
+    except (UnicodeError, SyntaxError, RecursionError):
         return None
     cited = _locations(proposal, path)
     if not cited or cwe.upper().replace("_", "-") != "CWE-78":
@@ -425,7 +714,10 @@ def resolve_flow_anchor(
             continue
         definitions: list[_Definition] = []
         calls: list[_Callsite] = []
-        _scan_statements(function.body, (), definitions, calls)
+        try:
+            _scan_statements(function.body, (), definitions, calls)
+        except RecursionError:
+            return None
         for callsite in calls:
             callee = _name(callsite.call.func)
             if callee in _COMMAND_SINKS and callsite.call.lineno in cited:
@@ -436,6 +728,23 @@ def resolve_flow_anchor(
     call = callsite.call
     if not call.args:
         return None
+    callee = _name(call.func)
+    if callee is None:
+        return None
+    route = _route(tree, function)
+    if (
+        route is None
+        or not _stable_imports(tree, function, callee.split(".", 1)[0])
+        or _unsupported_writes(function, call.lineno)
+        or not _only_supported_request_uses(function, call.lineno)
+        or len(_request_input_lines(function)) != 1
+        or any(not _literal(argument) for argument in call.args[1:])
+        or any(
+            keyword.arg is None or not _literal(keyword.value)
+            for keyword in call.keywords
+        )
+    ):
+        return None
     if any(
         isinstance(
             node, (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Match)
@@ -445,17 +754,45 @@ def resolve_flow_anchor(
     ):
         return None
     definitions = []
-    _scan_statements(function.body, (), definitions, [])
-    source = _trace_expression(
-        call.args[0], definitions, call.lineno, callsite.branches, frozenset()
-    )
+    try:
+        _scan_statements(function.body, (), definitions, [])
+        skipped_return_calls = (
+            {
+                id(child)
+                for statement in function.body
+                for node in ast.walk(statement)
+                if isinstance(node, ast.Return) and node.lineno < call.lineno
+                for child in ast.walk(node)
+                if isinstance(child, ast.Call)
+            }
+            if not any(branch.endswith(":finally") for branch in callsite.branches)
+            else set()
+        )
+        for statement in function.body:
+            for node in ast.walk(statement):
+                if (
+                    not isinstance(node, ast.Call)
+                    or node is call
+                    or id(node) in skipped_return_calls
+                    or node.lineno > call.lineno
+                ):
+                    continue
+                if (
+                    _trace_expression(
+                        node, definitions, node.lineno, callsite.branches, frozenset()
+                    )
+                    is None
+                ):
+                    return None
+        source = _trace_expression(
+            call.args[0], definitions, call.lineno, callsite.branches, frozenset()
+        )
+    except RecursionError:
+        return None
     if source is None or not source.key:
         return None
-    callee = _name(call.func)
-    if callee is None:
-        return None
     anchor = FlowAnchor(
-        route=_route(function),
+        route=route,
         function=function.name,
         source_file=path,
         source_line=source.line,
@@ -469,4 +806,4 @@ def resolve_flow_anchor(
         branch_nodes=callsite.branches,
         cwe="CWE-78",
     )
-    return anchor if _trace_agrees(flow_trace, anchor) else None
+    return anchor if _trace_agrees(flow_trace, anchor, tree) else None

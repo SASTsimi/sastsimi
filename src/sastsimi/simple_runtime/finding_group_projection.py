@@ -104,7 +104,7 @@ def _verified_closure(
     stages: Mapping[SimpleStage, StageCheckpoint],
     finding_ref: StoredDataRef,
     artifacts: SimpleArtifactRepository,
-) -> tuple[dict[str, Any], StoredDataRef] | None:
+) -> tuple[dict[str, Any], StoredDataRef, bool] | None:
     if any(
         (item := stages.get(stage)) is None
         or item.stage_version != STAGE_VERSION[stage]
@@ -126,7 +126,7 @@ def _verified_closure(
         or final.validated_poc_ref != dynamic.validated_poc_ref
         or finding.validated_poc_ref != dynamic.validated_poc_ref
         or len(candidate.output_refs) < 2
-        or len(dynamic.output_refs) != 1
+        or not dynamic.output_refs
         or not technical_gate_accepted(technical, artifacts)
     ):
         return None
@@ -170,7 +170,20 @@ def _verified_closure(
         or validated_poc.get("attempt_id") != dynamic.attempt_id
     ):
         raise ValueError("FINDING_GROUP_REQUIRED_EVIDENCE_INVALID")
-    return raw, validated
+    verification_proven = False
+    if len(final.output_refs) == 1:
+        verification = _json(artifacts, final.output_refs[0])
+        verification_result = verification.get("result")
+        source_refs = verification.get("source_refs")
+        verification_proven = (
+            verification.get("kind") == "simple_verification_result"
+            and isinstance(verification_result, dict)
+            and verification_result.get("verdict") == "TRUE"
+            and isinstance(source_refs, list)
+            and validated.model_dump(mode="json") in source_refs
+            and execution_ref.model_dump(mode="json") in source_refs
+        )
+    return raw, validated, verification_proven
 
 
 def _candidate(
@@ -236,7 +249,14 @@ def _trace_endpoint(
         else Path(uri_path).resolve()
     )
     expected = (workspace / path).resolve()
-    return {"path": path if resolved == expected else uri_path, "line": line}
+    endpoint: dict[str, object] = {
+        "path": path if resolved == expected else uri_path,
+        "line": line,
+    }
+    column = region.get("startColumn")
+    if type(column) is int and column > 0:
+        endpoint["column"] = column
+    return endpoint
 
 
 def _normalized_trace(
@@ -259,9 +279,10 @@ def _normalized_trace(
     locations = threads[0].get("locations")
     if not isinstance(locations, list) or len(locations) < 2:
         return {"source": {}, "sink": {}}
-    source = _trace_endpoint(locations[0], path, workspace)
-    sink = _trace_endpoint(locations[-1], path, workspace)
-    return {"source": source or {}, "sink": sink or {}}
+    steps = [_trace_endpoint(location, path, workspace) for location in locations]
+    if any(step is None for step in steps):
+        return {"source": {}, "sink": {}}
+    return {"sarif_steps": steps}
 
 
 def project_current_finding_groups(
@@ -316,7 +337,7 @@ def project_current_finding_groups(
         closure = _verified_closure(stages, finding_ref, artifacts)
         if closure is None:
             continue
-        finding, validated = closure
+        finding, validated, verification_proven = closure
         pro = stages[SimpleStage.PRO_CON_DONE]
         if not pro.input_refs:
             raise ValueError("FINDING_GROUP_REQUIRED_EVIDENCE_INVALID")
@@ -375,9 +396,14 @@ def project_current_finding_groups(
         origins: tuple[CandidateOrigin, ...] = candidate.origins if candidate else ()
         candidate_ids = (candidate_id,) if isinstance(candidate_id, str) else ()
         anchor = None
-        reason = "FLOW_PROVENANCE_UNAVAILABLE"
+        reason = (
+            "FLOW_PROVENANCE_UNAVAILABLE"
+            if verification_proven
+            else "VERIFICATION_EVIDENCE_UNPROVEN"
+        )
         if (
-            isinstance(proposal_body, dict)
+            verification_proven
+            and isinstance(proposal_body, dict)
             and run.workspace_path is not None
             and (candidate is not None or isinstance(surface_id, str))
             and len(paths) == 1
@@ -403,7 +429,7 @@ def project_current_finding_groups(
                         else None,
                     )
                     reason = "FLOW_NOT_RESOLVED" if anchor is None else ""
-                except (OSError, ValueError, FlowEvidenceInvalid):
+                except (OSError, ValueError, RuntimeError, FlowEvidenceInvalid):
                     reason = "PINNED_SOURCE_OR_AST_INVALID"
         members.append(
             VerifiedFindingMember(

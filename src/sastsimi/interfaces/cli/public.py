@@ -203,7 +203,7 @@ def emit_public(
     if "finding_count" in data:
         stream.write(f"Finding: {data['finding_count']}개\n")
     if type(data.get("finding_group_count")) is int:
-        stream.write(f"동일 경로 그룹: {data['finding_group_count']}개\n")
+        stream.write(f"표시 묶음: {data['finding_group_count']}개\n")
     if type(data.get("finding_group_undetermined_count")) is int:
         stream.write(f"묶음 미확정: {data['finding_group_undetermined_count']}개\n")
     if data.get("status") == "PAUSED":
