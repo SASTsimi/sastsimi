@@ -59,3 +59,32 @@ def test_mail_socket_and_task_entry_points_are_found(tmp_path: Path) -> None:
         if entry["routes"][0]["methods"][0] == "SOCKET"
     ]
     assert socket_owners == ["Echo"]
+
+
+_FLASK = '''
+from flask import request
+
+
+@bp.route("/mailboxes", methods=["POST"])
+def create_mailbox():
+    email = request.get_json().get("email")
+    return create(email)
+
+
+@bp.route("/ping")
+def ping():
+    return "ok"
+'''
+
+
+def test_imported_request_object_is_a_taint_source(tmp_path: Path) -> None:
+    (tmp_path / "views.py").write_text(_FLASK, encoding="utf-8")
+
+    result = extract_flows(tmp_path, ["views.py"])
+
+    by_handler = {entry["handler"]: entry for entry in result["entry_points"]}
+    created = by_handler["create_mailbox"]
+    assert created["global_inputs"] == ["request"]
+    assert "create" in [step["call"] for step in created["steps"]]
+    assert "global_inputs" not in by_handler["ping"]
+    assert by_handler["ping"]["steps"] == []

@@ -267,6 +267,21 @@ def _non_http_routes(tree: ast.Module) -> dict[int, dict[str, Any]]:
     return routes
 
 
+_REQUEST_OBJECTS = frozenset({"request"})
+
+
+def _request_globals(tree: ast.Module) -> set[str]:
+    """Request objects the module imports for use inside its handlers."""
+
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name in _REQUEST_OBJECTS
+    }
+
+
 def _injected(argument: ast.arg, default: ast.expr | None) -> bool:
     """A parameter the framework fills from the server side, not the request."""
 
@@ -464,6 +479,7 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for path, tree in trees.items():
         router_guards = _router_dependencies(tree)
+        request_globals = _request_globals(tree)
         cbv_routes = _cbv_routes(tree)
         non_http_routes = _non_http_routes(tree)
         for node in ast.walk(tree):
@@ -504,7 +520,14 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
                 guard = router_guards.get(str(route.get("router")))
                 if guard:
                     route["router_dependencies"] = guard
-            tracer = _FlowTracer(set(inputs), defined)
+            # Flask, Quart and Bottle hand a handler no parameter: the request
+            # is a module-level import read from inside the body, so a scan of
+            # the parameters alone found no input and traced nothing.
+            parameters = {argument.arg for argument in arguments}
+            global_inputs = sorted(
+                (request_globals - parameters) & _names_in(node)
+            )
+            tracer = _FlowTracer(set(inputs) | set(global_inputs), defined)
             for statement in node.body:
                 tracer.visit(statement)
             entries.append(
@@ -514,6 +537,7 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
                     "handler": node.name,
                     "routes": routes,
                     "inputs": inputs,
+                    **({"global_inputs": global_inputs} if global_inputs else {}),
                     **({"injected": injected} if injected else {}),
                     "steps": [
                         step.as_dict()
