@@ -172,7 +172,12 @@ of code is shown after its real line number and a `|`.
 2. Follow each attacker-controlled value transitively through the
    repository-defined functions it is passed to, until what happens to it is
    determined. Follow the value, not the whole call graph.
-3. Read every validator, sanitizer and permission check on those paths.
+3. Read every validator, sanitizer and permission check on those paths. A
+   missing check is a gap only when the handler's guards, read from
+   `(permission definitions)`, do not already admit or refuse the case: say
+   which role or permission the guards let reach this handler, and compare
+   it with what the handler does. If the intended policy cannot be told from
+   the code or its tests, say so in `assumptions` instead of assuming one.
 4. When a flow leaves this batch, put in `requested_paths` the minimum paths
    for your next reading step - whole files or `path:start-end` - or in
    `requested_ast_paths` the files whose definitions and calls are enough. The
@@ -192,9 +197,12 @@ _FACT_INSTRUCTIONS = (
 Generate security hypotheses from this repository's entry points and their
 input flows. You are reading one part of its fact bundle: every entry point in
 it - route, websocket or event handler - with its inputs, the dependencies the
-framework injects (authentication usually shows there), and each call its
-input reaches, in order, with line numbers and, where the callee is defined in
-this repository, where. The repository map names every definition.
+framework injects (authentication usually shows there), its `guards` (the
+decorators, dependencies, router and base classes that decide who may reach it,
+each with where it is defined), and each call its input reaches, in order, with
+line numbers and, where the callee is defined in this repository, where. The
+part also lists `(permission definitions)`: the source of those guards. The
+repository map names every definition.
 
 You have not read the code yet. Your first answer only asks for code: leave
 `hypotheses` empty and fill `requested_paths`. Hypotheses come in later

@@ -447,6 +447,139 @@ def _router_dependencies(tree: ast.Module) -> dict[str, str]:
                         found[target.id] = ast.unparse(keyword.value)
     return found
 
+# What decides who may reach a handler is spread over decorators, framework
+# dependencies, class attributes and router options, and its meaning lives in
+# the definition each one names - which role a permission class admits, which
+# scope a decorator demands.  Naming a guard without that definition left the
+# model to guess whether a missing check was a gap or the intended policy.
+_GUARDISH = re.compile(
+    r"auth|perm|login|scope|role|access|admin|sudo|require|csrf|owner|member"
+    r"|policy|allow|user|current|token|session|verify|check|can_",
+    re.IGNORECASE,
+)
+_GUARD_ATTRIBUTES = frozenset(
+    {
+        "permission_classes",
+        "authentication_classes",
+        "permission_required",
+        "required_scopes",
+        "required_permissions",
+    }
+)
+_GUARD_DEFINITION_LINES = 60
+_GUARD_DEFINITION_BYTES = 150_000
+
+
+def _identifiers(node: ast.AST) -> list[str]:
+    found: list[str] = []
+    for item in ast.walk(node):
+        name = (
+            item.id
+            if isinstance(item, ast.Name)
+            else item.attr
+            if isinstance(item, ast.Attribute)
+            else None
+        )
+        if name and name not in found:
+            found.append(name)
+    return found
+
+
+def _router_classes(tree: ast.Module) -> dict[str, str]:
+    """``router = UserAPIRouter(...)``: the class that builds a route's router."""
+
+    found: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            callee = _name(node.value.func)
+            if callee:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        found[target.id] = callee.split(".")[-1]
+    return found
+
+
+def _guards_of(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    owner: ast.ClassDef | None,
+    defaults: Sequence[ast.expr | None],
+    router_dependency: str | None,
+    router_class: str | None = None,
+) -> list[dict[str, Any]]:
+    guards: list[dict[str, Any]] = []
+
+    def add(name: str, kind: str, args: str | None = None) -> None:
+        entry = {"name": name, "kind": kind, **({"args": args} if args else {})}
+        if entry not in guards:
+            guards.append(entry)
+
+    for decorator in node.decorator_list:
+        if _route_of(decorator) or _task_route(decorator):
+            continue
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        name = _name(target)
+        leaf = name.split(".")[-1] if name else None
+        if leaf in _GUARD_ATTRIBUTES and isinstance(decorator, ast.Call):
+            for identifier in _identifiers(decorator):
+                if identifier != leaf:
+                    add(identifier, f"decorator:{leaf}")
+        elif leaf and _GUARDISH.search(leaf):
+            call_text = None
+            if isinstance(decorator, ast.Call):
+                call_text = ast.unparse(decorator)[:200]
+            add(leaf, "decorator", call_text)
+    for default in defaults:
+        if isinstance(default, ast.Call) and _name(default.func) in (
+            "Depends",
+            "Security",
+        ):
+            for identifier in _identifiers(default):
+                if identifier not in ("Depends", "Security") and _GUARDISH.search(
+                    identifier
+                ):
+                    add(identifier, "dependency", ast.unparse(default)[:200])
+    if router_dependency:
+        for identifier in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", router_dependency):
+            if identifier not in ("Depends", "Security"):
+                add(identifier, "router_dependency", router_dependency[:200])
+    if router_class:
+        add(router_class, "router_class")
+    if owner is not None:
+        for base in owner.bases:
+            base_name = _name(base)
+            if base_name:
+                add(base_name.split(".")[-1], "base_class")
+        for statement in owner.body:
+            if (
+                isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id in _GUARD_ATTRIBUTES
+                    for target in statement.targets
+                )
+            ):
+                attribute = next(
+                    target.id
+                    for target in statement.targets
+                    if isinstance(target, ast.Name)
+                )
+                for identifier in _identifiers(statement.value):
+                    add(identifier, f"class:{attribute}", ast.unparse(statement)[:200])
+    return guards
+
+
+def _definition_text(workspace: Path, path: str, node: ast.AST) -> str:
+    try:
+        lines = (workspace / path).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return ""
+    start = int(getattr(node, "lineno", 1)) - 1
+    end = int(getattr(node, "end_lineno", start + 1))
+    body = lines[start:end]
+    if len(body) > _GUARD_DEFINITION_LINES:
+        body = [*body[:_GUARD_DEFINITION_LINES], "    # ... (definition continues)"]
+    return "\n".join(body)
+
+
 
 def _parse(path: Path) -> ast.Module | None:
     try:
@@ -476,9 +609,24 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 defined.setdefault(node.name, []).append(f"{path}:{node.lineno}")
+    definitions: dict[str, list[tuple[str, ast.AST]]] = {}
+    for path, tree in trees.items():
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                definitions.setdefault(node.name, []).append((path, node))
+    guard_definitions: dict[str, str] = {}
+    guard_bytes = 0
     entries: list[dict[str, Any]] = []
     for path, tree in trees.items():
+        owners: dict[int, ast.ClassDef] = {
+            id(item): cls
+            for cls in ast.walk(tree)
+            if isinstance(cls, ast.ClassDef)
+            for item in cls.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
         router_guards = _router_dependencies(tree)
+        router_classes = _router_classes(tree)
         request_globals = _request_globals(tree)
         cbv_routes = _cbv_routes(tree)
         non_http_routes = _non_http_routes(tree)
@@ -527,6 +675,39 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
             global_inputs = sorted(
                 (request_globals - parameters) & _names_in(node)
             )
+            router_dependency = next(
+                (
+                    r["router_dependencies"]
+                    for r in routes
+                    if "router_dependencies" in r
+                ),
+                None,
+            )
+            router_var = next(
+                (r.get("router") for r in routes if r.get("router")), None
+            )
+            guards = _guards_of(
+                node,
+                owners.get(id(node)),
+                defaults,
+                router_dependency,
+                router_classes.get(str(router_var)) if router_var else None,
+            )
+            guards = [
+                g
+                for g in guards
+                if g["name"] in definitions or g["kind"] in ("decorator",)
+                or g["kind"].startswith("decorator:")
+            ]
+            for entry_guard in guards:
+                for def_path, def_node in definitions.get(entry_guard["name"], [])[:2]:
+                    key = f"{def_path}:{getattr(def_node, 'lineno', 0)}"
+                    entry_guard.setdefault("defined_at", []).append(key)
+                    room = guard_bytes < _GUARD_DEFINITION_BYTES
+                    if key not in guard_definitions and room:
+                        text = _definition_text(workspace, def_path, def_node)
+                        guard_definitions[key] = text
+                        guard_bytes += len(text)
             tracer = _FlowTracer(set(inputs) | set(global_inputs), defined)
             for statement in node.body:
                 tracer.visit(statement)
@@ -539,6 +720,7 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
                     "inputs": inputs,
                     **({"global_inputs": global_inputs} if global_inputs else {}),
                     **({"injected": injected} if injected else {}),
+                    **({"guards": guards} if guards else {}),
                     "steps": [
                         step.as_dict()
                         for step in sorted(tracer.steps, key=lambda s: s.line)
@@ -550,6 +732,7 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
     return {
         "kind": "simple_route_flows",
         "entry_points": entries,
+        "guard_definitions": guard_definitions,
         "files_with_entry_points": len(covered),
         "python_files": len(python),
         "files_without_entry_points": sorted(set(trees) - covered),

@@ -36,6 +36,9 @@ BATCH_BYTES = 280_000
 # files, 3,187 of them tests or migrations) it came to 2.9 MB, over three times
 # the model window on its own, and no batch size could have helped.
 MAP_BYTES = 400_000
+
+# Permission definitions shown with one fact batch, beyond its entry points.
+_GUARD_BATCH_BYTES = 30_000
 # A file this large, or with lines this long, is a bundle or a build output.
 _GENERATED_BYTES = 512_000
 _GENERATED_LINE_CHARS = 2_000
@@ -325,19 +328,54 @@ def plan_fact_feeding(
             by_file.setdefault(str(entry.get("file")), []).append(
                 {key: value for key, value in entry.items() if key != "file"}
             )
+    definitions = flows.get("guard_definitions")
+    definitions = definitions if isinstance(definitions, dict) else {}
+
+    def close(files: list[FedFile], entries_in: list[object]) -> None:
+        # What each guard on this batch's entry points admits, once per batch
+        # rather than repeated under every handler that names it.
+        wanted: list[str] = []
+        for entry in entries_in:
+            guards = entry.get("guards") if isinstance(entry, dict) else None
+            for guard in guards if isinstance(guards, list) else []:
+                keys = guard.get("defined_at", []) if isinstance(guard, dict) else []
+                for key in keys:
+                    if key in definitions and key not in wanted:
+                        wanted.append(key)
+        shown: dict[str, str] = {}
+        used = 0
+        for key in wanted:
+            text = str(definitions[key])
+            if used + len(text) > _GUARD_BATCH_BYTES:
+                break
+            shown[key] = text
+            used += len(text)
+        if shown:
+            files = [
+                *files,
+                FedFile(
+                    path="(permission definitions)",
+                    text=json.dumps(shown, ensure_ascii=False, indent=1),
+                    language="json",
+                ),
+            ]
+        feeding.batches.append(Batch(len(feeding.batches) + 1, tuple(files)))
+
     current: list[FedFile] = []
+    current_entries: list[object] = []
     size = 0
     for path in sorted(by_file):
         text = json.dumps(by_file[path], ensure_ascii=False, indent=1)
         item = FedFile(path=path, text=text, language="json")
         weight = len(text.encode("utf-8"))
         if current and size + weight > batch_bytes:
-            feeding.batches.append(Batch(len(feeding.batches) + 1, tuple(current)))
-            current, size = [], 0
+            close(current, current_entries)
+            current, current_entries, size = [], [], 0
         current.append(item)
+        current_entries.extend(by_file[path])
         size += weight
     if current:
-        feeding.batches.append(Batch(len(feeding.batches) + 1, tuple(current)))
+        close(current, current_entries)
     fed = set(by_file)
     feeding.unfed = sorted(
         path for batch in code.batches for path in batch.paths if path not in fed

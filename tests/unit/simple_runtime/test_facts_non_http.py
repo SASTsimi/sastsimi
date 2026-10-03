@@ -88,3 +88,49 @@ def test_imported_request_object_is_a_taint_source(tmp_path: Path) -> None:
     assert "create" in [step["call"] for step in created["steps"]]
     assert "global_inputs" not in by_handler["ping"]
     assert by_handler["ping"]["steps"] == []
+
+
+_GUARDED = '''
+from flask import request
+
+
+def require_api_auth(f):
+    """Only a signed-in user with an API key may call."""
+    return f
+
+
+@bp.route("/aliases")
+@require_api_auth
+@cache.cached(timeout=5)
+def get_aliases():
+    return request.args.get("page")
+
+
+class AdminOnly:
+    def has_permission(self, user):
+        return user.is_admin
+
+
+class Panel:
+    permission_classes = [AdminOnly]
+
+    @bp.route("/panel")
+    def show(self):
+        return "ok"
+'''
+
+
+def test_guards_are_attached_with_their_definitions(tmp_path: Path) -> None:
+    (tmp_path / "views.py").write_text(_GUARDED, encoding="utf-8")
+
+    result = extract_flows(tmp_path, ["views.py"])
+
+    by_handler = {entry["handler"]: entry for entry in result["entry_points"]}
+    names = [guard["name"] for guard in by_handler["get_aliases"]["guards"]]
+    assert names == ["require_api_auth"]
+    assert [g["name"] for g in by_handler["show"]["guards"]] == ["AdminOnly"]
+    definitions = result["guard_definitions"]
+    key = by_handler["get_aliases"]["guards"][0]["defined_at"][0]
+    assert "def require_api_auth" in definitions[key]
+    admin = by_handler["show"]["guards"][0]["defined_at"][0]
+    assert "is_admin" in definitions[admin]
