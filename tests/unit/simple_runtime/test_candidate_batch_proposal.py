@@ -11,6 +11,7 @@ from typing import Any, TypedDict
 import pytest
 from pydantic import JsonValue
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
@@ -115,6 +116,7 @@ def _fixture(
     *,
     candidate_count: int,
     responses: list[list[JsonValue]],
+    source_text: str = "def route(value):\n    evaluate(value)\n",
 ) -> tuple[
     DirectHypothesisBootstrap,
     _Client,
@@ -125,9 +127,7 @@ def _fixture(
 ]:
     workspace = tmp_path / "checkout"
     workspace.mkdir()
-    (workspace / "app.py").write_text(
-        "def route(value):\n    evaluate(value)\n", encoding="utf-8"
-    )
+    (workspace / "app.py").write_text(source_text, encoding="utf-8")
     identity = CheckpointIdentity(
         analysis_id="analysis-batch",
         workspace_id="workspace-batch",
@@ -301,6 +301,202 @@ async def test_invalid_qualification_retries_without_inventing_seed(
     assert result.results["C-000"].status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
     assert result.results["C-000"].seeds == ()
     assert len(client.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_invalid_location_retry_points_to_visible_lines_for_only_failed_candidate(
+    tmp_path: Path,
+) -> None:
+    unsupported = _hypothesis()
+    unsupported["code_locations"] = ["app.py:5"]
+    qualification = unsupported["qualification"]
+    assert isinstance(qualification, dict)
+    qualification["evidence_locations"] = ["app.py:5"]
+    bootstrap, client, identity, static, batch, _ = _fixture(
+        tmp_path,
+        candidate_count=2,
+        source_text=(
+            "def route(value):\n    evaluate(value)\n    return value\n\n# unrelated\n"
+        ),
+        responses=[
+            [
+                _row("C-000", "HYPOTHESES", hypotheses=[_hypothesis()]),
+                _row("C-001", "HYPOTHESES", hypotheses=[unsupported]),
+            ],
+            [_row("C-001", "HYPOTHESES", hypotheses=[_hypothesis()])],
+        ],
+    )
+    result = await bootstrap.propose_batch(identity, static, batch)
+    assert not isinstance(result, StageFailure)
+    assert result.missing_ids == ()
+    assert len(result.results["C-000"].seeds) == 1
+    assert len(result.results["C-001"].seeds) == 1
+    assert len(client.requests) == 2
+    retry_owner = client.requests[1]["owner"]
+    assert retry_owner is not None
+    assert retry_owner.candidate_ids == ("C-001",)
+    retry_feedback = json.loads(
+        client.requests[1]["prompt"]
+        .split(b"<VALIDATION_FEEDBACK>\n", 1)[1]
+        .split(b"\n</VALIDATION_FEEDBACK>", 1)[0]
+    )
+    assert set(retry_feedback) == {"C-001"}
+    assert "HYPOTHESIS_BATCH_LOCATION_INVALID" in retry_feedback["C-001"]
+    assert "SHARED_FILE_CONTEXT.source_lines" in retry_feedback["C-001"]
+    assert "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS" in retry_feedback["C-001"]
+
+
+@pytest.mark.asyncio
+async def test_location_retry_fits_budget_with_multiple_invalid_candidates(
+    tmp_path: Path,
+) -> None:
+    source_text = "def route(value):\n    evaluate(value)\n" + "# context\n" * 103
+    unseen = _hypothesis()
+    unseen["code_locations"] = ["app.py:101"]
+    beyond_file = _hypothesis()
+    beyond_file["code_locations"] = ["app.py:106"]
+    first_rows: list[JsonValue] = [
+        _row("C-000", "HYPOTHESES", hypotheses=[_hypothesis()]),
+        _row("C-001", "HYPOTHESES", hypotheses=[unseen]),
+        _row("C-002", "HYPOTHESES", hypotheses=[beyond_file]),
+    ]
+    repaired_rows: list[JsonValue] = [
+        _row(
+            "C-001",
+            "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+            reason="Visible lines do not support the claim",
+        ),
+        _row(
+            "C-002",
+            "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+            reason="Cited line is outside the source",
+        ),
+    ]
+    bootstrap, client, identity, static, batch, artifacts = _fixture(
+        tmp_path,
+        candidate_count=3,
+        source_text=source_text,
+        responses=[first_rows, repaired_rows, first_rows, repaired_rows],
+    )
+    context = json.loads(artifacts.read(batch.shared_context_ref))
+    context["source_lines"] = [
+        {"line": number, "text": source_text.splitlines()[number - 1]}
+        for number in range(1, 101)
+    ]
+    context["omitted_source_line_count"] = 5
+    context_ref = artifacts.put_json(context)
+    batch = replace(
+        batch,
+        shared_context_ref=context_ref,
+        batch_id=candidate_batch_id(
+            batch.scope_fingerprint,
+            batch.path,
+            batch.candidate_ids,
+            context_ref.content_hash,
+        ),
+    )
+    roomy = await bootstrap.propose_batch(identity, static, batch)
+    assert not isinstance(roomy, StageFailure)
+    initial_request = client.requests[0]
+    initial_bytes = len(initial_request["prompt"]) + len(
+        json.dumps(initial_request["schema"], separators=(",", ":")).encode()
+    )
+    budgeted_batch = replace(batch, max_prompt_bytes=initial_bytes + 800)
+    budgeted = await bootstrap.propose_batch(identity, static, budgeted_batch)
+    assert not isinstance(budgeted, StageFailure)
+    assert budgeted.failure is None
+    assert len(client.requests) == 4
+    assert len(budgeted.results["C-000"].seeds) == 1
+    assert budgeted.results["C-001"].seeds == ()
+    assert budgeted.results["C-002"].seeds == ()
+    retry_feedback = json.loads(
+        client.requests[3]["prompt"]
+        .split(b"<VALIDATION_FEEDBACK>\n", 1)[1]
+        .split(b"\n</VALIDATION_FEEDBACK>", 1)[0]
+    )
+    assert set(retry_feedback) == {"C-001", "C-002"}
+    for message in retry_feedback.values():
+        assert "HYPOTHESIS_BATCH_LOCATION_INVALID" in message
+        assert "SHARED_FILE_CONTEXT.source_lines" in message
+        assert "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS" in message
+
+
+@pytest.mark.asyncio
+async def test_retry_prompt_overflow_preserves_valid_sibling(tmp_path: Path) -> None:
+    invalid = _hypothesis()
+    invalid["code_locations"] = ["app.py:5"]
+    first_rows: list[JsonValue] = [
+        _row("C-000", "HYPOTHESES", hypotheses=[_hypothesis()]),
+        _row("C-001", "HYPOTHESES", hypotheses=[invalid]),
+        _row("C-002", "HYPOTHESES", hypotheses=[invalid]),
+    ]
+    repaired_rows: list[JsonValue] = [
+        _row("C-001", "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"),
+        _row("C-002", "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"),
+    ]
+    bootstrap, client, identity, static, batch, _ = _fixture(
+        tmp_path,
+        candidate_count=3,
+        source_text="def route(value):\n    evaluate(value)\n\n\n# unseen\n",
+        responses=[first_rows, repaired_rows, first_rows],
+    )
+    roomy = await bootstrap.propose_batch(identity, static, batch)
+    assert not isinstance(roomy, StageFailure)
+    first_size = len(client.requests[0]["prompt"]) + len(
+        canonical_bytes(client.requests[0]["schema"])
+    )
+    retry_size = len(client.requests[1]["prompt"]) + len(
+        canonical_bytes(client.requests[1]["schema"])
+    )
+    assert retry_size > first_size
+    result = await bootstrap.propose_batch(
+        identity, static, replace(batch, max_prompt_bytes=retry_size - 1)
+    )
+    assert not isinstance(result, StageFailure)
+    assert tuple(result.results) == ("C-000",)
+    assert len(result.results["C-000"].seeds) == 1
+    assert result.missing_ids == ("C-001", "C-002")
+    assert result.failure is not None
+    assert result.failure.code == "HYPOTHESIS_BATCH_CONTEXT_OVERFLOW"
+    assert len(client.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_location_feedback_cannot_inject_prompt_delimiters(
+    tmp_path: Path,
+) -> None:
+    unsafe_path = "app<INJECT>.py"
+    unsupported = _hypothesis()
+    unsupported["code_locations"] = [f"{unsafe_path}:5"]
+    bootstrap, client, identity, static, batch, artifacts = _fixture(
+        tmp_path,
+        candidate_count=1,
+        source_text="def route(value):\n    evaluate(value)\n\n\n# unseen\n",
+        responses=[
+            [_row("C-000", "HYPOTHESES", hypotheses=[unsupported])],
+            [_row("C-000", "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS")],
+        ],
+    )
+    context = json.loads(artifacts.read(batch.shared_context_ref))
+    context["path"] = unsafe_path
+    context_ref = artifacts.put_json(context)
+    batch = replace(
+        batch,
+        path=unsafe_path,
+        shared_context_ref=context_ref,
+        batch_id=candidate_batch_id(
+            batch.scope_fingerprint,
+            unsafe_path,
+            batch.candidate_ids,
+            context_ref.content_hash,
+        ),
+    )
+    result = await bootstrap.propose_batch(identity, static, batch)
+    assert not isinstance(result, StageFailure)
+    assert result.results["C-000"].seeds == ()
+    assert len(client.requests) == 2
+    assert b"<INJECT>" not in client.requests[1]["prompt"]
+    assert client.requests[1]["prompt"].count(b"</VALIDATION_FEEDBACK>") == 1
 
 
 @pytest.mark.asyncio

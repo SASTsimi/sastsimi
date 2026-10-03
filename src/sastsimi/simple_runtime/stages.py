@@ -1398,12 +1398,17 @@ Return a `results` array. Each row must use exactly one supplied
 `requested_paths` for only that hypothesis. Do not combine evidence across
 hypotheses. If a row cannot be completed, omit only that row; it will be
 requested again separately. The shared file context applies to every row.
+Every `evidence_refs` entry must be an exact content hash from the allowed
+hashes listed for that hypothesis below. Never include a filename, line
+range, label, or explanatory text in an evidence ref. Use an empty array
+when none of the supplied artifacts supports a claim.
 """
         )
         while len(completed) < len(ordered_ids):
             pending = tuple(item for item in ordered_ids if item not in completed)
             if not pending:
                 break
+            feedback = ""
             for attempt in range(_PRO_CON_BATCH_MAX_ATTEMPTS):
                 if not pending:
                     break
@@ -1451,7 +1456,36 @@ requested again separately. The shared file context applies to every row.
                             raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID") from error
                         raise ValueError("PRO_CON_BATCH_CONTEXT_OVERFLOW") from error
                     raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID") from error
-                prompt = _prompt(instructions, context)
+                allowed_by_id = {
+                    item: sorted(
+                        _trusted_batch_evidence_hashes(
+                            self._artifacts,
+                            shared_ref,
+                            checkpoints[item].input_refs[0],
+                        )
+                    )
+                    for item in pending
+                }
+                common_hashes = set(allowed_by_id[pending[0]])
+                for hashes in allowed_by_id.values():
+                    common_hashes.intersection_update(hashes)
+                guidance = (
+                    "\nAllowed evidence content hashes: common hashes apply to "
+                    "every requested hypothesis; additional hashes apply only "
+                    "to the named hypothesis_id.\n"
+                    + canonical_bytes(
+                        {
+                            "common": sorted(common_hashes),
+                            "additional_by_id": {
+                                item: sorted(set(hashes) - common_hashes)
+                                for item, hashes in allowed_by_id.items()
+                            },
+                        }
+                    ).decode("utf-8")
+                )
+                if feedback:
+                    guidance += "\nPrevious response was rejected: " + feedback
+                prompt = _prompt(instructions + guidance, context)
                 if (
                     len(prompt) + len(canonical_bytes(schema))
                     > _PRO_CON_BATCH_MAX_PROMPT_BYTES
@@ -1517,11 +1551,7 @@ requested again separately. The shared file context applies to every row.
                             values = cast(list[str], row[field])
                             if any(not value.strip() for value in values):
                                 raise ValueError("empty evidence field")
-                        allowed_evidence = _trusted_batch_evidence_hashes(
-                            self._artifacts,
-                            shared_ref,
-                            checkpoints[hypothesis_id].input_refs[0],
-                        )
+                        allowed_evidence = allowed_by_id[hypothesis_id]
                         if any(
                             ref not in allowed_evidence
                             for ref in cast(list[str], row["evidence_refs"])
@@ -1542,6 +1572,16 @@ requested again separately. The shared file context applies to every row.
                             ):
                                 raise ValueError("unsafe requested path")
                 except (KeyError, TypeError, ValueError) as error:
+                    if attempt + 1 < _PRO_CON_BATCH_MAX_ATTEMPTS:
+                        feedback = (
+                            "An evidence_refs entry was not an exact allowed hash. "
+                            "Return only the bare hashes listed for each hypothesis."
+                            if str(error) == "evidence ref is not a supplied hash"
+                            else "The previous results failed validation. Return "
+                            "only the requested IDs, required fields, safe relative "
+                            "paths, and exact allowed evidence hashes."
+                        )
+                        continue
                     raise ProConBatchBlocked(
                         StageFailure(
                             code="PRO_CON_BATCH_RESPONSE_INVALID",

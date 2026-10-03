@@ -3382,6 +3382,11 @@ class DirectHypothesisBootstrap:
             base = {key: raw[key] for key in _BATCH_PROPOSAL_FIELDS}
             proposal, errors = validate_proposal(base, lines={path: source_count})
             if proposal is None or errors:
+                if errors and set(errors) <= {
+                    "invalid code location",
+                    "code location is outside the tracked checkout",
+                }:
+                    raise ValueError("HYPOTHESIS_BATCH_LOCATION_INVALID")
                 raise ValueError("HYPOTHESIS_BATCH_PROPOSAL_INVALID")
             qualification = raw["qualification"]
             if not isinstance(qualification, dict) or set(qualification) != (
@@ -3497,6 +3502,9 @@ class DirectHypothesisBootstrap:
                 [candidate_prompt_projection(by_id[item]) for item in pending]
             )
             feedback_raw = canonical_bytes(feedback) if feedback else b"{}"
+            feedback_raw = feedback_raw.replace(b"<", b"\\u003c").replace(
+                b">", b"\\u003e"
+            )
             prompt = (
                 prefix
                 + b"<SHARED_FILE_CONTEXT>\n"
@@ -3509,12 +3517,20 @@ class DirectHypothesisBootstrap:
             )
             schema = self._batch_schema(pending)
             if len(prompt) + len(canonical_bytes(schema)) > batch.max_prompt_bytes:
-                return StageFailure(
+                failure = StageFailure(
                     code="HYPOTHESIS_BATCH_CONTEXT_OVERFLOW",
                     retryable=False,
                     safe_message="Batch prompt exceeds its configured byte budget",
                     evidence_refs=tuple(attempt_refs),
                 )
+                if outcomes:
+                    return BatchProposalResult(
+                        results=outcomes,
+                        missing_ids=pending,
+                        attempt_refs=tuple(attempt_refs),
+                        failure=failure,
+                    )
+                return failure
             input_ref = artifacts.put_json(
                 {
                     "kind": "simple_candidate_batch_prompt_v1",
@@ -3622,7 +3638,17 @@ class DirectHypothesisBootstrap:
                         row, context, batch.path
                     )
                 except (TypeError, ValueError, KeyError) as error:
-                    feedback[candidate_id] = str(error)[:160]
+                    if str(error) == "HYPOTHESIS_BATCH_LOCATION_INVALID":
+                        feedback[candidate_id] = (
+                            "HYPOTHESIS_BATCH_LOCATION_INVALID: "
+                            "For code_locations and qualification.evidence_locations, "
+                            "cite only SHARED_FILE_CONTEXT.path:<line> where <line> "
+                            "appears in SHARED_FILE_CONTEXT.source_lines. If those "
+                            "lines do not support a hypothesis, return "
+                            "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS."
+                        )
+                    else:
+                        feedback[candidate_id] = str(error)[:160]
                     continue
                 seeds: list[HypothesisSeed] = []
                 for proposal, qualification in qualified:

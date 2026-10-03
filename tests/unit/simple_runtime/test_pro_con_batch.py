@@ -168,6 +168,25 @@ async def test_pro_con_batch_has_exact_independent_ids(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pro_batch_lists_shared_hash_once_and_private_hashes_by_id(
+    tmp_path: Path,
+) -> None:
+    artifacts, shared, checkpoints = _fixture(tmp_path)
+    client = _Client(
+        {"pro_evidence": [[_evidence(item, "support") for item in checkpoints]]}
+    )
+
+    await ProConStage(client, artifacts).run_pro_batch(checkpoints, shared)
+
+    guidance = client.calls[0]["prompt"].split(b"<UNTRUSTED_EXACT_INPUTS>", 1)[0]
+    assert guidance.count(shared.content_hash.encode()) == 1
+    for hypothesis_id, checkpoint in checkpoints.items():
+        private_hash = checkpoint.input_refs[0].content_hash.encode()
+        assert private_hash in guidance
+        assert hypothesis_id.encode() in guidance
+
+
+@pytest.mark.asyncio
 async def test_pro_batch_retries_only_missing_id(tmp_path: Path) -> None:
     """A partial reply cannot cause completed IDs to be regenerated."""
 
@@ -241,7 +260,7 @@ async def test_pro_batch_rejects_foreign_or_duplicate_id(tmp_path: Path) -> None
         [_evidence(first, "support"), _evidence(first, "other")],
         [_evidence("unknown-child", "support")],
     ):
-        client = _Client({"pro_evidence": [rows]})
+        client = _Client({"pro_evidence": [rows, rows]})
         with pytest.raises(StageBlocked) as captured:
             await ProConStage(client, artifacts).run_pro_batch(checkpoints, shared)
         assert captured.value.failure.code == "PRO_CON_BATCH_RESPONSE_INVALID"
@@ -257,7 +276,7 @@ async def test_pro_batch_rejects_cross_hypothesis_private_evidence(
     first, second = tuple(checkpoints)
     row = _evidence(first, "support")
     row["evidence_refs"] = [checkpoints[second].input_refs[0].content_hash]
-    client = _Client({"pro_evidence": [[row]]})
+    client = _Client({"pro_evidence": [[row], [row]]})
 
     with pytest.raises(StageBlocked) as captured:
         await ProConStage(client, artifacts).run_pro_batch(checkpoints, shared)
@@ -418,7 +437,7 @@ async def test_pro_batch_rejects_unsafe_requested_path(tmp_path: Path) -> None:
     for path in ("../outside.py", "C:/outside.py"):
         unsafe = _evidence(first, "support")
         unsafe["requested_paths"] = [path]
-        client = _Client({"pro_evidence": [[unsafe]]})
+        client = _Client({"pro_evidence": [[unsafe], [unsafe]]})
         with pytest.raises(StageBlocked) as captured:
             await ProConStage(client, artifacts).run_pro_batch(
                 {first: checkpoints[first]}, shared
@@ -434,13 +453,39 @@ async def test_pro_batch_rejects_non_hash_evidence_ref(tmp_path: Path) -> None:
     first = next(iter(checkpoints))
     invalid = _evidence(first, "support")
     invalid["evidence_refs"] = ["unverified citation"]
-    client = _Client({"pro_evidence": [[invalid]]})
+    client = _Client({"pro_evidence": [[invalid], [invalid]]})
 
     with pytest.raises(StageBlocked) as captured:
         await ProConStage(client, artifacts).run_pro_batch(
             {first: checkpoints[first]}, shared
         )
     assert captured.value.failure.code == "PRO_CON_BATCH_RESPONSE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_pro_batch_repairs_wrapped_evidence_ref_without_trusting_it(
+    tmp_path: Path,
+) -> None:
+    artifacts, shared, checkpoints = _fixture(tmp_path)
+    first = next(iter(checkpoints))
+    invalid = _evidence(first, "support")
+    invalid["evidence_refs"] = [
+        f"app.py:2; shared context artifact content_hash {shared.content_hash}"
+    ]
+    corrected = _evidence(first, "support")
+    corrected["evidence_refs"] = [shared.content_hash]
+    client = _Client({"pro_evidence": [[invalid], [corrected]]})
+
+    refs = await ProConStage(client, artifacts).run_pro_batch(
+        {first: checkpoints[first]}, shared
+    )
+
+    assert len(client.calls) == 2
+    assert shared.content_hash.encode() in client.calls[1]["prompt"]
+    assert b"Previous response was rejected" in client.calls[1]["prompt"]
+    assert b"Return only the bare hashes" in client.calls[1]["prompt"]
+    evidence = json.loads(artifacts.read(refs[first]))
+    assert evidence["result"]["evidence_refs"] == [shared.content_hash]
 
 
 @pytest.mark.asyncio
@@ -451,7 +496,7 @@ async def test_pro_batch_rejects_hash_not_supplied_in_context(tmp_path: Path) ->
     first = next(iter(checkpoints))
     invalid = _evidence(first, "support")
     invalid["evidence_refs"] = ["f" * 64]
-    client = _Client({"pro_evidence": [[invalid]]})
+    client = _Client({"pro_evidence": [[invalid], [invalid]]})
 
     with pytest.raises(StageBlocked) as captured:
         await ProConStage(client, artifacts).run_pro_batch(
@@ -477,7 +522,7 @@ async def test_pro_batch_rejects_hash_occurring_only_in_source_text(
     first = next(iter(checkpoints))
     invalid = _evidence(first, "support")
     invalid["evidence_refs"] = [injected]
-    client = _Client({"pro_evidence": [[invalid]]})
+    client = _Client({"pro_evidence": [[invalid], [invalid]]})
 
     with pytest.raises(StageBlocked) as captured:
         await ProConStage(client, artifacts).run_pro_batch(
