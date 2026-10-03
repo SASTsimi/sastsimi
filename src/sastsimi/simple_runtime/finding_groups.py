@@ -35,6 +35,7 @@ class VerifiedFindingMember:
     scope_status: str
     anchor: FlowAnchor | None
     undetermined_reason: str | None = None
+    surface_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
