@@ -335,10 +335,13 @@ that configuration (a `conftest.py` that sets an environment variable, a
 `tests/*.env` or `.env.test` file, `example.env`) and set the same variables in
 the script before importing the application, copying values rather than
 inventing them.
-`/workspace` is read-only to the script, so point any data, media or upload
-directory the application writes at `/tmp`, usually through the environment
-variables its settings read. When the repository uses PostgreSQL a server is
-installed: start it as the script's own user with `initdb -D /tmp/pg -U
+The repository's existing files under `/workspace` are read-only to the script,
+but its directories accept new files, so an application that creates its own
+upload or data directory there works; never edit a repository file. Prefer
+`/tmp` for data, media or upload directories when a setting names one, usually
+through the environment variables its settings read. When the repository uses
+PostgreSQL a server is installed: start it as the script's own user with
+`initdb -D /tmp/pg -U
 postgres -A trust` and `pg_ctl -D /tmp/pg -o "-k /tmp -c
 listen_addresses=127.0.0.1" -w start`, then create the role and database its
 test settings name, rather than switching the project to SQLite.

@@ -464,6 +464,11 @@ class DirectEnvironmentPreparer:
                 # left every `python3` call a "Permission denied".
                 b"RUN (chmod a+x /root && chmod -R a+rX /root/.local /root/.cache) "
                 b">/dev/null 2>&1 || true\n"
+                # New files only: an application that makes its own upload or data
+                # directory under the checkout failed with "Permission denied"
+                # while existing source stays unwritable.
+                b"RUN find /workspace -type d -exec chmod a+rwx {} + "
+                b">/dev/null 2>&1 || true\n"
             )
             source = "REPOSITORY_DOCKERFILE"
         else:
@@ -869,6 +874,8 @@ class DirectEnvironmentPreparer:
             f"{self._target_install_layer(target_requirements).decode('utf-8')}"
             f"{self._test_dependency_layer().decode('utf-8') if install else ''}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
+            "RUN find /workspace -type d -exec chmod a+rwx {} + >/dev/null 2>&1 "
+            "|| true\n"
             'CMD ["sleep", "infinity"]\n'
         ).encode()
 
