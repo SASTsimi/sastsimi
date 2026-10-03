@@ -309,7 +309,14 @@ INCONCLUSIVE. When previous candidate and execution artifacts are supplied,
 correct the recorded runtime error instead of repeating the failed approach.
 Before exit 2, print a concise error type and traceback to stderr so the next
 attempt can repair the exact runtime failure; never print secrets or host paths.
-When testing a Python handler, prefer importing the real repository module or
+When the hypothesis is remotely reachable (the attacker-controlled value
+arrives as an HTTP header, query, path, body, cookie or upload), deliver the
+value through the application's real entry point - the framework's test client
+or a server started inside the container - rather than calling the vulnerable
+function with it, so the real request parser and middleware get the chance to
+reject or normalise it. A direct call is acceptable only for a flow whose source
+is not a network request. When testing a Python handler, prefer importing the
+real repository module or
 execute extracted code with its original globals (including `__file__`) intact;
 do not rebuild a handler in a way that changes its path or framework semantics.
 If extraction is unavoidable, include every imported module referenced by the
@@ -1066,6 +1073,18 @@ the same header, field, or content of their own project directly; a path that
 reaches that exact same outcome, for that same project, provides nothing new
 and does not belong in `provided_capabilities`. When nothing survives this
 check, `provided_capabilities` is empty and the verdict is FALSE, not TRUE.
+
+A PoC that calls the vulnerable function directly - importing it, or extracting
+it from its module - proves what the function does with a value, not that an
+attacker can deliver that value. When the claim is remote (the source is an
+HTTP header, query, path, body, cookie or upload), the PoC has to enter through
+the application's real entry point: a request sent to the running app or its
+framework test client, so the real request parser, middleware and routing sit
+in the path. Server and framework layers routinely reject or normalise exactly
+the bytes a direct call accepts - bare CR/LF in a header, NUL bytes, oversized or
+malformed encodings - so a flow that only works when the function is handed the
+raw value is HOLD, with "reachability through the real request path is
+unconfirmed" in `unresolved_conditions`, not TRUE with it left in `limitations`.
 
 When several entry points reach the flow and require different privileges,
 `required_capabilities` names the least-privileged one the evidence actually
