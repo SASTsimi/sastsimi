@@ -9,6 +9,94 @@ from pathlib import Path
 import pytest
 
 
+def test_verified_group_folds_cards_but_preserves_member_links_and_legacy_view() -> (
+    None
+):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not available")
+    script = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "sastsimi"
+        / "dashboard"
+        / "static"
+        / "app.js"
+    )
+    harness = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const nodes = new Map();
+class Element {
+  constructor(tag) {
+    this.tag = tag;
+    this.children = [];
+    this.className = "";
+    this.textContent = "";
+    this.classList = { add() {}, remove() {}, toggle() {} };
+  }
+  replaceChildren(...children) { this.children = children; }
+  append(...children) { this.children.push(...children); }
+  addEventListener() {}
+  setAttribute() {}
+}
+const context = {
+  window: {
+    location: { pathname: "/" }, history: { replaceState() {} }, setInterval() {}
+  },
+  document: {
+    getElementById(id) {
+      if (!nodes.has(id)) nodes.set(id, new Element("div"));
+      return nodes.get(id);
+    },
+    createElement(tag) { return new Element(tag); },
+    createDocumentFragment() { return new Element("fragment"); },
+  },
+  fetch() { return new Promise(() => {}); },
+  URLSearchParams, Intl, Date, Promise, encodeURIComponent, decodeURIComponent,
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
+const items = ["F-001", "F-002"].map((id) => ({
+  display_id: id, download_url: `/reports/${id}.md`,
+  attachment_urls: { "poc.py": `/reports/${id}/poc.py` },
+}));
+const groups = [{
+  group_id: "group", representative_id: "F-001", member_ids: ["F-001", "F-002"],
+  status: "PROVEN_SAME_FLOW",
+}];
+context.items = items;
+context.groups = groups;
+vm.runInContext("renderReports(items, groups)", context);
+const grouped = nodes.get("reports").children;
+assert.equal(grouped.length, 1, "one verified path gets one visible card");
+const walk = (node) => [node, ...node.children.flatMap(walk)];
+const links = walk(grouped[0])
+  .filter((node) => node.tag === "a")
+  .map((node) => node.href);
+assert(links.includes("/reports/F-001.md"));
+assert(links.includes("/reports/F-002.md"));
+assert(links.includes("/reports/F-001/poc.py"));
+assert(links.includes("/reports/F-002/poc.py"));
+context.groups = [{ group_id: "unknown", representative_id: "F-001",
+  member_ids: ["F-001"], status: "GROUPING_UNDETERMINED" }];
+vm.runInContext("renderReports(items, groups)", context);
+assert(walk(nodes.get("reports")).some((node) =>
+  String(node.textContent).includes("묶음 미확정")));
+vm.runInContext("renderReports(items)", context);
+assert.equal(nodes.get("reports").children.length, 2, "legacy JSON keeps raw rows");
+"""
+    result = subprocess.run(
+        [node, "-e", harness, str(script)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_refresh_does_not_overlap_and_log_scroll_is_user_controlled() -> None:
     node = shutil.which("node")
     if node is None:

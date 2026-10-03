@@ -74,6 +74,8 @@ button:hover, button.selected, button:focus-visible { border-color: #5de0c0; out
 .code-view { max-height: 31rem; margin: 0; overflow: auto; color: #c9e9dd; white-space: pre-wrap; overflow-wrap: anywhere; font: .82rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .reports { display: grid; gap: .6rem; margin-bottom: .8rem; }
 .report-row { justify-content: flex-start; }
+.report-group { display: grid; gap: .45rem; padding: .8rem; border: 1px solid #244357; border-radius: 10px; background: #0d2230; }
+.report-group .report-row { padding-top: .35rem; border-top: 1px solid #244357; flex-wrap: wrap; }
 .markdown-content { line-height: 1.65; }
 .markdown-content h1, .markdown-content h2, .markdown-content h3 { margin: 1.1rem 0 .55rem; }
 .markdown-content p { margin-bottom: .55rem; }
