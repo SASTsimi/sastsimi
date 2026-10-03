@@ -328,6 +328,13 @@ The test dependencies the repository declares are installed. When it has a
 test suite, write the reproduction as a test run by its own test runner and
 configuration - its conftest, test settings and fixtures - which is how the
 project itself boots the application; do not hand-assemble the framework.
+An application that fails at import for a missing required setting - a
+`KeyError`, or a `NoneType object is not callable` raised from its own config
+loader - is not configured, not broken. Find how the project's own tests supply
+that configuration (a `conftest.py` that sets an environment variable, a
+`tests/*.env` or `.env.test` file, `example.env`) and set the same variables in
+the script before importing the application, copying values rather than
+inventing them.
 `/workspace` is read-only to the script, so point any data, media or upload
 directory the application writes at `/tmp`, usually through the environment
 variables its settings read. When the repository uses PostgreSQL a server is
