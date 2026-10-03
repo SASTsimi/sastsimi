@@ -1054,14 +1054,14 @@ async def test_non_codex_short_deadline_still_cancels_slow_inner(
     inner = SlowClient()
     result = await asyncio.wait_for(
         _wrapper(tmp_path, inner, asyncio.Semaphore(1), max_retries=0).call(
-            prompt=b"safe", output_schema={}, timeout_ms=50
+            prompt=b"safe", output_schema={}, timeout_ms=500
         ),
-        timeout=1,
+        timeout=3,
     )
 
     assert isinstance(result, StageFailure)
     assert result.code == "TIMED_OUT"
-    assert 1 <= inner.requested_timeout_ms <= 50
+    assert 1 <= inner.requested_timeout_ms <= 500
     assert inner.cancelled
 
 

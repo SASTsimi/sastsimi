@@ -55,6 +55,8 @@ from .recipe_store import (
 )
 
 _CLEANUP_TIMEOUT_SECONDS = 10.0
+# Preparation can list, inspect, and remove a tag: three bounded Docker calls.
+_IMAGE_PREPARATION_TIMEOUT_SECONDS = 40.0
 # Agent-managed declarations that cannot be checked deterministically remain
 # visible as NOT_CHECKED but must not prevent the first PoC command from
 # running. A VERSION check that can actually run remains a readiness gate.
@@ -180,7 +182,7 @@ class ReproductionSetupAutomation:
         async with self._resources.creation_fence(labels):
             self._resources.reserve_image(image_tag=image_tag, labels=labels)
             try:
-                async with asyncio.timeout(_CLEANUP_TIMEOUT_SECONDS):
+                async with asyncio.timeout(_IMAGE_PREPARATION_TIMEOUT_SECONDS):
                     preparation = await self._resources.prepare_image_intent(
                         docker=self._docker,
                         image_tag=image_tag,

@@ -25,6 +25,8 @@ from sastsimi.composition.simple_runtime_composition import (
     PublicSimpleRuntimeApplication,
 )
 from sastsimi.config.user_config import SimpleExecutionProfile, UserConfig
+from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.interfaces.cli.public import emit_public
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
 from sastsimi.simple_runtime.application import (
@@ -109,26 +111,27 @@ class _DiscoveryClient:
         self.calls += 1
         self.prompt_bytes += len(prompt)
         rows = json.loads(prompt.split(b"<CANDIDATES>")[1].split(b"</CANDIDATES>")[0])
+        value: dict[str, JsonValue] = {
+            "decisions": [
+                {
+                    "candidate_id": row["candidate_id"],
+                    "status": (
+                        "EXCLUDE"
+                        if row["path"] == "api.py" and row["line"] == 6
+                        else "INCLUDE"
+                    ),
+                    "reason": (
+                        "The call site has a concrete source or a constant argument"
+                    ),
+                    "evidence": f"{row['path']}:{row['line']}",
+                }
+                for row in rows
+            ]
+        }
         return SimpleLLMCallResult(
-            value={
-                "decisions": [
-                    {
-                        "candidate_id": row["candidate_id"],
-                        "status": (
-                            "EXCLUDE"
-                            if row["path"] == "api.py" and row["line"] == 6
-                            else "INCLUDE"
-                        ),
-                        "reason": (
-                            "The call site has a concrete source or a constant argument"
-                        ),
-                        "evidence": f"{row['path']}:{row['line']}",
-                    }
-                    for row in rows
-                ]
-            },
+            value=value,
             prompt_digest="a" * 64,
-            output_digest="b" * 64,
+            output_digest=hashlib.sha256(canonical_bytes(value)).hexdigest(),
         )
 
 
@@ -315,12 +318,30 @@ class _FixtureRunner(SimpleRuntimeRunner):
         self.events.append(f"pro_con:{identity.hypothesis_id}")
         artifacts = SimpleArtifactRepository(self.data_dir, identity)
         pending = self.store.require(identity, SimpleStage.PRO_CON_DONE)
-        pro_ref = artifacts.put_json(
-            {"kind": "simple_pro_evidence", "path": "api.py:3"}
-        )
-        con_ref = artifacts.put_json(
-            {"kind": "simple_con_evidence", "path": "api.py:3"}
-        )
+        source_refs = [ref.model_dump(mode="json") for ref in pending.input_refs]
+
+        def evidence(role: str) -> StoredDataRef:
+            result = {
+                "claims": ["Fixture-only source review"],
+                "evidence_refs": [pending.input_refs[0].content_hash],
+                "limitations": [],
+                "requested_paths": [],
+            }
+            return artifacts.put_json(
+                {
+                    "kind": f"simple_{role}_evidence",
+                    "source_refs": source_refs,
+                    "result": result,
+                    "prompt_digest": "a" * 64,
+                    "output_digest": hashlib.sha256(
+                        canonical_bytes(result)
+                    ).hexdigest(),
+                    "attempt_id": pending.attempt_id,
+                }
+            )
+
+        pro_ref = evidence("pro")
+        con_ref = evidence("con")
         self.store.save_checkpoint(
             pending.model_copy(
                 update={
@@ -476,7 +497,7 @@ class _MeasuredHypothesisTransport:
         return SimpleLLMCallResult(
             value=cast(dict[str, JsonValue], value),
             prompt_digest="a" * 64,
-            output_digest="b" * 64,
+            output_digest=hashlib.sha256(canonical_bytes(value)).hexdigest(),
         )
 
 
@@ -695,10 +716,12 @@ class _HandoffClient:
         poc_validated: bool,
         gates_accepted: bool,
         fail_agent_once: str | None = None,
+        report_local_url: bool = False,
     ) -> None:
         self.poc_validated = poc_validated
         self.gates_accepted = gates_accepted
         self.fail_agent_once = fail_agent_once
+        self.report_local_url = report_local_url
         self.calls: Counter[str] = Counter()
         self.prompts: dict[str, list[bytes]] = {}
 
@@ -803,6 +826,11 @@ class _HandoffClient:
                 "citations": [],
             },
         }
+        if agent_name == "report_draft" and self.report_local_url:
+            korean = cast(dict[str, Any], values[agent_name]["ko"])
+            korean["details"] = (
+                "시험 입력은 file:relative/private folder/source, 다음 단계로 갔습니다."
+            )
         if agent_name == "rule_scope_gate":
             status = "PASS" if self.gates_accepted else "FAIL"
             lines = (
@@ -841,7 +869,9 @@ class _HandoffClient:
         return SimpleLLMCallResult(
             value=cast(dict[str, JsonValue], values[agent_name]),
             prompt_digest="a" * 64,
-            output_digest="b" * 64,
+            output_digest=hashlib.sha256(
+                canonical_bytes(values[agent_name])
+            ).hexdigest(),
         )
 
 
@@ -912,6 +942,7 @@ def build_handoff_harness(
     interrupt_once: bool = False,
     old_nonretryable_poc: bool = False,
     fail_agent_once: str | None = None,
+    report_local_url: bool = False,
 ) -> tuple[SimpleAnalysisApplication, CheckpointIdentity]:
     app, store, _discovery, _proposer, _events, data_dir = _fixture(
         tmp_path, omit_storage_once=interrupt_once
@@ -972,6 +1003,7 @@ def build_handoff_harness(
         poc_validated=poc_validated,
         gates_accepted=gates_accepted,
         fail_agent_once=fail_agent_once,
+        report_local_url=report_local_url,
     )
     docker = _HandoffDocker(poc_validated=poc_validated)
     containers = _HandoffContainers()
@@ -1084,6 +1116,7 @@ async def test_streaming_fixture_preserves_known_positive_and_exact_public_count
         "poc": {"attempted": 0, "completed": 0},
         "surface": {
             "recorded_contexts": 4,
+            "recorded_surfaces": 4,
             "completed": 4,
             "total": 4,
             "covered": 4,
@@ -1201,6 +1234,7 @@ async def test_streaming_fixture_unreviewed_sink_is_partial_in_terminal_and_cli(
     phase_counts = cast(dict[str, dict[str, int]], status["phase_counts"])
     assert phase_counts["surface"] == {
         "recorded_contexts": 4,
+        "recorded_surfaces": 4,
         "completed": 3,
         "total": 4,
         "covered": 3,
@@ -1471,6 +1505,31 @@ async def test_validated_fixture_exports_exact_bilingual_bundle(tmp_path: Path) 
     assert (bundle_path / "poc.sh").read_bytes() == artifacts.read(
         candidate.output_refs[1]
     )
+
+
+@pytest.mark.asyncio
+async def test_reporter_redacts_local_file_url_in_legacy_and_bundle_reports(
+    tmp_path: Path,
+) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path,
+        poc_validated=True,
+        gates_accepted=True,
+        report_local_url=True,
+    )
+    outcome = await app.analyze(_request(tmp_path / "data"))
+    assert outcome.status == "COMPLETE", outcome.error_code
+    child = identity.model_copy(update={"hypothesis_id": "known-command-path"})
+    store = SimpleCheckpointStore(tmp_path / "data" / "db" / "sastsimi.sqlite3")
+    report = store.require(child, SimpleStage.REPORT_DONE)
+    artifacts = SimpleArtifactRepository(tmp_path / "data", child)
+    legacy = artifacts.read(report.output_refs[1])
+    bundle = Path(report.markdown_path or "").with_suffix("")
+    korean = (bundle / "report_kr.md").read_bytes()
+    for body in (legacy, Path(report.markdown_path or "").read_bytes(), korean):
+        assert b"file:relative/private folder/source" not in body
+        assert b"folder/source" not in body
+        assert b"[REDACTED:LOCAL_FILE_URL]" in body
 
 
 @pytest.mark.asyncio

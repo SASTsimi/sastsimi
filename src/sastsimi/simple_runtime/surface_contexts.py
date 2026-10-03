@@ -182,6 +182,10 @@ def _surface_payload(
         "static_evidence_ref_hashes": sorted(
             {ref.content_hash for ref in surface.evidence_refs}
         ),
+        "static_evidence_refs": [
+            ref.model_dump(mode="json")
+            for ref in sorted(surface.evidence_refs, key=lambda item: item.content_hash)
+        ],
         "source_sha256": prepared.source_sha256,
         "source_status": source_status,
         "source_unavailable_reason": source_reason,

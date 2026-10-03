@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -66,6 +67,70 @@ def test_public_artifact_reader_never_loads_unbounded_cas(tmp_path: Path) -> Non
     assert raw == b'{"kind":"example"}'
 
 
+@pytest.mark.parametrize(
+    "body, media_type",
+    (
+        (b"# Report\nfile:///C:/Users/alice/private/repo\n", "text/markdown"),
+        (b'{"repository":"file:///C:/Users/alice/private/repo"}', "application/json"),
+        (
+            json.dumps({"payload": r'{"uri":"file\u003a///private/repo"}'}).encode(),
+            "application/json",
+        ),
+        (
+            json.dumps({"payload": '{"uri":"file:///private/repo"}'}).encode(),
+            "application/json",
+        ),
+    ),
+)
+def test_public_artifact_reader_redacts_legacy_local_file_urls(
+    tmp_path: Path, body: bytes, media_type: str
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    repository = SimpleArtifactRepository(tmp_path, identity)
+    artifact_ref = repository.put_bytes(body, media_type)
+
+    _, projected, parsed = DashboardQuery(tmp_path)._safe_ref_bytes(
+        repository, artifact_ref
+    )
+    assert b"file:" not in projected.lower()
+    assert b"[REDACTED:LOCAL_FILE_URL]" in projected
+    if isinstance(parsed, dict) and "payload" in parsed:
+        assert json.loads(parsed["payload"])["uri"] == "[REDACTED:LOCAL_FILE_URL]"
+
+
+def test_local_policy_snapshot_keeps_projection_complete(tmp_path: Path) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    repository = SimpleArtifactRepository(tmp_path, identity)
+    snapshot_ref = repository.put_json(
+        {
+            "kind": "simple_policy_snapshot",
+            "target_repository": "file:///C:/Users/alice/private/repo",
+        }
+    )
+    projected_run = run.model_copy(update={"repository_profile_ref": snapshot_ref})
+
+    _, contents, _, _, _, omitted = DashboardQuery(tmp_path)._artifact_projection(
+        "analysis-a", [], projected_run
+    )
+
+    assert omitted == 0
+    assert snapshot_ref.content_hash in contents
+    assert b"file:" not in contents[snapshot_ref.content_hash][2].lower()
+
+
 def seed(data_dir) -> None:
     database = data_dir / "db" / "sastsimi.sqlite3"
     store = SimpleCheckpointStore(database)
@@ -82,6 +147,7 @@ def seed(data_dir) -> None:
             chain_depths={"hypothesis-1": 1},
         )
     )
+
     identity = CheckpointIdentity(
         analysis_id="analysis-a",
         workspace_id="workspace-1",
@@ -137,6 +203,85 @@ def seed(data_dir) -> None:
     report = data_dir / "reports" / "analysis-a" / "F-001.md"
     report.parent.mkdir(parents=True)
     report.write_text("# report", encoding="utf-8")
+
+
+def test_public_analysis_repository_hides_local_file_url(tmp_path: Path) -> None:
+    seed(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(
+        run.model_copy(update={"repository": "file:///C:/Users/alice/private/repo"})
+    )
+
+    query = DashboardQuery(tmp_path)
+    assert query.get_analysis("analysis-a").repository == "[REDACTED:LOCAL_FILE_URL]"
+    assert query.list_analyses()[0].repository == "[REDACTED:LOCAL_FILE_URL]"
+
+
+def test_public_scope_review_redacts_nested_local_url(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    review = {
+        "status": "UNCERTAIN",
+        "policy_source": {"collection_status": "file:///private/status"},
+        "checks": ["file:///private/reason"],
+        "axes": {"reporting": {"reason": "file:///private/model-reason"}},
+    }
+
+    with patch("sastsimi.dashboard.query.project_scope_review", return_value=review):
+        public = DashboardQuery(tmp_path)._scope_review(identity, None, None)
+
+    assert "file:" not in json.dumps(public).lower()
+    assert "[REDACTED:LOCAL_FILE_URL]" in json.dumps(public)
+
+
+def test_public_events_and_logs_redact_local_urls_without_breaking_json(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    activity = AgentActivityStore(tmp_path / "db" / "sastsimi.sqlite3")
+    activity.append(
+        AgentActivityEvent(
+            event_id="event-local-url",
+            analysis_id="analysis-a",
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            hypothesis_id=None,
+            stage="PRO_CON_DONE",
+            agent_role="Pro·Con Agents",
+            attempt_id="attempt-local-url",
+            sequence=2,
+            kind=ActivityKind.EVIDENCE_RECORDED,
+            status="SUCCEEDED",
+            summary_ko="file:///private/repo",
+            provider="file:///private/provider",
+            model="file:///private/model",
+            started_at=datetime.now(UTC),
+        )
+    )
+    logs = tmp_path / "logs" / "analysis-a.log"
+    logs.parent.mkdir(parents=True, exist_ok=True)
+    logs.write_text(
+        json.dumps({"summary_ko": "file:///private/repo", "status": "RUNNING"}) + "\n",
+        encoding="utf-8",
+    )
+
+    query = DashboardQuery(tmp_path)
+    assert "file:" not in query.list_events("analysis-a")[-1].summary_ko.lower()
+    assert (
+        "file:"
+        not in json.dumps(
+            query.get_analysis("analysis-a").model_dump(mode="json")
+        ).lower()
+    )
+    rows = [json.loads(line) for line in query.logs_bytes("analysis-a").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "RUNNING"
+    assert "file:" not in rows[0]["summary_ko"].lower()
 
 
 def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -> None:
@@ -742,6 +887,7 @@ def test_v2_dashboard_does_not_complete_a_partially_recorded_surface(
         partial = DashboardQuery(tmp_path).get_analysis("analysis-a")
         assert partial.phase_counts["surface"] == {
             "recorded_contexts": 1 if context_id == "part-1" else 2,
+            "recorded_surfaces": 1,
             "completed": 0,
             "total": 2,
         }
@@ -750,11 +896,13 @@ def test_v2_dashboard_does_not_complete_a_partially_recorded_surface(
     detail = query.get_analysis("analysis-a")
     assert detail.phase_counts["surface"] == {
         "recorded_contexts": 2,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 2,
     }
     assert query.list_analyses()[0].phase_counts["surface"] == {
         "recorded_contexts": 2,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 2,
     }
@@ -815,6 +963,7 @@ def test_v2_dashboard_does_not_complete_a_partially_recorded_surface(
     unverified = query.get_analysis("analysis-a")
     assert unverified.phase_counts["surface"] == {
         "recorded_contexts": 2,
+        "recorded_surfaces": 1,
         "completed": 0,
         "total": 2,
     }
@@ -1062,6 +1211,295 @@ def _attach_bundle(tmp_path: Path) -> tuple[CheckpointIdentity, PublishedBundle]
     return identity, attach_current_bundle(tmp_path, identity, ref("finding"), "F-001")
 
 
+def test_dashboard_hides_raw_report_draft_and_response(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database)
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    draft = artifacts.put_json(
+        {
+            "kind": "simple_report_draft",
+            "result": {"en": {"details": "file:relative/private-source"}},
+        }
+    )
+    response = artifacts.put_json(
+        {
+            "kind": "simple_llm_response",
+            "response": {"en": {"details": "file:relative/private-source"}},
+        }
+    )
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    store.save_checkpoint(
+        report.model_copy(
+            update={
+                "output_refs": (draft, report.output_refs[1]),
+                "report_ref": draft,
+            }
+        )
+    )
+    AgentActivityStore(database).append(
+        AgentActivityEvent(
+            event_id="current-report-draft",
+            analysis_id=identity.analysis_id,
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            hypothesis_id=identity.hypothesis_id,
+            stage=SimpleStage.REPORT_DONE.value,
+            agent_role="Reporter Agent",
+            attempt_id="current-report-draft",
+            sequence=1,
+            kind=ActivityKind.DECISION_RECORDED,
+            status="SUCCEEDED",
+            summary_ko="Report generated",
+            output_refs=(draft, report.output_refs[1]),
+            tool_result_refs=(response,),
+            started_at=datetime.now(UTC),
+        )
+    )
+
+    query = DashboardQuery(tmp_path)
+    assert query.report_content(identity.analysis_id, "F-001") == b"# report"
+    markdown_bytes = query.artifact_bytes(
+        identity.analysis_id, report.output_refs[1].content_hash
+    )[2]
+    assert markdown_bytes == b"# report"
+    for hidden in (draft, response):
+        with pytest.raises(DashboardNotFound):
+            query.artifact_content(identity.analysis_id, hidden.content_hash)
+        with pytest.raises(DashboardNotFound):
+            query.artifact_bytes(identity.analysis_id, hidden.content_hash)
+
+
+@pytest.mark.parametrize("block_kind", ["root_invalid", "unresolved_call"])
+def test_integrity_block_hides_historical_activity_report_refs(
+    tmp_path: Path,
+    block_kind: str,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database)
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 2}))
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    old_finding = artifacts.put_json({"kind": "simple_finding", "old": True})
+    old_draft = artifacts.put_json({"kind": "simple_report_draft", "old": True})
+    old_report = artifacts.put_bytes(b"# historical report", "text/markdown")
+    old_response = artifacts.put_json(
+        {"kind": "simple_llm_response", "report": "historical draft"}
+    )
+    ordinary = artifacts.put_json({"kind": "ordinary_evidence", "valid": True})
+    carrier = artifacts.put_json(
+        {
+            "kind": "ordinary_evidence",
+            "nested": {"report_ref": old_report.model_dump(mode="json")},
+        }
+    )
+    activity = AgentActivityStore(database)
+    for sequence, stage, outputs, tool_results in (
+        (1, SimpleStage.FINDING_DONE, (old_finding,), ()),
+        (2, SimpleStage.REPORT_DONE, (old_draft, old_report), (old_response,)),
+        (3, SimpleStage.PRO_CON_DONE, (ordinary, carrier), ()),
+    ):
+        activity.append(
+            AgentActivityEvent(
+                event_id=f"historical-activity-{sequence}",
+                analysis_id=identity.analysis_id,
+                workspace_id=identity.workspace_id,
+                commit_id=identity.commit_id,
+                hypothesis_id=identity.hypothesis_id,
+                stage=stage.value,
+                agent_role="Agent",
+                attempt_id="historical-activity",
+                sequence=sequence,
+                kind=ActivityKind.EVIDENCE_RECORDED,
+                status="SUCCEEDED",
+                summary_ko="Historical activity",
+                output_refs=outputs,
+                tool_result_refs=tool_results,
+                started_at=datetime.now(UTC),
+            )
+        )
+    query = DashboardQuery(tmp_path)
+    finding_content = query.artifact_content(
+        identity.analysis_id, old_finding.content_hash
+    )
+    assert finding_content.kind == "simple_finding"
+    assert query.artifact_bytes(identity.analysis_id, old_report.content_hash)[2] == (
+        b"# historical report"
+    )
+
+    if block_kind == "unresolved_call":
+        assert store.begin_codex_call("orphan-call", identity.analysis_id)
+    else:
+        root = identity.model_copy(update={"hypothesis_id": None})
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=root,
+                stage=SimpleStage.HYPOTHESIS_DONE,
+                status=StageStatus.BLOCKED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                error_code="HYPOTHESIS_EVIDENCE_INVALID",
+                retryable=False,
+            )
+        )
+
+    assert any(
+        event.event_id == "historical-activity-2"
+        for event in query.list_events(identity.analysis_id)
+    )
+    assert query.artifact_content(identity.analysis_id, ordinary.content_hash).kind == (
+        "ordinary_evidence"
+    )
+    assert query.artifact_content(identity.analysis_id, carrier.content_hash).kind == (
+        "ordinary_evidence"
+    )
+    for hidden in (old_finding, old_draft, old_report, old_response):
+        with pytest.raises(DashboardNotFound):
+            query.artifact_content(identity.analysis_id, hidden.content_hash)
+        with pytest.raises(DashboardNotFound):
+            query.artifact_bytes(identity.analysis_id, hidden.content_hash)
+
+
+@pytest.mark.parametrize("status", [StageStatus.BLOCKED, StageStatus.FAILED])
+def test_candidate_hypothesis_integrity_failure_retracts_current_report(
+    tmp_path: Path, status: StageStatus
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 2}))
+    finding = store.require(identity, SimpleStage.FINDING_DONE)
+    store.save_checkpoint(finding.model_copy(update={"verdict": "TRUE"}))
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    query = DashboardQuery(tmp_path)
+    assert query.report_path(identity.analysis_id, "F-001").is_file()
+    before = query.get_analysis(identity.analysis_id)
+    assert before.finding_count == 1
+    assert before.hypotheses[0].validated_poc is True
+
+    root = identity.model_copy(update={"hypothesis_id": None})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=root,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=status,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            error_code="HYPOTHESIS_EVIDENCE_INVALID",
+            retryable=False,
+        )
+    )
+
+    detail = query.get_analysis(identity.analysis_id)
+    assert detail.finding_count == 0
+    assert detail.reports == ()
+    assert detail.hypotheses[0].verdict is None
+    assert detail.hypotheses[0].validated_poc is False
+    assert query.list_analyses()[0].finding_count == 0
+    with pytest.raises(DashboardNotFound):
+        query.report_path(identity.analysis_id, "F-001")
+    with pytest.raises(DashboardNotFound):
+        query.report_content(identity.analysis_id, "F-001")
+    with pytest.raises(DashboardNotFound):
+        query.report_attachment(identity.analysis_id, "F-001", "bundle.zip")
+    with pytest.raises(DashboardNotFound):
+        query.artifact_content(identity.analysis_id, report.output_refs[1].content_hash)
+    with pytest.raises(DashboardNotFound):
+        query.bundle_members(
+            identity.analysis_id,
+            artifact_ids=frozenset(),
+            report_ids=frozenset({"F-001"}),
+        )
+    assert not any(
+        name.startswith("reports/")
+        for name in query.bundle_members(identity.analysis_id, artifact_ids=frozenset())
+    )
+
+
+def test_inactive_unresolved_codex_call_retracts_current_dashboard_report(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 2}))
+    finding = store.require(identity, SimpleStage.FINDING_DONE)
+    store.save_checkpoint(finding.model_copy(update={"verdict": "TRUE"}))
+    report = store.require(identity, SimpleStage.REPORT_DONE)
+    assert store.begin_codex_call("orphan-call", identity.analysis_id)
+
+    query = DashboardQuery(tmp_path)
+    detail = query.get_analysis(identity.analysis_id)
+    assert detail.status == "BLOCKED"
+    assert detail.finding_count == 0
+    assert detail.reports == ()
+    assert detail.hypotheses[0].verdict is None
+    assert detail.hypotheses[0].validated_poc is False
+    assert query.list_analyses()[0].finding_count == 0
+    with pytest.raises(DashboardNotFound):
+        query.report_path(identity.analysis_id, "F-001")
+    with pytest.raises(DashboardNotFound):
+        query.report_content(identity.analysis_id, "F-001")
+    for hidden in (finding.output_refs[0], report.output_refs[1]):
+        with pytest.raises(DashboardNotFound):
+            query.artifact_content(identity.analysis_id, hidden.content_hash)
+    with pytest.raises(DashboardNotFound):
+        query.bundle_members(
+            identity.analysis_id,
+            artifact_ids=frozenset(),
+            report_ids=frozenset({"F-001"}),
+        )
+
+    with analysis_run_lease(tmp_path, identity.analysis_id):
+        active = query.get_analysis(identity.analysis_id)
+        assert tuple(item.display_id for item in active.reports) == ("F-001",)
+        assert active.finding_count == 1
+        assert query.report_content(identity.analysis_id, "F-001") == b"# report"
+
+
+@pytest.mark.parametrize(
+    ("candidate_version", "error_code"),
+    [
+        (2, "CANDIDATE_CHILD_ERROR:OTHER_CHILD_BLOCKED"),
+        (None, "HYPOTHESIS_EVIDENCE_INVALID"),
+    ],
+)
+def test_other_root_failures_keep_previously_verified_report(
+    tmp_path: Path, candidate_version: int | None, error_code: str
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(
+        run.model_copy(update={"candidate_pipeline_version": candidate_version})
+    )
+    root = identity.model_copy(update={"hypothesis_id": None})
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=root,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            error_code=error_code,
+            retryable=False,
+        )
+    )
+
+    query = DashboardQuery(tmp_path)
+    assert query.report_path(identity.analysis_id, "F-001").is_file()
+    reports = query.get_analysis(identity.analysis_id).reports
+    assert tuple(item.display_id for item in reports) == ("F-001",)
+
+
 def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
     test_current_accepted_report_remains_accessible(tmp_path)
     _attach_bundle(tmp_path)
@@ -1079,6 +1517,115 @@ def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
     for invalid in ("../poc.sh", "manifest.json", "other.txt", "evidence/../../poc.sh"):
         with pytest.raises(DashboardNotFound):
             query.report_attachment("analysis-a", "F-001", invalid)
+
+
+def test_legacy_bundle_with_local_file_url_is_not_downloadable(tmp_path: Path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    attach_current_bundle(
+        tmp_path,
+        identity,
+        ref("finding"),
+        "F-001",
+        report_en=b"# Report\n- Repository: file:///repository/private/repo\n",
+        report_kr="# 보고서\n- 저장소: file:///repository/private/repo\n".encode(),
+    )
+
+    query = DashboardQuery(tmp_path)
+    for name in ("report_en.md", "report_kr.md", "poc.sh", "bundle.zip"):
+        with pytest.raises(DashboardNotFound):
+            query.report_attachment("analysis-a", "F-001", name)
+
+
+def test_legacy_bundle_with_provenance_only_local_file_url_is_not_downloadable(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    attach_current_bundle(
+        tmp_path,
+        identity,
+        ref("finding"),
+        "F-001",
+        provenance_origin="file:///repository/private/repo",
+    )
+
+    query = DashboardQuery(tmp_path)
+    for name in ("evidence/provenance.json", "poc.sh", "bundle.zip"):
+        with pytest.raises(DashboardNotFound):
+            query.report_attachment("analysis-a", "F-001", name)
+
+
+def test_sandbox_only_file_url_in_verified_shell_poc_remains_downloadable(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    safe_poc = b"#!/bin/sh\nprintf file:///tmp/sastsimi-poc-candidate\n"
+    attach_current_bundle(tmp_path, identity, ref("finding"), "F-001", poc=safe_poc)
+
+    body, _ = DashboardQuery(tmp_path).report_attachment(
+        "analysis-a", "F-001", "poc.sh"
+    )
+
+    assert body == safe_poc
+
+
+def test_sandbox_file_url_in_execution_stdout_keeps_verified_bundle(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    uri = b"file:///tmp/sastsimi-poc-candidate"
+    attach_current_bundle(
+        tmp_path,
+        identity,
+        ref("finding"),
+        "F-001",
+        poc=b"#!/bin/sh\nprintf " + uri + b"\n",
+        stdout=uri + b"\n",
+    )
+
+    body, _ = DashboardQuery(tmp_path).report_attachment(
+        "analysis-a", "F-001", "bundle.zip"
+    )
+
+    assert body
+
+
+def test_host_file_url_in_shell_poc_is_rejected(tmp_path: Path) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    unsafe_poc = b"#!/bin/sh\nprintf file:///C:/Users/alice/private/repo\n"
+    with pytest.raises(ValueError, match="BUNDLE_FILE_UNSAFE"):
+        attach_current_bundle(
+            tmp_path, identity, ref("finding"), "F-001", poc=unsafe_poc
+        )
 
 
 def test_bundle_rejects_poc_without_current_execution_closure(tmp_path) -> None:

@@ -20,6 +20,7 @@ from sastsimi.config.user_config import (
     load_simple_execution_profile,
 )
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
+from sastsimi.contracts.prompt_redaction import redact_local_file_urls
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.policy.adapters.official_http import (
@@ -86,6 +87,9 @@ from sastsimi.simple_runtime.provider import (
     SimpleOpenAIClient,
 )
 from sastsimi.simple_runtime.recovery import SimpleRecoveryCoordinator
+from sastsimi.simple_runtime.report_currentness import (
+    candidate_report_currentness_blocked,
+)
 from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.scope_policy import (
@@ -631,14 +635,18 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         except (OSError, ValueError, sqlite3.Error):
             return None, None
         indexed = {surface.surface_id for surface in index.surfaces}
-        recorded_contexts = sum(
-            1
+        matching_contexts = [
+            item
             for item in progress.values()
             if item.surface_id in indexed
             and item.static_bundle_hash == record.static_bundle_hash
             and item.index_hash == record.index_ref.content_hash
-        )
-        counts = {"TOTAL": len(indexed), "CONTEXT_RECORDS": recorded_contexts}
+        ]
+        counts = {
+            "TOTAL": len(indexed),
+            "CONTEXT_RECORDS": len(matching_contexts),
+            "CONTEXT_SURFACES": len({item.surface_id for item in matching_contexts}),
+        }
         terminal = run.candidate_terminal
         if (
             terminal is not None
@@ -681,6 +689,13 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
         snapshot = self._progress_snapshot(run)
+        if candidate_report_currentness_blocked(
+            run,
+            self._store.list_checkpoints(exact),
+            data_dir=self._config.data_dir,
+            store=self._store,
+        ):
+            snapshot = snapshot.model_copy(update={"finding_count": 0})
         lease_inactive = (
             analysis_run_lease_active(self._config.data_dir, exact) is False
         )
@@ -951,17 +966,28 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         run = self._store.require_analysis_run(exact)
         checkpoints = self._store.list_checkpoints(exact)
         stale_hypothesis_ids = stale_poc_hypothesis_ids(checkpoints)
-        findings = [
-            checkpoint
-            for checkpoint in checkpoints
-            if checkpoint.stage is SimpleStage.FINDING_DONE
-            and checkpoint.output_refs
-            and checkpoint.identity.hypothesis_id not in stale_hypothesis_ids
-            and technical_gate_accepted(
-                self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
-                SimpleArtifactRepository(self._config.data_dir, checkpoint.identity),
+        findings = (
+            []
+            if candidate_report_currentness_blocked(
+                run,
+                checkpoints,
+                data_dir=self._config.data_dir,
+                store=self._store,
             )
-        ]
+            else [
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint.stage is SimpleStage.FINDING_DONE
+                and checkpoint.output_refs
+                and checkpoint.identity.hypothesis_id not in stale_hypothesis_ids
+                and technical_gate_accepted(
+                    self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
+                    SimpleArtifactRepository(
+                        self._config.data_dir, checkpoint.identity
+                    ),
+                )
+            ]
+        )
         return {
             **self.status(run.display_analysis_id),
             "hypothesis_count": (
@@ -1127,7 +1153,19 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 )
             except (LookupError, ValueError):
                 continue
-            for checkpoint in self._store.list_checkpoints(exact):
+            checkpoints = self._store.list_checkpoints(exact)
+            try:
+                run = self._store.require_analysis_run(exact)
+            except LookupError:
+                run = None
+            if candidate_report_currentness_blocked(
+                run,
+                checkpoints,
+                data_dir=self._config.data_dir,
+                store=self._store,
+            ):
+                raise LookupError("FINDING_DISPLAY_ID_NOT_FOUND")
+            for checkpoint in checkpoints:
                 if (
                     checkpoint.stage is SimpleStage.FINDING_DONE
                     and finding_ref in checkpoint.output_refs
@@ -1144,7 +1182,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         data = self.status(display_id)
         return {
             **data,
-            "repository": repository,
+            "repository": redact_local_file_urls(repository),
             "commit": commit,
             "dashboard_url": f"http://127.0.0.1:8765/analyses/{display_id}",
         }

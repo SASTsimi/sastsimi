@@ -26,12 +26,17 @@ def attach_current_bundle(
     identity: CheckpointIdentity,
     finding_ref: StoredDataRef,
     display_id: str,
+    *,
+    report_en: bytes = b"# English report\n",
+    report_kr: bytes = "# 한국어 보고서\n".encode(),
+    provenance_origin: str | None = None,
+    poc: bytes = b"#!/bin/sh\nprintf ok\n",
+    stdout: bytes = b"ok\n",
 ) -> PublishedBundle:
     artifacts = SimpleArtifactRepository(data_dir, identity)
     store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
-    poc = b"#!/bin/sh\nprintf ok\n"
     poc_ref = artifacts.put_bytes(poc, "text/x-shellscript")
-    stdout_ref = artifacts.put_bytes(b"ok\n", "text/plain")
+    stdout_ref = artifacts.put_bytes(stdout, "text/plain")
     stderr_ref = artifacts.put_bytes(b"", "text/plain")
     candidate_ref = artifacts.put_json(
         {
@@ -104,36 +109,38 @@ def attach_current_bundle(
         "stderr": stderr_ref,
     }
     digest = hashlib.sha256(poc).hexdigest()
-    provenance = canonical_bytes(
-        {
-            "scope_status": "UNCERTAIN",
-            "sources": {
-                name: ref.model_dump(mode="json") for name, ref in sources.items()
-            },
-            "poc": {
-                "path": "poc.sh",
-                "original_sha256": digest,
-                "attachment_sha256": digest,
-                "redacted": False,
-            },
-        }
-    )
+    provenance_data = {
+        "scope_status": "UNCERTAIN",
+        "sources": {name: ref.model_dump(mode="json") for name, ref in sources.items()},
+        "poc": {
+            "path": "poc.sh",
+            "original_sha256": digest,
+            "attachment_sha256": digest,
+            "redacted": False,
+        },
+    }
+    if provenance_origin is not None:
+        provenance_data["repository"] = provenance_origin
+    provenance = canonical_bytes(provenance_data)
     bundle = publish_bundle(
         root=data_dir,
         analysis_id=identity.analysis_id,
         display_id=display_id,
         finding_ref=finding_ref,
         files=(
-            BundleFile(
-                "report_en.md", b"# English report\n", "text/markdown; charset=utf-8"
-            ),
+            BundleFile("report_en.md", report_en, "text/markdown; charset=utf-8"),
             BundleFile(
                 "report_kr.md",
-                "# 한국어 보고서\n".encode(),
+                report_kr,
                 "text/markdown; charset=utf-8",
             ),
             BundleFile("poc.sh", poc, "text/x-shellscript; charset=utf-8"),
             BundleFile("evidence/provenance.json", provenance, "application/json"),
+        )
+        + (
+            (BundleFile("evidence/stdout.txt", stdout, "text/plain; charset=utf-8"),)
+            if stdout != b"ok\n"
+            else ()
         ),
         put_artifact=artifacts.put_bytes,
     )

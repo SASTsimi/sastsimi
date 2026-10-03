@@ -109,10 +109,18 @@ def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
     else:
         recorded_contexts = surface.get("recorded_contexts")
         if type(recorded_contexts) is int:
-            stream.write(
-                f"보안 surface: 저장된 context {recorded_contexts}건 · "
-                f"인덱스 {total}개 · coverage 확인 전\n"
-            )
+            recorded_surfaces = surface.get("recorded_surfaces")
+            if type(recorded_surfaces) is int:
+                stream.write(
+                    "보안 surface: context가 저장된 surface "
+                    f"{recorded_surfaces}/{total}개 · 저장된 context "
+                    f"{recorded_contexts}건 (확장 포함) · coverage 확인 전\n"
+                )
+            else:
+                stream.write(
+                    f"보안 surface: 저장된 context {recorded_contexts}건 · "
+                    f"인덱스 {total}개 · coverage 확인 전\n"
+                )
         else:
             stream.write("보안 surface: coverage 확인 불가\n")
 

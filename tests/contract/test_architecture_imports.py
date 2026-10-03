@@ -106,7 +106,8 @@ RULES: dict[str, frozenset[str]] = {
 # package-wide dependency policy is not weakened for unrelated code.
 EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     # The speed-first local CLI composes the intentionally isolated simple
-    # runtime. It is not imported by the production orchestration graph.
+    # runtime and uses its read-side report-currentness gate. It is not
+    # imported by the production orchestration graph.
     "sastsimi.interfaces.cli.simple_evaluation": frozenset(
         {
             "sastsimi.composition.local_codex_binding",
@@ -119,6 +120,8 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
             "sastsimi.simple_runtime.migration",
             "sastsimi.simple_runtime.models",
             "sastsimi.simple_runtime.provider",
+            "sastsimi.simple_runtime.report_currentness",
+            "sastsimi.simple_runtime.report_currentness.candidate_report_currentness_blocked",
             "sastsimi.simple_runtime.runner",
             "sastsimi.simple_runtime.scope_policy",
             "sastsimi.simple_runtime.stages",

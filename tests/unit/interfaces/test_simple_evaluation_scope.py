@@ -22,6 +22,7 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
+from sastsimi.simple_runtime.run_lease import analysis_run_lease
 from sastsimi.simple_runtime.runner import RunOutcome
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -128,6 +129,91 @@ def test_result_path_does_not_advertise_unverified_allow_report(
             )
             is None
         )
+        store.save_analysis_run(
+            SimpleAnalysisRun(
+                analysis_id=identity.analysis_id,
+                display_analysis_id="A-001",
+                workspace_id=identity.workspace_id,
+                commit_id=identity.commit_id,
+                repository="https://example.invalid/repository.git",
+                candidate_pipeline_version=2,
+            )
+        )
+        finding_ref = artifacts.put_json({"kind": "simple_finding"})
+        report_with_finding = report.model_copy(
+            update={
+                "input_refs": (finding_ref,),
+                "input_hash": input_reference_hash((finding_ref,)),
+            }
+        )
+        assert simple_evaluation._report_path_for_result(
+            store,
+            artifacts,
+            identity,
+            report_with_finding,
+            policy_snapshot_ref=None,
+            repository_url=None,
+        ) == str(report_path)
+
+        root = identity.model_copy(update={"hypothesis_id": None})
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=root,
+                stage=SimpleStage.HYPOTHESIS_DONE,
+                status=StageStatus.BLOCKED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                error_code="HYPOTHESIS_EVIDENCE_INVALID",
+                retryable=False,
+            )
+        )
+        assert (
+            simple_evaluation._report_path_for_result(
+                store,
+                artifacts,
+                identity,
+                report_with_finding,
+                policy_snapshot_ref=None,
+                repository_url=None,
+            )
+            is None
+        )
+        blocked = store.require(root, SimpleStage.HYPOTHESIS_DONE)
+        store.save_checkpoint(
+            blocked.model_copy(
+                update={"error_code": "CANDIDATE_CHILD_ERROR:OTHER_CHILD_BLOCKED"}
+            )
+        )
+        assert simple_evaluation._report_path_for_result(
+            store,
+            artifacts,
+            identity,
+            report_with_finding,
+            policy_snapshot_ref=None,
+            repository_url=None,
+        ) == str(report_path)
+
+        assert store.begin_codex_call("orphan-call", identity.analysis_id)
+        assert (
+            simple_evaluation._report_path_for_result(
+                store,
+                artifacts,
+                identity,
+                report_with_finding,
+                policy_snapshot_ref=None,
+                repository_url=None,
+            )
+            is None
+        )
+        with analysis_run_lease(tmp_path, identity.analysis_id):
+            assert simple_evaluation._report_path_for_result(
+                store,
+                artifacts,
+                identity,
+                report_with_finding,
+                policy_snapshot_ref=None,
+                repository_url=None,
+            ) == str(report_path)
 
 
 @pytest.mark.asyncio

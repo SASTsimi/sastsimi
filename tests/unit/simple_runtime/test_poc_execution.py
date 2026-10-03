@@ -764,19 +764,65 @@ async def test_poc_execution_error_is_blocked_and_releases_container(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("exit_code", "error_line", "python_traceback", "on_stdout", "blocks"),
+    (
+        "exit_code",
+        "error_line",
+        "python_traceback",
+        "on_stdout",
+        "blocks",
+        "expected_error",
+    ),
     [
-        (0, b"ModuleNotFoundError: No module named 'django'", True, False, True),
+        (
+            0,
+            b"ModuleNotFoundError: No module named 'django'",
+            True,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
         (
             1,
             b"ImportError: cannot import name 'settings' from 'app'",
             True,
             False,
             True,
+            "POC_RUNTIME_IMPORT_FAILED",
         ),
-        (1, b"ModuleNotFoundError: No module named 'django'", True, True, True),
-        (1, b"/usr/local/bin/python: No module named app", False, False, True),
-        (0, b"ImportError: expected diagnostic text only", False, False, False),
+        (
+            1,
+            b"ModuleNotFoundError: No module named 'django'",
+            True,
+            True,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            1,
+            b"/usr/local/bin/python: No module named app",
+            False,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            2,
+            b"ModuleNotFoundError\ntraceback: <module> > run > exec_module > <module>",
+            False,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            2,
+            b"ImportError\ntraceback: <module> > run > exec_module > <module>",
+            False,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (2, b"ModuleNotFoundError", False, False, True, "POC_EXECUTION_FAILED"),
+        (0, b"ImportError: expected diagnostic text only", False, False, False, None),
     ],
 )
 async def test_python_import_traceback_blocks_before_disproof_interpretation(
@@ -786,6 +832,7 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
     python_traceback: bool,
     on_stdout: bool,
     blocks: bool,
+    expected_error: str | None,
 ) -> None:
     identity = CheckpointIdentity(
         analysis_id="analysis-import-error",
@@ -875,15 +922,21 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
     with pytest.raises(StageBlocked) as blocked:
         await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
 
-    assert blocked.value.failure.code == "POC_EXECUTION_FAILED"
+    assert blocked.value.failure.code == expected_error
     assert blocked.value.failure.retryable is True
     assert client.calls == 0
     assert containers.released == ["a" * 64]
-    execution_ref, stdout_ref, stderr_ref, _cleanup_ref = (
+    execution_ref, stdout_ref, stderr_ref, cleanup_ref = (
         blocked.value.failure.evidence_refs
     )
+    execution = json.loads(artifacts.read(execution_ref))
+    assert execution["exit_code"] == exit_code
+    assert execution["timed_out"] is False
+    assert json.loads(artifacts.read(cleanup_ref))["status"] == "REMOVED"
     observation_ref = stdout_ref if on_stdout else stderr_ref
     assert artifacts.read(observation_ref) == stderr
-    assert json.loads(artifacts.read(execution_ref))[
+    assert execution[
         "stdout_ref" if on_stdout else "stderr_ref"
     ] == observation_ref.model_dump(mode="json")
+    if expected_error == "POC_RUNTIME_IMPORT_FAILED":
+        assert "origin is unverified" in blocked.value.failure.safe_message

@@ -24,6 +24,9 @@ from sastsimi.simple_runtime.poc_currentness import (
     stale_poc_hypothesis_ids,
     stale_successful_poc,
 )
+from sastsimi.simple_runtime.report_currentness import (
+    candidate_integrity_blocked_scopes,
+)
 
 from .models import ProgressSnapshot
 
@@ -368,7 +371,13 @@ class ProgressProjector:
         surface_phase: dict[str, int] | None = None
         if candidate_pipeline_version >= 2 and surface_counts is not None:
             if any(
-                key not in {*_SURFACE_STATUSES, "CONTEXT_RECORDS", "TOTAL"}
+                key
+                not in {
+                    *_SURFACE_STATUSES,
+                    "CONTEXT_RECORDS",
+                    "CONTEXT_SURFACES",
+                    "TOTAL",
+                }
                 or type(value) is not int
                 or value < 0
                 for key, value in surface_counts.items()
@@ -381,6 +390,8 @@ class ProgressProjector:
                 "completed": 0,
                 "total": total,
             }
+            if "CONTEXT_SURFACES" in surface_counts:
+                surface_phase["recorded_surfaces"] = surface_counts["CONTEXT_SURFACES"]
             known += total
         if candidate_pipeline_version >= 2:
             producer_output_hashes = {
@@ -444,12 +455,21 @@ class ProgressProjector:
                 + decisions["UNDECIDED"]
                 + min(deep_completed, deep_eligible)
             )
+        blocked_finding_scopes = candidate_integrity_blocked_scopes(
+            candidate_pipeline_version, checkpoints
+        )
         finding_count = sum(
             item.stage is SimpleStage.FINDING_DONE
             and item.status is StageStatus.SUCCEEDED
             and item.verdict == "TRUE"
             and bool(item.output_refs)
             and item.identity.hypothesis_id not in stale_hypothesis_ids
+            and (
+                item.identity.analysis_id,
+                item.identity.workspace_id,
+                item.identity.commit_id,
+            )
+            not in blocked_finding_scopes
             for item in checkpoints
         )
         status, current = self._status(

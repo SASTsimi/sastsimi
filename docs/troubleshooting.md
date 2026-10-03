@@ -30,7 +30,13 @@ sastsimi resume A-001
 분석·조회·재개에 같은 버전의 코드를 사용하세요. DB를 초기화하는 해결책은 아닙니다.
 후보 파이프라인 v1에서 마지막 기록이 `RUNNING`이지만 활성 실행 잠금(lease)이 없으면 `status`는 DB 체크포인트를 변경하지 않고 `PAUSED`·`INTERRUPTED_RESUME_REQUIRED`로 표시합니다. 이전 프로세스가 종료된 것을 확인한 뒤 `sastsimi resume A-001`로 저장된 단계부터 재개하세요.
 
+`HYPOTHESIS_EVIDENCE_INVALID`는 저장된 가설 또는 Pro/Con 근거를 신뢰할 수 없어 재개를 차단한 상태입니다. 구형 Pro/Con의 인용 해시만 현재 저장된 입력과 다르고 원본·실행 계보가 온전하면, `resume`은 해당 가설과 후속 결과가 없는 연쇄 단계만 되돌려 다시 검증합니다. 이때 이전 Finding·보고서는 새 검증이 끝날 때까지 현재 결과로 표시하지 않습니다. 원본 손상, 다른 가설의 파생 작업 또는 불명확한 연쇄 의존성이 있으면 자동 복구하지 않습니다. `resume`만 반복하거나 DB에서 체크포인트를 삭제하지 말고, 상태와 보관된 근거를 확인하세요.
+
+`HYPOTHESIS_BATCH_OUTPUT_INVALID`는 요청하지 않은·중복된 후보 ID가 응답에 있거나, 후보별 누락·형식 오류가 두 번의 검증 시도 뒤에도 남은 경우입니다. 해당 가설 단계는 `BLOCKED`로 남고 실패 후보는 `ERROR`로 기록됩니다. `PRO_CON_RESPONSE_INVALID`(개별 역할)와 `PRO_CON_BATCH_RESPONSE_INVALID`(묶음 역할)는 필수 필드·상대 경로·허용된 근거 해시의 검증이 두 번 모두 실패한 `BLOCKED` 상태입니다. 저장된 시도 근거와 실제 입력 해시를 확인하세요. 이 오류들은 취약점 부재를 뜻하지 않습니다.
+
 `LLM_TOKEN_BUDGET_EXHAUSTED`는 숫자로 설정한 누적 토큰 한도에 도달해 다음 요청을 차단한 상태입니다. 새 후보 분석에서 토큰·비용·누적 시간 한도 소진은 `PAUSED`로 표시하고 남은 후보를 `PENDING`으로 보존합니다. 한도를 바꾸지 않은 `resume`은 같은 유료 요청을 무한히 제출하지 않습니다. Provider 계정 사용량을 확인하고 필요한 설정 한도를 높인 뒤 재개하세요. 요청 전 검사이므로 한 번의 호출이 한도를 넘어설 수 있습니다. `LLM_TOKEN_USAGE_UNAVAILABLE`은 숫자 한도가 설정됐지만 이전 시도의 토큰 수치를 확인할 수 없어 후속 요청을 차단한 상태입니다. 새 `setup`의 기본값 `max_tokens = "unlimited"`에서는 이 두 차단을 적용하지 않습니다. 기존 설치의 `config.toml`과 `profile.toml` 모두 `max_tokens`를 `"unlimited"`로 바꾼 뒤 `resume`하면 해당 실패 단계를 다시 시도할 수 있습니다. 사용량 미확인 기록은 지우지 않으며 Codex CLI의 누락·잘못된 정상 완료 이벤트도 성공으로 인정하지 않습니다. Cursor CLI에서 토큰 수치가 없는 정상 응답은 무제한 설정에서 다음 요청을 차단하지 않지만 사용량은 미확인으로 남습니다.
+
+Codex 호출이 `CODEX_CALL_IN_FLIGHT_UNRESOLVED`로 남았다면, 재개 시 해당 호출의 자식 프로세스가 **생성되지 않았음**을 버전·시도·프로세스 원장과 배타적 실행 잠금으로 입증할 수 있는 경우에만 같은 작업을 다시 시도합니다. 자식 프로세스 생성 기록이 있거나 종료 여부를 입증할 수 없으면 중복 유료 호출을 피하기 위해 차단을 유지합니다. 임의로 DB의 호출 상태나 PID를 고쳐 해제하지 마세요.
 
 `LLM_COST_USAGE_UNAVAILABLE`은 이전 OpenAI API 시도의 신뢰할 수 있는 금액이 없어 후속 API 요청을 차단한 상태입니다. API adapter는 실제 청구 금액을 산출하지 않습니다. Codex·Cursor CLI는 비용을 제공하지 않고 Cursor SDK의 비용 확정도 늦을 수 있습니다. `max_cost_minor_units`는 기록된 신뢰 가능한 비용에만 다음 요청 전에 적용되므로 실제 청구액의 정확한 상한은 아닙니다. Provider 계정의 사용량과 지출 설정을 확인하세요. 미확인 시도가 남아 있으면 `resume`만 반복해도 차단이 해소되지 않습니다.
 
@@ -195,9 +201,13 @@ poc_wheel_archive_sha256 = "<소문자 SHA-256 64자리>"
 
 이 모드는 로컬에 이미 있는 Linux `python:3.12-slim` 이미지와 검증된 wheel만 사용합니다. TAR 크기와 TAR 안의 wheel 데이터는 각각 최대 64 MiB이고, wheel은 최대 20,000개입니다. 대상 Linux 이미지와 호환되는 wheel이어야 하며 대상 태그를 확인할 수 없으면 범용 `py3-none-any` wheel만 허용합니다. 저장소 Dockerfile 대신 생성된 Dockerfile과 고정 commit의 파일로 분리된 빌드 문맥을 만들고, `pip --no-index --find-links`로 설치합니다. Docker build와 PoC 컨테이너는 모두 `--network none`입니다. 제품 패키지를 wheel로 만들 때 ZIP 형식의 최소 시각보다 오래된 파일 때문에 실패하지 않도록, 이미지 안에 복사된 소스 파일의 수정 시각만 고정된 1980년 값으로 맞춥니다. 파일 내용과 대상 commit은 변경하지 않습니다. 현재 선택된 Buildx 빌더가 로컬 Docker 엔진 드라이버인지 `docker buildx inspect`로 확인하며, 지원되지 않는 빌더면 `POC_OFFLINE_BUILDER_UNSUPPORTED`로 중단합니다. 고정 저장소에 추적된 비밀파일은 Docker 문맥에 넣지 않습니다. 공통 테스트 파일 판정과 지원하는 Flit 패키지 경계를 통해 제품 데이터가 아니라고 확인된 테스트용 비밀파일만 제외합니다. 패키지 데이터 여부가 불명확하거나 그 밖의 비밀파일이면 `PINNED_CONTEXT_SECRET_FILE_DENIED`로 차단합니다. 필요한 wheel·전이 의존성·빌드 의존성 또는 로컬 base image가 없으면 명시적으로 `BLOCKED`로 남습니다. sdist, VCS·apt 설치, uv/Poetry lock 및 지원되지 않는 manifest는 이 모드에서 설치하지 않습니다. 실패를 PoC 반증이나 `confirmed` Finding으로 바꾸지 않습니다.
 
+두 PoC 빌드 경로는 고정된 저장소의 `.dockerignore`를 문맥에서 제외할 파일을 고르는 데 사용합니다. 단일 `*`와 영숫자 문자 클래스(예: `*.py[cod]`, `cache[12]/`)를 지원하지만 `!` 재포함, `**`, `?`, 범위·부정 문자 클래스는 지원하지 않습니다. 지원하지 않는 패턴은 임의로 해석하거나 무시하지 않고 `DOCKERIGNORE_UNSUPPORTED`로 중단합니다. 필요한 파일이 제외됐다면 해당 commit의 패턴을 확인하고 새 분석에서 수정된 commit을 사용하세요.
+
 wheel 묶음을 지정하지 않은 기존 경로에서는 저장소 Dockerfile이 있으면 우선 사용하고, 없으면 Python package 파일을 바탕으로 기본 Dockerfile을 만듭니다. 가설의 제품 파일이 하위 Python 프로젝트에 있으면 가장 가까운 `requirements.txt` 또는 `pyproject.toml`을 찾아 일회용 이미지 안에 의존성을 설치하며, 로컬 패키지 소스를 지정한 uv 프로젝트는 lock 파일과 소스 경로를 사용합니다. 하위 프로젝트 설치가 실패하면 의존성 없는 이미지로 성공을 가장하지 않고 빌드 오류와 시도 기록을 남깁니다. 그 외 의존성 설치 단계의 빌드 실패가 확인된 경우에만 설치를 생략한 Python 소스 전용 image를 한 번 더 시도합니다. 이 경우 recipe의 `dockerfile_source`가 `GENERATED_NO_INSTALL`, `degraded`가 `true`가 되고 두 빌드 시도와 원본 진단이 artifact에 남습니다. 소스 전용 image가 만들어졌다는 사실만으로 PoC 검증이나 취약점 판정이 성공한 것은 아닙니다. 두 빌드가 모두 실패하거나 실패 원인이 의존성 설치가 아니면 `DOCKER_BUILD_FAILED`로 중단하고 환경을 확인한 뒤 `sastsimi resume A-001`을 실행합니다.
 
 소스 전용 image만 만들 수 있고 제품 의존성이 재현되지 않았다면 PoC 실행 전에 `POC_ENVIRONMENT_UNVERIFIED`로 차단합니다. 이 환경의 결과를 검증된 PoC나 취약점 부재의 근거로 승격하지 않습니다. wheel 묶음을 지정하지 않은 경로는 임의 저장소의 빌드 의존성을 네트워크 없이 자동 공급하지 못하며, 선택형 묶음도 승인된 wheel로 해결 가능한 설치에만 적용됩니다. 네트워크 정책을 자동으로 완화하지 않습니다. 이미 재시도 불가로 저장된 이 PoC는 profile에 wheel 묶음을 추가해도 같은 ID의 `resume`으로 다시 실행되지 않습니다. 기존 분석을 보존하고 검증 가능한 의존성 환경을 준비한 뒤 새 분석을 시작해야 합니다.
+
+`POC_RUNTIME_IMPORT_FAILED`는 컨테이너에서 PoC 또는 대상 앱을 불러오는 중 Python import가 실패했다는 뜻입니다. 실행·stderr·컨테이너 정리 근거를 보존한 `BLOCKED` 상태이며, 실제 공격 요청이 실행됐거나 취약점이 반증됐다는 뜻은 아닙니다. 누락된 모듈이 제품 의존성인지 PoC 코드 의존성인지는 고정 소스와 이미지 입력을 함께 확인해야 합니다. 패키지를 임의로 설치하거나 네트워크 격리를 풀지 않으며, 승인된 의존성·wheel로 환경을 다시 만들 수 있는 경우에만 재검증하세요. 단순 `resume`이 기존 이미지 digest를 재사용한다면 환경 변경이 반영되지 않으므로 같은 오류를 반복할 수 있습니다.
 
 이 안전 검사보다 앞서 완료된 PoC는 DB와 아티팩트를 보존하되 현재 검증으로 표시하지 않습니다. 상태가 `POC_REVALIDATION_REQUIRED`라면 같은 분석 ID를 `sastsimi resume A-001`로 재개하세요. 완료된 정적 검사·후보 선별·Pro/Con·초기 검증·PoC 후보는 재사용하고 PoC 실행과 후속 판정만 새 기준으로 확인합니다. 필요한 의존성을 오프라인에서 구할 수 없으면 재검증도 `BLOCKED`로 남으며, 이전 보고서를 제보 근거로 다시 사용해서는 안 됩니다.
 

@@ -144,6 +144,126 @@ def test_bilingual_reports_share_section_order_and_exact_facts() -> None:
     assert provenance["sources"]["poc"]["content_hash"] == "c" * 64
 
 
+def test_local_repository_path_is_redacted_from_bundle_metadata() -> None:
+    repository = "file:///C:/Users/example/private/source"
+
+    files = _render(facts=_facts(repository=repository))
+
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["repository"] != repository
+    for path in ("report_en.md", "report_kr.md", "evidence/provenance.json"):
+        assert repository.encode() not in files[path].body
+
+
+@pytest.mark.parametrize(
+    "repository",
+    (
+        "file:///mnt/private-project/source",
+        "file://server/private-share/source",
+        "FILE:relative/private-source",
+    ),
+)
+def test_any_file_repository_url_is_redacted_from_bundle_metadata(
+    repository: str,
+) -> None:
+    files = _render(facts=_facts(repository=repository))
+
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["repository"] != repository
+    for path in ("report_en.md", "report_kr.md", "evidence/provenance.json"):
+        assert repository.encode() not in files[path].body
+
+
+@pytest.mark.parametrize(
+    "language, local_url",
+    (
+        ("en", "file:///mnt/private-project/source"),
+        ("ko", "FILE://server/private-share/source"),
+        ("en", "file:///C:/Users/example/private/source"),
+        ("ko", "file:relative/private-source"),
+        ("en", "file:///C:/Program Files/private/report.txt"),
+        ("ko", "file:relative/private folder/report.txt"),
+        ("en", "file:///C:/Users/Smith,John/private/report.txt"),
+        ("ko", "file:relative/private;archive/report.txt"),
+    ),
+)
+def test_bundle_redacts_file_url_echoed_in_model_prose(
+    language: str, local_url: str
+) -> None:
+    content = _content()
+    prose = getattr(content, language).model_copy(
+        update={
+            "details": (
+                f"Review local source {local_url}, then consult "
+                "https://example.org/docs."
+            )
+        }
+    )
+    content = content.model_copy(update={language: prose})
+
+    for _ in range(2):  # A saved draft can be rendered on every resume.
+        files = {
+            item.path: item
+            for item in render_bundle_files(
+                _facts(),
+                content,
+                poc=b"#!/bin/sh\necho safe\n",
+                stdout=None,
+                stderr=None,
+            )
+        }
+        body = files["report_kr.md" if language == "ko" else "report_en.md"].body
+        assert b"Review local source [REDACTED:LOCAL_FILE_URL]" in body
+        assert b"then consult" not in body
+        assert b"https://example.org/docs." not in body
+        assert local_url.encode() not in body
+        assert all(local_url.encode() not in item.body for item in files.values())
+    assert local_url in prose.details
+
+
+def test_bundle_redacts_file_urls_from_every_prose_field() -> None:
+    content = _content()
+    local_url = "file:///mnt/private-project/source?version=private"
+    prose = content.en.model_copy(
+        update={
+            "title": f"Title {local_url}",
+            "summary": f"Summary {local_url}",
+            "details": f"Details {local_url}.",
+            "impact": f"Impact {local_url}",
+            "recommendation": f"Recommendation {local_url}",
+            "limitations": (f"Limit {local_url}",),
+            "review_items": (f"Review {local_url}",),
+        }
+    )
+    content = content.model_copy(update={"en": prose})
+
+    files = {
+        item.path: item
+        for item in render_bundle_files(
+            _facts(),
+            content,
+            poc=b"#!/bin/sh\necho safe\n",
+            stdout=None,
+            stderr=None,
+        )
+    }
+    body = files["report_en.md"].body
+    assert body.count(b"[REDACTED:LOCAL_FILE_URL]") == 7
+    assert local_url.encode() not in body
+    assert b"Details [REDACTED:LOCAL_FILE_URL]" in body
+
+
+def test_https_repository_url_is_preserved_in_bundle_metadata() -> None:
+    repository = "https://example.com/organization/project"
+
+    files = _render(facts=_facts(repository=repository))
+
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["repository"] == repository
+    assert repository.encode() in files["report_en.md"].body
+    assert repository.encode() in files["report_kr.md"].body
+
+
 def test_partial_coverage_is_disclosed_equally_without_embedding_ledger() -> None:
     coverage_ref = _ref("coverage", "d" * 64)
     coverage = coverage_disclosure(
@@ -410,6 +530,8 @@ def test_unverified_metadata_cannot_be_filled_by_reporter_prose() -> None:
         ("en", "details", "Affected: product-1.2.3."),
         ("en", "details", "1.2.3 is affected."),
         ("en", "details", "1.2.3.4 is affected."),
+        ("en", "details", "Affected build 1.2.3.4 on the server."),
+        ("en", "details", "1.2.3.4"),
         ("en", "details", "1.2.3 versions are affected."),
         (
             "en",
@@ -436,6 +558,32 @@ def test_unsupported_metadata_claims_in_prose_are_rejected(
         render_bundle_files(
             _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
         )
+
+
+@pytest.mark.parametrize(
+    ("address", "limitation"),
+    [
+        ("127.0.0.1", "The direct-run configuration binds to 127.0.0.1."),
+        ("127.0.0.1", "The PoC connects to: 127.0.0.1 only."),
+        ("192.168.1.20", "The local PoC connects to 192.168.1.20 only."),
+        ("8.8.8.8", "The local PoC connects to 8.8.8.8 only."),
+    ],
+)
+def test_report_prose_accepts_bare_ipv4_poc_endpoint(
+    address: str, limitation: str
+) -> None:
+    content = _content()
+    en = content.en.model_copy(update={"limitations": (limitation,)})
+    content = content.model_copy(update={"en": en})
+
+    files = {
+        item.path: item
+        for item in render_bundle_files(
+            _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
+        )
+    }
+
+    assert address in files["report_en.md"].body.decode()
 
 
 def test_citation_subrange_is_rendered_in_both_reports() -> None:
@@ -496,6 +644,104 @@ def test_redacted_poc_and_output_are_labeled_not_exactly_executed() -> None:
     )
     assert "not the exact executed bytes" in files["report_en.md"].body.decode()
     assert "실행된 원본과 동일하지" in files["report_kr.md"].body.decode()
+
+
+def test_validated_shell_poc_keeps_container_tmp_path_and_exact_bytes() -> None:
+    poc = (
+        b"#!/bin/sh\nset -eu\n"
+        b"fixture=/tmp/sastsimi-fixture\n"
+        b"printf 'safe' > \"$fixture\"\n"
+    )
+    digest = hashlib.sha256(poc).hexdigest()
+
+    files = _render(facts=_facts(poc_original_sha256=digest), poc=poc)
+
+    assert files["poc.sh"].body == poc
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["poc"] == {
+        "path": "poc.sh",
+        "original_sha256": digest,
+        "attachment_sha256": digest,
+        "redacted": False,
+    }
+    assert (
+        "attached PoC bytes match the validated original"
+        in files["report_en.md"].body.decode()
+    )
+    assert (
+        "첨부된 PoC 바이트는 검증된 원본과 동일" in files["report_kr.md"].body.decode()
+    )
+
+
+def test_validated_shell_poc_keeps_multiple_container_tmp_paths_on_one_line() -> None:
+    poc = (
+        b"#!/bin/sh\nset -eu\nprintf fixture > /tmp/source\n"
+        b"cp /tmp/source /tmp/destination\n"
+    )
+    digest = hashlib.sha256(poc).hexdigest()
+
+    files = _render(facts=_facts(poc_original_sha256=digest), poc=poc)
+
+    assert files["poc.sh"].body == poc
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["poc"]["original_sha256"] == digest
+    assert provenance["poc"]["attachment_sha256"] == digest
+    assert provenance["poc"]["redacted"] is False
+
+
+@pytest.mark.parametrize(
+    "poc, sensitive_fragment",
+    (
+        (b"#!/bin/sh\necho /home/alice/private.txt\n", b"/home/alice/private.txt"),
+        (b"#!/bin/sh\necho /root/private.txt\n", b"/root/private.txt"),
+        (b"#!/bin/sh\necho C:\\Users\\Alice\\private.txt\n", b"C:\\Users\\Alice"),
+        (
+            b"#!/bin/sh\necho /tmp/safe sk-Abcdefghijk99999\n",
+            b"sk-Abcdefghijk99999",
+        ),
+        (
+            b"#!/bin/sh\nmkdir -p /tmp/sk-ABCDEFGH12345678\n",
+            b"sk-ABCDEFGH12345678",
+        ),
+        (b"#!/bin/sh\necho /usr/local/private.txt\n", b"/usr/local/private.txt"),
+        (b"#!/bin/sh\necho /tmp/../var/log/private\n", b"/tmp/../var/log/private"),
+    ),
+)
+def test_shell_poc_with_host_path_or_secret_is_redacted(
+    poc: bytes, sensitive_fragment: bytes
+) -> None:
+    digest = hashlib.sha256(poc).hexdigest()
+
+    files = _render(facts=_facts(poc_original_sha256=digest), poc=poc)
+
+    attached = files["poc.sh"].body
+    assert attached != poc
+    assert sensitive_fragment not in attached
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["poc"]["original_sha256"] == digest
+    assert (
+        provenance["poc"]["attachment_sha256"] == hashlib.sha256(attached).hexdigest()
+    )
+    assert provenance["poc"]["redacted"] is True
+    assert "not the exact executed bytes" in files["report_en.md"].body.decode()
+    assert "실행된 원본과 동일하지" in files["report_kr.md"].body.decode()
+
+
+def test_python_poc_with_tmp_path_still_uses_generic_redaction() -> None:
+    poc = b"print(open('/tmp/sastsimi-fixture').read())\n"
+
+    files = _render(
+        facts=_facts(
+            poc_language="python",
+            poc_original_sha256=hashlib.sha256(poc).hexdigest(),
+        ),
+        poc=poc,
+    )
+
+    assert b"/tmp/sastsimi-fixture" not in files["poc.py"].body
+    assert b"[REDACTED:HOST_ABSOLUTE_PATH]" in files["poc.py"].body
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["poc"]["redacted"] is True
 
 
 def test_bundle_file_and_poc_language_reject_unsupported_paths() -> None:

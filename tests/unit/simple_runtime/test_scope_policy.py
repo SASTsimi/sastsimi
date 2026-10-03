@@ -339,6 +339,43 @@ def test_verified_gate_artifact_is_recomputed_on_read(tmp_path: Path) -> None:
     assert restricted["external_disclosure_allowed"] is False
 
 
+def test_public_report_redacts_legacy_local_file_url() -> None:
+    raw = b"\n".join(
+        (
+            b"# Report",
+            b"- Repository: file:///C:/Users/alice/private/repo",
+            b"- Commit: abc",
+            b"",
+        )
+    )
+
+    public = safe_public_report(raw, {"status": "UNCERTAIN"})
+
+    assert b"file://" not in public.lower()
+    assert b"[REDACTED:LOCAL_FILE_URL]" in public
+    assert b"- Commit: abc" in public
+
+
+def test_public_report_preserves_ordinary_file_label() -> None:
+    raw = b"# Report\n- File: backend/views.py\n"
+
+    assert safe_public_report(raw, {"status": "UNCERTAIN"}) == raw
+
+
+def test_restricted_public_report_redacts_legacy_policy_reason() -> None:
+    review = {
+        "status": "UNCERTAIN",
+        "provenance_verified": False,
+        "policy_source": {"collection_status": "file:///private/policy"},
+        "checks": ["file:../private/reason"],
+    }
+
+    public = safe_public_report(b"- Rule Scope Gate: ALLOW\n", review)
+
+    assert b"file:" not in public.lower()
+    assert public.count(b"[REDACTED:LOCAL_FILE_URL]") == 2
+
+
 def test_policy_body_alone_cannot_revalidate_an_allow_gate(tmp_path: Path) -> None:
     artifacts, gate, snapshot_ref, _ = _verified_gate_case(tmp_path)
     raw_gate = json.loads(artifacts.read(gate.output_refs[0]))

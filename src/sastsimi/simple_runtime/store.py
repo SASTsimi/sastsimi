@@ -4,11 +4,12 @@ import hashlib
 import json
 import math
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
+from uuid import uuid4
 
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -1696,6 +1697,142 @@ class SimpleCheckpointStore:
         self._candidate_ref_json(identity, ref)
         return ref
 
+    def repair_pending_pro_con_role_cache(
+        self,
+        checkpoint: StageCheckpoint,
+        invalid_roles: Mapping[str, StoredDataRef],
+        *,
+        expected_role_cache: Mapping[str, StoredDataRef | None],
+    ) -> bool:
+        """Reopen one incomplete legacy child after an exact role-cache audit."""
+
+        if not invalid_roles:
+            return False
+        if (
+            checkpoint.stage is not SimpleStage.PRO_CON_DONE
+            or checkpoint.status not in {StageStatus.PENDING, StageStatus.BLOCKED}
+            or checkpoint.identity.hypothesis_id is None
+            or checkpoint.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+            or set(expected_role_cache) != {"pro", "con"}
+            or not set(invalid_roles) <= {"pro", "con"}
+        ):
+            raise ValueError("PRO_CON_PENDING_CACHE_REPAIR_INVALID")
+        for role, ref in invalid_roles.items():
+            if expected_role_cache[role] != ref:
+                raise ValueError("PRO_CON_PENDING_CACHE_REPAIR_STALE")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (checkpoint.identity.analysis_id,),
+            ).fetchone()
+            run = (
+                SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+                if run_row is not None
+                else None
+            )
+            if (
+                run is None
+                or run.candidate_pipeline_version not in {1, 2}
+                or run.workspace_id != checkpoint.identity.workspace_id
+                or run.commit_id != checkpoint.identity.commit_id
+            ):
+                raise ValueError("PRO_CON_PENDING_CACHE_REPAIR_STALE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    checkpoint.identity.analysis_id,
+                    self._hypothesis_key(checkpoint.identity),
+                    SimpleStage.PRO_CON_DONE.value,
+                ),
+            ).fetchone()
+            if (
+                row is None
+                or StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                != checkpoint
+            ):
+                raise ValueError("PRO_CON_PENDING_CACHE_REPAIR_STALE")
+            after_pro_con = STAGE_ORDER.index(SimpleStage.PRO_CON_DONE) + 1
+            later = tuple(stage.value for stage in STAGE_ORDER[after_pro_con:])
+            placeholders = ",".join("?" for _ in later)
+            if connection.execute(
+                "SELECT 1 FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                "AND hypothesis_key = ? "
+                f"AND stage IN ({placeholders}) LIMIT 1",  # noqa: S608
+                (
+                    checkpoint.identity.analysis_id,
+                    self._hypothesis_key(checkpoint.identity),
+                    *later,
+                ),
+            ).fetchone():
+                raise ValueError("PRO_CON_PENDING_CACHE_REPAIR_STALE")
+            for role in ("pro", "con"):
+                key = self._pro_con_batch_key(
+                    checkpoint.identity, role, checkpoint.input_hash
+                )
+                saved = connection.execute(
+                    "SELECT evidence_ref_json FROM simple_pro_con_batch_evidence "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ? AND role = ? AND input_hash = ?",
+                    key,
+                ).fetchone()
+                expected = expected_role_cache[role]
+                encoded = (
+                    self._candidate_ref_json(checkpoint.identity, expected)
+                    if expected is not None
+                    else None
+                )
+                if (saved["evidence_ref_json"] if saved else None) != encoded:
+                    raise ValueError("PRO_CON_PENDING_CACHE_REPAIR_STALE")
+            for role in invalid_roles:
+                connection.execute(
+                    "DELETE FROM simple_pro_con_batch_evidence WHERE analysis_id = ? "
+                    "AND workspace_id = ? AND commit_id = ? AND hypothesis_id = ? "
+                    "AND role = ? AND input_hash = ?",
+                    self._pro_con_batch_key(
+                        checkpoint.identity, role, checkpoint.input_hash
+                    ),
+                )
+            pending = checkpoint.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if run.candidate_terminal is not None:
+                self._upsert_analysis_run_connection(
+                    connection, run.model_copy(update={"candidate_terminal": None})
+                )
+            audit = checkpoint.model_copy(
+                update={"attempt_id": f"role-cache-repair-{uuid4().hex}"}
+            )
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    audit,
+                    ActivityKind.EVIDENCE_REVIEWED,
+                    sequence=self._stage_sequence(SimpleStage.PRO_CON_DONE, 88),
+                    status=StageStatus.BLOCKED,
+                    summary_ko="Pro/Con 인용 오류로 해당 역할을 다시 실행합니다.",
+                    output_refs=tuple(invalid_roles.values()),
+                    error_code="PRO_CON_LEGACY_ROLE_CACHE_REPAIRED",
+                ),
+            )
+            connection.commit()
+            return True
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def save_chaining_pool_batch(
         self,
         identity: CheckpointIdentity,
@@ -3122,6 +3259,131 @@ class SimpleCheckpointStore:
             ).fetchone()
         return str(row["call_id"]) if row is not None else None
 
+    def _reconcile_unspawned_codex_call_with_lease(
+        self, run: SimpleAnalysisRun, data_dir: Path
+    ) -> bool:
+        """Settle a v2 Codex reservation that provably never spawned a child.
+
+        The caller must hold the exclusive analysis run lease. Production Codex
+        invokes ``begin_codex_child_spawn`` synchronously before creating each
+        subprocess, so an empty intent ledger is a durable pre-spawn boundary.
+        The conditional update and empty-ledger check share one write transaction:
+        a late callback cannot spawn after this transaction wins.
+        """
+
+        if (
+            run.candidate_pipeline_version != 2
+            or run.provider != "codex"
+            or run.llm_provider != "codex"
+            or run.started_at is None
+        ):
+            return False
+        identity = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        artifacts = SimpleArtifactRepository(data_dir, identity)
+        if artifacts.paths.database.resolve() != self._database_path.resolve():
+            raise ValueError("CODEX_PRE_SPAWN_DATABASE_MISMATCH")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT call_id, started_at FROM simple_codex_calls "
+                "WHERE analysis_id = ? AND status = 'IN_FLIGHT'",
+                (run.analysis_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            call_id = str(row["call_id"])
+            version = connection.execute(
+                "SELECT candidate_pipeline_version FROM simple_codex_call_versions "
+                "WHERE call_id = ? AND analysis_id = ?",
+                (call_id, run.analysis_id),
+            ).fetchone()
+            saved_run = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (run.analysis_id,),
+            ).fetchone()
+            child = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE call_id = ? LIMIT 1",
+                (call_id,),
+            ).fetchone()
+            attempt = connection.execute(
+                "SELECT 1 FROM simple_llm_attempts WHERE attempt_id = ? LIMIT 1",
+                (call_id,),
+            ).fetchone()
+            try:
+                started_at = datetime.fromisoformat(str(row["started_at"]))
+                exact_run = (
+                    SimpleAnalysisRun.model_validate_json(saved_run["run_json"])
+                    if saved_run is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                return False
+            now = datetime.now(UTC)
+            if (
+                version is None
+                or int(version["candidate_pipeline_version"]) != 2
+                or exact_run != run
+                or child is not None
+                or attempt is not None
+                or started_at.tzinfo is None
+                or run.started_at.tzinfo is None
+                or not run.started_at <= started_at <= now
+            ):
+                return False
+            confirmation = artifacts.put_json(
+                {
+                    "kind": "simple_codex_pre_spawn_confirmation",
+                    "analysis_id": run.analysis_id,
+                    "workspace_id": run.workspace_id,
+                    "commit_id": run.commit_id,
+                    "call_id": call_id,
+                    "call_started_at": started_at.isoformat(),
+                    "confirmed_at": now.isoformat(),
+                    "candidate_pipeline_version": 2,
+                    "child_spawn_rows": 0,
+                    "llm_attempt_rows": 0,
+                }
+            )
+            connection.execute(
+                "INSERT INTO simple_llm_attempts "
+                "(attempt_id, analysis_id, agent, model, attempt_number, status, "
+                "elapsed_ms, input_tokens, output_tokens, cost_cents, "
+                "artifact_ref_json) VALUES (?, ?, 'unknown', ?, 0, "
+                "'CODEX_NOT_SPAWNED', 0, 0, 0, 0, ?)",
+                (
+                    call_id,
+                    run.analysis_id,
+                    run.model or "unknown",
+                    confirmation.model_dump_json(),
+                ),
+            )
+            changed = connection.execute(
+                "UPDATE simple_codex_calls SET status = 'CONFIRMED', "
+                "resolved_at = ?, confirmation_ref_json = ? "
+                "WHERE call_id = ? AND analysis_id = ? AND status = 'IN_FLIGHT'",
+                (
+                    now.isoformat(),
+                    confirmation.model_dump_json(),
+                    call_id,
+                    run.analysis_id,
+                ),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("CODEX_PRE_SPAWN_RECONCILIATION_STALE")
+            connection.commit()
+            return True
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def confirmed_codex_call_covering(
         self, analysis_id: str, observed_at: datetime
     ) -> bool:
@@ -3295,7 +3557,8 @@ class SimpleCheckpointStore:
     ) -> dict[str, int | float | None]:
         row = connection.execute(
             """
-            SELECT COUNT(*) AS calls,
+            SELECT COALESCE(SUM(CASE WHEN status != 'CODEX_NOT_SPAWNED'
+                   THEN 1 ELSE 0 END), 0) AS calls,
                    COALESCE(SUM(input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
                    SUM(cost_cents) AS cost_minor_units,
@@ -4207,6 +4470,8 @@ class SimpleCheckpointStore:
         checkpoint: StageCheckpoint,
         failure: StageFailure,
         status: StageStatus,
+        *,
+        activity_attempt_id: str | None = None,
     ) -> StageCheckpoint:
         if status not in (StageStatus.BLOCKED, StageStatus.FAILED):
             raise ValueError("SimpleRuntime failure status must be BLOCKED or FAILED")
@@ -4224,11 +4489,18 @@ class SimpleCheckpointStore:
             if status is StageStatus.BLOCKED
             else ActivityKind.STAGE_FAILED
         )
+        # An integrity audit is a new event, not a replay of the stage's old
+        # failure event. Keep the checkpoint's actual execution attempt intact.
+        event_checkpoint = (
+            failed.model_copy(update={"attempt_id": activity_attempt_id})
+            if activity_attempt_id is not None
+            else failed
+        )
         self._write(
             failed,
             activity_events=(
                 self._lifecycle_event(
-                    failed,
+                    event_checkpoint,
                     kind,
                     sequence=self._stage_sequence(checkpoint.stage, 99),
                     status=status,
@@ -4902,6 +5174,330 @@ class SimpleCheckpointStore:
                 ),
             )
             connection.commit()
+
+    def repair_legacy_pro_con_evidence(
+        self,
+        checkpoint: StageCheckpoint,
+        invalid_roles: dict[str, StoredDataRef],
+        *,
+        expected_role_cache: Mapping[str, StoredDataRef | None],
+    ) -> bool:
+        """Atomically reopen one child's invalid legacy evidence and descendants."""
+
+        if (
+            checkpoint.stage is not SimpleStage.PRO_CON_DONE
+            or checkpoint.status is not StageStatus.SUCCEEDED
+            or checkpoint.identity.hypothesis_id is None
+            or len(checkpoint.output_refs) != 2
+            or not invalid_roles
+            or set(invalid_roles) - {"pro", "con"}
+            or set(expected_role_cache) != {"pro", "con"}
+            or any(
+                invalid_roles[role] != checkpoint.output_refs[0 if role == "pro" else 1]
+                for role in invalid_roles
+            )
+        ):
+            raise ValueError("PRO_CON_LEGACY_REPAIR_INVALID")
+        identity = checkpoint.identity
+        first_index = STAGE_ORDER.index(SimpleStage.PRO_CON_DONE)
+        stages = tuple(stage.value for stage in STAGE_ORDER[first_index:])
+        placeholders = ",".join("?" for _ in stages)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    checkpoint.stage.value,
+                ),
+            ).fetchone()
+            if (
+                row is None
+                or StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                != checkpoint
+            ):
+                raise ValueError("PRO_CON_LEGACY_REPAIR_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("PRO_CON_LEGACY_REPAIR_STALE")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            if (run.workspace_id, run.commit_id) != (
+                identity.workspace_id,
+                identity.commit_id,
+            ):
+                raise ValueError("PRO_CON_LEGACY_REPAIR_STALE")
+            for role in ("pro", "con"):
+                key = self._pro_con_batch_key(identity, role, checkpoint.input_hash)
+                cached = connection.execute(
+                    "SELECT evidence_ref_json FROM simple_pro_con_batch_evidence "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ? AND role = ? AND input_hash = ?",
+                    key,
+                ).fetchone()
+                actual_ref = (
+                    StoredDataRef.model_validate_json(cached["evidence_ref_json"])
+                    if cached is not None
+                    else None
+                )
+                if actual_ref != expected_role_cache[role] or (
+                    actual_ref is not None
+                    and actual_ref != checkpoint.output_refs[0 if role == "pro" else 1]
+                ):
+                    raise ValueError("PRO_CON_LEGACY_REPAIR_STALE")
+                if role in invalid_roles and cached is not None:
+                    connection.execute(
+                        "DELETE FROM simple_pro_con_batch_evidence "
+                        "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                        "AND hypothesis_id = ? AND role = ? AND input_hash = ?",
+                        key,
+                    )
+                elif role not in invalid_roles and cached is None:
+                    # The saved successful checkpoint itself contains this
+                    # audited valid role, even if old runs never cached it.
+                    valid_ref = checkpoint.output_refs[0 if role == "pro" else 1]
+                    encoded = self._candidate_ref_json(identity, valid_ref)
+                    connection.execute(
+                        "INSERT INTO simple_pro_con_batch_evidence "
+                        "(analysis_id, workspace_id, commit_id, hypothesis_id, "
+                        "role, input_hash, evidence_ref_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (*key, encoded),
+                    )
+            scope = (identity.analysis_id, identity.workspace_id, identity.commit_id)
+            registrations = connection.execute(
+                "SELECT hypothesis_id, parent_hypothesis_ids_json "
+                "FROM simple_candidate_hypotheses WHERE analysis_id = ? "
+                "AND workspace_id = ? AND commit_id = ?",
+                scope,
+            ).fetchall()
+            parents_by_id: dict[str, tuple[str, ...]] = {}
+            for registered in registrations:
+                hypothesis_id = str(registered["hypothesis_id"])
+                parents = json.loads(registered["parent_hypothesis_ids_json"])
+                if (
+                    not isinstance(parents, list)
+                    or any(not isinstance(parent, str) for parent in parents)
+                    or len(parents) != len(set(parents))
+                    or hypothesis_id in parents
+                ):
+                    raise ValueError("PRO_CON_LEGACY_REPAIR_STALE")
+                parents_by_id[hypothesis_id] = tuple(parents)
+            if identity.hypothesis_id not in parents_by_id:
+                raise ValueError("PRO_CON_LEGACY_REPAIR_STALE")
+            descendants: set[str] = set()
+            frontier = {identity.hypothesis_id}
+            while frontier:
+                next_frontier = {
+                    child_id
+                    for child_id, parents in parents_by_id.items()
+                    if child_id not in descendants
+                    and child_id != identity.hypothesis_id
+                    and any(parent in frontier for parent in parents)
+                }
+                descendants.update(next_frontier)
+                frontier = next_frontier
+            if any(
+                parent not in descendants and parent != identity.hypothesis_id
+                for child_id in descendants
+                for parent in parents_by_id[child_id]
+            ):
+                # A co-parent may have a completed Chaining result referring
+                # to the invalidated primitive. Rebuilding that pool needs a
+                # separate, lineage-aware replay rather than a local repair.
+                raise ValueError("PRO_CON_LEGACY_REPAIR_COPARENT")
+            affected_ids = descendants | {identity.hypothesis_id}
+            revoked_primitives: set[StoredDataRef] = set()
+            for primitive_row in connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND stage = ?",
+                (identity.analysis_id, SimpleStage.PRIMITIVE_ADMISSION_DONE.value),
+            ):
+                primitive_checkpoint = StageCheckpoint.model_validate_json(
+                    primitive_row["checkpoint_json"]
+                )
+                if primitive_checkpoint.identity.hypothesis_id not in affected_ids:
+                    continue
+                if (
+                    primitive_checkpoint.identity.workspace_id != identity.workspace_id
+                    or primitive_checkpoint.identity.commit_id != identity.commit_id
+                ):
+                    raise ValueError("PRO_CON_LEGACY_REPAIR_STALE")
+                if primitive_checkpoint.status is StageStatus.SUCCEEDED:
+                    if primitive_checkpoint.stage_version != STAGE_VERSION[
+                        SimpleStage.PRIMITIVE_ADMISSION_DONE
+                    ] or len(primitive_checkpoint.output_refs) not in {1, 2}:
+                        raise ValueError("PRO_CON_LEGACY_REPAIR_DEPENDENT_CHAINING")
+                    if len(primitive_checkpoint.output_refs) == 1:
+                        # A DENY or a non-material ALLOW has an admission
+                        # record but deliberately creates no primitive.
+                        if self._artifact_data_dir is None:
+                            raise ValueError("PRO_CON_LEGACY_REPAIR_DEPENDENT_CHAINING")
+                        primitive_artifacts = SimpleArtifactRepository(
+                            self._artifact_data_dir, primitive_checkpoint.identity
+                        )
+                        try:
+                            admission = json.loads(
+                                primitive_artifacts.read(
+                                    primitive_checkpoint.output_refs[0]
+                                )
+                            )
+                        except (OSError, ValueError, TypeError) as error:
+                            raise ValueError(
+                                "PRO_CON_LEGACY_REPAIR_DEPENDENT_CHAINING"
+                            ) from error
+                        if (
+                            not isinstance(admission, dict)
+                            or admission.get("kind") != "simple_primitive_admission"
+                            or admission.get("analysis_id") != identity.analysis_id
+                            or admission.get("hypothesis_id")
+                            != primitive_checkpoint.identity.hypothesis_id
+                            or admission.get("decision") not in {"ALLOW", "DENY"}
+                        ):
+                            raise ValueError("PRO_CON_LEGACY_REPAIR_DEPENDENT_CHAINING")
+                    else:
+                        revoked_primitives.add(primitive_checkpoint.output_refs[1])
+            dependent_no_child_ids: set[str] = set()
+            if revoked_primitives:
+                for chain_row in connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND stage = ?",
+                    (identity.analysis_id, SimpleStage.CHAINING_DONE.value),
+                ):
+                    chain = StageCheckpoint.model_validate_json(
+                        chain_row["checkpoint_json"]
+                    )
+                    if (
+                        chain.status is not StageStatus.SUCCEEDED
+                        or chain.identity.hypothesis_id in affected_ids
+                    ):
+                        continue
+                    if (
+                        chain.identity.workspace_id != identity.workspace_id
+                        or chain.identity.commit_id != identity.commit_id
+                        or chain.identity.hypothesis_id is None
+                        or len(chain.output_refs) != 1
+                        or self._artifact_data_dir is None
+                    ):
+                        raise ValueError("PRO_CON_LEGACY_REPAIR_DEPENDENT_CHAINING")
+                    artifacts = SimpleArtifactRepository(
+                        self._artifact_data_dir, chain.identity
+                    )
+                    try:
+                        result = json.loads(artifacts.read(chain.output_refs[0]))
+                        if (
+                            not isinstance(result, dict)
+                            or result.get("kind") != "simple_chaining_result"
+                            or result.get("analysis_id") != identity.analysis_id
+                            or result.get("source_hypothesis_id")
+                            != chain.identity.hypothesis_id
+                            or not isinstance(
+                                result.get("considered_primitive_refs"), list
+                            )
+                        ):
+                            raise ValueError("invalid surviving chaining result")
+                        considered = {
+                            StoredDataRef.model_validate(ref)
+                            for ref in result["considered_primitive_refs"]
+                        }
+                    except (OSError, ValueError, KeyError, TypeError) as error:
+                        raise ValueError(
+                            "PRO_CON_LEGACY_REPAIR_DEPENDENT_CHAINING"
+                        ) from error
+                    if considered & revoked_primitives:
+                        owner_id = chain.identity.hypothesis_id
+                        if (
+                            chain.stage_version
+                            != STAGE_VERSION[SimpleStage.CHAINING_DONE]
+                            or result.get("status") != "NO_MATERIAL_CHILD"
+                            or result.get("children") != []
+                            or len(considered)
+                            != len(result["considered_primitive_refs"])
+                            or owner_id not in parents_by_id
+                            or any(
+                                owner_id in parents
+                                for parents in parents_by_id.values()
+                            )
+                        ):
+                            # Material or lineage-bearing results need a wider
+                            # replay; preserve every checkpoint and block.
+                            raise ValueError("PRO_CON_LEGACY_REPAIR_DEPENDENT_CHAINING")
+                        dependent_no_child_ids.add(owner_id)
+            rewind_stages = tuple(
+                stage.value
+                for stage in STAGE_ORDER[STAGE_ORDER.index(SimpleStage.CHAINING_DONE) :]
+            )
+            rewind_placeholders = ",".join("?" for _ in rewind_stages)
+            for owner_id in dependent_no_child_ids:
+                connection.execute(
+                    "DELETE FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                    "AND hypothesis_key = ? "
+                    f"AND stage IN ({rewind_placeholders})",  # noqa: S608
+                    (identity.analysis_id, owner_id, *rewind_stages),
+                )
+            for descendant_id in descendants:
+                descendant_scope = (*scope, descendant_id)
+                connection.execute(
+                    "DELETE FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                    "AND hypothesis_key = ?",
+                    (identity.analysis_id, descendant_id),
+                )
+                for table in (
+                    "simple_pro_con_batch_evidence",
+                    "simple_candidate_child_claims",
+                    "simple_candidate_hypothesis_links",
+                    "simple_candidate_hypotheses",
+                ):
+                    connection.execute(
+                        f"DELETE FROM {table} WHERE analysis_id = ? "
+                        "AND workspace_id = ? AND commit_id = ? "
+                        "AND hypothesis_id = ?",  # noqa: S608 - constant table names.
+                        descendant_scope,
+                    )
+            connection.execute(
+                f"DELETE FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                f"AND hypothesis_key = ? AND stage IN ({placeholders})",  # noqa: S608
+                (identity.analysis_id, self._hypothesis_key(identity), *stages),
+            )
+            pending = checkpoint.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if run.candidate_terminal is not None:
+                self._upsert_analysis_run_connection(
+                    connection, run.model_copy(update={"candidate_terminal": None})
+                )
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    checkpoint,
+                    ActivityKind.EVIDENCE_REVIEWED,
+                    sequence=self._stage_sequence(SimpleStage.PRO_CON_DONE, 88),
+                    status=StageStatus.BLOCKED,
+                    summary_ko="Pro/Con 근거 해시 오류로 후속 검증을 다시 시작합니다.",
+                    output_refs=tuple(invalid_roles.values()),
+                    error_code="PRO_CON_LEGACY_EVIDENCE_REPAIRED",
+                ),
+            )
+            connection.commit()
+            return True
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def replace_from(
         self,

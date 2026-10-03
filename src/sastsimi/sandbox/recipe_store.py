@@ -991,7 +991,10 @@ class EnvironmentRecipeStore:
                 or "\0" in line
                 or ".." in PurePosixPath(line.lstrip("/")).parts
                 or "**" in line
-                or any(character in line for character in "?[]")
+                or any(
+                    character in re.sub(r"\[[A-Za-z0-9]+\]", "", line)
+                    for character in "?[]"
+                )
             ):
                 raise ValueError("DOCKERIGNORE_UNSUPPORTED")
             normalized = line.removeprefix("/").removeprefix("./")
@@ -1005,8 +1008,13 @@ class EnvironmentRecipeStore:
         parts = PurePosixPath(path).parts
         for pattern in patterns:
             if pattern.endswith("/"):
-                prefix = pattern.rstrip("/")
-                if path == prefix or path.startswith(prefix + "/"):
+                prefix_parts = PurePosixPath(pattern.rstrip("/")).parts
+                if len(parts) >= len(prefix_parts) and all(
+                    fnmatch.fnmatchcase(part, expected)
+                    for part, expected in zip(
+                        parts[: len(prefix_parts)], prefix_parts, strict=True
+                    )
+                ):
                     return True
             elif "/" in pattern:
                 if fnmatch.fnmatchcase(path, pattern):

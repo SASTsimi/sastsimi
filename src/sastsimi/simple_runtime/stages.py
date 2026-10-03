@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+import sqlite3
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, NoReturn, Protocol, cast
 
@@ -27,6 +29,7 @@ from sastsimi.observability.agent_activity import (
 from sastsimi.reporting.bilingual_bundle import (
     BundleFacts,
     coverage_report_lines,
+    redact_report_local_file_urls,
     render_bundle_files,
 )
 from sastsimi.reporting.bundle_files import PublishedBundle, publish_bundle
@@ -39,6 +42,7 @@ from sastsimi.reporting.markdown_export import write_report_markdown
 from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
+from .attack_surfaces import SurfaceIndex, surface_index_from_json
 from .attempt_owner import AttemptOwner, PromptByteCounts
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .gate_guard import technical_gate_accepted
@@ -77,11 +81,18 @@ _PRO_CON_BATCH_MAX_ATTEMPTS = 2
 
 def _has_python_import_failure(output: bytes) -> bool:
     traceback_started = False
-    for line in output.splitlines():
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
         if line == b"Traceback (most recent call last):":
             traceback_started = True
         elif traceback_started and line.startswith(
             (b"ModuleNotFoundError: ", b"ImportError: ")
+        ):
+            return True
+        if (
+            line in {b"ModuleNotFoundError", b"ImportError"}
+            and index + 1 < len(lines)
+            and lines[index + 1].startswith(b"traceback: ")
         ):
             return True
         interpreter, marker, module = (
@@ -165,12 +176,95 @@ def _string_array() -> dict[str, Any]:
     return {"type": "array", "items": {"type": "string"}}
 
 
+_PRO_CON_EVIDENCE_SCHEMA = _object_schema(
+    {
+        "claims": _string_array(),
+        "evidence_refs": _string_array(),
+        "limitations": _string_array(),
+        "requested_paths": _string_array(),
+    },
+    ["claims", "evidence_refs", "limitations", "requested_paths"],
+)
+
+
 def _enum(*values: str) -> dict[str, Any]:
     return {"type": "string", "enum": list(values)}
 
 
 def _unique_refs(refs: tuple[StoredDataRef, ...]) -> tuple[StoredDataRef, ...]:
     return tuple(dict.fromkeys(refs))
+
+
+@lru_cache(maxsize=8)
+def _parsed_surface_index(raw: bytes) -> SurfaceIndex:
+    """Cache parsing only; callers still verify the exact CAS bytes each time."""
+
+    return surface_index_from_json(json.loads(raw))
+
+
+def _legacy_surface_evidence_refs(
+    artifacts: SimpleArtifactRepository, context: dict[str, Any]
+) -> tuple[StoredDataRef, ...]:
+    """Resolve old hash-only contexts through the persisted exact surface index."""
+
+    scope = context.get("scope_fingerprint")
+    surface_id = context.get("surface_id")
+    if not isinstance(scope, str) or not scope or not isinstance(surface_id, str):
+        raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID")
+    try:
+        database = artifacts.paths.database.resolve().as_posix()
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                "SELECT index_ref_json FROM simple_attack_surface_indexes "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ?",
+                (
+                    artifacts.identity.analysis_id,
+                    artifacts.identity.workspace_id,
+                    artifacts.identity.commit_id,
+                    scope,
+                ),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise ValueError("missing surface index")
+        index_ref = StoredDataRef.model_validate_json(row[0])
+        index = _parsed_surface_index(artifacts.read(index_ref))
+        if any(
+            context.get(field) != getattr(index, field)
+            for field in (
+                "scope_fingerprint",
+                "static_bundle_hash",
+                "ast_manifest_hash",
+                "candidate_inventory_hash",
+                "workspace_id",
+                "commit_id",
+            )
+        ):
+            raise ValueError("surface index mismatch")
+        matches = [
+            surface for surface in index.surfaces if surface.surface_id == surface_id
+        ]
+        if len(matches) != 1:
+            raise ValueError("surface missing from index")
+        surface = matches[0]
+        if any(
+            context.get(field) != expected
+            for field, expected in (
+                ("surface_type", surface.type),
+                ("path", surface.path),
+                ("symbol", surface.symbol),
+                ("line", surface.line),
+                ("detector", surface.detector),
+                ("flow_identity", surface.flow_identity),
+            )
+        ):
+            raise ValueError("surface identity mismatch")
+        return surface.evidence_refs
+    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID") from error
 
 
 def _trusted_batch_evidence_hashes(
@@ -215,7 +309,27 @@ def _trusted_batch_evidence_hashes(
                     or any(character not in "0123456789abcdef" for character in value)
                 ):
                     raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID")
-                allowed.add(value)
+            if hashes != sorted(set(hashes)):
+                raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID")
+            if "static_evidence_refs" in context:
+                raw_refs = context["static_evidence_refs"]
+                if not isinstance(raw_refs, list):
+                    raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID")
+                evidence_refs = tuple(
+                    StoredDataRef.model_validate(value) for value in raw_refs
+                )
+            elif hashes:
+                evidence_refs = _legacy_surface_evidence_refs(artifacts, context)
+            else:
+                evidence_refs = ()
+            if sorted({ref.content_hash for ref in evidence_refs}) != hashes:
+                raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID")
+            for ref in evidence_refs:
+                try:
+                    artifacts.read(ref)
+                except (OSError, ValueError) as error:
+                    raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID") from error
+                allowed.add(ref.content_hash)
     if isinstance(proposal, dict):
         for field in (
             "static_bundle_ref",
@@ -224,6 +338,67 @@ def _trusted_batch_evidence_hashes(
         ):
             add_ref(proposal.get(field))
     return frozenset(allowed)
+
+
+def trusted_pro_con_evidence_hashes(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    refs: tuple[StoredDataRef, ...],
+) -> frozenset[str]:
+    """Resolve exact owned hashes available to one individual Pro/Con call."""
+
+    if (
+        len(checkpoint.input_refs) < 2
+        or checkpoint.stage is not SimpleStage.PRO_CON_DONE
+    ):
+        raise ValueError("PRO_CON_INPUT_INVALID")
+    proposal = json.loads(artifacts.read_prompt_proposal(checkpoint.input_refs[0]))
+    if (
+        not isinstance(proposal, dict)
+        or proposal.get("analysis_id") != checkpoint.identity.analysis_id
+        or proposal.get("hypothesis_id") != checkpoint.identity.hypothesis_id
+        or not checkpoint.identity.hypothesis_id
+    ):
+        raise ValueError("PRO_CON_INPUT_INVALID")
+    allowed = set(
+        _trusted_batch_evidence_hashes(
+            artifacts, checkpoint.input_refs[1], checkpoint.input_refs[0]
+        )
+    )
+    for ref in refs:
+        artifacts.read(ref)
+        allowed.add(ref.content_hash)
+    return frozenset(allowed)
+
+
+class ProConEvidenceRefInvalid(ValueError):
+    """A well-formed Pro/Con result cited a hash absent from its exact inputs."""
+
+
+def validate_pro_con_evidence_result(
+    value: object, allowed_hashes: frozenset[str]
+) -> None:
+    """Validate one role result without invoking a provider or writing artifacts."""
+
+    _validate_schema(value, _PRO_CON_EVIDENCE_SCHEMA)
+    if not isinstance(value, dict):
+        raise ValueError("evidence result")
+    for field in ("claims", "evidence_refs", "limitations", "requested_paths"):
+        values = value[field]
+        if any(not item.strip() for item in values):
+            raise ValueError("empty evidence field")
+    if any(ref not in allowed_hashes for ref in value["evidence_refs"]):
+        raise ProConEvidenceRefInvalid("evidence ref is not a supplied hash")
+    for path in value["requested_paths"]:
+        parts = PurePosixPath(path)
+        if (
+            parts.is_absolute()
+            or ".." in parts.parts
+            or "\\" in path
+            or "\x00" in path
+            or (len(path) >= 2 and path[0].isalpha() and path[1] == ":")
+        ):
+            raise ValueError("unsafe requested path")
 
 
 def _prior_refs(
@@ -744,23 +919,27 @@ class PoCExecutionStage:
                     evidence_refs=(*evidence_refs, cleanup_ref),
                 )
             ) from execution_error
+        if not outcome.timed_out and (
+            _has_python_import_failure(outcome.stderr)
+            or _has_python_import_failure(outcome.stdout)
+        ):
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_RUNTIME_IMPORT_FAILED",
+                    retryable=True,
+                    safe_message=(
+                        "Isolated PoC runtime reported a Python import failure; "
+                        "dependency origin is unverified"
+                    ),
+                    evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
+                )
+            )
         if outcome.timed_out or outcome.exit_code not in (0, 1):
             raise StageBlocked(
                 StageFailure(
                     code="POC_EXECUTION_FAILED",
                     retryable=True,
                     safe_message="PoC script did not produce a usable observation",
-                    evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
-                )
-            )
-        if _has_python_import_failure(outcome.stderr) or _has_python_import_failure(
-            outcome.stdout
-        ):
-            raise StageBlocked(
-                StageFailure(
-                    code="POC_EXECUTION_FAILED",
-                    retryable=True,
-                    safe_message="PoC raised a Python import error",
                     evidence_refs=(execution_ref, stdout_ref, stderr_ref, cleanup_ref),
                 )
             )
@@ -1136,15 +1315,22 @@ class _StructuredStage:
         self,
         checkpoint: StageCheckpoint,
         refs: tuple[StoredDataRef, ...],
+        *,
+        guidance: str = "",
+        validate_result: Callable[[dict[str, JsonValue]], None] | None = None,
     ) -> tuple[SimpleLLMCallResult, StoredDataRef]:
         result = await self._client.call(
-            prompt=_prompt(self._instructions, self._artifacts.prompt_context(refs)),
+            prompt=_prompt(
+                self._instructions + guidance, self._artifacts.prompt_context(refs)
+            ),
             output_schema=self._schema,
             timeout_ms=_LOCAL_TIMEOUT_MS,
             agent_name=self._kind.removeprefix("simple_"),
         )
         if isinstance(result, StageFailure):
             _raise_provider_failure(result)
+        if validate_result is not None:
+            validate_result(result.value)
         output_ref = self._artifacts.put_json(
             {
                 "kind": self._kind,
@@ -1196,6 +1382,10 @@ class ProConBatchFailed(StageFailed):
         self.missing_ids = missing_ids
 
 
+class _InvalidProConResponse(ValueError):
+    """The individual role returned a structurally or semantically invalid row."""
+
+
 class ProConStage:
     """Collect independent supporting and opposing evidence."""
 
@@ -1209,15 +1399,7 @@ class ProConStage:
         self._client = client
         self._artifacts = artifacts
         self._store = store
-        schema = _object_schema(
-            {
-                "claims": _string_array(),
-                "evidence_refs": _string_array(),
-                "limitations": _string_array(),
-                "requested_paths": _string_array(),
-            },
-            ["claims", "evidence_refs", "limitations", "requested_paths"],
-        )
+        schema = _PRO_CON_EVIDENCE_SCHEMA
         self._pro = _StructuredStage(
             client=client,
             artifacts=artifacts,
@@ -1244,6 +1426,57 @@ use `requested_paths` for repository-relative files needed later.
             schema=schema,
             kind="simple_con_evidence",
         )
+
+    @staticmethod
+    def _validate_individual_result(
+        value: object,
+        allowed_hashes: frozenset[str],
+    ) -> None:
+        try:
+            validate_pro_con_evidence_result(value, allowed_hashes)
+        except ValueError as error:
+            raise _InvalidProConResponse(str(error)) from error
+
+    async def _call_individual_role(
+        self,
+        role: Literal["pro", "con"],
+        checkpoint: StageCheckpoint,
+        refs: tuple[StoredDataRef, ...],
+        allowed_hashes: frozenset[str],
+    ) -> tuple[SimpleLLMCallResult, StoredDataRef]:
+        stage = self._pro if role == "pro" else self._con
+        guidance = (
+            "\nAllowed evidence content hashes for this hypothesis: "
+            + canonical_bytes(sorted(allowed_hashes)).decode("utf-8")
+            + "\nEvery evidence_refs entry must be one bare hash from this list. "
+            "Use [] when no supplied artifact supports a claim."
+        )
+        for attempt in range(_PRO_CON_BATCH_MAX_ATTEMPTS):
+            try:
+                return await stage.call(
+                    checkpoint,
+                    refs,
+                    guidance=guidance,
+                    validate_result=lambda value: self._validate_individual_result(
+                        value, allowed_hashes
+                    ),
+                )
+            except _InvalidProConResponse as error:
+                if attempt + 1 == _PRO_CON_BATCH_MAX_ATTEMPTS:
+                    raise StageBlocked(
+                        StageFailure(
+                            code="PRO_CON_RESPONSE_INVALID",
+                            retryable=True,
+                            safe_message="Pro/Con response was invalid",
+                            invalid_field="evidence_refs",
+                        )
+                    ) from error
+                guidance += (
+                    "\nPrevious response was rejected. Return only the required "
+                    "nonempty fields, safe relative requested_paths, and exact "
+                    "allowed evidence hashes."
+                )
+        raise AssertionError("unreachable Pro/Con attempt")
 
     async def run_pro_batch(
         self,
@@ -1398,12 +1631,17 @@ Return a `results` array. Each row must use exactly one supplied
 `requested_paths` for only that hypothesis. Do not combine evidence across
 hypotheses. If a row cannot be completed, omit only that row; it will be
 requested again separately. The shared file context applies to every row.
+Every `evidence_refs` entry must be an exact content hash from the allowed
+hashes listed for that hypothesis below. Never include a filename, line
+range, label, or explanatory text in an evidence ref. Use an empty array
+when none of the supplied artifacts supports a claim.
 """
         )
         while len(completed) < len(ordered_ids):
             pending = tuple(item for item in ordered_ids if item not in completed)
             if not pending:
                 break
+            feedback = ""
             for attempt in range(_PRO_CON_BATCH_MAX_ATTEMPTS):
                 if not pending:
                     break
@@ -1451,7 +1689,36 @@ requested again separately. The shared file context applies to every row.
                             raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID") from error
                         raise ValueError("PRO_CON_BATCH_CONTEXT_OVERFLOW") from error
                     raise ValueError("PRO_CON_BATCH_CONTEXT_INVALID") from error
-                prompt = _prompt(instructions, context)
+                allowed_by_id = {
+                    item: sorted(
+                        _trusted_batch_evidence_hashes(
+                            self._artifacts,
+                            shared_ref,
+                            checkpoints[item].input_refs[0],
+                        )
+                    )
+                    for item in pending
+                }
+                common_hashes = set(allowed_by_id[pending[0]])
+                for hashes in allowed_by_id.values():
+                    common_hashes.intersection_update(hashes)
+                guidance = (
+                    "\nAllowed evidence content hashes: common hashes apply to "
+                    "every requested hypothesis; additional hashes apply only "
+                    "to the named hypothesis_id.\n"
+                    + canonical_bytes(
+                        {
+                            "common": sorted(common_hashes),
+                            "additional_by_id": {
+                                item: sorted(set(hashes) - common_hashes)
+                                for item, hashes in allowed_by_id.items()
+                            },
+                        }
+                    ).decode("utf-8")
+                )
+                if feedback:
+                    guidance += "\nPrevious response was rejected: " + feedback
+                prompt = _prompt(instructions + guidance, context)
                 if (
                     len(prompt) + len(canonical_bytes(schema))
                     > _PRO_CON_BATCH_MAX_PROMPT_BYTES
@@ -1517,11 +1784,7 @@ requested again separately. The shared file context applies to every row.
                             values = cast(list[str], row[field])
                             if any(not value.strip() for value in values):
                                 raise ValueError("empty evidence field")
-                        allowed_evidence = _trusted_batch_evidence_hashes(
-                            self._artifacts,
-                            shared_ref,
-                            checkpoints[hypothesis_id].input_refs[0],
-                        )
+                        allowed_evidence = allowed_by_id[hypothesis_id]
                         if any(
                             ref not in allowed_evidence
                             for ref in cast(list[str], row["evidence_refs"])
@@ -1542,6 +1805,16 @@ requested again separately. The shared file context applies to every row.
                             ):
                                 raise ValueError("unsafe requested path")
                 except (KeyError, TypeError, ValueError) as error:
+                    if attempt + 1 < _PRO_CON_BATCH_MAX_ATTEMPTS:
+                        feedback = (
+                            "An evidence_refs entry was not an exact allowed hash. "
+                            "Return only the bare hashes listed for each hypothesis."
+                            if str(error) == "evidence ref is not a supplied hash"
+                            else "The previous results failed validation. Return "
+                            "only the requested IDs, required fields, safe relative "
+                            "paths, and exact allowed evidence hashes."
+                        )
+                        continue
                     raise ProConBatchBlocked(
                         StageFailure(
                             code="PRO_CON_BATCH_RESPONSE_INVALID",
@@ -1652,6 +1925,7 @@ requested again separately. The shared file context applies to every row.
         checkpoint: StageCheckpoint,
         refs: tuple[StoredDataRef, ...],
         evidence_ref: StoredDataRef,
+        allowed_hashes: frozenset[str],
     ) -> SimpleLLMCallResult:
         try:
             envelope = json.loads(self._artifacts.read(evidence_ref))
@@ -1670,33 +1944,62 @@ requested again separately. The shared file context applies to every row.
                     shared_ref,
                     {hypothesis_id: evidence_ref},
                 )
+                batch_response_ref = StoredDataRef.model_validate(
+                    envelope["batch_response_ref"]
+                )
+                batch_response = json.loads(self._artifacts.read(batch_response_ref))
+                digest_value = batch_response["result"]
+                allowed_hashes = _trusted_batch_evidence_hashes(
+                    self._artifacts, shared_ref, checkpoint.input_refs[0]
+                )
             else:
-                stage = self._pro if role == "pro" else self._con
                 if envelope.get("kind") != f"simple_{role}_evidence" or envelope.get(
                     "source_refs"
                 ) != [ref.model_dump(mode="json") for ref in refs]:
                     raise ValueError("legacy evidence mismatch")
-                _validate_schema(envelope.get("result"), stage._schema)
+                digest_value = envelope["result"]
+            for digest_field in ("prompt_digest", "output_digest"):
+                digest = envelope.get(digest_field)
+                if (
+                    not isinstance(digest, str)
+                    or len(digest) != 64
+                    or any(character not in "0123456789abcdef" for character in digest)
+                ):
+                    raise ValueError("evidence digest invalid")
+            if (
+                envelope["output_digest"]
+                != hashlib.sha256(canonical_bytes(digest_value)).hexdigest()
+            ):
+                raise ValueError("evidence output digest mismatch")
+            invocation_refs: list[StoredDataRef | None] = []
+            for ref_field in ("llm_request_ref", "llm_response_ref"):
+                ref_data = envelope.get(ref_field)
+                if ref_data is None:
+                    invocation_refs.append(None)
+                    continue
+                invocation_ref = StoredDataRef.model_validate(ref_data)
+                self._artifacts.read(invocation_ref)
+                invocation_refs.append(invocation_ref)
+            request_ref, response_ref = invocation_refs
             value = envelope["result"]
-            if not isinstance(value, dict):
-                raise ValueError("evidence result")
-            request_data = envelope.get("llm_request_ref")
-            response_data = envelope.get("llm_response_ref")
+            validate_pro_con_evidence_result(value, allowed_hashes)
             return SimpleLLMCallResult(
                 value=cast(dict[str, JsonValue], value),
                 prompt_digest=envelope["prompt_digest"],
                 output_digest=envelope["output_digest"],
-                request_ref=(
-                    StoredDataRef.model_validate(request_data)
-                    if request_data is not None
-                    else None
-                ),
-                response_ref=(
-                    StoredDataRef.model_validate(response_data)
-                    if response_data is not None
-                    else None
-                ),
+                request_ref=request_ref,
+                response_ref=response_ref,
             )
+        except ProConEvidenceRefInvalid as error:
+            raise StageBlocked(
+                StageFailure(
+                    code="PRO_CON_BATCH_EXISTING_INVALID",
+                    retryable=True,
+                    safe_message="Stored Pro/Con evidence does not match the child",
+                    invalid_field="evidence_refs",
+                    evidence_refs=(evidence_ref,),
+                )
+            ) from error
         except (OSError, ValueError, KeyError, TypeError, ProConBatchBlocked) as error:
             raise StageBlocked(
                 StageFailure(
@@ -1707,12 +2010,50 @@ requested again separately. The shared file context applies to every row.
                 )
             ) from error
 
+    async def validate_cached_role_evidence(
+        self,
+        role: Literal["pro", "con"],
+        checkpoint: StageCheckpoint,
+        evidence_ref: StoredDataRef,
+        prior: Mapping[SimpleStage, StageCheckpoint] | None = None,
+    ) -> None:
+        """Audit persisted role evidence without requesting new LLM output."""
+
+        refs = _unique_refs(checkpoint.input_refs + _prior_refs(prior or {}))
+        try:
+            allowed_hashes = trusted_pro_con_evidence_hashes(
+                self._artifacts, checkpoint, refs
+            )
+        except (OSError, ValueError, TypeError) as error:
+            raise StageBlocked(
+                StageFailure(
+                    code="PRO_CON_INPUT_INVALID",
+                    retryable=True,
+                    safe_message="Pro/Con inputs were invalid",
+                )
+            ) from error
+        await self._cached_role_result(
+            role, checkpoint, refs, evidence_ref, allowed_hashes
+        )
+
     async def __call__(
         self,
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
         refs = _unique_refs(checkpoint.input_refs + _prior_refs(prior))
+        try:
+            allowed_hashes = trusted_pro_con_evidence_hashes(
+                self._artifacts, checkpoint, refs
+            )
+        except (OSError, ValueError, TypeError) as error:
+            raise StageBlocked(
+                StageFailure(
+                    code="PRO_CON_INPUT_INVALID",
+                    retryable=True,
+                    safe_message="Pro/Con inputs were invalid",
+                )
+            ) from error
         pro_ref = (
             self._store.get_pro_con_batch_evidence(
                 checkpoint.identity, "pro", checkpoint.input_hash
@@ -1721,13 +2062,17 @@ requested again separately. The shared file context applies to every row.
             else None
         )
         if pro_ref is None:
-            pro, pro_ref = await self._pro.call(checkpoint, refs)
+            pro, pro_ref = await self._call_individual_role(
+                "pro", checkpoint, refs, allowed_hashes
+            )
             if self._store is not None:
                 self._store.save_pro_con_batch_evidence(
                     checkpoint.identity, "pro", checkpoint.input_hash, pro_ref
                 )
         else:
-            pro = await self._cached_role_result("pro", checkpoint, refs, pro_ref)
+            pro = await self._cached_role_result(
+                "pro", checkpoint, refs, pro_ref, allowed_hashes
+            )
         con_ref = (
             self._store.get_pro_con_batch_evidence(
                 checkpoint.identity, "con", checkpoint.input_hash
@@ -1736,13 +2081,17 @@ requested again separately. The shared file context applies to every row.
             else None
         )
         if con_ref is None:
-            con, con_ref = await self._con.call(checkpoint, refs)
+            con, con_ref = await self._call_individual_role(
+                "con", checkpoint, refs, allowed_hashes
+            )
             if self._store is not None:
                 self._store.save_pro_con_batch_evidence(
                     checkpoint.identity, "con", checkpoint.input_hash, con_ref
                 )
         else:
-            con = await self._cached_role_result("con", checkpoint, refs, con_ref)
+            con = await self._cached_role_result(
+                "con", checkpoint, refs, con_ref, allowed_hashes
+            )
         return StageResult(
             output_refs=(pro_ref, con_ref),
             activity_events=(
@@ -2533,6 +2882,7 @@ this local route requires citations=[].
         result, draft_ref, content, reused_draft = await self._draft(
             checkpoint, prior, finding.output_refs[0]
         )
+        content = redact_report_local_file_urls(content)
         coverage = self._coverage(checkpoint)
         rendered = self._render(
             content.ko.model_dump(mode="json"),

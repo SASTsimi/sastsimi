@@ -245,6 +245,8 @@ function renderOverview(detail) {
     if (Number.isInteger(surface?.total)) {
       if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) {
         values.push(["보안 surface", `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`]);
+      } else if (Number.isInteger(surface.recorded_contexts) && Number.isInteger(surface.recorded_surfaces)) {
+        values.push(["보안 surface", `context가 저장된 surface ${surface.recorded_surfaces}/${surface.total}개 · 저장된 context ${surface.recorded_contexts}건 (확장 포함) · coverage 확인 전`]);
       } else if (Number.isInteger(surface.recorded_contexts)) {
         values.push(["보안 surface", `저장된 context ${surface.recorded_contexts}건 · 인덱스 ${surface.total}개 · coverage 확인 전`]);
       } else {
