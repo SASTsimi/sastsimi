@@ -84,8 +84,8 @@ from .models import (
     LLMInvocationView,
     ReadinessCheckView,
     StageProgressView,
-    StaticToolFindingView,
     StaticCoveragePageView,
+    StaticToolFindingView,
     StaticToolProgressView,
     StatusCellPageView,
     StatusCellView,
@@ -689,9 +689,7 @@ class DashboardQuery:
                 else None
             ),
             model=(
-                redact_local_file_urls(event.model)
-                if event.model is not None
-                else None
+                redact_local_file_urls(event.model) if event.model is not None else None
             ),
             prompt_digest=event.prompt_digest,
             output_digest=event.output_digest,
@@ -1649,16 +1647,6 @@ class DashboardQuery:
         ) + sum(item.completed_count for item in hypotheses)
         reports = self._reports(analysis_id)
         coverage = self._static_coverage_projection(values) if detail else {}
-        known_hypotheses = set(run.hypothesis_ids) if run is not None else set()
-        hypothesis_total = (
-            len(known_hypotheses | set(hypothesis_groups))
-            if run is not None or hypothesis_groups
-            else None
-        )
-        verification_done = sum(
-            self._final_verdict_saved(checkpoints)
-            for checkpoints in hypothesis_groups.values()
-        )
         confirmed_count = sum(
             self._confirmed_hypothesis(checkpoints)
             for checkpoints in hypothesis_groups.values()
@@ -2744,6 +2732,7 @@ class DashboardQuery:
             "오류 코드를 기록하고 docs/troubleshooting.md의 안전한 복구 "
             "절차를 확인하세요."
         )
+
     @staticmethod
     def _pipeline(
         values: list[StageCheckpoint], run: SimpleAnalysisRun | None
