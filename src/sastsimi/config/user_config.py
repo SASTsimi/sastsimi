@@ -313,6 +313,7 @@ class SimpleExecutionProfile(BaseModel):
     docker_network: Literal["NONE", "BRIDGE"]
     poc_wheel_archive_path: Path | None = None
     poc_wheel_archive_sha256: str | None = None
+    poc_offline_base_image_digest: str | None = None
     tools: dict[str, SimpleToolBinding]
     agent_models: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
@@ -337,6 +338,13 @@ class SimpleExecutionProfile(BaseModel):
     @classmethod
     def validate_wheel_archive_path(cls, value: object) -> Path | None:
         return None if value is None else _local_path(value)
+
+    @field_validator("poc_offline_base_image_digest")
+    @classmethod
+    def validate_offline_base_image_digest(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_DIGEST_INVALID")
+        return value
 
     @field_validator("provider_profile_ref", "provider")
     @classmethod
@@ -404,6 +412,14 @@ class SimpleExecutionProfile(BaseModel):
                     f"{_quoted(self.poc_wheel_archive_sha256)}",
                 ]
                 if self.poc_wheel_archive_path is not None
+                else []
+            ),
+            *(
+                [
+                    "poc_offline_base_image_digest = "
+                    f"{_quoted(self.poc_offline_base_image_digest)}"
+                ]
+                if self.poc_offline_base_image_digest is not None
                 else []
             ),
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",

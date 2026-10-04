@@ -53,6 +53,7 @@ from sastsimi.runtime.system_support import SystemClock, UUIDIds
 from sastsimi.sandbox.docker_adapter import DockerAdapter
 from sastsimi.setup.service import SystemToolDiscovery
 from sastsimi.simple_runtime.application import (
+    OfflineRepairPreflight,
     SimpleAnalysisApplication,
     SimpleAnalysisOutcome,
     SimpleAnalysisRequest,
@@ -436,6 +437,7 @@ def build_analysis_application(
             workspace=static.workspace_path,
             wheel_bundle_path=profile.poc_wheel_archive_path,
             wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
+            offline_base_image_digest=profile.poc_offline_base_image_digest,
             git_executable=(
                 str(profile.tools["git"].executable_path)
                 if "git" in profile.tools
@@ -473,6 +475,25 @@ def build_analysis_application(
             offline_base_ready=environments.offline_base_ready,
             recovery=recovery_factory(identity),
             policy_snapshot_ref=static.policy_snapshot_ref,
+        )
+
+    async def offline_repair_preflight(
+        identity: CheckpointIdentity,
+    ) -> OfflineRepairPreflight:
+        preparer = DirectEnvironmentPreparer(
+            docker=docker,
+            artifacts=SimpleArtifactRepository(data_dir, identity),
+            workspace=profile.workspace_root,
+            wheel_bundle_path=profile.poc_wheel_archive_path,
+            wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
+            offline_base_image_digest=profile.poc_offline_base_image_digest,
+        )
+        smoke = await preparer.preflight_offline_repair()
+        return OfflineRepairPreflight(
+            base_image_digest=smoke.base_image_digest,
+            browser_command=smoke.browser_command,
+            python_version=smoke.python_version,
+            smoke_output_digest=smoke.smoke_output_digest,
         )
 
     return SimpleAnalysisApplication(
@@ -519,6 +540,11 @@ def build_analysis_application(
             feed="current",
             store=store,
             llm_timeout_seconds=profile.llm_timeout_seconds,
+        ),
+        offline_repair_preflight=(
+            offline_repair_preflight
+            if profile.poc_offline_base_image_digest is not None
+            else None
         ),
     )
 
@@ -570,9 +596,17 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         outcome = asyncio.run(run())
         return self._outcome(outcome.display_analysis_id, repository, commit)
 
-    def resume(self, analysis_id: str) -> dict[str, object]:
+    def resume(
+        self,
+        analysis_id: str,
+        *,
+        repair_exhausted_hypothesis: str | None = None,
+    ) -> dict[str, object]:
         outcome = asyncio.run(
-            build_analysis_application(self._config, self._profile).resume(analysis_id)
+            build_analysis_application(self._config, self._profile).resume(
+                analysis_id,
+                repair_exhausted_hypothesis=repair_exhausted_hypothesis,
+            )
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
         data = self._outcome(
@@ -588,12 +622,17 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         self,
         analysis_id: str,
         callback: Callable[[ProgressSnapshot], None],
+        *,
+        repair_exhausted_hypothesis: str | None = None,
     ) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
 
         async def run() -> SimpleAnalysisOutcome:
             task = asyncio.create_task(
-                build_analysis_application(self._config, self._profile).resume(exact)
+                build_analysis_application(self._config, self._profile).resume(
+                    exact,
+                    repair_exhausted_hypothesis=repair_exhausted_hypothesis,
+                )
             )
             return await self._track(task, [exact], callback)
 

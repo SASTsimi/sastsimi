@@ -2308,4 +2308,86 @@ def test_terminal_gate_projects_complete_without_report_or_resume_hint(
     assert detail.hypotheses[0].error_code is None
 
 
+@pytest.mark.parametrize(
+    "stage",
+    (SimpleStage.VERIFICATION_INITIAL_DONE, SimpleStage.POC_EXECUTION_DONE),
+)
+def test_status_cells_keep_verified_terminal_hold_complete(
+    tmp_path: Path, stage: SimpleStage
+) -> None:
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database, artifact_data_dir=tmp_path)
+    display = AnalysisDisplayIdStore(database).get_or_allocate("analysis-a")
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id="analysis-a",
+            display_analysis_id=display,
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            repository="https://example.invalid/repository.git",
+            hypothesis_ids=("hypothesis-1",),
+        )
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    attempt_id = "terminal-attempt"
+    external_prerequisites_ref: StoredDataRef | None = None
+    output_refs: tuple[StoredDataRef, ...]
+    attempt_number = 1
+    if stage is SimpleStage.VERIFICATION_INITIAL_DONE:
+        external_prerequisites_ref = artifacts.put_json(
+            {
+                "kind": "simple_initial_verification",
+                "attempt_id": attempt_id,
+                "result": {
+                    "initial_assessment": "HOLD",
+                    "unmet_external_prerequisites": ["attacker control unproven"],
+                },
+            }
+        )
+        output_refs = (external_prerequisites_ref,)
+    else:
+        attempt_number = 3
+        execution_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_execution",
+                "attempt_id": attempt_id,
+                "timed_out": False,
+                "exit_code": 0,
+            }
+        )
+        interpretation_ref = artifacts.put_json(
+            {
+                "kind": "simple_dynamic_interpretation",
+                "execution_ref": execution_ref.model_dump(mode="json"),
+                "result": {"outcome": "INCONCLUSIVE"},
+            }
+        )
+        output_refs = (execution_ref, interpretation_ref)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=stage,
+            stage_version=STAGE_VERSION[stage],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=output_refs,
+            attempt_number=attempt_number,
+            attempt_id=attempt_id,
+            verdict="HOLD",
+            external_prerequisites_ref=external_prerequisites_ref,
+        )
+    )
+
+    cells = DashboardQuery(tmp_path).list_status_cells(display).items
+
+    assert [(cell.id, cell.status) for cell in cells] == [("hypothesis-1", "COMPLETE")]
+
+
 # mypy: disable-error-code="no-untyped-def"

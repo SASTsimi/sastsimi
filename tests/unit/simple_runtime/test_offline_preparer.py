@@ -189,6 +189,284 @@ async def test_offline_base_preflight_checks_and_pins_local_image(
 
 
 @pytest.mark.asyncio
+async def test_configured_offline_base_is_pinned_and_changes_recipe_cache(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, wheel_digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    default_docker = _Docker()
+    default_result = await DirectEnvironmentPreparer(
+        docker=default_docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=wheel_digest,
+    ).prepare(checkpoint, {}, ())
+
+    selected_digest = "sha256:" + "d" * 64
+    selected_reference = "sastsimi-offline-base:" + "d" * 64
+
+    class _SelectedDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probes: list[str] = []
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            self.probes.append(base_image)
+            assert base_image in {selected_digest, selected_reference}
+            return selected_digest
+
+        async def target_wheel_tags(self, base_image: str) -> frozenset[str]:
+            assert base_image == selected_digest
+            return frozenset({"py3-none-any"})
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return selected_reference
+
+    docker = _SelectedDocker()
+    preparer = DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=wheel_digest,
+        offline_base_image_digest=selected_digest,
+    )
+
+    assert await preparer.offline_base_ready() is True
+    result = await preparer.prepare(checkpoint, {}, ())
+
+    assert docker.probes == [
+        selected_digest,
+        selected_digest,
+        selected_reference,
+        selected_digest,
+        selected_reference,
+    ]
+    assert docker.calls[0][0].startswith(f"FROM {selected_reference}\n".encode("ascii"))
+    assert docker.calls[0][1] != default_docker.calls[0][1]
+    assert json.loads(artifacts.read(result.recipe_ref))["base_image_digest"] == (
+        selected_digest
+    )
+    assert (
+        json.loads(artifacts.read(default_result.recipe_ref))["base_image_digest"]
+        == "sha256:" + "b" * 64
+    )
+
+
+@pytest.mark.asyncio
+async def test_offline_repair_preflight_smokes_configured_local_image_without_mounts(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, wheel_digest = _fixture(tmp_path)
+    artifacts, _ = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+    smoke_stdout = json.dumps(
+        {
+            "marker": "SASTSIMI_BROWSER_SMOKE_OK",
+            "browser_command": "/usr/bin/chromium",
+            "python_version": "3.12.15",
+        }
+    ).encode("utf-8")
+
+    class _SmokeDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probes: list[str] = []
+            self.run_args: tuple[str, ...] = ()
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            self.probes.append(base_image)
+            return selected_digest
+
+        async def _run(
+            self,
+            args: tuple[str, ...],
+            *,
+            timeout_seconds: int,
+        ) -> DockerCommandOutcome:
+            assert timeout_seconds <= 90
+            self.run_args = args
+            return DockerCommandOutcome(0, smoke_stdout, b"DBus warning", False)
+
+    docker = _SmokeDocker()
+    preparer = DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=wheel_digest,
+        offline_base_image_digest=selected_digest,
+    )
+
+    smoke = await preparer.preflight_offline_repair()
+
+    assert docker.probes == [selected_digest]
+    assert docker.run_args[:4] == ("run", "--pull", "never", "--rm")
+    assert ("--network", "none") == docker.run_args[4:6]
+    assert "--read-only" in docker.run_args
+    assert ("--user", "10001:10001") == docker.run_args[
+        docker.run_args.index("--user") : docker.run_args.index("--user") + 2
+    ]
+    assert ("--cap-drop", "ALL") == docker.run_args[
+        docker.run_args.index("--cap-drop") : docker.run_args.index("--cap-drop") + 2
+    ]
+    assert "--tmpfs" in docker.run_args
+    assert ("--env", "HOME=/tmp") == docker.run_args[
+        docker.run_args.index("HOME=/tmp") - 1 : docker.run_args.index("HOME=/tmp") + 1
+    ]
+    assert ("--env", "XDG_CACHE_HOME=/tmp/cache") == docker.run_args[
+        docker.run_args.index("XDG_CACHE_HOME=/tmp/cache") - 1 : docker.run_args.index(
+            "XDG_CACHE_HOME=/tmp/cache"
+        )
+        + 1
+    ]
+    assert "--mount" not in docker.run_args
+    assert "--volume" not in docker.run_args
+    assert selected_digest in docker.run_args
+    assert smoke.base_image_digest == selected_digest
+    assert smoke.browser_command == "/usr/bin/chromium"
+    assert smoke.python_version == "3.12.15"
+    assert (
+        smoke.smoke_output_digest
+        == "sha256:" + hashlib.sha256(smoke_stdout).hexdigest()
+    )
+
+
+@pytest.mark.asyncio
+async def test_offline_repair_preflight_rejects_different_local_image_id(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, wheel_digest = _fixture(tmp_path)
+    artifacts, _ = _checkpoint(tmp_path, commit)
+
+    class _WrongDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            assert base_image == "sha256:" + "d" * 64
+            return "sha256:" + "b" * 64
+
+        async def _run(self, *args: object, **kwargs: object) -> DockerCommandOutcome:
+            raise AssertionError("must not run a different image")
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_BASE_IMAGE_CHANGED"):
+        await DirectEnvironmentPreparer(
+            docker=_WrongDocker(),  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=path,
+            wheel_bundle_sha256=wheel_digest,
+            offline_base_image_digest="sha256:" + "d" * 64,
+        ).preflight_offline_repair()
+
+
+@pytest.mark.asyncio
+async def test_offline_repair_proof_rejects_profile_digest_change(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, wheel_digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    proof = artifacts.put_json(
+        {
+            "kind": "simple_offline_environment_repair",
+            "identity": checkpoint.identity.model_dump(mode="json"),
+            "new_base_image_digest": "sha256:" + "d" * 64,
+        }
+    )
+    checkpoint = checkpoint.model_copy(
+        update={
+            "input_refs": (proof,),
+            "input_hash": input_reference_hash((proof,)),
+            "recovery_decision_refs": (proof,),
+        }
+    )
+    docker = _Docker()
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_REPAIR_BASE_MISMATCH"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=path,
+            wheel_bundle_sha256=wheel_digest,
+            offline_base_image_digest="sha256:" + "e" * 64,
+        ).prepare(checkpoint, {}, ())
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_offline_repair_rejects_unreadable_recovery_evidence(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, wheel_digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    damaged = artifacts.put_bytes(b"not-json", "application/json")
+    checkpoint = checkpoint.model_copy(
+        update={
+            "input_refs": (damaged,),
+            "input_hash": input_reference_hash((damaged,)),
+            "recovery_decision_refs": (damaged,),
+        }
+    )
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_REPAIR_EVIDENCE_INVALID"):
+        await DirectEnvironmentPreparer(
+            docker=_Docker(),  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=path,
+            wheel_bundle_sha256=wheel_digest,
+            offline_base_image_digest="sha256:" + "d" * 64,
+        ).prepare(checkpoint, {}, ())
+
+
+def test_offline_repair_proof_stops_historical_rebuild_patch(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, wheel_digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    old_decision = artifacts.put_json(
+        {
+            "kind": "simple_recovery_decision",
+            "identity": checkpoint.identity.model_dump(mode="json"),
+            "decision": {
+                "category": "ENVIRONMENT",
+                "action": "REBUILD_ENVIRONMENT",
+                "diagnosis": "old environment",
+                "guidance": "historical patch",
+                "environment_patch": "RUN python -m pip install pytest",
+            },
+        }
+    )
+    proof = artifacts.put_json(
+        {
+            "kind": "simple_offline_environment_repair",
+            "identity": checkpoint.identity.model_dump(mode="json"),
+            "new_base_image_digest": "sha256:" + "d" * 64,
+        }
+    )
+    refs = (old_decision, proof)
+    checkpoint = checkpoint.model_copy(
+        update={
+            "input_refs": refs,
+            "input_hash": input_reference_hash(refs),
+            "recovery_decision_refs": refs,
+        }
+    )
+    preparer = DirectEnvironmentPreparer(
+        docker=_Docker(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=wheel_digest,
+        offline_base_image_digest="sha256:" + "d" * 64,
+    )
+
+    preparer._require_repair_base_digest(checkpoint)
+    assert preparer._recovery_patch(checkpoint) == b""
+
+
+@pytest.mark.asyncio
 async def test_offline_base_preflight_rejects_missing_local_image(
     tmp_path: Path,
 ) -> None:

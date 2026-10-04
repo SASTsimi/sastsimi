@@ -648,7 +648,10 @@ class DashboardQuery:
                 status = "CONFIRMED"
             elif checkpoints:
                 status = (
-                    ProgressProjector(_CheckpointProjection(tuple(checkpoints)))
+                    ProgressProjector(
+                        _CheckpointProjection(tuple(checkpoints)),
+                        artifact_data_dir=self._data_dir,
+                    )
                     .snapshot(exact)
                     .status
                 )

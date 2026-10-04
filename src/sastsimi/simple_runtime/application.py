@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -139,6 +140,15 @@ class SimpleAnalysisOutcome(ContractModel):
     child_attempt_id: str | None = Field(default=None, exclude=True)
 
 
+class OfflineRepairPreflight(ContractModel):
+    """Read-only proof that the configured, pinned offline base can run a browser."""
+
+    base_image_digest: str
+    browser_command: str
+    python_version: str
+    smoke_output_digest: str
+
+
 class StaticBootstrap(Protocol):
     async def run(
         self,
@@ -190,6 +200,9 @@ class SimpleAnalysisApplication:
         ]
         | None = None,
         candidate_hypothesis_bootstrap: HypothesisBootstrap | None = None,
+        offline_repair_preflight: (
+            Callable[[CheckpointIdentity], Awaitable[OfflineRepairPreflight]] | None
+        ) = None,
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
@@ -225,6 +238,7 @@ class SimpleAnalysisApplication:
         self._candidate_hypotheses = (
             candidate_hypothesis_bootstrap or hypothesis_bootstrap
         )
+        self._offline_repair_preflight = offline_repair_preflight
 
     async def analyze(
         self,
@@ -382,10 +396,19 @@ class SimpleAnalysisApplication:
             return await self._run_hypotheses(updated_run, identity, static)
         return await self._propose_and_run(updated_run, identity, static)
 
-    async def resume(self, analysis_id_or_display: str) -> SimpleAnalysisOutcome:
+    async def resume(
+        self,
+        analysis_id_or_display: str,
+        *,
+        repair_exhausted_hypothesis: str | None = None,
+    ) -> SimpleAnalysisOutcome:
         exact = self._display.resolve(analysis_id_or_display)
         try:
             with analysis_run_lease(self._data_dir, exact):
+                if repair_exhausted_hypothesis is not None:
+                    await self._prepare_offline_repair_locked(
+                        exact, repair_exhausted_hypothesis
+                    )
                 return await self._resume_locked(exact)
         except AnalysisRunBusy:
             run = self._store.require_analysis_run(exact)
@@ -407,6 +430,85 @@ class SimpleAnalysisApplication:
                 current_stage=current_stage,
                 error_code="ANALYSIS_ALREADY_RUNNING",
             )
+
+    async def _prepare_offline_repair_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        preflight_callback = self._offline_repair_preflight
+        if preflight_callback is None:
+            raise ValueError("OFFLINE_REPAIR_NOT_CONFIGURED")
+        run = self._store.require_analysis_run(analysis_id)
+        root_identity = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        if not hypothesis_id or not (
+            hypothesis_id in run.hypothesis_ids
+            or self._store.has_hypothesis(root_identity, hypothesis_id)
+        ):
+            raise ValueError("OFFLINE_REPAIR_HYPOTHESIS_INVALID")
+        if self._store.unresolved_codex_call(analysis_id) is not None:
+            raise ValueError("OFFLINE_REPAIR_CODEX_CALL_UNRESOLVED")
+        identity = root_identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        exhausted = self._store.get(identity, SimpleStage.POC_EXECUTION_DONE)
+        if (
+            exhausted is None
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or exhausted.recipe_ref is None
+        ):
+            raise ValueError("OFFLINE_REPAIR_EXHAUSTION_INVALID")
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        try:
+            recipe = json.loads(
+                artifacts.read_bounded(exhausted.recipe_ref, 256 * 1024)
+            )
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            raise ValueError("OFFLINE_REPAIR_RECIPE_INVALID") from error
+        old_base = recipe.get("base_image_digest") if isinstance(recipe, dict) else None
+        digest_pattern = r"sha256:[0-9a-f]{64}"
+        if (
+            not isinstance(recipe, dict)
+            or recipe.get("kind") != "simple_environment_recipe"
+            or not isinstance(old_base, str)
+            or re.fullmatch(digest_pattern, old_base) is None
+        ):
+            raise ValueError("OFFLINE_REPAIR_RECIPE_INVALID")
+        try:
+            preflight = OfflineRepairPreflight.model_validate(
+                await preflight_callback(identity)
+            )
+        except (OSError, ValueError) as error:
+            raise ValueError("OFFLINE_REPAIR_PREFLIGHT_FAILED") from error
+        if (
+            re.fullmatch(digest_pattern, preflight.base_image_digest) is None
+            or preflight.base_image_digest == old_base
+            or not preflight.browser_command.startswith("/")
+            or re.fullmatch(r"3\.12\.\d+", preflight.python_version) is None
+            or re.fullmatch(digest_pattern, preflight.smoke_output_digest) is None
+        ):
+            raise ValueError("OFFLINE_REPAIR_PREFLIGHT_INVALID")
+        proof_ref = artifacts.put_json(
+            {
+                "kind": "simple_offline_environment_repair",
+                "identity": identity.model_dump(mode="json"),
+                "stage": SimpleStage.POC_EXECUTION_DONE.value,
+                "exhausted_attempt_id": exhausted.attempt_id,
+                "exhausted_attempt_number": exhausted.attempt_number,
+                "exhausted_checkpoint_hash": hashlib.sha256(
+                    canonical_bytes(exhausted.model_dump(mode="json"))
+                ).hexdigest(),
+                "old_base_image_digest": old_base,
+                "new_base_image_digest": preflight.base_image_digest,
+                "browser_command": preflight.browser_command,
+                "python_version": preflight.python_version,
+                "smoke_output_digest": preflight.smoke_output_digest,
+            }
+        )
+        self._store.prepare_offline_environment_repair(exhausted, proof_ref, artifacts)
 
     async def _resume_locked(self, exact: str) -> SimpleAnalysisOutcome:
         run = self._store.require_analysis_run(exact)

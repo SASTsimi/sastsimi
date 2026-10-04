@@ -925,6 +925,7 @@ async def test_reproduction_container_keeps_baked_workspace_writable() -> None:
     assert "--network" in create
     assert create[create.index("--network") + 1] == "none"
     assert "no-new-privileges" in create
+    assert create[create.index("--env") + 1] == "HOME=/tmp"
 
 
 @pytest.mark.asyncio

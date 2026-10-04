@@ -15,6 +15,7 @@ import subprocess
 import tarfile
 import tomllib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
@@ -52,6 +53,38 @@ _MAX_PINNED_CONTEXT_BYTES = 64 * 1024 * 1024
 _MAX_PINNED_FILES = 20_000
 _REPRODUCIBLE_SOURCE_MTIME = 315532800  # 1980-01-01 UTC; wheel ZIP minimum.
 _OFFLINE_BASE_IMAGE = "python:3.12-slim"
+_OFFLINE_BROWSER_SMOKE_MARKER = "SASTSIMI_BROWSER_SMOKE_OK"
+_OFFLINE_BROWSER_COMMANDS = (
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "chrome",
+)
+_OFFLINE_BROWSER_SMOKE_SCRIPT = (
+    "import json, shutil, subprocess, sys\n"
+    "if sys.version_info[:2] != (3, 12): raise SystemExit(3)\n"
+    f"marker = {_OFFLINE_BROWSER_SMOKE_MARKER!r}\n"
+    "url = 'data:text/html,<html><body>' + marker + '</body></html>'\n"
+    f"for name in {_OFFLINE_BROWSER_COMMANDS!r}:\n"
+    "    browser = shutil.which(name)\n"
+    "    if browser is None: continue\n"
+    "    try:\n"
+    "        result = subprocess.run(\n"
+    "            [browser, '--headless', '--no-sandbox', '--disable-gpu',\n"
+    "             '--disable-dev-shm-usage', '--disable-background-networking',\n"
+    "             '--no-first-run', '--user-data-dir=/tmp/sastsimi-browser-smoke',\n"
+    "             '--dump-dom', url],\n"
+    "            capture_output=True, text=True, timeout=25, check=False,\n"
+    "        )\n"
+    "    except (OSError, subprocess.TimeoutExpired): continue\n"
+    "    if result.returncode == 0 and marker in result.stdout:\n"
+    "        print(json.dumps({'marker': marker, 'browser_command': browser,\n"
+    "                          'python_version': sys.version.split()[0]}))\n"
+    "        break\n"
+    "else:\n"
+    "    raise SystemExit(4)\n"
+)
 _OFFLINE_PINNED_SOURCE = re.compile(
     r"Source checkout at commit ((?:[0-9a-f]{40}|[0-9a-f]{64})) "
     r"containing (.+\.py)"
@@ -90,6 +123,14 @@ def offline_recipe_cache_key(
         )
     ).hexdigest()
     return f"{archive_sha256}:{digest}"
+
+
+@dataclass(frozen=True, slots=True)
+class OfflineBaseSmoke:
+    base_image_digest: str
+    browser_command: str
+    python_version: str
+    smoke_output_digest: str
 
 
 _DEPENDENCY_INSTALL = re.compile(
@@ -755,6 +796,8 @@ class PortableDockerRuntime:
             "2g",
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+            "--env",
+            "HOME=/tmp",
         ]
         for key, value in sorted(labels.items()):
             args.extend(("--label", f"{key}={value}"))
@@ -1119,13 +1162,21 @@ class DirectEnvironmentPreparer:
         workspace: Path,
         wheel_bundle_path: Path | None = None,
         wheel_bundle_sha256: str | None = None,
+        offline_base_image_digest: str | None = None,
         git_executable: str = "git",
     ) -> None:
+        if (
+            offline_base_image_digest is not None
+            and _IMAGE_DIGEST.fullmatch(offline_base_image_digest) is None
+        ):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_DIGEST_INVALID")
         self._docker = docker
         self._artifacts = artifacts
         self._workspace = workspace
         self._wheel_bundle_path = wheel_bundle_path
         self._wheel_bundle_sha256 = wheel_bundle_sha256
+        self._offline_base_image_digest = offline_base_image_digest
+        self._offline_base_image = offline_base_image_digest or _OFFLINE_BASE_IMAGE
         self._git_executable = git_executable
 
     async def offline_base_ready(self) -> bool:
@@ -1134,11 +1185,113 @@ class DirectEnvironmentPreparer:
         if self._wheel_bundle_path is None:
             return False
         try:
-            digest = await self._docker.local_base_image_digest(_OFFLINE_BASE_IMAGE)
+            digest = await self._docker.local_base_image_digest(
+                self._offline_base_image
+            )
+            if (
+                self._offline_base_image_digest is not None
+                and digest != self._offline_base_image_digest
+            ):
+                return False
             await self._docker.pin_local_base(digest)
         except (OSError, RuntimeError, ValueError):
             return False
         return True
+
+    async def preflight_offline_repair(self) -> OfflineBaseSmoke:
+        """Prove the configured local image can run the offline browser PoC."""
+
+        if self._offline_base_image_digest is None:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_DIGEST_REQUIRED")
+        if self._wheel_bundle_path is None or self._wheel_bundle_sha256 is None:
+            raise ValueError("POC_WHEEL_ARCHIVE_PAIR_REQUIRED")
+        digest = await self._docker.local_base_image_digest(
+            self._offline_base_image_digest
+        )
+        if digest != self._offline_base_image_digest:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        outcome = await self._docker._run(
+            (
+                "run",
+                "--pull",
+                "never",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--user",
+                "10001:10001",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "128",
+                "--cpus",
+                "1",
+                "--memory",
+                "1g",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+                "--env",
+                "HOME=/tmp",
+                "--env",
+                "XDG_CACHE_HOME=/tmp/cache",
+                digest,
+                "python",
+                "-c",
+                _OFFLINE_BROWSER_SMOKE_SCRIPT,
+            ),
+            timeout_seconds=60,
+        )
+        if outcome.timed_out or outcome.exit_code != 0:
+            raise ValueError("POC_OFFLINE_BASE_SMOKE_FAILED")
+        try:
+            proof = json.loads(outcome.stdout)
+        except (UnicodeError, ValueError) as error:
+            raise ValueError("POC_OFFLINE_BASE_SMOKE_FAILED") from error
+        if not isinstance(proof, dict):
+            raise ValueError("POC_OFFLINE_BASE_SMOKE_FAILED")
+        browser = proof.get("browser_command")
+        version = proof.get("python_version")
+        if (
+            proof.get("marker") != _OFFLINE_BROWSER_SMOKE_MARKER
+            or not isinstance(browser, str)
+            or not browser.startswith("/")
+            or PurePosixPath(browser).name not in _OFFLINE_BROWSER_COMMANDS
+            or ".." in PurePosixPath(browser).parts
+            or not isinstance(version, str)
+            or re.fullmatch(r"3\.12\.[0-9]+", version) is None
+        ):
+            raise ValueError("POC_OFFLINE_BASE_SMOKE_FAILED")
+        return OfflineBaseSmoke(
+            base_image_digest=digest,
+            browser_command=browser,
+            python_version=version,
+            smoke_output_digest="sha256:" + hashlib.sha256(outcome.stdout).hexdigest(),
+        )
+
+    def _require_repair_base_digest(self, checkpoint: StageCheckpoint) -> None:
+        if len(checkpoint.recovery_decision_refs) > 64:
+            raise ValueError("POC_OFFLINE_REPAIR_EVIDENCE_INVALID")
+        for artifact_ref in checkpoint.recovery_decision_refs:
+            try:
+                with self._artifacts.artifacts.open_verified_bounded(
+                    artifact_ref, 64 * 1024
+                ) as stream:
+                    evidence = json.loads(stream.read())
+            except (OSError, UnicodeError, ValueError) as error:
+                raise ValueError("POC_OFFLINE_REPAIR_EVIDENCE_INVALID") from error
+            if not isinstance(evidence, dict):
+                raise ValueError("POC_OFFLINE_REPAIR_EVIDENCE_INVALID")
+            if evidence.get("kind") != "simple_offline_environment_repair":
+                continue
+            if (
+                evidence.get("identity") != checkpoint.identity.model_dump(mode="json")
+                or evidence.get("new_base_image_digest")
+                != self._offline_base_image_digest
+            ):
+                raise ValueError("POC_OFFLINE_REPAIR_BASE_MISMATCH")
 
     @property
     def offline_mode(self) -> bool:
@@ -1271,6 +1424,7 @@ class DirectEnvironmentPreparer:
             raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
         if self._wheel_bundle_path is None or self._wheel_bundle_sha256 is None:
             raise ValueError("POC_WHEEL_ARCHIVE_PAIR_REQUIRED")
+        self._require_repair_base_digest(checkpoint)
         if self._recovery_patch(checkpoint):
             raise ValueError("POC_OFFLINE_RECOVERY_PATCH_UNSUPPORTED")
         extra_python_requirements, required_source_paths = (
@@ -1292,7 +1446,14 @@ class DirectEnvironmentPreparer:
             for name in ("requirements.txt", "pyproject.toml")
         ):
             raise ValueError("POC_OFFLINE_MANIFEST_AMBIGUOUS")
-        base_digest = await self._docker.local_base_image_digest(_OFFLINE_BASE_IMAGE)
+        base_digest = await self._docker.local_base_image_digest(
+            self._offline_base_image
+        )
+        if (
+            self._offline_base_image_digest is not None
+            and base_digest != self._offline_base_image_digest
+        ):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
         tags = await self._docker.target_wheel_tags(base_digest)
         base_reference = await self._docker.pin_local_base(base_digest)
         bundle = import_wheel_bundle(
@@ -1398,7 +1559,7 @@ class DirectEnvironmentPreparer:
                 error, tuple(attempt_refs), recipe_ref
             ) from error
         if (
-            await self._docker.local_base_image_digest(_OFFLINE_BASE_IMAGE)
+            await self._docker.local_base_image_digest(self._offline_base_image)
             != base_digest
         ):
             raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
@@ -1684,6 +1845,18 @@ class DirectEnvironmentPreparer:
                 value = json.loads(self._artifacts.read(ref))
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
+            if isinstance(value, dict) and value.get("kind") == (
+                "simple_offline_environment_repair"
+            ):
+                if (
+                    ref not in checkpoint.recovery_decision_refs
+                    or value.get("identity")
+                    != checkpoint.identity.model_dump(mode="json")
+                    or value.get("new_base_image_digest")
+                    != self._offline_base_image_digest
+                ):
+                    raise ValueError("POC_OFFLINE_REPAIR_BASE_MISMATCH")
+                return b""
             if not isinstance(value, dict) or value.get("kind") != (
                 "simple_recovery_decision"
             ):

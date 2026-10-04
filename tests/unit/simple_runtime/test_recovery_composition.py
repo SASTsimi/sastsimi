@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -17,7 +18,10 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
-from sastsimi.simple_runtime.application import StaticBootstrapResult
+from sastsimi.simple_runtime.application import (
+    SimpleAnalysisOutcome,
+    StaticBootstrapResult,
+)
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
 from sastsimi.simple_runtime.models import (
@@ -171,9 +175,12 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert created == [identity, identity]
 
 
+@pytest.mark.parametrize("configured_digest", [None, "sha256:" + "b" * 64])
 @pytest.mark.asyncio
 async def test_composition_wires_local_only_offline_base_preflight(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_digest: str | None,
 ) -> None:
     wheel_path = tmp_path / "wheels.tar"
     wheel_path.write_bytes(b"fixture")
@@ -181,6 +188,7 @@ async def test_composition_wires_local_only_offline_base_preflight(
         update={
             "poc_wheel_archive_path": wheel_path,
             "poc_wheel_archive_sha256": "a" * 64,
+            "poc_offline_base_image_digest": configured_digest,
         }
     )
     application = composition.build_analysis_application(_config(tmp_path), profile)
@@ -212,9 +220,78 @@ async def test_composition_wires_local_only_offline_base_preflight(
     assert runner.offline_base_ready is not None
     assert await runner.offline_base_ready() is True
     assert calls == [
-        ("inspect", "python:3.12-slim"),
+        ("inspect", configured_digest or "python:3.12-slim"),
         ("tag", "sha256:" + "b" * 64),
     ]
+    assert (application._offline_repair_preflight is not None) is (
+        configured_digest is not None
+    )
+
+
+@pytest.mark.parametrize("with_progress", [False, True])
+def test_public_resume_forwards_explicit_offline_repair_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_progress: bool,
+) -> None:
+    public = composition.PublicSimpleRuntimeApplication(
+        _config(tmp_path), _profile(tmp_path)
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    outcome = SimpleAnalysisOutcome(
+        identity=identity,
+        display_analysis_id="A-001",
+        status="BLOCKED",
+        current_stage=SimpleStage.POC_EXECUTION_DONE,
+    )
+    calls: list[tuple[str, str | None]] = []
+
+    class _Application:
+        async def resume(
+            self,
+            analysis_id: str,
+            *,
+            repair_exhausted_hypothesis: str | None = None,
+        ) -> SimpleAnalysisOutcome:
+            calls.append((analysis_id, repair_exhausted_hypothesis))
+            return outcome
+
+    async def track(
+        task: object, _started: object, _callback: object
+    ) -> SimpleAnalysisOutcome:
+        return await task  # type: ignore[misc]
+
+    monkeypatch.setattr(
+        composition, "build_analysis_application", lambda *_args: _Application()
+    )
+    monkeypatch.setattr(public._display, "resolve", lambda _id: "analysis-1")
+    monkeypatch.setattr(
+        public._store,
+        "require_analysis_run",
+        lambda _id: SimpleNamespace(
+            repository="https://example.invalid/repo", commit_id="a" * 40
+        ),
+    )
+    monkeypatch.setattr(
+        public, "_outcome", lambda *_args: {"display_analysis_id": "A-001"}
+    )
+    monkeypatch.setattr(public, "_track", track)
+
+    if with_progress:
+        public.resume_with_progress(
+            "A-001",
+            lambda _snapshot: None,
+            repair_exhausted_hypothesis="hypothesis-1",
+        )
+    else:
+        public.resume("A-001", repair_exhausted_hypothesis="hypothesis-1")
+
+    assert calls == [("analysis-1" if with_progress else "A-001", "hypothesis-1")]
 
 
 def test_public_candidate_status_marks_unleased_running_stage_interrupted(
