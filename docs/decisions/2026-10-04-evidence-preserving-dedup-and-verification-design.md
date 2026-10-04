@@ -1,0 +1,32 @@
+# Evidence-preserving deduplication and verification design
+
+Date: 2026-10-04
+Status: implementation brief (user requested design and immediate implementation)
+
+## Intent and limits
+
+Reduce repeated static-candidate review and duplicate final reports across Python vulnerability classes without losing a distinct input-to-effect path. Repair the confirmed final-verification evidence handoff that left a validated stored-XSS PoC on HOLD. Preserve the existing pipeline, raw tool results, hypothesis and Finding IDs, PoCs, report bundles, checkpoints, and resume data. A grouped result is not a new vulnerability verdict or permission to disclose. Neither complete duplicate elimination nor zero missed vulnerabilities is a valid claim.
+
+## Evidence boundary
+
+Keep three separate quantities: raw scanner results, distinct review candidates, and verified Finding groups. A scanner failure or unverified file/rule pair is never a zero-result candidate. Candidate and Finding equality must be based on a positive, versioned proof; missing or contradictory evidence means **separate**, not equal. CWE, title, route, sink line, common payload, candidate ID, and LLM similarity alone are not proof. Every group retains stable member IDs, tool origins, and direct links to each original record.
+
+## Static-stage deduplication
+
+Persist every original OpenGrep, Semgrep, CodeQL, and AST result as before. The authoritative registration seam is `normalize_candidate_page` after `ingest_static_candidates` has checked verified file/rule pairs, not the bounded preview in `static_coverage.py`. For new analysis scopes, use a versioned exact normalized-alert fingerprint that excludes only engine provenance and scan bookkeeping; it includes the full per-result match evidence and, for a flow, the complete per-thread trace. Do not let an optional `semantic_key` alone erase differing match evidence. A location-only hint cannot be equated to a complete flow merely because they share a sink; keep it separate or mark it as a possible duplicate. Aggregate all origins into the surviving review candidate through the existing atomic store upsert, including original artifact hash and row index. Preserve different input keys, branches, sink arguments, resources, sanitizers, and paths. Discovery receives one review item per proven candidate group; INCLUDE/EXCLUDE/UNDECIDED/PENDING/ERROR state remains traceable to every raw origin. An existing scope with persisted candidate IDs keeps its legacy identity algorithm on resume, because decisions and hypothesis links are keyed by those IDs; no silent migration or double counting.
+
+## Verified Finding grouping
+
+Build on ADR-018's read-only projection, after final TRUE, a validated PoC, and Technical Gate ACCEPT. Add versioned family-specific Python proof resolvers using commit-pinned source, trusted AST facts, and any complete trace. Extend the existing command-injection proof first to SQL injection, reflected/stored XSS, SSRF, code evaluation, and path/file operations where the evidence format permits. Each resolver returns a canonical root-cause certificate containing the entry point, attacker-controlled input, path and relevant guards, affected resource/operation, exact sink, vulnerability family, and proof refs. A class without a trustworthy certificate remains a singleton with an undetermined reason. No fuzzy or transitive grouping. A contradictory trace or changed source invalidates the projection, not the original Finding.
+
+The default CLI/dashboard report list and export present one representative per proven group, with member count, all original IDs, origins, PoCs, scope statuses, and direct original-report access. Unknowns remain separate. Historical report files are not deleted or overwritten. Raw Finding count and visible group count are labeled separately; the latter is not a complete count of unique vulnerabilities.
+
+## Final-verification evidence handoff
+
+The Pro/Con checkpoint's exact hypothesis proposal and commit-pinned source context are required downstream inputs, not incidental earlier outputs. Initial Verification, PoC interpretation, Final Verification, and Technical Gate receive a validated, bounded hypothesis anchor first, then current PoC execution/validated evidence and repair feedback, then optional broad context. The anchor builder checks analysis/hypothesis/workspace/commit identity and content-addressed refs, and creates a line-numbered source projection around cited locations. It never follows an LLM-authored path or reads an unpinned current checkout. Required evidence must not disappear behind the 256 KiB prompt limit: fit a smaller verified projection or produce an explicit context error, never a silent truncation or false vulnerability verdict.
+
+Change the Final Verification stage version so existing HOLDs caused by missing anchors can be selected on resume; reuse successful Pro/Con and validated PoC work. Do not rewrite historical HOLD to TRUE. Do not broadly replay Docker/PoC or mark unsupported executions as counterevidence. Any newly TRUE result still passes the same Technical Gate, scope, and report stages.
+
+## Validation and rollout
+
+Use test-first cases for same and distinct paths across engines and vulnerability families, including same route/CWE/sink with different inputs, guards, resources, or effects. Test original-record preservation, static candidate status mapping, current and legacy resume, direct report/PoC access, prompt ordering and size, missing/corrupt/cross-child refs, and explicit failure behavior. Replay saved Antony and GNU fixtures read-only for grouping counts and use an isolated copy or mock for GNU stored-XSS resume; never mutate original analysis data. Run focused tests, the full suite, Ruff and mypy. Record any pre-existing baseline failures separately from regressions. Update README and architecture docs with what is proven, what remains uncertain, and the fact that synthetic benchmark recall is not a production guarantee.
