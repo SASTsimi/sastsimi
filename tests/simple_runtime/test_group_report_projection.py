@@ -37,8 +37,14 @@ from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from tests.simple_runtime.test_finding_group_projection import _case, _checkpoint
 
 
-def _reported_case(tmp_path: Path, *, second_severity: str = "High"):  # type: ignore[no-untyped-def]
+def _reported_case(
+    tmp_path: Path,
+    *,
+    second_severity: str = "High",
+    repository: str = "https://example.test/repo",
+):  # type: ignore[no-untyped-def]
     run, original, eligible, data_dir, database, _workspace = _case(tmp_path)
+    run = run.model_copy(update={"repository": repository})
     output: list[StageCheckpoint] = []
     fresh_refs = {}
     by_hypothesis = {
@@ -140,7 +146,11 @@ def _reported_case(tmp_path: Path, *, second_severity: str = "High"):  # type: i
             "analysis_id": run.analysis_id,
             "display_id": display_id,
             "finding_id": hypothesis,
-            "repository": run.repository,
+            "repository": (
+                "[REDACTED:LOCAL_REPOSITORY]"
+                if run.repository.startswith("file:")
+                else run.repository
+            ),
             "tested_commit": run.commit_id,
             "cwe": "CWE-78",
             "ecosystem": "pip",
@@ -252,6 +262,20 @@ def test_current_group_bundle_contains_verified_original_member_evidence(
         assert zipped.read("members/F-001/poc.py") == b"print(1)"
         assert zipped.read("members/F-002/poc.py") == b"print(1)"
         assert group.group_id.encode() in zipped.read("report_en.md")
+
+
+def test_current_group_bundle_rejects_unverifiable_local_repository_provenance(
+    tmp_path: Path,
+) -> None:
+    run, checkpoints, group, data_dir, database, _store = _reported_case(
+        tmp_path,
+        repository="file:///C:/local/fixture",
+    )
+    with pytest.raises(GroupBundleUnavailable) as error:
+        current_group_bundle(
+            run, checkpoints, group, data_dir=data_dir, database_path=database
+        )
+    assert error.value.code == "GROUP_REPOSITORY_UNVERIFIABLE"
 
 
 def test_group_reader_does_not_create_missing_runtime_directories(

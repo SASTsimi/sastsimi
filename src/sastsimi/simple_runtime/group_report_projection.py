@@ -217,12 +217,20 @@ def current_group_bundle(
             }
             provenance = json.loads(files["evidence/provenance.json"])
             if (
+                isinstance(provenance, dict)
+                and run.repository.lstrip().casefold().startswith("file:")
+                and provenance.get("repository") == "[REDACTED:LOCAL_REPOSITORY]"
+            ):
+                raise GroupBundleUnavailable("GROUP_REPOSITORY_UNVERIFIABLE")
+            if (
                 not isinstance(provenance, dict)
                 or provenance.get("analysis_id") != run.analysis_id
                 or provenance.get("tested_commit") != run.commit_id
                 or provenance.get("repository") != run.repository
             ):
                 raise ValueError("stale provenance")
+        except GroupBundleUnavailable:
+            raise
         except (KeyError, OSError, ValueError, TypeError) as error:
             raise GroupBundleUnavailable("GROUP_MEMBER_STALE") from error
         sources.append(

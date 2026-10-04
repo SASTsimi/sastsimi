@@ -147,6 +147,68 @@ class _Docker:
 
 
 @pytest.mark.asyncio
+async def test_offline_base_preflight_checks_and_pins_local_image(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, digest = _fixture(tmp_path)
+    artifacts, _ = _checkpoint(tmp_path, commit)
+
+    class _ObservedDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probes: list[tuple[str, str]] = []
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            self.probes.append(("inspect", base_image))
+            return await super().local_base_image_digest(base_image)
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            self.probes.append(("tag", image_digest))
+            return await super().pin_local_base(image_digest)
+
+    docker = _ObservedDocker()
+    preparer = DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=digest,
+    )
+
+    assert await preparer.offline_base_ready() is True
+    assert docker.probes == [
+        ("inspect", "python:3.12-slim"),
+        ("tag", "sha256:" + "b" * 64),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_offline_base_preflight_rejects_missing_local_image(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, digest = _fixture(tmp_path)
+    artifacts, _ = _checkpoint(tmp_path, commit)
+
+    class _MissingBase(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            assert base_image == "python:3.12-slim"
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            raise AssertionError("must not tag a missing image")
+
+    preparer = DirectEnvironmentPreparer(
+        docker=_MissingBase(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=digest,
+    )
+
+    assert await preparer.offline_base_ready() is False
+
+
+@pytest.mark.asyncio
 async def test_bundle_mode_installs_without_index_or_build_network(
     tmp_path: Path,
 ) -> None:
