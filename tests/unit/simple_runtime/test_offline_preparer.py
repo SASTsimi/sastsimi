@@ -21,6 +21,7 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageStatus,
     input_reference_hash,
 )
@@ -30,7 +31,7 @@ from sastsimi.simple_runtime.portable_docker import (
     offline_recipe_cache_key,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import StageBlocked
+from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
 from sastsimi.simple_runtime.stages import (
     InitialVerificationStage,
     ReproductionEnvironment,
@@ -866,6 +867,84 @@ async def test_initial_verification_reasks_once_for_invalid_offline_requirement(
         "GNU coreutils (provides ls with -R support)",
     ]
     assert "GNU coreutils" not in rejected_event.summary_ko
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ("prepare", "provider"))
+async def test_rejected_offline_requirement_remains_failure_evidence(
+    tmp_path: Path, failure_mode: str
+) -> None:
+    workspace, commit, path, digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    raw_failure_ref = artifacts.put_bytes(b"provider response", "text/plain")
+    calls = 0
+
+    class _Client:
+        async def call(self, **_kwargs: object) -> SimpleLLMCallResult | StageFailure:
+            nonlocal calls
+            calls += 1
+            if calls == 2 and failure_mode == "provider":
+                return StageFailure(
+                    code="INVALID_OUTPUT",
+                    retryable=False,
+                    safe_message="Second response was invalid",
+                    evidence_refs=(raw_failure_ref,),
+                )
+            requirements: JsonValue = (
+                ["python:3.12", "pip:Flask", "GNU coreutils"]
+                if calls == 1
+                else ["python:3.12", "pip:Flask"]
+            )
+            return SimpleLLMCallResult(
+                value={
+                    "initial_assessment": "TRUE",
+                    "rationale": "Can run locally.",
+                    "reproduction_goal": "Run a local test.",
+                    "environment_requirements": requirements,
+                    "unmet_external_prerequisites": [],
+                    "supporting_refs": [],
+                    "limitations": [],
+                },
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    class _Environment(DirectEnvironmentPreparer):
+        async def prepare(
+            self,
+            _checkpoint: StageCheckpoint,
+            _prior: object,
+            requirements: tuple[str, ...],
+        ) -> ReproductionEnvironment:
+            assert failure_mode == "prepare"
+            assert requirements == ("python:3.12", "pip:Flask")
+            raise ValueError("POC_OFFLINE_MANIFEST_UNSUPPORTED")
+
+    environment = _Environment(
+        docker=_Docker(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=digest,
+    )
+    failure_type = StageBlocked if failure_mode == "prepare" else StageFailed
+    with pytest.raises(failure_type) as caught:
+        await InitialVerificationStage(_Client(), artifacts, environment)(
+            checkpoint, {}
+        )
+
+    assert calls == 2
+    assert isinstance(caught.value, (StageBlocked, StageFailed))
+    evidence_refs = caught.value.failure.evidence_refs
+    assert len(evidence_refs) == 2
+    rejected = json.loads(artifacts.read(evidence_refs[0]))
+    assert rejected["result"]["environment_requirements"] == [
+        "python:3.12",
+        "pip:Flask",
+        "GNU coreutils",
+    ]
+    if failure_mode == "provider":
+        assert evidence_refs[1] == raw_failure_ref
 
 
 @pytest.mark.asyncio

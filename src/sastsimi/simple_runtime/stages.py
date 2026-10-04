@@ -2682,12 +2682,26 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
             )
 
         for request_index in range(2):
-            result, output_ref = await self._stage.call(
-                checkpoint,
-                _unique_refs(checkpoint.input_refs + _prior_refs(prior)),
-                required_refs=required_refs,
-                guidance=guidance,
-            )
+            try:
+                result, output_ref = await self._stage.call(
+                    checkpoint,
+                    _unique_refs(checkpoint.input_refs + _prior_refs(prior)),
+                    required_refs=required_refs,
+                    guidance=guidance,
+                )
+            except (StageBlocked, StageFailed) as error:
+                if not rejected_refs:
+                    raise
+                failure = error.failure.model_copy(
+                    update={
+                        "evidence_refs": _unique_refs(
+                            (*rejected_refs, *error.failure.evidence_refs)
+                        )
+                    }
+                )
+                if isinstance(error, StageBlocked):
+                    raise StageBlocked(failure) from error
+                raise StageFailed(failure) from error
             raw_requirements = result.value["environment_requirements"]
             if not isinstance(raw_requirements, list):
                 raise ValueError("ENVIRONMENT_REQUIREMENTS_INVALID")
@@ -2769,7 +2783,12 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
                     code=code[:160],
                     retryable=not code.startswith(("POC_OFFLINE_", "WHEEL_")),
                     safe_message="Reproduction environment did not complete",
-                    evidence_refs=(output_ref, *attempt_refs, *failed_recipe_refs),
+                    evidence_refs=(
+                        *rejected_refs,
+                        output_ref,
+                        *attempt_refs,
+                        *failed_recipe_refs,
+                    ),
                 )
             ) from error
         return StageResult(
