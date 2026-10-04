@@ -35,6 +35,7 @@ class OracleCase:
     # matching line alone is never proof that two vulnerability paths coincide.
     vetted_candidate_ids: tuple[str, ...] = ()
     vetted_hypothesis_ids: tuple[str, ...] = ()
+    finding_inventory_reviewed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,7 +367,9 @@ def audit_analysis(
                 if key in case.vetted_hypothesis_ids
             }
             complete = static_paths is not None and case.path in static_paths
-            if any(
+            if set(case.vetted_candidate_ids) - set(vetted_ids):
+                status, first_gap = "INCOMPLETE", "ORACLE_CANDIDATE_MAPPING_INVALID"
+            elif any(
                 _confirmed(data_dir, run, key, case, item)
                 for key, item in vetted_stages.items()
             ):
@@ -426,7 +429,8 @@ def audit_analysis(
                     ("MISSED", "HYPOTHESIS")
                     if vetted_ids
                     and all(
-                        deep_states[value] == "NO_HYPOTHESIS" for value in vetted_ids
+                        deep_states[value] in {"NO_HYPOTHESIS", "INCONCLUSIVE"}
+                        for value in vetted_ids
                     )
                     else ("INCOMPLETE", "HYPOTHESIS")
                 )
@@ -448,6 +452,8 @@ def audit_analysis(
                     if case.vetted_hypothesis_ids
                     else ("POSSIBLE", "HYPOTHESIS_IDENTITY_UNVERIFIED")
                 )
+            if status == "MISSED" and not case.finding_inventory_reviewed:
+                status, first_gap = "POSSIBLE", "FINDING_INVENTORY_UNREVIEWED"
             cases.append(
                 {
                     "case_id": case.case_id,
@@ -459,6 +465,7 @@ def audit_analysis(
                     "deep_states": deep_states,
                     "hypothesis_ids": list(hypothesis_ids),
                     "vetted_hypothesis_ids": list(case.vetted_hypothesis_ids),
+                    "finding_inventory_reviewed": case.finding_inventory_reviewed,
                 }
             )
     return {

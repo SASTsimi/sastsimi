@@ -122,6 +122,7 @@ def _oracle(
     *,
     vetted_candidate_ids: tuple[str, ...] = (),
     vetted_hypothesis_ids: tuple[str, ...] = (),
+    finding_inventory_reviewed: bool = False,
 ) -> Oracle:
     return Oracle(
         repository="https://example.test/python-repo",
@@ -136,6 +137,7 @@ def _oracle(
                 rationale="Vetted request parameter reaches SQL execution.",
                 vetted_candidate_ids=vetted_candidate_ids,
                 vetted_hypothesis_ids=vetted_hypothesis_ids,
+                finding_inventory_reviewed=finding_inventory_reviewed,
             ),
         ),
     )
@@ -382,7 +384,9 @@ def test_complete_scan_without_candidate_reports_static_gap_without_writing(
     data_dir, database = _saved_run(tmp_path)
     before = database.read_bytes()
 
-    result = audit_analysis(data_dir, "analysis-1", _oracle())
+    result = audit_analysis(
+        data_dir, "analysis-1", _oracle(finding_inventory_reviewed=True)
+    )
 
     assert result["cases"][0]["first_gap"] == "STATIC_CANDIDATE"
     assert result["cases"][0]["status"] == "MISSED"
@@ -411,12 +415,60 @@ def test_complete_marker_without_static_evidence_is_not_a_measured_miss(
     assert result["cases"][0]["first_gap"] == "STATIC_EVIDENCE_UNVERIFIED"
 
 
+def test_oracle_path_outside_scanned_product_files_is_not_a_miss(
+    tmp_path: Path,
+) -> None:
+    data_dir, _ = _saved_run(tmp_path)
+    oracle = _oracle(finding_inventory_reviewed=True)
+    other = oracle.cases[0]
+    out_of_scope = Oracle(
+        repository=oracle.repository,
+        commit=oracle.commit,
+        cases=(
+            OracleCase(
+                case_id=other.case_id,
+                cwe=other.cwe,
+                path="tests/test_app.py",
+                source_line=other.source_line,
+                sink_line=other.sink_line,
+                rationale=other.rationale,
+                finding_inventory_reviewed=True,
+            ),
+        ),
+    )
+
+    result = audit_analysis(data_dir, "analysis-1", out_of_scope)
+
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+    assert result["cases"][0]["first_gap"] == "ORACLE_OUT_OF_SCOPE"
+
+
+def test_stale_manual_candidate_mapping_is_incomplete_not_static_miss(
+    tmp_path: Path,
+) -> None:
+    data_dir, _ = _saved_run(tmp_path)
+
+    result = audit_analysis(
+        data_dir,
+        "analysis-1",
+        _oracle(
+            vetted_candidate_ids=("candidate-from-other-run",),
+            finding_inventory_reviewed=True,
+        ),
+    )
+
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+    assert result["cases"][0]["first_gap"] == "ORACLE_CANDIDATE_MAPPING_INVALID"
+
+
 def test_excluded_flow_is_attributed_to_discovery(tmp_path: Path) -> None:
     data_dir, database = _saved_run(tmp_path)
     _candidate(data_dir, database, decision="EXCLUDE", deep_status="NO_HYPOTHESIS")
 
     result = audit_analysis(
-        data_dir, "analysis-1", _oracle(vetted_candidate_ids=("candidate-1",))
+        data_dir,
+        "analysis-1",
+        _oracle(vetted_candidate_ids=("candidate-1",), finding_inventory_reviewed=True),
     )
 
     assert result["cases"][0]["candidate_ids"] == ["candidate-1"]
@@ -547,6 +599,33 @@ def test_same_sink_without_vetted_candidate_identity_is_not_a_discovery_miss(
 
     assert result["cases"][0]["status"] == "POSSIBLE"
     assert result["cases"][0]["first_gap"] == "CANDIDATE_IDENTITY_UNVERIFIED"
+
+
+def test_unreviewed_free_exploration_cannot_be_declared_missed(
+    tmp_path: Path,
+) -> None:
+    data_dir, _ = _saved_run(tmp_path)
+
+    result = audit_analysis(data_dir, "analysis-1", _oracle())
+
+    assert result["cases"][0]["status"] == "POSSIBLE"
+    assert result["cases"][0]["first_gap"] == "FINDING_INVENTORY_UNREVIEWED"
+
+
+def test_vetted_inconclusive_candidate_is_hypothesis_gap_after_full_review(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path)
+    _candidate(data_dir, database, deep_status="INCONCLUSIVE")
+
+    result = audit_analysis(
+        data_dir,
+        "analysis-1",
+        _oracle(vetted_candidate_ids=("candidate-1",), finding_inventory_reviewed=True),
+    )
+
+    assert result["cases"][0]["status"] == "MISSED"
+    assert result["cases"][0]["first_gap"] == "HYPOTHESIS"
 
 
 def test_oracle_commit_mismatch_refuses_comparison(tmp_path: Path) -> None:
