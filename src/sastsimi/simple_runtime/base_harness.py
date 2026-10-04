@@ -46,8 +46,11 @@ the way the project's own tests make one, and then prove it did: load the
 project's own test configuration (its conftest, `tests/*.env`, `.env.test` or
 example env file - load the whole file, then override only what the container
 needs, such as a database URI or a writable path), start any database it
-needs and create its schema the way the project's own tests do (migrations
-or the models' create-all) before anything queries it, create or import the
+needs (and Redis, when `redis-server` is installed and the project uses it:
+`redis-server --daemonize yes --port 6379 --dir /tmp`), create its schema the
+way the project's own tests do (migrations or the models' create-all) before
+anything queries it, reproduce whatever the project's own test fixtures switch
+off or stub (rate limits, outgoing mail, background workers), create or import the
 application, sign a made-up test user in with the
 project's own helper, make one harmless request to a real route through the
 framework's test client or a server started inside the container, and print

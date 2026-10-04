@@ -723,18 +723,32 @@ class DirectEnvironmentPreparer:
         passwd entry, so the PoC user is given one.
         """
 
-        if not self._uses_postgres():
+        wanted = (("postgresql", "psycopg"), ("redis-server", "redis"))
+        packages = [name for name, marker in wanted if self._declares(marker)]
+        if not packages:
             return b""
+        links = (
+            b"&& ln -sf /usr/lib/postgresql/*/bin/* /usr/local/bin/ "
+            if "postgresql" in packages
+            else b""
+        )
         return (
             b"RUN (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "
             b"--no-install-recommends "
-            b"postgresql && ln -sf /usr/lib/postgresql/*/bin/* /usr/local/bin/ "
-            b"&& rm -rf /var/lib/apt/lists/*) || true\n"
+            + " ".join(packages).encode()
+            + b" "
+            + links
+            + b"&& rm -rf /var/lib/apt/lists/*) || true\n"
             b"RUN (getent passwd 10001 || useradd -u 10001 -M -s /bin/sh sastsimi) "
             b">/dev/null 2>&1 || true\n"
         )
 
     def _uses_postgres(self) -> bool:
+        return self._declares("psycopg")
+
+    def _declares(self, marker: str) -> bool:
+        """Whether a dependency file names ``marker`` as a requirement."""
+
         for name in (
             "pyproject.toml",
             "requirements.txt",
@@ -746,7 +760,7 @@ class DirectEnvironmentPreparer:
                 )
             except OSError:
                 continue
-            if "psycopg" in text.lower():
+            if re.search(rf'(^|["\s\'])\s*{re.escape(marker)}', text.lower(), re.M):
                 return True
         return False
 
