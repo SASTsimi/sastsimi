@@ -332,9 +332,11 @@ An application that fails at import for a missing required setting - a
 `KeyError`, or a `NoneType object is not callable` raised from its own config
 loader - is not configured, not broken. Find how the project's own tests supply
 that configuration (a `conftest.py` that sets an environment variable, a
-`tests/*.env` or `.env.test` file, `example.env`) and set the same variables in
-the script before importing the application, copying values rather than
-inventing them.
+`tests/*.env` or `.env.test` file, `example.env`) and load that whole file
+before importing the application - `set -a; . tests/test.env; set +a`, or the
+same in Python - then override only what the container needs, such as the
+database URI or a writable path. A hand-written subset of its variables leaves
+the next required one unset.
 The repository's existing files under `/workspace` are read-only to the script,
 but its directories accept new files, so an application that creates its own
 upload or data directory there works; never edit a repository file. Prefer
