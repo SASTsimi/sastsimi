@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast, overload
+from urllib.parse import quote
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.prompt_redaction import (
@@ -72,13 +73,23 @@ from .models import (
     AnalysisDetailView,
     AnalysisSummaryView,
     ArtifactContentView,
+    ArtifactRelationView,
     ArtifactView,
+    DashboardKpiView,
+    DashboardShellView,
     FindingReportView,
+    FindingTraceView,
     HypothesisProgressView,
+    LLMInvocationDetailView,
     LLMInvocationView,
+    ReadinessCheckView,
     StageProgressView,
     StaticCoveragePageView,
+    StaticToolFindingView,
     StaticToolProgressView,
+    StatusCellPageView,
+    StatusCellView,
+    UsageSummaryView,
 )
 
 _ANALYSIS_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
@@ -88,6 +99,7 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 1024 * 1024
 _MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACTS = 512
+_INCOMPLETE_ARTIFACT_PREVIEW = 32
 _MAX_PROJECTED_ARTIFACT_BYTES = 64 * 1024 * 1024
 _STALE_SECONDS = 30
 _STAGE_LABELS: dict[SimpleStage, str] = {
@@ -109,6 +121,10 @@ _STAGE_LABELS: dict[SimpleStage, str] = {
 
 
 class DashboardNotFound(LookupError):
+    pass
+
+
+class DashboardBadRequest(ValueError):
     pass
 
 
@@ -235,6 +251,334 @@ class DashboardQuery:
             return AnalysisDetailView(**summary.model_dump())
         return self._project_analysis(analysis_id, list(values), detail=True)
 
+    def get_analysis_shell(self, analysis_id: str) -> DashboardShellView:
+        """Return only data needed outside the selected tab."""
+        exact = self._resolved(analysis_id)
+        values = list(self._checkpoints(exact))
+        if not values:
+            summary = next(
+                (
+                    item
+                    for item in self._full_runtime_summaries()
+                    if item.analysis_id == exact
+                ),
+                None,
+            )
+            if summary is None:
+                raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
+            return DashboardShellView(**summary.model_dump())
+        summary = self._project_analysis(exact, values)
+        run = self._simple_run(exact)
+        groups = self._hypothesis_groups(values)
+        known_ids = set(run.hypothesis_ids) if run is not None else set()
+        total = len(known_ids | set(groups)) if run is not None or groups else None
+        verified = sum(self._final_verdict_saved(items) for items in groups.values())
+        validated = sum(self._validated_poc(items) for items in groups.values())
+        confirmed = sum(self._confirmed_hypothesis(items) for items in groups.values())
+        coverage = self._static_coverage_projection(values)
+        return DashboardShellView.model_validate(
+            {
+                **summary.model_dump(),
+                "kpis": DashboardKpiView(
+                    discovery_done=cast(
+                        int | None, coverage.get("static_coverage_verified")
+                    ),
+                    discovery_total=cast(
+                        int | None, coverage.get("static_coverage_expected")
+                    ),
+                    verification_done=verified if total is not None else None,
+                    verification_total=total,
+                    remaining_work=(
+                        max(0, total - verified) if total is not None else None
+                    ),
+                    confirmed_findings=confirmed,
+                ),
+                "validated_poc_count": validated if total is not None else None,
+                "llm_token_usage_known": self._known_token_usage(exact),
+                "logs_url": f"/api/analyses/{exact}/logs/download",
+                "bundle_url": f"/api/analyses/{exact}/bundle.zip",
+                "presentation_bundle_url": f"/api/analyses/{exact}/presentation.zip",
+            }
+        )
+
+    def get_analysis_tab(
+        self,
+        analysis_id: str,
+        tab: str,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """Build only the selected tab's projection."""
+        if tab not in {
+            "overview",
+            "progress",
+            "findings",
+            "coverage",
+            "artifacts",
+            "llm",
+            "outputs",
+            "logs",
+        }:
+            raise DashboardNotFound("DASHBOARD_TAB_NOT_FOUND")
+        if (
+            type(offset) is not int
+            or type(limit) is not int
+            or offset < 0
+            or not 1 <= limit <= 200
+        ):
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        exact = self._resolved(analysis_id)
+        values = list(self._checkpoints(exact))
+        run = self._simple_run(exact)
+        if not values and run is None:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
+        if not values:
+            return {
+                "tab": tab,
+                "items": [],
+                "total": 0,
+                "offset": offset,
+                "limit": limit,
+            }
+
+        groups = self._hypothesis_groups(values)
+        hypotheses = tuple(
+            self._project_hypothesis(exact, hypothesis_id, checkpoints, run)
+            for hypothesis_id, checkpoints in sorted(groups.items())
+        )
+        reports = self._reports(exact)
+        coverage = self._static_coverage_projection(values)
+
+        if tab == "overview":
+            static_tools = self._static_tools(run, values, coverage) if run else ()
+            artifact_count = len(
+                {
+                    ref.content_hash
+                    for checkpoint in values
+                    for ref in (*checkpoint.input_refs, *checkpoint.output_refs)
+                    if ref.data_kind == "artifact"
+                }
+            )
+            return {
+                "tab": tab,
+                "readiness": [
+                    item.model_dump(mode="json")
+                    for item in self._readiness(
+                        exact, run, static_tools, artifact_count, reports
+                    )
+                ],
+            }
+        if tab == "progress":
+            events = self._event_models(exact)
+            return {
+                "tab": tab,
+                "pipeline": [
+                    item.model_dump(mode="json") for item in self._pipeline(values, run)
+                ],
+                "history": [
+                    self._activity_view(item).model_dump(mode="json")
+                    for item in events[-12:]
+                ],
+            }
+        if tab == "logs":
+            return {"tab": tab, "logs_url": f"/api/analyses/{exact}/logs/download"}
+
+        artifacts: tuple[ArtifactView, ...] = ()
+        contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
+        invocations: tuple[LLMInvocationView, ...] = ()
+        poc_ids: tuple[str, ...] = ()
+        evidence_ids: tuple[str, ...] = ()
+        omitted = 0
+        if run is not None:
+            artifacts, contents, invocations, poc_ids, evidence_ids, omitted = (
+                self._artifact_projection(exact, values, run)
+            )
+            hypotheses = self._with_hypothesis_metadata(hypotheses, contents)
+        traces = self._finding_traces(
+            exact, reports, hypotheses, artifacts, contents, poc_ids, evidence_ids
+        )
+
+        if tab == "findings":
+            finding_page = hypotheses[offset : offset + limit]
+            return {
+                "tab": tab,
+                "items": [item.model_dump(mode="json") for item in finding_page],
+                "total": len(hypotheses),
+                "offset": offset,
+                "limit": limit,
+                "finding_traces": [item.model_dump(mode="json") for item in traces],
+            }
+        if tab == "coverage":
+            static_tools = self._static_tools(run, values, coverage) if run else ()
+            return {
+                "tab": tab,
+                **coverage,
+                "static_tools": [item.model_dump(mode="json") for item in static_tools],
+                "static_tool_findings": [
+                    item.model_dump(mode="json")
+                    for item in self._static_tool_findings(contents)
+                ],
+            }
+        if tab == "artifacts":
+            artifact_page = artifacts[offset : offset + limit]
+            return {
+                "tab": tab,
+                "items": [item.model_dump(mode="json") for item in artifact_page],
+                "total": len(artifacts),
+                "offset": offset,
+                "limit": limit,
+                "omitted_count": omitted,
+                "projection_complete": omitted == 0,
+                "relations": [
+                    item.model_dump(mode="json")
+                    for item in self._artifact_relations(contents)
+                ],
+            }
+        if tab == "llm":
+            by_hypothesis: dict[str, tuple[str, ...]] = {
+                item.hypothesis_id: (item.display_id,)
+                for item in traces
+                if item.hypothesis_id is not None
+            }
+            enriched = tuple(
+                item.model_copy(
+                    update={
+                        "finding_ids": by_hypothesis.get(item.hypothesis_id or "", ())
+                    }
+                )
+                for item in invocations
+            )
+            invocation_page = enriched[offset : offset + limit]
+            return {
+                "tab": tab,
+                "items": [item.model_dump(mode="json") for item in invocation_page],
+                "total": len(enriched),
+                "offset": offset,
+                "limit": limit,
+            }
+        output_artifact_ids = set(poc_ids) | set(evidence_ids)
+        output_artifacts = tuple(
+            item for item in artifacts if item.artifact_id in output_artifact_ids
+        )
+        return {
+            "tab": tab,
+            "reports": [item.model_dump(mode="json") for item in reports],
+            "finding_traces": [item.model_dump(mode="json") for item in traces],
+            "artifacts": [item.model_dump(mode="json") for item in output_artifacts],
+            "poc_artifact_ids": list(poc_ids),
+            "evidence_artifact_ids": list(evidence_ids),
+        }
+
+    def get_llm_invocation(
+        self, analysis_id: str, invocation_id: str
+    ) -> LLMInvocationDetailView:
+        exact = self._resolved(analysis_id)
+        values = list(self._checkpoints(exact))
+        run = self._simple_run(exact)
+        if run is None or not values:
+            raise DashboardNotFound("DASHBOARD_INVOCATION_NOT_FOUND")
+        artifacts, contents, invocations, poc_ids, evidence_ids, _ = (
+            self._artifact_projection(exact, values, run)
+        )
+        invocation = next(
+            (item for item in invocations if item.invocation_id == invocation_id), None
+        )
+        if invocation is None:
+            raise DashboardNotFound("DASHBOARD_INVOCATION_NOT_FOUND")
+        hypotheses = tuple(
+            self._project_hypothesis(exact, hypothesis_id, checkpoints, run)
+            for hypothesis_id, checkpoints in sorted(
+                self._hypothesis_groups(values).items()
+            )
+        )
+        reports = self._reports(exact)
+        traces = self._finding_traces(
+            exact,
+            reports,
+            self._with_hypothesis_metadata(hypotheses, contents),
+            artifacts,
+            contents,
+            poc_ids,
+            evidence_ids,
+        )
+        finding_ids = tuple(
+            trace.display_id
+            for trace in traces
+            if trace.hypothesis_id == invocation.hypothesis_id
+        )
+        invocation = invocation.model_copy(update={"finding_ids": finding_ids})
+
+        request = self._invocation_payload(contents, invocation.request_artifact_id)
+        response = self._invocation_payload(contents, invocation.response_artifact_id)
+        system_prompt = self._prompt_text(request, "system_prompt", "system")
+        user_prompt = self._prompt_text(request, "user_prompt", "prompt", "user")
+        result = response.get("response") if isinstance(response, dict) else None
+        return LLMInvocationDetailView(
+            invocation=invocation,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_result=cast(Any, result),
+            stored_request_json=cast(Any, request),
+            stored_response_json=cast(Any, response),
+        )
+
+    def list_status_cells(
+        self, analysis_id: str, *, offset: int = 0, limit: int = 100
+    ) -> StatusCellPageView:
+        if (
+            type(offset) is not int
+            or type(limit) is not int
+            or offset < 0
+            or not 1 <= limit <= 200
+        ):
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        try:
+            exact = self._resolve_analysis_id(analysis_id)
+        except (LookupError, OSError, sqlite3.Error, ValueError) as error:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND") from error
+        self._validate_analysis_id(exact)
+        values = self._checkpoints(exact)
+        run = self._simple_run(exact)
+        if not values and run is None:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
+        groups: dict[str, list[StageCheckpoint]] = defaultdict(list)
+        for checkpoint in values:
+            hypothesis_id = checkpoint.identity.hypothesis_id
+            if hypothesis_id is not None:
+                groups[hypothesis_id].append(checkpoint)
+        ids = sorted(set(groups) | set(run.hypothesis_ids if run else ()))
+        items: list[StatusCellView] = []
+        for ordinal, hypothesis_id in enumerate(
+            ids[offset : offset + limit], offset + 1
+        ):
+            checkpoints = groups.get(hypothesis_id, [])
+            if self._confirmed_hypothesis(checkpoints):
+                status = "CONFIRMED"
+            elif checkpoints:
+                status = (
+                    ProgressProjector(_CheckpointProjection(tuple(checkpoints)))
+                    .snapshot(exact)
+                    .status
+                )
+            else:
+                status = "PENDING"
+            items.append(
+                StatusCellView(
+                    id=hypothesis_id,
+                    kind="hypothesis",
+                    status=status,
+                    label_ko=f"가설 {ordinal}",
+                    detail_url=(
+                        f"/analyses/{quote(exact, safe='')}"
+                        f"#hypothesis-{quote(hypothesis_id, safe='')}"
+                    ),
+                )
+            )
+        return StatusCellPageView(
+            items=tuple(items), total=len(ids), offset=offset, limit=limit
+        )
+
     def list_events(
         self,
         analysis_id: str,
@@ -275,41 +619,82 @@ class DashboardQuery:
                     (analysis_id, cursor[0]),
                 ).fetchall()
         events = [AgentActivityEvent.model_validate_json(row[0]) for row in rows]
-        return tuple(
-            AgentActivityView(
-                event_id=event.event_id,
-                analysis_id=event.analysis_id,
-                hypothesis_id=event.hypothesis_id,
-                stage=event.stage,
-                agent_role=redact_local_file_urls(event.agent_role),
-                attempt_id=event.attempt_id,
-                sequence=event.sequence,
-                kind=event.kind,
-                status=event.status,
-                summary_ko=redact_local_file_urls(event.summary_ko),
-                tool_name=(
-                    redact_local_file_urls(event.tool_name)
-                    if event.tool_name is not None
-                    else None
-                ),
-                error_code=event.error_code,
-                started_at=event.started_at,
-                finished_at=event.finished_at,
-                elapsed_ms=event.elapsed_ms,
-                provider=(
-                    redact_local_file_urls(event.provider)
-                    if event.provider is not None
-                    else None
-                ),
-                model=(
-                    redact_local_file_urls(event.model)
-                    if event.model is not None
-                    else None
-                ),
-                prompt_digest=event.prompt_digest,
-                output_digest=event.output_digest,
-            )
-            for event in events
+        return tuple(self._activity_view(event) for event in events)
+
+    def list_event_page(
+        self, analysis_id: str, *, offset: int = 0, limit: int = 50
+    ) -> dict[str, object]:
+        if (
+            type(offset) is not int
+            or type(limit) is not int
+            or offset < 0
+            or not 1 <= limit <= 200
+        ):
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        exact = self._resolved(analysis_id)
+        with self._connect() as connection:
+            if not self._table_exists(connection, "agent_activity_events"):
+                return {"items": [], "total": 0, "offset": offset, "limit": limit}
+            total_row = connection.execute(
+                "SELECT COUNT(*) FROM agent_activity_events WHERE analysis_id = ?",
+                (exact,),
+            ).fetchone()
+            total = int(total_row[0]) if total_row is not None else 0
+            rows = connection.execute(
+                """
+                SELECT event_json FROM agent_activity_events
+                WHERE analysis_id = ? ORDER BY rowid DESC LIMIT ? OFFSET ?
+                """,
+                (exact, limit, offset),
+            ).fetchall()
+        items: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                event = AgentActivityEvent.model_validate_json(row[0])
+            except ValueError:
+                continue
+            items.append(self._activity_view(event).model_dump(mode="json"))
+        return {
+            "items": items,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
+
+    @staticmethod
+    def _activity_view(event: AgentActivityEvent) -> AgentActivityView:
+        return AgentActivityView(
+            event_id=event.event_id,
+            analysis_id=event.analysis_id,
+            hypothesis_id=event.hypothesis_id,
+            stage=event.stage,
+            agent_role=redact_local_file_urls(event.agent_role),
+            attempt_id=event.attempt_id,
+            sequence=event.sequence,
+            kind=event.kind,
+            status=event.status,
+            summary_ko=redact_local_file_urls(event.summary_ko),
+            tool_name=(
+                redact_local_file_urls(event.tool_name)
+                if event.tool_name is not None
+                else None
+            ),
+            error_code=event.error_code,
+            started_at=event.started_at,
+            finished_at=event.finished_at,
+            elapsed_ms=event.elapsed_ms,
+            provider=(
+                redact_local_file_urls(event.provider)
+                if event.provider is not None
+                else None
+            ),
+            model=(
+                redact_local_file_urls(event.model) if event.model is not None else None
+            ),
+            prompt_digest=event.prompt_digest,
+            output_digest=event.output_digest,
+            substage=getattr(event, "substage", None),
+            metrics=getattr(event, "metrics", {}),
         )
 
     def artifact_content(
@@ -534,6 +919,42 @@ class DashboardQuery:
                     members[f"reports/{report.display_id}/{entry.path}"] = body
         return members
 
+    def presentation_bundle_members(self, analysis_id: str) -> dict[str, bytes]:
+        exact = self._resolved(analysis_id)
+        detail = self.get_analysis(exact)
+        members = self.bundle_members(exact)
+        english = [
+            report.display_id for report in detail.reports if report.english_available
+        ]
+        steps = (
+            "# SASTSIMI 발표 패키지\n\n"
+            "1. manifest.json에서 저장소·commit·분석 상태를 확인합니다.\n"
+            "2. logs/console.log에서 단계별 진행 상황을 보여 줍니다.\n"
+            "3. artifacts/에서 정적분석·PoC·증거·LLM 안전 사본을 확인합니다.\n"
+            "4. reports/에서 한국어 보고서와 준비된 영문 보고서를 엽니다.\n\n"
+            f"영문 보고서 준비: {', '.join(english) if english else '없음'}\n"
+        )
+        members["presentation/README.md"] = steps.encode("utf-8")
+        members["presentation/summary.json"] = json.dumps(
+            {
+                "analysis_id": detail.analysis_id,
+                "display_analysis_id": detail.display_analysis_id,
+                "repository": detail.repository,
+                "commit_id": detail.commit_id,
+                "status": detail.status,
+                "progress_percent": detail.progress_percent,
+                "finding_count": detail.finding_count,
+                "english_report_ids": english,
+                "usage": detail.usage.model_dump(mode="json"),
+                "readiness": [
+                    item.model_dump(mode="json") for item in detail.readiness
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+        return members
+
     def _resolved(self, value: str) -> str:
         try:
             exact = self._resolve_analysis_id(value)
@@ -640,6 +1061,8 @@ class DashboardQuery:
         sources: dict[str, dict[str, set[str]]] = defaultdict(
             lambda: {"stages": set(), "hypotheses": set()}
         )
+        agents: dict[str, set[str]] = defaultdict(set)
+        created_at: dict[str, datetime] = {}
         refs: dict[str, StoredDataRef] = {}
         expected_artifacts: set[str] = set()
         queue: list[tuple[StoredDataRef, str, str | None]] = []
@@ -698,11 +1121,14 @@ class DashboardQuery:
                     ),
                 )
             )
+        projection_limit = _MAX_ARTIFACTS
 
         def enqueue(
             ref: StoredDataRef | None,
             stage: str,
             hypothesis: str | None,
+            agent_role: str | None = None,
+            timestamp: datetime | None = None,
         ) -> None:
             if ref is None:
                 return
@@ -719,31 +1145,75 @@ class DashboardQuery:
             sources[digest]["stages"].add(stage)
             if hypothesis:
                 sources[digest]["hypotheses"].add(hypothesis)
-            if digest not in refs and len(refs) < _MAX_ARTIFACTS:
+            if agent_role:
+                agents[digest].add(agent_role)
+            if timestamp is not None and (
+                digest not in created_at or timestamp < created_at[digest]
+            ):
+                created_at[digest] = timestamp
+            if digest not in refs and len(refs) < projection_limit:
                 refs[digest] = ref
                 queue.append((ref, stage, hypothesis))
 
-        enqueue(run.repository_profile_ref, "REPOSITORY", None)
-        enqueue(run.static_bundle_ref, SimpleStage.STATIC_DONE.value, None)
+        enqueue(
+            run.repository_profile_ref, "REPOSITORY", None, "Runtime", run.started_at
+        )
+        enqueue(
+            run.static_bundle_ref,
+            SimpleStage.STATIC_DONE.value,
+            None,
+            "Static Analysis",
+            run.started_at,
+        )
         for checkpoint in values:
             stage = checkpoint.stage.value
             hypothesis = checkpoint.identity.hypothesis_id
             for ref in (*checkpoint.input_refs, *checkpoint.output_refs):
-                enqueue(ref, stage, hypothesis)
+                enqueue(
+                    ref,
+                    stage,
+                    hypothesis,
+                    ROLE_BY_STAGE.get(checkpoint.stage),
+                    checkpoint.updated_at,
+                )
             for optional_ref in (
                 checkpoint.recipe_ref,
                 checkpoint.validated_poc_ref,
                 checkpoint.report_ref,
             ):
-                enqueue(optional_ref, stage, hypothesis)
+                enqueue(
+                    optional_ref,
+                    stage,
+                    hypothesis,
+                    ROLE_BY_STAGE.get(checkpoint.stage),
+                    checkpoint.updated_at,
+                )
         for event in events:
             for ref in (*event.input_refs, *event.output_refs, *event.tool_result_refs):
-                enqueue(ref, event.stage, event.hypothesis_id)
+                enqueue(
+                    ref,
+                    event.stage,
+                    event.hypothesis_id,
+                    event.agent_role,
+                    event.started_at,
+                )
+
+        # Once the safety limit is exceeded, a small representative preview is
+        # enough to explain the omission and support selected downloads. Reading
+        # hundreds of files here would delay every legacy detail request even
+        # though the complete export is deliberately blocked below.
+        if len(expected_artifacts) > _MAX_ARTIFACTS:
+            projection_limit = _INCOMPLETE_ARTIFACT_PREVIEW
+            preview_digests = set(tuple(refs)[:projection_limit])
+            refs = {
+                digest: ref for digest, ref in refs.items() if digest in preview_digests
+            }
+            queue = [item for item in queue if item[0].content_hash in preview_digests]
 
         contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
         projected_bytes = 0
         index = 0
-        while index < len(queue) and len(contents) < _MAX_ARTIFACTS:
+        while index < len(queue) and len(contents) < projection_limit:
             ref, stage, hypothesis = queue[index]
             index += 1
             if ref.content_hash in contents:
@@ -775,6 +1245,10 @@ class DashboardQuery:
                 size_bytes=len(item[2]),
                 stages=tuple(sorted(sources[digest]["stages"])),
                 hypothesis_ids=tuple(sorted(sources[digest]["hypotheses"])),
+                label_ko=self._artifact_label(item[0]),
+                purpose_ko=self._artifact_purpose(item[0]),
+                agent_roles=tuple(sorted(agents[digest])),
+                created_at=created_at.get(digest),
                 view_url=f"/api/analyses/{analysis_id}/artifacts/{digest}",
                 download_url=(
                     f"/api/analyses/{analysis_id}/artifacts/{digest}?download=1"
@@ -1229,6 +1703,11 @@ class DashboardQuery:
             if item.identity.hypothesis_id is None
         ) + sum(item.completed_count for item in hypotheses)
         reports = self._reports(analysis_id)
+        coverage = self._static_coverage_projection(values) if detail else {}
+        confirmed_count = sum(
+            self._confirmed_hypothesis(checkpoints)
+            for checkpoints in hypothesis_groups.values()
+        )
         progress = ProgressProjector(
             _CheckpointProjection(tuple(values)), artifact_data_dir=self._data_dir
         ).snapshot(
@@ -1317,6 +1796,12 @@ class DashboardQuery:
             stage_count=len(values),
             hypothesis_count=progress.hypothesis_count,
             finding_count=progress.finding_count,
+            confirmed_finding_count=confirmed_count,
+            failed_stage=(
+                progress.current_stage
+                if progress.status in {"FAILED", "BLOCKED"}
+                else None
+            ),
             candidate_total_count=progress.candidate_total_count,
             candidate_decision_counts=progress.candidate_decision_counts,
             deep_analysis_running_count=progress.deep_analysis_running_count,
@@ -1458,6 +1943,126 @@ class DashboardQuery:
                 }
             )
         return data
+
+    @staticmethod
+    def _hypothesis_groups(
+        values: list[StageCheckpoint],
+    ) -> dict[str, list[StageCheckpoint]]:
+        groups: dict[str, list[StageCheckpoint]] = defaultdict(list)
+        for checkpoint in values:
+            if checkpoint.identity.hypothesis_id is not None:
+                groups[checkpoint.identity.hypothesis_id].append(checkpoint)
+        return groups
+
+    @staticmethod
+    def _final_verdict_saved(values: list[StageCheckpoint]) -> bool:
+        return any(
+            item.stage is SimpleStage.VERIFICATION_FINAL_DONE
+            and item.status is StageStatus.SUCCEEDED
+            and item.verdict in {"TRUE", "FALSE", "HOLD"}
+            for item in values
+        )
+
+    @staticmethod
+    def _validated_poc(values: list[StageCheckpoint]) -> bool:
+        return any(
+            item.stage is SimpleStage.POC_EXECUTION_DONE
+            and item.status is StageStatus.SUCCEEDED
+            and item.validated_poc_ref is not None
+            for item in values
+        )
+
+    def _known_token_usage(self, analysis_id: str) -> bool:
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_llm_attempts"):
+                return False
+            row = connection.execute(
+                """
+                SELECT COUNT(*) FROM simple_llm_attempts
+                WHERE analysis_id = ?
+                  AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
+                """,
+                (analysis_id,),
+            ).fetchone()
+        return row is not None and int(row[0]) > 0
+
+    @staticmethod
+    def _invocation_payload(
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+        artifact_id: str | None,
+    ) -> dict[str, Any] | None:
+        if artifact_id is None:
+            return None
+        item = contents.get(artifact_id)
+        if item is None or not isinstance(item[3], dict):
+            return None
+        return cast(dict[str, Any], item[3])
+
+    @staticmethod
+    def _prompt_text(payload: dict[str, Any] | None, *keys: str) -> str | None:
+        if payload is None:
+            return None
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return None
+
+    @staticmethod
+    def _artifact_label(kind: str) -> str:
+        exact = {
+            "simple_llm_request": "LLM 요청",
+            "simple_llm_response": "LLM 응답",
+            "simple_static_fact_bundle": "정적분석 사실 묶음",
+            "simple_validated_poc": "검증된 PoC",
+            "simple_poc_execution": "PoC 실행 결과",
+            "simple_dynamic_interpretation": "동적 검증 해석",
+            "simple_hypothesis_proposal": "취약점 가설",
+            "simple_policy_snapshot": "정책 스냅샷",
+        }
+        if kind in exact:
+            return exact[kind]
+        return kind.replace("simple_", "").replace("_", " ").strip().title()
+
+    @staticmethod
+    def _artifact_purpose(kind: str) -> str:
+        if "llm_request" in kind:
+            return "Agent가 Provider에 전달한 정제된 요청 기록"
+        if "llm_response" in kind:
+            return "Provider 응답에서 저장한 정제된 결과 기록"
+        if "poc" in kind:
+            return "취약점 재현과 검증에 사용된 PoC 자료"
+        if "evidence" in kind or "static_fact" in kind:
+            return "Finding 판정을 뒷받침하는 정적·동적 근거"
+        if "report" in kind:
+            return "검증 결과를 정리한 보고서 자료"
+        if "hypothesis" in kind:
+            return "검증 대상으로 생성된 취약점 가설"
+        if "policy" in kind:
+            return "Scope Gate 판정에 사용된 정책 근거"
+        return "분석 단계에서 생성·참조된 저장 아티팩트"
+
+    @staticmethod
+    def _confirmed_hypothesis(values: list[StageCheckpoint]) -> bool:
+        return (
+            any(
+                item.stage is SimpleStage.VERIFICATION_FINAL_DONE
+                and item.status is StageStatus.SUCCEEDED
+                and item.verdict == "TRUE"
+                for item in values
+            )
+            and any(item.validated_poc_ref is not None for item in values)
+            and any(
+                item.stage is SimpleStage.FINDING_DONE
+                and item.status is StageStatus.SUCCEEDED
+                for item in values
+            )
+            and any(
+                item.stage is SimpleStage.REPORT_DONE
+                and item.status is StageStatus.SUCCEEDED
+                for item in values
+            )
+        )
 
     def _static_coverage_projection(
         self, checkpoints: list[StageCheckpoint]
@@ -1796,6 +2401,394 @@ class DashboardQuery:
             ):
                 return None
         return coverage, coverage_ref.content_hash
+
+    @staticmethod
+    def _artifact_relations(
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+    ) -> tuple[ArtifactRelationView, ...]:
+        relations: list[ArtifactRelationView] = []
+        seen: set[tuple[str, str]] = set()
+        for target_id, target in contents.items():
+            parsed = target[3]
+            if not isinstance(parsed, dict):
+                continue
+            for ref in DashboardQuery._nested_refs(parsed):
+                source_id = ref.content_hash
+                if source_id not in contents or source_id == target_id:
+                    continue
+                identity = (source_id, target_id)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                relations.append(
+                    ArtifactRelationView(
+                        source_artifact_id=source_id,
+                        target_artifact_id=target_id,
+                        relation="INPUT_TO_OUTPUT",
+                        source_kind=contents[source_id][0],
+                        target_kind=target[0],
+                    )
+                )
+        return tuple(
+            sorted(
+                relations,
+                key=lambda item: (
+                    item.target_kind,
+                    item.source_kind,
+                    item.source_artifact_id,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _static_tool_findings(
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+    ) -> tuple[StaticToolFindingView, ...]:
+        bundle = next(
+            (
+                item[3]
+                for item in contents.values()
+                if item[0] == "simple_static_fact_bundle" and isinstance(item[3], dict)
+            ),
+            None,
+        )
+        if not isinstance(bundle, dict):
+            return ()
+        grouped: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: {"tools": set(), "rules": set()}
+        )
+        ast_summary = bundle.get("ast_summary")
+        findings_by_tool = (
+            (
+                "AST",
+                (
+                    bundle.get("ast_findings"),
+                    bundle.get("ast_facts"),
+                    (
+                        ast_summary.get("facts")
+                        if isinstance(ast_summary, dict)
+                        else None
+                    ),
+                ),
+            ),
+            ("OpenGrep", (bundle.get("opengrep_findings"),)),
+            ("CodeQL", (bundle.get("codeql_findings"),)),
+        )
+        for tool, finding_groups in findings_by_tool:
+            for raw in finding_groups:
+                if not isinstance(raw, list):
+                    continue
+                for value in raw[:500]:
+                    if not isinstance(value, dict):
+                        continue
+                    path = next(
+                        (
+                            str(value[name])
+                            for name in ("path", "file", "uri")
+                            if isinstance(value.get(name), str)
+                        ),
+                        "위치 미기록",
+                    )
+                    line = next(
+                        (
+                            value[name]
+                            for name in ("line", "start_line", "line_number")
+                            if isinstance(value.get(name), int)
+                        ),
+                        None,
+                    )
+                    location = f"{path}:{line}" if line is not None else path
+                    grouped[location]["tools"].add(tool)
+                    rule = next(
+                        (
+                            str(value[name])
+                            for name in ("rule_id", "check_id", "query", "name")
+                            if isinstance(value.get(name), str)
+                        ),
+                        None,
+                    )
+                    if rule:
+                        grouped[location]["rules"].add(rule[:200])
+        return tuple(
+            StaticToolFindingView(
+                location=location[:500],
+                tools=tuple(sorted(values["tools"])),
+                rule_ids=tuple(sorted(values["rules"])),
+                overlap=len(values["tools"]) > 1,
+            )
+            for location, values in sorted(grouped.items())
+        )
+
+    def _finding_traces(
+        self,
+        analysis_id: str,
+        reports: tuple[FindingReportView, ...],
+        hypotheses: tuple[HypothesisProgressView, ...],
+        artifacts: tuple[ArtifactView, ...],
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+        poc_ids: tuple[str, ...],
+        evidence_ids: tuple[str, ...],
+    ) -> tuple[FindingTraceView, ...]:
+        hypothesis_map = {item.hypothesis_id: item for item in hypotheses}
+        traces: list[FindingTraceView] = []
+        for report in reports:
+            try:
+                finding_ref = FindingDisplayIdStore.resolve_existing(
+                    self._database, analysis_id, report.display_id
+                )
+            except (LookupError, OSError, sqlite3.Error, ValueError):
+                continue
+            parsed = contents.get(finding_ref.content_hash, ("", "", b"", None))[3]
+            hypothesis_id = (
+                str(parsed.get("hypothesis_id"))
+                if isinstance(parsed, dict)
+                and isinstance(parsed.get("hypothesis_id"), str)
+                else None
+            )
+            hypothesis = hypothesis_map.get(hypothesis_id or "")
+            related = {
+                item.artifact_id
+                for item in artifacts
+                if hypothesis_id and hypothesis_id in item.hypothesis_ids
+            }
+            if finding_ref.content_hash in contents:
+                related.add(finding_ref.content_hash)
+            if isinstance(parsed, dict):
+                related.update(
+                    ref.content_hash
+                    for ref in self._nested_refs(parsed)
+                    if ref.content_hash in contents
+                )
+            traces.append(
+                FindingTraceView(
+                    display_id=report.display_id,
+                    hypothesis_id=hypothesis_id,
+                    title=(hypothesis.title if hypothesis else None),
+                    vulnerability_type=(
+                        hypothesis.vulnerability_type if hypothesis else None
+                    ),
+                    source=(hypothesis.source if hypothesis else None),
+                    sink=(hypothesis.sink if hypothesis else None),
+                    verdict=(hypothesis.verdict if hypothesis else None),
+                    validated_poc=(hypothesis.validated_poc if hypothesis else False),
+                    artifact_ids=tuple(sorted(related)),
+                    poc_artifact_ids=tuple(item for item in poc_ids if item in related),
+                    evidence_artifact_ids=tuple(
+                        item for item in evidence_ids if item in related
+                    ),
+                    report_view_url=report.view_url,
+                    report_download_url=report.download_url,
+                    english_available=report.english_available,
+                )
+            )
+        return tuple(traces)
+
+    @staticmethod
+    def _with_hypothesis_metadata(
+        hypotheses: tuple[HypothesisProgressView, ...],
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+    ) -> tuple[HypothesisProgressView, ...]:
+        proposals: dict[str, dict[str, Any]] = {}
+        for _kind, _media_type, _raw, parsed in contents.values():
+            if not isinstance(parsed, dict):
+                continue
+            if parsed.get("kind") != "simple_hypothesis_proposal":
+                continue
+            hypothesis_id = parsed.get("hypothesis_id")
+            proposal = parsed.get("proposal")
+            if isinstance(hypothesis_id, str) and isinstance(proposal, dict):
+                proposals[hypothesis_id] = proposal
+
+        def text(value: object, limit: int = 500) -> str | None:
+            return str(value)[:limit] if isinstance(value, str) and value else None
+
+        enriched: list[HypothesisProgressView] = []
+        for hypothesis in hypotheses:
+            proposal = proposals.get(hypothesis.hypothesis_id, {})
+            raw_locations = proposal.get("code_locations", [])
+            locations = (
+                tuple(str(item)[:300] for item in raw_locations[:12])
+                if isinstance(raw_locations, list)
+                else ()
+            )
+            enriched.append(
+                hypothesis.model_copy(
+                    update={
+                        "title": text(proposal.get("title"), 300),
+                        "vulnerability_type": text(
+                            proposal.get("vulnerability_type"), 160
+                        ),
+                        "summary": text(proposal.get("summary"), 700),
+                        "source": text(proposal.get("source")),
+                        "sink": text(proposal.get("sink")),
+                        "code_locations": locations,
+                    }
+                )
+            )
+        return tuple(enriched)
+
+    def _readiness(
+        self,
+        analysis_id: str,
+        run: SimpleAnalysisRun | None,
+        static_tools: tuple[StaticToolProgressView, ...],
+        artifacts: tuple[ArtifactView, ...] | int,
+        reports: tuple[FindingReportView, ...],
+    ) -> tuple[ReadinessCheckView, ...]:
+        def present(value: object) -> bool:
+            return value is not None and str(value).strip() != ""
+
+        artifact_count = artifacts if isinstance(artifacts, int) else len(artifacts)
+        tool_status = {item.tool: item.status for item in static_tools}
+        core = [tool_status.get("AST"), tool_status.get("OpenGrep")]
+        if any(status in {"FAILED", "BLOCKED"} for status in core):
+            static_status = "BLOCKED"
+        elif core and all(status == "SUCCEEDED" for status in core):
+            static_status = "READY"
+        elif any(status == "RUNNING" for status in core):
+            static_status = "RUNNING"
+        else:
+            static_status = "WAITING"
+        codeql = tool_status.get("CodeQL")
+        codeql_status = (
+            "READY"
+            if codeql == "SUCCEEDED"
+            else "OPTIONAL"
+            if codeql == "SKIPPED"
+            else "BLOCKED"
+            if codeql in {"FAILED", "BLOCKED"}
+            else "RUNNING"
+            if codeql == "RUNNING"
+            else "WAITING"
+        )
+        log_ready = (self._data_dir / "logs" / f"{analysis_id}.log").is_file()
+        return (
+            ReadinessCheckView(
+                key="exact-target",
+                label_ko="저장소·commit 고정",
+                status=(
+                    "READY"
+                    if run is not None
+                    and present(run.repository)
+                    and present(run.commit_id)
+                    else "BLOCKED"
+                ),
+                detail_ko=(
+                    "재현 가능한 분석 대상을 기록했습니다."
+                    if run is not None
+                    and present(run.repository)
+                    and present(run.commit_id)
+                    else "저장소 또는 commit 기록이 없습니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="runtime-profile",
+                label_ko="실행 프로필",
+                status=(
+                    "READY"
+                    if run is not None and present(run.profile_ref)
+                    else "WAITING"
+                ),
+                detail_ko=(
+                    "분석 실행 프로필이 연결되어 있습니다."
+                    if run is not None and present(run.profile_ref)
+                    else "이전 분석이어서 프로필 기록이 없을 수 있습니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="llm-provider",
+                label_ko="LLM Provider·모델",
+                status=(
+                    "READY"
+                    if run is not None and present(run.provider) and present(run.model)
+                    else "WAITING"
+                ),
+                detail_ko=(
+                    "Provider와 모델 provenance를 확인했습니다."
+                    if run is not None and present(run.provider) and present(run.model)
+                    else "Provider 또는 모델 기록을 기다리는 중입니다."
+                ),
+            ),
+            ReadinessCheckView(
+                key="static-core",
+                label_ko="AST·OpenGrep",
+                status=static_status,
+                detail_ko="필수 정적분석 도구의 저장 결과 기준 상태입니다.",
+            ),
+            ReadinessCheckView(
+                key="codeql",
+                label_ko="CodeQL",
+                status=codeql_status,
+                detail_ko=(
+                    "선택 프로필에서 CodeQL을 사용하지 않았습니다."
+                    if codeql_status == "OPTIONAL"
+                    else "CodeQL 저장 결과 기준 상태입니다."
+                ),
+                required=False,
+            ),
+            ReadinessCheckView(
+                key="presentation-output",
+                label_ko="발표 결과물",
+                status=(
+                    "READY" if artifact_count and (reports or log_ready) else "WAITING"
+                ),
+                detail_ko=(
+                    f"아티팩트 {artifact_count}개·보고서 {len(reports)}개"
+                    + ("·로그 있음" if log_ready else "·로그 없음")
+                ),
+                required=False,
+            ),
+        )
+
+    @staticmethod
+    def _invocation_usage_summary(
+        invocations: tuple[LLMInvocationView, ...],
+    ) -> UsageSummaryView:
+        input_tokens = sum(item.input_tokens or 0 for item in invocations)
+        output_tokens = sum(item.output_tokens or 0 for item in invocations)
+        known = sum(
+            item.input_tokens is not None or item.output_tokens is not None
+            for item in invocations
+        )
+        return UsageSummaryView(
+            invocation_count=len(invocations),
+            succeeded_count=sum(
+                item.status in {"SUCCEEDED", "COMPLETE"} for item in invocations
+            ),
+            failed_count=sum(
+                item.status in {"FAILED", "BLOCKED", "TIMED_OUT", "CANCELLED"}
+                for item in invocations
+            ),
+            retry_count=sum(item.retry_count for item in invocations),
+            known_usage_count=known,
+            unknown_usage_count=len(invocations) - known,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            elapsed_ms=sum(item.elapsed_ms or 0 for item in invocations),
+        )
+
+    @staticmethod
+    def _failure_guidance(error_code: str | None) -> str | None:
+        if not error_code:
+            return None
+        code = error_code.upper()
+        if any(value in code for value in ("AUTH", "CREDENTIAL", "PROVIDER")):
+            return "Provider 인증 상태를 확인한 뒤 같은 분석을 resume 하세요."
+        if any(value in code for value in ("DOCKER", "SANDBOX", "CONTAINER")):
+            return "Docker 실행 상태와 승인된 격리 프로필을 확인하세요."
+        if "CODEQL" in code:
+            return "CodeQL bundle·query pack과 출력 quota 준비 상태를 확인하세요."
+        if any(value in code for value in ("OPENGREP", "AST", "TOOL")):
+            return "setup에서 선택한 정적분석 도구 경로와 실행 권한을 확인하세요."
+        if any(value in code for value in ("RATE_LIMIT", "TIMEOUT")):
+            return (
+                "Provider 한도와 네트워크 상태를 확인한 뒤 실패 단계부터 resume 하세요."
+            )
+        return (
+            "오류 코드를 기록하고 docs/troubleshooting.md의 안전한 복구 "
+            "절차를 확인하세요."
+        )
 
     @staticmethod
     def _pipeline(
