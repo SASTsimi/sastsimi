@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import ActivityKind
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
@@ -36,9 +38,16 @@ def _checkpoint(
     stage: SimpleStage,
     *,
     status: StageStatus,
-    inputs: tuple = (),
-    outputs: tuple = (),
-    **extra: object,
+    inputs: tuple[StoredDataRef, ...] = (),
+    outputs: tuple[StoredDataRef, ...] = (),
+    attempt_id: str | None = None,
+    attempt_number: int = 0,
+    recovery_lineage_id: str | None = None,
+    recovery_origin_stage: SimpleStage | None = None,
+    recipe_ref: StoredDataRef | None = None,
+    image_digest: str | None = None,
+    error_code: str | None = None,
+    retryable: bool = False,
 ) -> StageCheckpoint:
     return StageCheckpoint(
         identity=identity,
@@ -48,11 +57,28 @@ def _checkpoint(
         input_refs=inputs,
         input_hash=input_reference_hash(inputs),
         output_refs=outputs,
-        **extra,
+        attempt_id=attempt_id,
+        attempt_number=attempt_number,
+        recovery_lineage_id=recovery_lineage_id,
+        recovery_origin_stage=recovery_origin_stage,
+        recipe_ref=recipe_ref,
+        image_digest=image_digest,
+        error_code=error_code,
+        retryable=retryable,
     )
 
 
-def _exhausted_poc(tmp_path, *, recipe_source: str = "GENERATED_OFFLINE_WHEELS"):
+def _exhausted_poc(
+    tmp_path: Path, *, recipe_source: str = "GENERATED_OFFLINE_WHEELS"
+) -> tuple[
+    SimpleCheckpointStore,
+    SimpleArtifactRepository,
+    StageCheckpoint,
+    StageCheckpoint,
+    StageCheckpoint,
+    StageCheckpoint,
+    StoredDataRef,
+]:
     data_dir = tmp_path / "data"
     store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
     identity = CheckpointIdentity(
@@ -142,7 +168,9 @@ def _exhausted_poc(tmp_path, *, recipe_source: str = "GENERATED_OFFLINE_WHEELS")
     return store, artifacts, pro_con, initial, candidate, exhausted, proof_ref
 
 
-def test_repair_resets_only_child_stages_and_keeps_attempt_lineage(tmp_path) -> None:
+def test_repair_resets_only_child_stages_and_keeps_attempt_lineage(
+    tmp_path: Path,
+) -> None:
     store, artifacts, pro_con, _initial, _candidate, exhausted, proof_ref = (
         _exhausted_poc(tmp_path)
     )
@@ -188,7 +216,7 @@ def test_repair_resets_only_child_stages_and_keeps_attempt_lineage(tmp_path) -> 
 
 
 @pytest.mark.parametrize("tamper", ["wrong_old_base", "same_base", "wrong_attempt"])
-def test_repair_rejects_unverified_proof(tmp_path, tamper: str) -> None:
+def test_repair_rejects_unverified_proof(tmp_path: Path, tamper: str) -> None:
     store, artifacts, _pro_con, initial, _candidate, exhausted, _proof_ref = (
         _exhausted_poc(tmp_path)
     )
@@ -227,7 +255,7 @@ def test_repair_rejects_unverified_proof(tmp_path, tamper: str) -> None:
     )
 
 
-def test_repair_refuses_duplicate_and_stale_requests(tmp_path) -> None:
+def test_repair_refuses_duplicate_and_stale_requests(tmp_path: Path) -> None:
     store, artifacts, _pro_con, _initial, _candidate, exhausted, proof_ref = (
         _exhausted_poc(tmp_path)
     )
@@ -237,7 +265,9 @@ def test_repair_refuses_duplicate_and_stale_requests(tmp_path) -> None:
         store.prepare_offline_environment_repair(exhausted, proof_ref, artifacts)
 
 
-def test_repair_rejects_online_recipe_despite_valid_new_base(tmp_path) -> None:
+def test_repair_rejects_online_recipe_despite_valid_new_base(
+    tmp_path: Path,
+) -> None:
     store, artifacts, _pro_con, initial, _candidate, exhausted, proof_ref = (
         _exhausted_poc(tmp_path, recipe_source="GENERATED")
     )
@@ -255,7 +285,7 @@ def test_repair_rejects_online_recipe_despite_valid_new_base(tmp_path) -> None:
 
 
 def test_repair_keeps_attempt_four_through_execution_and_cannot_reopen(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     store, artifacts, pro_con, _initial, _candidate, exhausted, proof_ref = (
         _exhausted_poc(tmp_path)
@@ -320,7 +350,7 @@ def test_repair_keeps_attempt_four_through_execution_and_cannot_reopen(
         store.prepare_offline_environment_repair(exhausted_again, proof_ref, artifacts)
 
 
-def test_repair_rolls_back_checkpoint_and_event_on_crash(tmp_path) -> None:
+def test_repair_rolls_back_checkpoint_and_event_on_crash(tmp_path: Path) -> None:
     store, artifacts, _pro_con, initial, candidate, exhausted, proof_ref = (
         _exhausted_poc(tmp_path)
     )
@@ -355,12 +385,16 @@ def test_repair_rolls_back_checkpoint_and_event_on_crash(tmp_path) -> None:
 @pytest.mark.parametrize("registered_candidate", [False, True])
 @pytest.mark.asyncio
 async def test_application_repairs_only_on_explicit_resume_request(
-    tmp_path, monkeypatch, registered_candidate: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    registered_candidate: bool,
 ) -> None:
     store, _artifacts, _pro_con, _initial, _candidate, exhausted, _proof_ref = (
         _exhausted_poc(tmp_path)
     )
     identity = exhausted.identity
+    hypothesis_id = identity.hypothesis_id
+    assert hypothesis_id is not None
     display_id = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
         identity.analysis_id
     )
@@ -371,14 +405,14 @@ async def test_application_repairs_only_on_explicit_resume_request(
             workspace_id=identity.workspace_id,
             commit_id=identity.commit_id,
             repository="https://example.invalid/repo.git",
-            hypothesis_ids=() if registered_candidate else (identity.hypothesis_id,),
+            hypothesis_ids=() if registered_candidate else (hypothesis_id,),
             candidate_pipeline_version=2 if registered_candidate else None,
         )
     )
     if registered_candidate:
         store.upsert_hypothesis(
             identity.model_copy(update={"hypothesis_id": None}),
-            identity.hypothesis_id,
+            hypothesis_id,
         )
     preflight_calls: list[CheckpointIdentity] = []
 
@@ -432,11 +466,15 @@ async def test_application_repairs_only_on_explicit_resume_request(
 
 
 @pytest.mark.asyncio
-async def test_application_rejects_wrong_hypothesis_before_smoke(tmp_path) -> None:
+async def test_application_rejects_wrong_hypothesis_before_smoke(
+    tmp_path: Path,
+) -> None:
     store, _artifacts, _pro_con, _initial, _candidate, exhausted, _proof_ref = (
         _exhausted_poc(tmp_path)
     )
     identity = exhausted.identity
+    hypothesis_id = identity.hypothesis_id
+    assert hypothesis_id is not None
     display_id = AnalysisDisplayIdStore(store.database_path).get_or_allocate(
         identity.analysis_id
     )
@@ -447,7 +485,7 @@ async def test_application_rejects_wrong_hypothesis_before_smoke(tmp_path) -> No
             workspace_id=identity.workspace_id,
             commit_id=identity.commit_id,
             repository="https://example.invalid/repo.git",
-            hypothesis_ids=(identity.hypothesis_id,),
+            hypothesis_ids=(hypothesis_id,),
         )
     )
     calls = 0

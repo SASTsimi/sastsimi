@@ -36,7 +36,10 @@ class _PublicApplication:
             "error_code": "RECOVERY_EXHAUSTED",
         }
 
-    def resume(self, analysis_id: str) -> dict[str, object]:
+    def resume(
+        self, analysis_id: str, *, repair_exhausted_hypothesis: str | None = None
+    ) -> dict[str, object]:
+        del repair_exhausted_hypothesis
         return {"analysis_id": analysis_id, "status": "COMPLETE", "percent": 100}
 
     def result(self, analysis_id: str) -> dict[str, object]:
@@ -108,7 +111,10 @@ class _ProgressApplication(_PublicApplication):
 
 
 class _BusyPublicApplication(_PublicApplication):
-    def resume(self, analysis_id: str) -> dict[str, object]:
+    def resume(
+        self, analysis_id: str, *, repair_exhausted_hypothesis: str | None = None
+    ) -> dict[str, object]:
+        del repair_exhausted_hypothesis
         return {
             "analysis_id": analysis_id,
             "status": "RUNNING",

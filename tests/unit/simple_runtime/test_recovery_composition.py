@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,7 +10,7 @@ from typing import cast
 
 import pytest
 
-from sastsimi.composition import simple_runtime_composition as composition
+import sastsimi.composition.simple_runtime_composition as composition
 from sastsimi.config.user_config import (
     SimpleExecutionProfile,
     SimpleToolBinding,
@@ -17,6 +19,7 @@ from sastsimi.config.user_config import (
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
     SimpleAnalysisOutcome,
@@ -262,9 +265,11 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
             return outcome
 
     async def track(
-        task: object, _started: object, _callback: object
+        task: asyncio.Task[SimpleAnalysisOutcome],
+        _started: list[str],
+        _callback: Callable[[ProgressSnapshot], None],
     ) -> SimpleAnalysisOutcome:
-        return await task  # type: ignore[misc]
+        return await task
 
     monkeypatch.setattr(
         composition, "build_analysis_application", lambda *_args: _Application()
