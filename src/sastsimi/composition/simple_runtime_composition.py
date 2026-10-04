@@ -42,12 +42,17 @@ from sastsimi.simple_runtime.application import (
     StaticBootstrapResult,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.base_harness import BaseHarness
 from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
     DirectStaticBootstrap,
 )
 from sastsimi.simple_runtime.call_queue import CallQueue
-from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleStage
+from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
+    SimpleStage,
+    StageCheckpoint,
+)
 from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
     PortableContainerFactory,
@@ -280,6 +285,27 @@ def build_analysis_application(
             artifacts=artifacts,
             workspace=static.workspace_path,
         )
+        harness = BaseHarness(
+            data_dir=data_dir,
+            workspace=static.workspace_path,
+            docker=docker,
+            client=client,
+            analysis_id=identity.analysis_id,
+            labels={
+                "sastsimi.owner": "simple-runtime",
+                "sastsimi.analysis-id": identity.analysis_id,
+                "sastsimi.workspace-id": identity.workspace_id,
+                "sastsimi.commit-id": identity.commit_id,
+                "sastsimi.hypothesis-id": "base-harness",
+                "sastsimi.attempt-id": "base-harness",
+            },
+        )
+
+        async def base_harness(checkpoint: StageCheckpoint) -> str | None:
+            if checkpoint.image_digest is None:
+                return None
+            return await harness.ensure(checkpoint.image_digest)
+
         return SimpleRuntimeRunner(
             runtime_store,
             build_stage_handlers(
@@ -303,6 +329,7 @@ def build_analysis_application(
                 # LLM calls too, not only the tool subprocesses.
                 call_timeout_ms=_call_timeout_ms(profile),
                 poc_timeout_ms=_call_timeout_ms(profile),
+                base_harness=base_harness,
             ),
         )
 
