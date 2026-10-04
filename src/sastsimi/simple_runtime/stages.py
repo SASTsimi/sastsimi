@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, NoReturn, Protocol, cast
+from typing import Any, Literal, NoReturn, Protocol, cast, runtime_checkable
 
 from pydantic import JsonValue
 
@@ -140,19 +140,22 @@ class ReproductionEnvironment:
 
 
 class ReproductionEnvironmentPreparer(Protocol):
-    @property
-    def offline_mode(self) -> bool: ...
-
-    def validate_requirements(
-        self, requirements: tuple[str, ...], *, commit_id: str
-    ) -> None: ...
-
     async def prepare(
         self,
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
         requirements: tuple[str, ...],
     ) -> ReproductionEnvironment: ...
+
+
+@runtime_checkable
+class OfflineRequirementPreparer(Protocol):
+    @property
+    def offline_mode(self) -> bool: ...
+
+    def validate_requirements(
+        self, requirements: tuple[str, ...], *, commit_id: str
+    ) -> None: ...
 
 
 class _UnavailableEnvironmentPreparer:
@@ -2637,6 +2640,17 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
             git_executable=self._git_executable,
             require_anchor=self._require_anchor,
         )
+        offline_preparer: OfflineRequirementPreparer | None = None
+        if getattr(self._environments, "offline_mode", False):
+            if not isinstance(self._environments, OfflineRequirementPreparer):
+                raise StageBlocked(
+                    StageFailure(
+                        code="POC_OFFLINE_REQUIREMENT_VALIDATION_UNAVAILABLE",
+                        retryable=False,
+                        safe_message="Offline requirement validation is unavailable",
+                    )
+                )
+            offline_preparer = self._environments
         guidance = (
             "\nOn this retry, environment_requirements supports only "
             "`python:3.12`, `pip:<PEP 508 requirement>`, or "
@@ -2646,7 +2660,7 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
             "in the base image. Do not invent OS package installations. Put a "
             "genuinely unavailable utility, service, credential, or attack "
             "precondition in unmet_external_prerequisites instead.\n"
-            if checkpoint.attempt_number > 1 and self._environments.offline_mode
+            if checkpoint.attempt_number > 1 and offline_preparer is not None
             else ""
         )
         rejected_refs: list[StoredDataRef] = []
@@ -2705,9 +2719,10 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
                     ),
                 )
             try:
-                self._environments.validate_requirements(
-                    requirements, commit_id=checkpoint.identity.commit_id
-                )
+                if offline_preparer is not None:
+                    offline_preparer.validate_requirements(
+                        requirements, commit_id=checkpoint.identity.commit_id
+                    )
             except ValueError as error:
                 if str(error) != "POC_OFFLINE_REQUIREMENT_UNSUPPORTED":
                     raise

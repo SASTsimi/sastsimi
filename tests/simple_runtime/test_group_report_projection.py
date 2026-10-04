@@ -26,12 +26,17 @@ from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.finding_group_projection import (
     project_current_finding_groups,
 )
+from sastsimi.simple_runtime.finding_groups import FindingGroup
 from sastsimi.simple_runtime.group_report_projection import (
     _read_only_artifact_reader,
     current_group_bundle,
     current_report_groups,
 )
-from sastsimi.simple_runtime.models import SimpleStage, StageCheckpoint
+from sastsimi.simple_runtime.models import (
+    SimpleAnalysisRun,
+    SimpleStage,
+    StageCheckpoint,
+)
 from sastsimi.simple_runtime.scope_policy import project_scope_review
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from tests.simple_runtime.test_finding_group_projection import _case, _checkpoint
@@ -42,7 +47,14 @@ def _reported_case(
     *,
     second_severity: str = "High",
     repository: str = "https://example.test/repo",
-):  # type: ignore[no-untyped-def]
+) -> tuple[
+    SimpleAnalysisRun,
+    list[StageCheckpoint],
+    FindingGroup,
+    Path,
+    Path,
+    SimpleCheckpointStore,
+]:
     run, original, eligible, data_dir, database, _workspace = _case(tmp_path)
     run = run.model_copy(update={"repository": repository})
     output: list[StageCheckpoint] = []

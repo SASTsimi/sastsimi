@@ -27,6 +27,7 @@ from sastsimi.simple_runtime.models import (
     StageFailure,
     StageStatus,
 )
+from sastsimi.simple_runtime.portable_docker import PortableDockerRuntime
 from sastsimi.simple_runtime.run_lease import analysis_run_lease
 from sastsimi.simple_runtime.stages import PoCCandidateStage, RuleScopeGateStage
 
@@ -204,10 +205,8 @@ async def test_composition_wires_local_only_offline_base_preflight(
         calls.append(("tag", digest))
         return "sastsimi-offline-base:" + "b" * 64
 
-    monkeypatch.setattr(
-        composition.PortableDockerRuntime, "local_base_image_digest", inspect
-    )
-    monkeypatch.setattr(composition.PortableDockerRuntime, "pin_local_base", pin)
+    monkeypatch.setattr(PortableDockerRuntime, "local_base_image_digest", inspect)
+    monkeypatch.setattr(PortableDockerRuntime, "pin_local_base", pin)
     runner = application._runner_factory(application._store, identity, static)
 
     assert runner.offline_base_ready is not None

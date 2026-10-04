@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 
 from sastsimi.observability.agent_activity import ActivityKind
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
@@ -794,7 +795,7 @@ async def test_initial_verification_reasks_once_for_invalid_offline_requirement(
     artifacts, checkpoint = _checkpoint(tmp_path, commit)
     prompts: list[bytes] = []
     schemas: list[object] = []
-    responses = [
+    responses: list[JsonValue] = [
         ["python:3.12", "pip:Flask", "GNU coreutils (provides ls with -R support)"],
         ["python:3.12", "pip:Flask"],
     ]
@@ -865,6 +866,36 @@ async def test_initial_verification_reasks_once_for_invalid_offline_requirement(
         "GNU coreutils (provides ls with -R support)",
     ]
     assert "GNU coreutils" not in rejected_event.summary_ko
+
+
+@pytest.mark.asyncio
+async def test_offline_preparer_without_requirement_validator_fails_closed(
+    tmp_path: Path,
+) -> None:
+    _workspace, commit, _path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _Client:
+        async def call(self, **_kwargs: object) -> SimpleLLMCallResult:
+            raise AssertionError("offline preflight must fail before an LLM call")
+
+    class _BrokenOffline:
+        offline_mode = True
+
+        async def prepare(
+            self,
+            _checkpoint: StageCheckpoint,
+            _prior: Mapping[SimpleStage, StageCheckpoint],
+            _requirements: tuple[str, ...],
+        ) -> ReproductionEnvironment:
+            raise AssertionError("offline requirements must be validated first")
+
+    stage = InitialVerificationStage(_Client(), artifacts, _BrokenOffline())
+    with pytest.raises(StageBlocked) as blocked:
+        await stage(checkpoint, {})
+    code = blocked.value.failure.code
+    assert code == "POC_OFFLINE_REQUIREMENT_VALIDATION_UNAVAILABLE"
+    assert blocked.value.failure.retryable is False
 
 
 @pytest.mark.asyncio
