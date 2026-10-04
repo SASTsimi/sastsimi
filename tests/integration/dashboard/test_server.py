@@ -30,6 +30,7 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
+from tests.simple_runtime.test_group_report_projection import _reported_case
 from tests.support.current_bundle import attach_current_bundle
 
 
@@ -233,6 +234,21 @@ def request(url: str, *, method: str = "GET", timeout: float = 5):
         )
     except urllib.error.HTTPError as error:
         return error
+
+
+def test_server_serves_verified_group_zip_and_denies_unknown_group(tmp_path) -> None:
+    run, _checkpoints, group, data_dir, _database, _store = _reported_case(tmp_path)
+    with running_server(data_dir) as base:
+        endpoint = (
+            f"{base}/api/analyses/{run.analysis_id}/groups/{group.group_id}/bundle.zip"
+        )
+        response = request(endpoint)
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "application/zip"
+        assert "attachment" in response.headers["Content-Disposition"]
+        with zipfile.ZipFile(BytesIO(response.read())) as zipped:
+            assert "members/F-002/poc.py" in zipped.namelist()
+        assert request(endpoint.replace(group.group_id, "f" * 64)).status == 404
 
 
 def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:

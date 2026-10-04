@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -211,6 +212,9 @@ class _FixtureProposer:
                         "analysis_id": identity.analysis_id,
                         "hypothesis_id": "known-command-path",
                         "candidate_id": candidate_id,
+                        "shared_context_ref": batch.shared_context_ref.model_dump(
+                            mode="json"
+                        ),
                         "qualification": {
                             "attacker_control": "YES",
                             "sensitive_operation": "YES",
@@ -542,6 +546,7 @@ def _fixture(
     incomplete_storage_review: bool = False,
     pipeline_version: int = 2,
     bulk_candidate_count: int = 0,
+    committed_checkout: bool = False,
 ) -> tuple[
     SimpleAnalysisApplication,
     SimpleCheckpointStore,
@@ -575,11 +580,46 @@ def _fixture(
             for index in range(bulk_candidate_count)
         )
     for name, source in sources.items():
-        (workspace / name).write_text(source, encoding="utf-8")
+        if committed_checkout:
+            (workspace / name).write_bytes(source.encode("utf-8"))
+        else:
+            (workspace / name).write_text(source, encoding="utf-8")
+    commit = _COMMIT
+    if committed_checkout:
+        subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+        subprocess.run(
+            ["git", "config", "core.autocrlf", "false"],
+            cwd=workspace,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "add", "--", *sorted(sources)], cwd=workspace, check=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Sastsimi Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "Pinned fixture sources",
+            ],
+            cwd=workspace,
+            check=True,
+        )
+        commit = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace)
+            .decode("ascii")
+            .strip()
+        )
     identity = CheckpointIdentity(
         analysis_id="analysis-fixture",
         workspace_id="workspace-fixture",
-        commit_id=_COMMIT,
+        commit_id=commit,
         hypothesis_id=None,
     )
     artifacts = SimpleArtifactRepository(data_dir, identity)
@@ -702,10 +742,18 @@ def _fixture(
 
 
 def _request(data_dir: Path) -> SimpleAnalysisRequest:
+    workspace = data_dir / "checkout"
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace)
+        .decode("ascii")
+        .strip()
+        if (workspace / ".git").is_dir()
+        else _COMMIT
+    )
     return SimpleAnalysisRequest(
         data_dir=data_dir,
         repository="https://github.com/example/fixture",
-        commit=_COMMIT,
+        commit=commit,
     )
 
 
@@ -945,12 +993,17 @@ def build_handoff_harness(
     report_local_url: bool = False,
 ) -> tuple[SimpleAnalysisApplication, CheckpointIdentity]:
     app, store, _discovery, _proposer, _events, data_dir = _fixture(
-        tmp_path, omit_storage_once=interrupt_once
+        tmp_path, omit_storage_once=interrupt_once, committed_checkout=True
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=data_dir / "checkout")
+        .decode("ascii")
+        .strip()
     )
     identity = CheckpointIdentity(
         analysis_id="analysis-fixture",
         workspace_id="workspace-fixture",
-        commit_id=_COMMIT,
+        commit_id=commit,
         hypothesis_id=None,
     )
     artifacts = SimpleArtifactRepository(data_dir, identity)
@@ -1414,6 +1467,72 @@ async def test_cloned_legacy_run_reuses_v1_page_and_child_checkpoints(
     )
     assert cloned_store.list_hypotheses(resumed.identity) == old_hypothesis_ids
     assert cloned_transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_handoff_fixture_anchors_proposal_to_committed_source(
+    tmp_path: Path,
+) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path, poc_validated=True, gates_accepted=True
+    )
+    workspace = tmp_path / "data" / "checkout"
+    pinned = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=workspace,
+        capture_output=True,
+        check=False,
+    )
+    assert pinned.returncode == 0
+    assert pinned.stdout.decode("ascii").strip() == identity.commit_id
+
+    outcome = await app.analyze(_request(tmp_path / "data"))
+    assert outcome.status == "COMPLETE", (outcome.current_stage, outcome.error_code)
+    store = SimpleCheckpointStore(tmp_path / "data" / "db" / "sastsimi.sqlite3")
+    child = identity.model_copy(update={"hypothesis_id": "known-command-path"})
+    inputs = store.require(child, SimpleStage.PRO_CON_DONE).input_refs
+    proposal = json.loads(
+        SimpleArtifactRepository(tmp_path / "data", child).read_prompt_proposal(
+            inputs[0]
+        )
+    )
+    assert StoredDataRef.model_validate(proposal["shared_context_ref"]) == inputs[1]
+
+
+@pytest.mark.asyncio
+async def test_completed_candidate_rechecks_final_v2_without_replaying_poc(
+    tmp_path: Path,
+) -> None:
+    app, identity = build_handoff_harness(
+        tmp_path, poc_validated=True, gates_accepted=True
+    )
+    data_dir = tmp_path / "data"
+    first = await app.analyze(_request(data_dir))
+    assert first.status == "COMPLETE", (first.current_stage, first.error_code)
+    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    child = identity.model_copy(update={"hypothesis_id": "known-command-path"})
+    pro_con = store.require(child, SimpleStage.PRO_CON_DONE)
+    poc = store.require(child, SimpleStage.POC_EXECUTION_DONE)
+    report = store.require(child, SimpleStage.REPORT_DONE)
+    final = store.require(child, SimpleStage.VERIFICATION_FINAL_DONE)
+    assert final.stage_version == STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE]
+    store.save_checkpoint(final.model_copy(update={"stage_version": "2"}))
+    assert store.require(child, SimpleStage.REPORT_DONE) == report
+    before_calls = dict(app.fixture_agent_calls)  # type: ignore[attr-defined]
+    before_docker = app.fixture_docker.calls  # type: ignore[attr-defined]
+
+    second = await _reopen_handoff_app(app, data_dir).resume(identity.analysis_id)
+
+    assert second.status == "COMPLETE", (second.current_stage, second.error_code)
+    updated = store.require(child, SimpleStage.VERIFICATION_FINAL_DONE)
+    assert updated.stage_version == STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE]
+    after_calls = dict(app.fixture_agent_calls)  # type: ignore[attr-defined]
+    assert after_calls["verification_result"] == before_calls["verification_result"] + 1
+    assert after_calls["pro_evidence"] == before_calls["pro_evidence"]
+    assert after_calls["con_evidence"] == before_calls["con_evidence"]
+    assert store.require(child, SimpleStage.PRO_CON_DONE) == pro_con
+    assert store.require(child, SimpleStage.POC_EXECUTION_DONE) == poc
+    assert app.fixture_docker.calls == before_docker  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

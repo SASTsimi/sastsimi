@@ -53,6 +53,38 @@ def _hit(index: int, *, semantic_key: str | None = None) -> dict[str, object]:
     return row
 
 
+def _hit_extra(row: dict[str, object]) -> dict[str, object]:
+    extra = row["extra"]
+    assert isinstance(extra, dict)
+    return extra
+
+
+def _hit_with_sink_span(*, semantic_key: str) -> dict[str, object]:
+    row = _hit(0, semantic_key=semantic_key)
+    row["start"] = {"line": 1, "col": 1}
+    row["end"] = {"line": 1, "col": 5}
+    return row
+
+
+def _identified_flow_trace() -> dict[str, object]:
+    return {
+        "taint_source": {
+            "path": "pkg/input.py",
+            "line": 1,
+            "column": 8,
+            "source_key": "a",
+        },
+        "intermediate_vars": [],
+        "taint_sink": {
+            "path": "pkg/file_0.py",
+            "line": 1,
+            "column": 1,
+            "end_column": 5,
+            "sink_argument": 0,
+        },
+    }
+
+
 def test_raw_pages_cover_every_result_without_aggregate_limit(tmp_path: Path) -> None:
     identity = _identity()
     artifacts = _artifacts(tmp_path, identity)
@@ -122,6 +154,734 @@ def test_same_evidence_merges_origins_but_distinct_traces_do_not(
     assert flows[0].kind == flows[1].kind == "FLOW"
     assert flows[0].candidate_id != flows[1].candidate_id
     assert flows[0].flow_identity != flows[1].flow_identity
+
+
+def test_exact_v2_merges_identical_alerts_and_preserves_both_raw_origins(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit_with_sink_span(semantic_key="same-call")
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    _hit_extra(first)["dataflow_trace"] = _identified_flow_trace()
+    first["fingerprint"] = "scanner-first"
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "semgrep.python.eval"
+    second["fingerprint"] = "scanner-second"
+    first_ref = artifacts.put_json({"results": [first]})
+    second_ref = artifacts.put_json({"results": [second]})
+
+    open_candidate = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        first_ref,
+        (first,),
+        identity_version="exact-v2",
+    )[0]
+    sem_candidate = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "semgrep",
+        second_ref,
+        (second,),
+        identity_version="exact-v2",
+    )[0]
+    assert open_candidate.candidate_id == sem_candidate.candidate_id
+
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    store.upsert_candidate_page(identity, "scope-1", first_ref, 0, 1, (open_candidate,))
+    store.upsert_candidate_page(identity, "scope-1", second_ref, 0, 1, (sem_candidate,))
+    saved = store.list_candidates(identity, "scope-1")
+    assert len(saved) == 1
+    assert {
+        (
+            origin.engine,
+            origin.rule_id,
+            origin.artifact_ref.content_hash,
+            origin.result_index,
+        )
+        for origin in saved[0].origins
+    } == {
+        ("opengrep", "python.eval", first_ref.content_hash, 0),
+        ("semgrep", "semgrep.python.eval", second_ref.content_hash, 0),
+    }
+
+
+@pytest.mark.parametrize(
+    ("left_cwe", "right_cwe"),
+    (
+        (None, None),
+        ("CWE-95", None),
+        ("CWE-95", "CWE-89"),
+    ),
+)
+def test_exact_v2_keeps_different_rules_without_matching_explicit_class(
+    tmp_path: Path, left_cwe: str | None, right_cwe: str | None
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit(0, semantic_key="same-expression")
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "python.sql-injection"
+    if left_cwe is not None:
+        _hit_extra(first)["metadata"] = {"cwe": left_cwe}
+    if right_cwe is not None:
+        second["extra"]["metadata"] = {"cwe": right_cwe}
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+def test_exact_v2_merges_different_rules_with_normalized_single_cwe(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit_with_sink_span(semantic_key="same-expression")
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    _hit_extra(first)["dataflow_trace"] = _identified_flow_trace()
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "semgrep.python.eval"
+    second["extra"]["metadata"]["cwe"] = "cwe_095"
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].candidate_id == candidates[1].candidate_id
+
+
+@pytest.mark.parametrize(
+    ("source_identity", "sink_identity"),
+    (
+        ({}, {}),
+        ({"column": 8, "source_key": "a"}, {}),
+        ({}, {"column": 1, "sink_argument": 0}),
+        ({"column": 8}, {"column": 1}),
+        ({"source_key": "a"}, {"sink_argument": 0}),
+    ),
+)
+def test_exact_v2_same_line_flow_without_both_endpoint_identities_keeps_rules(
+    tmp_path: Path,
+    source_identity: dict[str, object],
+    sink_identity: dict[str, object],
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit_with_sink_span(semantic_key="same-flow")
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    _hit_extra(first)["dataflow_trace"] = {
+        "taint_source": {"path": "pkg/input.py", "line": 1, **source_identity},
+        "intermediate_vars": [],
+        "taint_sink": {"path": "pkg/file_0.py", "line": 1, **sink_identity},
+    }
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "python.other-flow-rule"
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "second_value"),
+    (("taint_source", "b"), ("taint_sink", 1)),
+)
+def test_exact_v2_same_line_flow_keeps_distinct_endpoint_semantics(
+    tmp_path: Path, endpoint: str, second_value: str | int
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit_with_sink_span(semantic_key="same-flow")
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    _hit_extra(first)["dataflow_trace"] = _identified_flow_trace()
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "python.other-flow-rule"
+    endpoint_field = "source_key" if endpoint == "taint_source" else "sink_argument"
+    second["extra"]["dataflow_trace"][endpoint][endpoint_field] = second_value
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+@pytest.mark.parametrize(
+    "intermediate",
+    (
+        {"path": "pkg/guard.py", "line": 4},
+        {"path": "pkg/guard.py", "line": 4, "column": 10},
+        {"path": "pkg/guard.py", "line": 4, "node_id": "auth-guard"},
+    ),
+)
+def test_exact_v2_sparse_intermediate_does_not_prove_cross_rule_flow(
+    tmp_path: Path, intermediate: dict[str, object]
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit_with_sink_span(semantic_key="same-flow")
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    trace = _identified_flow_trace()
+    trace["intermediate_vars"] = [intermediate]
+    _hit_extra(first)["dataflow_trace"] = trace
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "python.other-flow-rule"
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+def test_exact_v2_identified_intermediate_preserves_cross_rule_merge(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit_with_sink_span(semantic_key="same-flow")
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    trace = _identified_flow_trace()
+    trace["intermediate_vars"] = [
+        {"path": "pkg/guard.py", "line": 4, "column": 10, "node_id": "auth-guard"}
+    ]
+    _hit_extra(first)["dataflow_trace"] = trace
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "python.other-flow-rule"
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert candidates[0].candidate_id == candidates[1].candidate_id
+
+
+@pytest.mark.parametrize(
+    ("primary_has_span", "trace_span"),
+    ((False, (1, 5)), (True, (2, 5)), (True, (1, 6))),
+)
+def test_exact_v2_sink_trace_must_match_primary_column_span(
+    tmp_path: Path,
+    primary_has_span: bool,
+    trace_span: tuple[int, int],
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = (
+        _hit_with_sink_span(semantic_key="same-flow")
+        if primary_has_span
+        else _hit(0, semantic_key="same-flow")
+    )
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    trace = _identified_flow_trace()
+    sink = trace["taint_sink"]
+    assert isinstance(sink, dict)
+    sink["column"], sink["end_column"] = trace_span
+    _hit_extra(first)["dataflow_trace"] = trace
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "python.other-flow-rule"
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+@pytest.mark.parametrize("kind", ["HINT", "ENTRY_POINT"])
+@pytest.mark.parametrize(
+    ("second_engine", "second_rule"),
+    (
+        ("opengrep", "python.other-rule"),
+        ("semgrep", "python.eval"),
+        ("semgrep", "python.other-rule"),
+    ),
+)
+def test_exact_v2_sparse_same_cwe_alerts_keep_engine_and_rule_boundaries(
+    tmp_path: Path, kind: str, second_engine: str, second_rule: str
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit(0, semantic_key="same-expression")
+    metadata = {"cwe": "CWE-95"}
+    _hit_extra(first)["metadata"] = metadata
+    if kind == "ENTRY_POINT":
+        metadata["candidate_kind"] = "ENTRY_POINT"
+    second = json.loads(json.dumps(first))
+    second["check_id"] = second_rule
+    ref = artifacts.put_json({"results": [first, second]})
+
+    left = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first,),
+        identity_version="exact-v2",
+    )[0]
+    right = normalize_candidate_page(
+        identity,
+        "scope-1",
+        second_engine,
+        ref,
+        (second,),
+        1,
+        identity_version="exact-v2",
+    )[0]
+    assert left.kind == right.kind == kind
+    assert left.candidate_id != right.candidate_id
+
+
+def test_exact_v2_incomplete_opengrep_flow_does_not_cross_rules(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit(0, semantic_key="same-flow")
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    _hit_extra(first)["dataflow_trace"] = {
+        "taint_source": {"path": "pkg/input.py", "line": 0},
+        "intermediate_vars": [],
+        "taint_sink": {"path": "pkg/file_0.py", "line": 1},
+    }
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "python.other-rule"
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+@pytest.mark.parametrize("source", ["", "pkg/input.py"])
+def test_exact_v2_codeql_cross_rule_flow_requires_complete_thread(
+    tmp_path: Path, source: str
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _sarif_result(
+        {
+            "threadFlows": [
+                _sarif_thread(
+                    source,
+                    source_columns=(5, 12),
+                    sink_columns=(3, 18),
+                )
+            ]
+        },
+        sink_columns=(3, 18),
+    )
+    first["properties"] = {"cwe": "CWE-79"}
+    second = json.loads(json.dumps(first))
+    second["ruleId"] = "py/another-rule"
+    ref = artifacts.put_json({"runs": [{"results": [first, second]}]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "codeql",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert (candidates[0].candidate_id == candidates[1].candidate_id) == bool(source)
+
+
+@pytest.mark.parametrize(
+    ("source_columns", "sink_columns", "primary_columns"),
+    (
+        (None, None, None),
+        (None, (3, 18), (3, 18)),
+        ((5, 12), None, (3, 18)),
+        ((5, 12), (3, 18), None),
+        ((5, 12), (3, 18), (4, 18)),
+        ((5, 12), (18, 3), (18, 3)),
+    ),
+)
+def test_exact_v2_sparse_or_mismatched_codeql_columns_keep_rule_boundary(
+    tmp_path: Path,
+    source_columns: tuple[int, int] | None,
+    sink_columns: tuple[int, int] | None,
+    primary_columns: tuple[int, int] | None,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _sarif_result(
+        {
+            "threadFlows": [
+                _sarif_thread(
+                    "pkg/source.py",
+                    source_columns=source_columns,
+                    sink_columns=sink_columns,
+                )
+            ]
+        },
+        sink_columns=primary_columns,
+    )
+    first["properties"] = {"cwe": "CWE-79"}
+    second = json.loads(json.dumps(first))
+    second["ruleId"] = "py/another-rule"
+    ref = artifacts.put_json({"runs": [{"results": [first, second]}]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "codeql",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+@pytest.mark.parametrize(
+    ("guard_region", "should_merge"),
+    (
+        ({"startLine": 4}, False),
+        ({"startLine": 4, "startColumn": 9}, False),
+        ({"startLine": 4, "startColumn": 0, "endColumn": 17}, False),
+        ({"startLine": 4, "startColumn": 17, "endColumn": 9}, False),
+        ({"startLine": 4, "startColumn": 9, "endColumn": 17}, True),
+    ),
+)
+def test_exact_v2_codeql_intermediate_requires_explicit_column_span(
+    tmp_path: Path,
+    guard_region: dict[str, int],
+    should_merge: bool,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    thread = _sarif_thread(
+        "pkg/source.py", source_columns=(5, 12), sink_columns=(3, 18)
+    )
+    locations = thread["locations"]
+    assert isinstance(locations, list)
+    locations.insert(
+        1,
+        {
+            "location": {
+                "physicalLocation": {
+                    "artifactLocation": {"uri": "pkg/guards.py"},
+                    "region": guard_region,
+                }
+            }
+        },
+    )
+    first = _sarif_result({"threadFlows": [thread]}, sink_columns=(3, 18))
+    first["properties"] = {"cwe": "CWE-79"}
+    second = json.loads(json.dumps(first))
+    second["ruleId"] = "py/another-rule"
+    ref = artifacts.put_json({"runs": [{"results": [first, second]}]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "codeql",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert (candidates[0].candidate_id == candidates[1].candidate_id) == should_merge
+
+
+def test_exact_v2_rejects_conflicting_class_fields(tmp_path: Path) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit(0, semantic_key="same-expression")
+    _hit_extra(first)["metadata"] = {"cwe": "CWE-95"}
+    first["properties"] = {"cwe": "not-a-cwe"}
+    second = json.loads(json.dumps(first))
+    second["check_id"] = "python.sql-injection"
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+@pytest.mark.parametrize("kind", ["HINT", "ENTRY_POINT"])
+def test_exact_v2_non_flow_same_span_without_input_proof_keeps_raw_rows(
+    tmp_path: Path, kind: str
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit_with_sink_span(semantic_key="same-expression")
+    if kind == "ENTRY_POINT":
+        _hit_extra(first)["metadata"] = {"candidate_kind": "ENTRY_POINT"}
+    duplicate = json.loads(json.dumps(first))
+    ref = artifacts.put_json({"results": [first, duplicate]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, duplicate),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == kind
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    store.upsert_candidate_page(identity, "scope-1", ref, 0, 2, candidates)
+    saved = store.list_candidates(identity, "scope-1")
+    assert len(saved) == 2
+    assert {item.origins[0].result_index for item in saved} == {0, 1}
+
+
+@pytest.mark.parametrize("engine", ["opengrep", "codeql"])
+def test_exact_v2_same_rule_non_flow_rows_keep_distinct_origins(
+    tmp_path: Path, engine: str
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = (
+        _sarif_result(sink_columns=(3, 18))
+        if engine == "codeql"
+        else _hit_with_sink_span(semantic_key="same-expression")
+    )
+    duplicate = json.loads(json.dumps(first))
+    raw = (
+        {"runs": [{"results": [first, duplicate]}]}
+        if engine == "codeql"
+        else {"results": [first, duplicate]}
+    )
+    ref = artifacts.put_json(raw)
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        engine,
+        ref,
+        (first, duplicate),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+def test_exact_v2_same_rule_rich_flow_exact_duplicates_merge(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit_with_sink_span(semantic_key="same-flow")
+    _hit_extra(first)["dataflow_trace"] = _identified_flow_trace()
+    duplicate = json.loads(json.dumps(first))
+    ref = artifacts.put_json({"results": [first, duplicate]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, duplicate),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "FLOW"
+    assert candidates[0].candidate_id == candidates[1].candidate_id
+
+
+@pytest.mark.parametrize("engine", ["opengrep", "codeql"])
+def test_exact_v2_same_rule_sparse_raw_rows_keep_separate_candidate_ids(
+    tmp_path: Path, engine: str
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _sarif_result() if engine == "codeql" else _hit(0)
+    duplicate = json.loads(json.dumps(first))
+    raw = (
+        {"runs": [{"results": [first, duplicate]}]}
+        if engine == "codeql"
+        else {"results": [first, duplicate]}
+    )
+    ref = artifacts.put_json(raw)
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        engine,
+        ref,
+        (first, duplicate),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].kind == candidates[1].kind == "HINT"
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+def test_exact_v2_keeps_same_rule_id_separate_across_engines_without_cwe(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    row = _hit(0, semantic_key="same-expression")
+    ref = artifacts.put_json({"results": [row]})
+
+    opengrep = normalize_candidate_page(
+        identity, "scope-1", "opengrep", ref, (row,), identity_version="exact-v2"
+    )[0]
+    semgrep = normalize_candidate_page(
+        identity, "scope-1", "semgrep", ref, (row,), identity_version="exact-v2"
+    )[0]
+    assert opengrep.candidate_id != semgrep.candidate_id
+
+
+@pytest.mark.parametrize(
+    ("field", "first_value", "second_value"),
+    (
+        ("lines", "eval(request.args['a'])", "eval(request.args['b'])"),
+        ("source_key", "a", "b"),
+        ("branch", "is_admin", "is_guest"),
+        ("sink_argument", "command", "template"),
+        ("resource", "users", "orders"),
+        ("sanitizer", "escaped", "raw"),
+    ),
+)
+def test_exact_v2_keeps_distinct_full_match_evidence(
+    tmp_path: Path, field: str, first_value: str, second_value: str
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit(0, semantic_key="same-call")
+    extra = first["extra"]
+    assert isinstance(extra, dict)
+    extra[field] = first_value
+    second = json.loads(json.dumps(first))
+    second["extra"][field] = second_value
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].candidate_id != candidates[1].candidate_id
+
+
+def test_exact_v2_keeps_distinct_codeql_trace_threads(tmp_path: Path) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    row = _sarif_result(
+        {"threadFlows": [_sarif_thread("pkg/first.py"), _sarif_thread("pkg/second.py")]}
+    )
+    ref = artifacts.put_json({"runs": [{"results": [row]}]})
+
+    candidates = normalize_candidate_page(
+        identity, "scope-1", "codeql", ref, (row,), identity_version="exact-v2"
+    )
+    assert len(candidates) == 2
+    assert len({item.candidate_id for item in candidates}) == 2
+    assert all(item.origins[0].result_index == 0 for item in candidates)
+
+
+@pytest.mark.parametrize("placement", ["top", "metadata"])
+@pytest.mark.parametrize("change", ["different", "absent"])
+@pytest.mark.parametrize("with_flow", [False, True])
+def test_exact_v2_preserves_semantic_key_differences(
+    tmp_path: Path,
+    placement: str,
+    change: str,
+    with_flow: bool,
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    first = _hit(0)
+    if with_flow:
+        _hit_extra(first)["dataflow_trace"] = {
+            "taint_source": {"path": "pkg/input.py", "line": 1},
+            "intermediate_vars": [],
+            "taint_sink": {"path": "pkg/file_0.py", "line": 1},
+        }
+    if placement == "top":
+        first["semantic_key"] = "scanner-key-one"
+    else:
+        _hit_extra(first)["metadata"] = {"semantic_key": "scanner-key-one"}
+    second = json.loads(json.dumps(first))
+    if placement == "top":
+        if change == "different":
+            second["semantic_key"] = "scanner-key-two"
+        else:
+            second.pop("semantic_key")
+    elif change == "different":
+        second["extra"]["metadata"]["semantic_key"] = "scanner-key-two"
+    else:
+        second["extra"]["metadata"].pop("semantic_key")
+    ref = artifacts.put_json({"results": [first, second]})
+
+    candidates = normalize_candidate_page(
+        identity,
+        "scope-1",
+        "opengrep",
+        ref,
+        (first, second),
+        identity_version="exact-v2",
+    )
+    assert candidates[0].candidate_id != candidates[1].candidate_id
 
 
 def test_candidate_page_and_cursor_commit_together_and_resume(tmp_path: Path) -> None:
@@ -397,6 +1157,69 @@ def test_same_raw_artifact_keeps_two_engine_origins(tmp_path: Path) -> None:
     assert {origin.engine for origin in candidate.origins} == {"opengrep", "semgrep"}
 
 
+@pytest.mark.parametrize(
+    ("cwe", "with_flow", "expected_count"),
+    ((None, False, 2), ("CWE-95", False, 2), ("CWE-95", True, 1)),
+)
+def test_exact_v2_shared_raw_artifact_requires_class_for_cross_engine_merge(
+    tmp_path: Path, cwe: str | None, with_flow: bool, expected_count: int
+) -> None:
+    identity = _identity()
+    artifacts = _artifacts(tmp_path, identity)
+    row = (
+        _hit_with_sink_span(semantic_key="same-call")
+        if with_flow
+        else _hit(0, semantic_key="same-call")
+    )
+    if cwe is not None:
+        _hit_extra(row)["metadata"] = {"cwe": cwe}
+    if with_flow:
+        _hit_extra(row)["dataflow_trace"] = _identified_flow_trace()
+    raw_ref = artifacts.put_json({"results": [row]})
+    ast_ref = artifacts.put_json({"kind": "simple_python_ast", "facts": []})
+    merged_ref = artifacts.put_json({"results": []})
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "engine_raw_refs": [raw_ref.model_dump(mode="json")],
+            "engine_raw_sources": [
+                {
+                    "ref": raw_ref.model_dump(mode="json"),
+                    "engine": engine,
+                    "verified_pairs": [
+                        {"path": "pkg/file_0.py", "rule_id": "python.eval"}
+                    ],
+                }
+                for engine in ("opengrep", "semgrep")
+            ],
+            "tool_result_refs": [
+                ast_ref.model_dump(mode="json"),
+                merged_ref.model_dump(mode="json"),
+            ],
+        }
+    )
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+
+    ingest_static_candidates(
+        identity,
+        "scope-1",
+        bundle_ref,
+        artifacts,
+        store,
+        identity_version="exact-v2",
+    )
+    candidates = store.list_candidates(identity, "scope-1")
+    assert len(candidates) == expected_count
+    assert {origin.engine for item in candidates for origin in item.origins} == {
+        "opengrep",
+        "semgrep",
+    }
+    if expected_count == 2:
+        assert all(len(item.origins) == 1 for item in candidates)
+    else:
+        assert len(candidates[0].origins) == 2
+
+
 def test_budget_failure_reopens_only_with_usage_headroom(tmp_path: Path) -> None:
     identity = _identity()
     artifacts = _artifacts(tmp_path, identity)
@@ -519,8 +1342,10 @@ def test_cursor_advances_past_unverified_hits_without_creating_candidates(
     assert store.candidate_counts(identity, "scope-1")["PENDING"] == 1
 
 
+@pytest.mark.parametrize("identity_version", ["legacy", "exact-v2"])
 def test_ingest_only_verified_file_rule_hits_from_partial_raw(
     tmp_path: Path,
+    identity_version: str,
 ) -> None:
     identity = _identity()
     artifacts = _artifacts(tmp_path, identity)
@@ -549,7 +1374,15 @@ def test_ingest_only_verified_file_rule_hits_from_partial_raw(
     store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
 
     assert (
-        ingest_static_candidates(identity, "scope-1", bundle_ref, artifacts, store) == 1
+        ingest_static_candidates(
+            identity,
+            "scope-1",
+            bundle_ref,
+            artifacts,
+            store,
+            identity_version=identity_version,
+        )
+        == 1
     )
     assert store.candidate_cursor(identity, "scope-1", raw_ref) == 2
     candidates = store.list_candidates(identity, "scope-1")
@@ -1237,14 +2070,29 @@ def test_real_request_source_rule_is_entry_point_and_sink_remains_hint(
     assert [candidate.kind for candidate in candidates] == ["ENTRY_POINT", "HINT"]
 
 
-def _sarif_thread(source: str) -> dict[str, object]:
+def _sarif_thread(
+    source: str,
+    *,
+    source_columns: tuple[int, int] | None = None,
+    sink_columns: tuple[int, int] | None = None,
+) -> dict[str, object]:
     return {
         "locations": [
             {
                 "location": {
                     "physicalLocation": {
                         "artifactLocation": {"uri": source},
-                        "region": {"startLine": 1},
+                        "region": {
+                            "startLine": 1,
+                            **(
+                                {
+                                    "startColumn": source_columns[0],
+                                    "endColumn": source_columns[1],
+                                }
+                                if source_columns is not None
+                                else {}
+                            ),
+                        },
                     }
                 }
             },
@@ -1252,7 +2100,17 @@ def _sarif_thread(source: str) -> dict[str, object]:
                 "location": {
                     "physicalLocation": {
                         "artifactLocation": {"uri": "pkg/sink.py"},
-                        "region": {"startLine": 10},
+                        "region": {
+                            "startLine": 10,
+                            **(
+                                {
+                                    "startColumn": sink_columns[0],
+                                    "endColumn": sink_columns[1],
+                                }
+                                if sink_columns is not None
+                                else {}
+                            ),
+                        },
                     }
                 }
             },
@@ -1260,7 +2118,10 @@ def _sarif_thread(source: str) -> dict[str, object]:
     }
 
 
-def _sarif_result(*flows: dict[str, object]) -> dict[str, object]:
+def _sarif_result(
+    *flows: dict[str, object],
+    sink_columns: tuple[int, int] | None = None,
+) -> dict[str, object]:
     return {
         "ruleId": "py/taint",
         "message": {"text": "tainted input reaches sink"},
@@ -1268,7 +2129,17 @@ def _sarif_result(*flows: dict[str, object]) -> dict[str, object]:
             {
                 "physicalLocation": {
                     "artifactLocation": {"uri": "pkg/sink.py"},
-                    "region": {"startLine": 10},
+                    "region": {
+                        "startLine": 10,
+                        **(
+                            {
+                                "startColumn": sink_columns[0],
+                                "endColumn": sink_columns[1],
+                            }
+                            if sink_columns is not None
+                            else {}
+                        ),
+                    },
                 }
             }
         ],

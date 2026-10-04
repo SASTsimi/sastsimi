@@ -87,6 +87,58 @@ Promise.resolve().then(async () => {
     assert result.returncode == 0, result.stderr
 
 
+def test_outputs_tab_receives_group_data_and_renders_verified_zip_link() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    source = _STATIC / "app.js"
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync(process.argv[1], 'utf8').split(
+  'document.getElementById("log-search").addEventListener'
+)[0];
+const context = { window: { location: { pathname: '/' } }, console };
+vm.createContext(context);
+vm.runInContext(source, context);
+vm.runInContext(`
+  globalThis.rendered = null;
+  el = (tag, label, className) => ({
+    tag, label, className, children: [],
+    append(...items) { this.children.push(...items); },
+  });
+  reportRow = (item) => ({ tag: 'raw', label: item.display_id });
+  replace = (_id, rows) => { globalThis.rendered = rows; };
+  renderArtifactSubset = () => {};
+  renderOutputs({
+    artifacts: [], poc_artifact_ids: [], evidence_artifact_ids: [],
+    reports: [{display_id:'F-001'}, {display_id:'F-002'}],
+    finding_groups: [{
+      group_id:'aaa', representative_id:'F-001',
+      status:'PROVEN_SAME_FLOW', member_ids:['F-001','F-002'],
+      bundle_url:'/api/analyses/analysis/groups/aaa/bundle.zip'
+    }]
+  });
+`, context);
+assert.equal(context.rendered.length, 1);
+const card = context.rendered[0];
+assert.equal(card.className, 'report-group');
+assert.ok(card.children.some((item) => item.tag === 'a' &&
+  item.href === '/api/analyses/analysis/groups/aaa/bundle.zip'));
+assert.ok(card.children.some((item) => String(item.label).includes('제보 허가')));
+assert.equal(card.children.filter((item) => item.tag === 'raw').length, 2);
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(source)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_status_grid_is_paged_and_unknown_is_not_rendered_as_zero() -> None:
     source = (_STATIC / "app.js").read_text(encoding="utf-8")
     assert "status-cells?offset=" in source

@@ -9,6 +9,7 @@ from typing import Any, NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
+from sastsimi.composition.simple_runtime_composition import GroupBundleUnavailable
 from sastsimi.config.production_profile import load_production_profile
 from sastsimi.config.user_config import UserConfigStore
 from sastsimi.interfaces.cli import analyze as analyze_command
@@ -100,6 +101,7 @@ def _normalize_public_argv(argv: list[str] | None) -> list[str] | None:
     if index + 1 >= len(normalized) or normalized[index + 1] in {
         "show",
         "export",
+        "export-group",
         "-h",
         "--help",
     }:
@@ -326,6 +328,10 @@ def main(
     report_export.add_argument(
         "--format", dest="export_format", choices=["markdown"], required=True
     )
+    report_group = report_commands.add_parser("export-group", allow_abbrev=False)
+    report_group.add_argument("analysis_id")
+    report_group.add_argument("group_id")
+    report_group.add_argument("--format", choices=["text", "json"])
     onboarding_parser = subparsers.add_parser(
         "onboarding",
         help="record and verify production provider/prompt approvals",
@@ -796,6 +802,23 @@ def main(
             return int(ExitCode.OK)
         if args.command == "report":
             command_name = "report " + args.report_command
+            if args.report_command == "export-group":
+                application = resolve_public_application()
+                export_group = getattr(application, "export_report_group", None)
+                if not callable(export_group):
+                    raise GroupBundleUnavailable("GROUP_EXPORT_UNAVAILABLE")
+                bundle_path = export_group(args.analysis_id, args.group_id)
+                emit_data(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data={
+                        "analysis_id": args.analysis_id,
+                        "group_id": args.group_id,
+                        "bundle_path": bundle_path,
+                    },
+                )
+                return int(ExitCode.OK)
             report_application = public_application
             if report_application is None and args.finding_id.startswith("F-"):
                 try:
@@ -1028,6 +1051,15 @@ def main(
         return int(ExitCode.CAPABILITY_UNSUPPORTED)
     except report_command.ReportCommandError:
         code = ExitCode.REPORT_UNAVAILABLE
+    except GroupBundleUnavailable as error:
+        emit_result(
+            ExitCode.REPORT_UNAVAILABLE,
+            output_format,
+            sys.stderr,
+            command=command_name,
+            reason_code=error.code,
+        )
+        return int(ExitCode.REPORT_UNAVAILABLE)
     except result_command.ResultNotFound:
         emit_result(
             ExitCode.INPUT_ERROR,

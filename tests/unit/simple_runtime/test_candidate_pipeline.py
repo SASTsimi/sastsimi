@@ -34,7 +34,10 @@ from sastsimi.simple_runtime.bootstrap_stages import (
     SurfaceProposalResult,
 )
 from sastsimi.simple_runtime.candidate_batches import CandidateBatch
-from sastsimi.simple_runtime.candidates import ingest_static_candidates
+from sastsimi.simple_runtime.candidates import (
+    ingest_static_candidates,
+    normalize_candidate_page,
+)
 from sastsimi.simple_runtime.chaining import SimpleChainingStage
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
@@ -437,6 +440,89 @@ def _setup(
         candidate_client_factory=lambda *_: client,
     )
     return app, store, client, hypotheses
+
+
+@pytest.mark.asyncio
+async def test_legacy_scope_resume_keeps_saved_ids_and_skips_decided_candidate(
+    tmp_path: Path,
+) -> None:
+    app, store, client, _ = _setup(tmp_path, result_count=2)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    static = cast(_Static, app._static).result
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    bundle = json.loads(artifacts.read(static.static_bundle_ref))
+    raw_ref = StoredDataRef.model_validate(bundle["engine_raw_refs"][0])
+    rows = json.loads(artifacts.read(raw_ref))["results"]
+    first = normalize_candidate_page(
+        identity, "scope-1", "opengrep", raw_ref, (rows[0],)
+    )
+    second = normalize_candidate_page(
+        identity, "scope-1", "opengrep", raw_ref, (rows[1],), 1
+    )
+    store.upsert_candidate_page(identity, "scope-1", raw_ref, 0, 1, first)
+    store.save_candidate_decision(
+        identity, "scope-1", first[0].candidate_id, "EXCLUDE", "saved legacy review"
+    )
+
+    result = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    assert result.status == "COMPLETE", result.error_code
+    saved = store.list_candidates(identity, "scope-1")
+    assert {candidate.candidate_id for candidate in saved} == {
+        first[0].candidate_id,
+        second[0].candidate_id,
+    }
+    assert store.candidate_counts(identity, "scope-1")["EXCLUDE"] == 2
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_interrupted_new_scope_resumes_with_exact_v2_candidate_id(
+    tmp_path: Path,
+) -> None:
+    app, store, client, _ = _setup(tmp_path, budget=True)
+    request = SimpleAnalysisRequest(
+        data_dir=tmp_path / "data",
+        repository="https://github.com/example/repo",
+        commit="a" * 40,
+    )
+    first = await app.analyze(request)
+    candidates = store.list_candidates(first.identity, "scope-1")
+    assert first.status == "PAUSED"
+    assert len(candidates) == 1
+    candidate_id = candidates[0].candidate_id
+
+    artifacts = SimpleArtifactRepository(tmp_path / "data", first.identity)
+    run = store.require_analysis_run("analysis-1")
+    assert run.static_bundle_ref is not None
+    bundle = json.loads(artifacts.read(run.static_bundle_ref))
+    raw_ref = StoredDataRef.model_validate(bundle["engine_raw_refs"][0])
+    row = json.loads(artifacts.read(raw_ref))["results"][0]
+    legacy_id = normalize_candidate_page(
+        first.identity, "scope-1", "opengrep", raw_ref, (row,)
+    )[0].candidate_id
+    assert candidate_id != legacy_id
+
+    client.budget = False
+    resumed = await app.resume("analysis-1")
+
+    assert resumed.status == "COMPLETE", resumed.error_code
+    assert {
+        item.candidate_id for item in store.list_candidates(first.identity, "scope-1")
+    } == {candidate_id}
+    assert store.candidate_counts(first.identity, "scope-1")["EXCLUDE"] == 1
+    assert client.calls == 1
 
 
 def test_candidate_terminal_rejects_legacy_v2_poc_with_newer_report(
