@@ -140,6 +140,13 @@ class ReproductionEnvironment:
 
 
 class ReproductionEnvironmentPreparer(Protocol):
+    @property
+    def offline_mode(self) -> bool: ...
+
+    def validate_requirements(
+        self, requirements: tuple[str, ...], *, commit_id: str
+    ) -> None: ...
+
     async def prepare(
         self,
         checkpoint: StageCheckpoint,
@@ -149,6 +156,15 @@ class ReproductionEnvironmentPreparer(Protocol):
 
 
 class _UnavailableEnvironmentPreparer:
+    @property
+    def offline_mode(self) -> bool:
+        return False
+
+    def validate_requirements(
+        self, requirements: tuple[str, ...], *, commit_id: str
+    ) -> None:
+        del requirements, commit_id
+
     async def prepare(
         self,
         checkpoint: StageCheckpoint,
@@ -2621,39 +2637,100 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
             git_executable=self._git_executable,
             require_anchor=self._require_anchor,
         )
-        result, output_ref = await self._stage.call(
-            checkpoint,
-            _unique_refs(checkpoint.input_refs + _prior_refs(prior)),
-            required_refs=required_refs,
+        guidance = (
+            "\nOn this retry, environment_requirements supports only "
+            "`python:3.12`, `pip:<PEP 508 requirement>`, or "
+            "`Source checkout at commit "
+            f"{checkpoint.identity.commit_id} containing relative/path.py`. "
+            "Do not list the checkout itself or shell utilities already present "
+            "in the base image. Do not invent OS package installations. Put a "
+            "genuinely unavailable utility, service, credential, or attack "
+            "precondition in unmet_external_prerequisites instead.\n"
+            if checkpoint.attempt_number > 1 and self._environments.offline_mode
+            else ""
         )
-        raw_requirements = result.value["environment_requirements"]
-        if not isinstance(raw_requirements, list):
-            raise ValueError("ENVIRONMENT_REQUIREMENTS_INVALID")
-        requirements = tuple(str(value) for value in raw_requirements)
-        raw_external = result.value["unmet_external_prerequisites"]
-        if not isinstance(raw_external, list) or any(
-            not isinstance(value, str) or not value.strip() for value in raw_external
-        ):
-            raise ValueError("EXTERNAL_PREREQUISITES_INVALID")
-        if raw_external:
-            return StageResult(
-                output_refs=(output_ref,),
-                external_prerequisites_ref=output_ref,
-                verdict="HOLD",
-                activity_events=(
-                    _activity_event(
-                        checkpoint,
-                        ActivityKind.DECISION_RECORDED,
-                        offset=10,
-                        summary_ko=(
-                            "미입증 외부 공격 전제를 기록하고 "
-                            "가설을 미확정으로 종료했습니다."
-                        ),
-                        output_refs=(output_ref,),
-                        llm=result,
+        rejected_refs: list[StoredDataRef] = []
+
+        def rejected_activity() -> tuple[AgentActivityEvent, ...]:
+            if not rejected_refs:
+                return ()
+            return (
+                _activity_event(
+                    checkpoint,
+                    ActivityKind.EVIDENCE_RECORDED,
+                    offset=9,
+                    summary_ko=(
+                        "지원되지 않는 오프라인 환경 요구사항 응답을 "
+                        "거절하고 재요청했습니다."
                     ),
+                    output_refs=tuple(rejected_refs),
                 ),
             )
+
+        for request_index in range(2):
+            result, output_ref = await self._stage.call(
+                checkpoint,
+                _unique_refs(checkpoint.input_refs + _prior_refs(prior)),
+                required_refs=required_refs,
+                guidance=guidance,
+            )
+            raw_requirements = result.value["environment_requirements"]
+            if not isinstance(raw_requirements, list):
+                raise ValueError("ENVIRONMENT_REQUIREMENTS_INVALID")
+            requirements = tuple(str(value) for value in raw_requirements)
+            raw_external = result.value["unmet_external_prerequisites"]
+            if not isinstance(raw_external, list) or any(
+                not isinstance(value, str) or not value.strip()
+                for value in raw_external
+            ):
+                raise ValueError("EXTERNAL_PREREQUISITES_INVALID")
+            if raw_external:
+                return StageResult(
+                    output_refs=(output_ref,),
+                    external_prerequisites_ref=output_ref,
+                    verdict="HOLD",
+                    activity_events=(
+                        *rejected_activity(),
+                        _activity_event(
+                            checkpoint,
+                            ActivityKind.DECISION_RECORDED,
+                            offset=10,
+                            summary_ko=(
+                                "미입증 외부 공격 전제를 기록하고 "
+                                "가설을 미확정으로 종료했습니다."
+                            ),
+                            output_refs=(output_ref,),
+                            llm=result,
+                        ),
+                    ),
+                )
+            try:
+                self._environments.validate_requirements(
+                    requirements, commit_id=checkpoint.identity.commit_id
+                )
+            except ValueError as error:
+                if str(error) != "POC_OFFLINE_REQUIREMENT_UNSUPPORTED":
+                    raise
+                rejected_refs.append(output_ref)
+                if request_index == 0:
+                    guidance += (
+                        "\nThe previous environment_requirements were rejected with "
+                        "POC_OFFLINE_REQUIREMENT_UNSUPPORTED. Return the same JSON "
+                        "schema with a corrected requirements list. Only list "
+                        "installable Python packages as `pip:<PEP 508 requirement>`; "
+                        "do not list natural-language OS packages or shell tools "
+                        "already supplied by the base image.\n"
+                    )
+                    continue
+                raise StageBlocked(
+                    StageFailure(
+                        code="POC_OFFLINE_REQUIREMENT_UNSUPPORTED",
+                        retryable=False,
+                        safe_message="Offline requirements remained unsupported",
+                        evidence_refs=tuple(rejected_refs),
+                    )
+                ) from error
+            break
         try:
             environment = await self._environments.prepare(
                 checkpoint,
@@ -2685,6 +2762,7 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
             recipe_ref=environment.recipe_ref,
             image_digest=environment.image_digest,
             activity_events=(
+                *rejected_activity(),
                 _activity_event(
                     checkpoint,
                     ActivityKind.DECISION_RECORDED,

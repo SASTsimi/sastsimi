@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.observability.agent_activity import ActivityKind
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -29,7 +30,10 @@ from sastsimi.simple_runtime.portable_docker import (
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.runner import StageBlocked
-from sastsimi.simple_runtime.stages import InitialVerificationStage
+from sastsimi.simple_runtime.stages import (
+    InitialVerificationStage,
+    ReproductionEnvironment,
+)
 
 
 def _fixture(
@@ -682,6 +686,13 @@ async def test_offline_dependency_failure_is_nonretryable_stage_block(
             )
 
     class _MissingDependency:
+        offline_mode = True
+
+        def validate_requirements(
+            self, _requirements: tuple[str, ...], *, commit_id: str
+        ) -> None:
+            del commit_id
+
         async def prepare(self, *_args: object) -> None:
             raise ValueError("POC_OFFLINE_DEPENDENCY_MISSING")
 
@@ -696,6 +707,208 @@ async def test_offline_dependency_failure_is_nonretryable_stage_block(
     assert blocked.value.failure.retryable is False
     assert b"in-process PoC fixtures" in prompts[0]
     assert b"already provided by the pinned checkout" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_initial_verification_retry_explains_offline_requirement_contract(
+    tmp_path: Path,
+) -> None:
+    _workspace, commit, _path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    prompts: list[bytes] = []
+
+    class _Client:
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            prompt = kwargs["prompt"]
+            assert isinstance(prompt, bytes)
+            prompts.append(prompt)
+            return SimpleLLMCallResult(
+                value={
+                    "initial_assessment": "HOLD",
+                    "rationale": "Needs a runtime check.",
+                    "reproduction_goal": "Run a local command-injection test.",
+                    "environment_requirements": [
+                        "python:3.12",
+                        "pip:Flask",
+                        "GNU coreutils (provides ls with -R support)",
+                    ],
+                    "unmet_external_prerequisites": [],
+                    "supporting_refs": [],
+                    "limitations": [],
+                },
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    class _OfflineValidator:
+        offline_mode = True
+
+        def validate_requirements(
+            self, requirements: tuple[str, ...], *, commit_id: str
+        ) -> None:
+            DirectEnvironmentPreparer._offline_agent_requirements(
+                requirements, commit_id=commit_id
+            )
+
+        async def prepare(
+            self,
+            current: StageCheckpoint,
+            _prior: object,
+            requirements: tuple[str, ...],
+        ) -> None:
+            DirectEnvironmentPreparer._offline_agent_requirements(
+                requirements, commit_id=current.identity.commit_id
+            )
+            raise AssertionError("the invalid requirement must not be accepted")
+
+    stage = InitialVerificationStage(
+        _Client(),
+        artifacts,
+        _OfflineValidator(),  # type: ignore[arg-type]
+    )
+    for attempt_number in (1, 2):
+        with pytest.raises(StageBlocked) as blocked:
+            await stage(
+                checkpoint.model_copy(update={"attempt_number": attempt_number}), {}
+            )
+        assert blocked.value.failure.code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
+        assert len(blocked.value.failure.evidence_refs) == 2
+
+    assert len(prompts) == 4
+    assert b"On this retry" not in prompts[0]
+    assert b"On this retry" not in prompts[1]
+    assert b"On this retry" in prompts[2]
+    assert b"pip:<PEP 508 requirement>" in prompts[2]
+    assert b"Source checkout at commit" in prompts[2]
+    assert commit.encode("ascii") in prompts[2]
+    assert b"shell utilities already present in the base image" in prompts[2]
+    assert b"unmet_external_prerequisites" in prompts[2]
+    assert len(prompts[2]) - len(prompts[0]) < 1200
+
+
+@pytest.mark.asyncio
+async def test_initial_verification_reasks_once_for_invalid_offline_requirement(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    prompts: list[bytes] = []
+    schemas: list[object] = []
+    responses = [
+        ["python:3.12", "pip:Flask", "GNU coreutils (provides ls with -R support)"],
+        ["python:3.12", "pip:Flask"],
+    ]
+
+    class _Client:
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            prompt = kwargs["prompt"]
+            assert isinstance(prompt, bytes)
+            prompts.append(prompt)
+            schemas.append(kwargs["output_schema"])
+            return SimpleLLMCallResult(
+                value={
+                    "initial_assessment": "TRUE",
+                    "rationale": "Can run locally.",
+                    "reproduction_goal": "Run a local test.",
+                    "environment_requirements": responses.pop(0),
+                    "unmet_external_prerequisites": [],
+                    "supporting_refs": [],
+                    "limitations": [],
+                },
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    class _Environment(DirectEnvironmentPreparer):
+        async def prepare(
+            self,
+            _checkpoint: StageCheckpoint,
+            _prior: object,
+            requirements: tuple[str, ...],
+        ) -> ReproductionEnvironment:
+            assert requirements == ("python:3.12", "pip:Flask")
+            return ReproductionEnvironment(
+                recipe_ref=artifacts.put_json({"kind": "test_offline_recipe"}),
+                image_digest="sha256:" + "c" * 64,
+            )
+
+    environment = _Environment(
+        docker=_Docker(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=digest,
+    )
+    result = await InitialVerificationStage(_Client(), artifacts, environment)(
+        checkpoint, {}
+    )
+
+    assert result.recipe_ref is not None
+    assert len(prompts) == 2
+    assert schemas[0] == schemas[1]
+    assert b"POC_OFFLINE_REQUIREMENT_UNSUPPORTED" in prompts[1]
+    assert b"pip:<PEP 508 requirement>" in prompts[1]
+    assert responses == []
+    assert len(result.activity_events) == 2
+    rejected_event, accepted_event = result.activity_events
+    assert rejected_event.kind is ActivityKind.EVIDENCE_RECORDED
+    assert rejected_event.sequence % 100 == 9
+    assert accepted_event.kind is ActivityKind.DECISION_RECORDED
+    assert accepted_event.sequence % 100 == 10
+    assert accepted_event.output_refs == result.output_refs
+    assert len(rejected_event.output_refs) == 1
+    assert rejected_event.output_refs[0] not in result.output_refs
+    rejected = json.loads(artifacts.read(rejected_event.output_refs[0]))
+    assert rejected["result"]["environment_requirements"] == [
+        "python:3.12",
+        "pip:Flask",
+        "GNU coreutils (provides ls with -R support)",
+    ]
+    assert "GNU coreutils" not in rejected_event.summary_ko
+
+
+@pytest.mark.asyncio
+async def test_non_offline_retry_does_not_impose_offline_requirement_contract(
+    tmp_path: Path,
+) -> None:
+    _workspace, commit, _path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    prompts: list[bytes] = []
+
+    class _Client:
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            prompt = kwargs["prompt"]
+            assert isinstance(prompt, bytes)
+            prompts.append(prompt)
+            return SimpleLLMCallResult(
+                value={
+                    "initial_assessment": "HOLD",
+                    "rationale": "An external service is needed.",
+                    "reproduction_goal": "Check the service integration.",
+                    "environment_requirements": [],
+                    "unmet_external_prerequisites": ["external service unavailable"],
+                    "supporting_refs": [],
+                    "limitations": [],
+                },
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    class _OnlineEnvironment:
+        offline_mode = False
+
+        async def prepare(self, *_args: object) -> None:
+            raise AssertionError("external prerequisite must remain a HOLD")
+
+    result = await InitialVerificationStage(
+        _Client(),
+        artifacts,
+        _OnlineEnvironment(),  # type: ignore[arg-type]
+    )(checkpoint.model_copy(update={"attempt_number": 2}), {})
+
+    assert result.verdict == "HOLD"
+    assert len(prompts) == 1
+    assert b"On this retry" not in prompts[0]
 
 
 @pytest.mark.asyncio

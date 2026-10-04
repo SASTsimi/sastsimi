@@ -1140,6 +1140,18 @@ class DirectEnvironmentPreparer:
             return False
         return True
 
+    @property
+    def offline_mode(self) -> bool:
+        return self._wheel_bundle_path is not None
+
+    def validate_requirements(
+        self, requirements: tuple[str, ...], *, commit_id: str
+    ) -> None:
+        """Check syntax; pinned source presence stays fail-closed in prepare."""
+
+        if self.offline_mode:
+            self._offline_agent_requirements(requirements, commit_id=commit_id)
+
     async def prepare(
         self,
         checkpoint: StageCheckpoint,
