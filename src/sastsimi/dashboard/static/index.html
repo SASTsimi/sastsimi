@@ -1,85 +1,61 @@
 <!doctype html>
 <html lang="ko">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>SASTSIMI 분석 현황</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SASTSIMI 분석 현황</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
-  <header>
-    <div>
-      <p class="eyebrow">LOCAL READ-ONLY DASHBOARD</p>
-      <h1>SASTSIMI 분석 현황</h1>
-      <p>저장된 단계·Agent 활동·아티팩트·증거만 표시합니다.</p>
-    </div>
-    <div class="header-actions">
-      <div id="last-updated" class="meta">마지막 갱신 확인 중</div>
-      <div id="connection" class="connection" role="status" aria-live="polite">연결 확인 중</div>
-    </div>
+  <header class="app-header">
+    <div><p class="eyebrow">LOCAL READ-ONLY DASHBOARD</p><h1>SASTSIMI 분석 현황</h1><p>검증된 진행 기록과 산출물을 기능별로 확인합니다.</p></div>
+    <section id="summary-strip" class="header-summary" aria-label="핵심 분석 요약">
+      <span id="summary-status" class="sr-only">—</span>
+      <div id="kpi-grid" class="header-kpi-group result-kpis" aria-label="핵심 결과">
+        <article class="header-kpi" tabindex="0" aria-label="TRUE Finding" data-tooltip="TRUE Finding"><span class="kpi-icon" aria-hidden="true">◆</span><strong id="summary-true-findings">—</strong></article>
+        <article class="header-kpi" tabindex="0" aria-label="검증된 PoC" data-tooltip="검증된 PoC"><span class="kpi-icon" aria-hidden="true">⚗</span><strong id="summary-validated-poc">—</strong></article>
+        <article class="header-kpi" tabindex="0" aria-label="검증 완료 가설" data-tooltip="검증 완료 가설"><span class="kpi-icon" aria-hidden="true">✓</span><strong id="summary-verified-hypotheses">—</strong></article>
+      </div>
+      <div id="usage" class="header-kpi-group usage-kpis" aria-label="LLM 사용량">
+        <article class="header-kpi" tabindex="0" aria-label="LLM 호출" data-tooltip="LLM 호출"><span class="kpi-icon" aria-hidden="true">✦</span><strong id="summary-llm-calls">—</strong></article>
+        <article class="header-kpi" tabindex="0" aria-label="LLM 토큰" data-tooltip="LLM 토큰"><span class="kpi-icon" aria-hidden="true">◉</span><strong id="summary-llm-tokens">—</strong></article>
+        <article class="header-kpi" tabindex="0" aria-label="확인된 LLM 비용" data-tooltip="확인된 LLM 비용"><span class="kpi-icon" aria-hidden="true">₩</span><strong id="summary-llm-cost">—</strong></article>
+      </div>
+      <span id="summary-usage-note" class="sr-only"></span>
+    </section>
+    <div class="header-actions"><button id="analysis-drawer-toggle" class="small-button mobile-only" type="button" aria-controls="analysis-sidebar" aria-expanded="false">분석 목록</button><button id="presentation-toggle" class="mode-toggle" type="button" aria-pressed="false">발표 모드</button><div id="last-updated" class="meta">마지막 갱신 확인 중</div><div id="connection" class="connection" role="status" aria-live="polite">연결 확인 중</div></div>
   </header>
+  <div id="demo-banner" class="demo-banner" role="status" hidden>DEMO · 가상 시연 데이터입니다. 실제 분석 결과나 제보 가능한 Finding이 아닙니다.</div>
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
   <main>
-    <aside>
-      <h2>분석 목록</h2>
-      <div id="analyses" class="stack"></div>
-      <a id="bundle-download" class="download hidden" href="#">전체 결과 ZIP 다운로드</a>
-      <label id="logs-selection" class="selection-option hidden"><input id="include-logs" type="checkbox" checked> 로그 포함</label>
-      <a id="selection-download" class="download hidden" href="#">선택 결과 ZIP 다운로드</a>
+    <aside id="analysis-sidebar" aria-label="분석 선택">
+      <div class="panel-heading"><h2>분석 목록</h2><button id="analysis-drawer-close" class="small-button mobile-only" type="button">닫기</button></div>
+      <div id="analyses" class="analysis-list"></div>
+      <div class="compare-controls"><label for="compare-analysis" class="meta">다른 분석과 비교</label><select id="compare-analysis" aria-label="비교할 분석"></select><button id="compare-button" class="small-button" type="button">비교</button></div>
+      <a id="bundle-download" class="download hidden" href="#">전체 결과 ZIP 다운로드</a><a id="presentation-download" class="download hidden" href="#">발표 패키지 ZIP 다운로드</a><label id="logs-selection" class="selection-option hidden"><input id="include-logs" type="checkbox" checked> 로그 포함</label><a id="selection-download" class="download hidden" href="#">선택 결과 ZIP 다운로드</a>
     </aside>
     <section class="content">
       <div id="notice" class="notice" role="status" aria-live="polite">분석 데이터를 불러오는 중입니다.</div>
-      <div id="overview" class="panel empty">분석을 선택하세요.</div>
-      <section class="panel">
-        <h2>정적분석 도구</h2>
-        <div id="static-tools" class="tool-grid"></div>
+      <nav id="dashboard-tabs" class="dashboard-tabs" aria-label="대시보드 기능" role="tablist">
+        <button role="tab" aria-selected="true" aria-controls="tab-overview" data-tab="overview">개요</button><button role="tab" aria-selected="false" aria-controls="tab-progress" data-tab="progress">진행</button><button role="tab" aria-selected="false" aria-controls="tab-findings" data-tab="findings">Finding∙검증</button><button role="tab" aria-selected="false" aria-controls="tab-coverage" data-tab="coverage">Coverage</button><button role="tab" aria-selected="false" aria-controls="tab-artifacts" data-tab="artifacts">아티팩트</button><button role="tab" aria-selected="false" aria-controls="tab-llm" data-tab="llm">LLM</button><button role="tab" aria-selected="false" aria-controls="tab-outputs" data-tab="outputs">PoC∙증거∙보고서</button><button role="tab" aria-selected="false" aria-controls="tab-logs" data-tab="logs">로그</button>
+      </nav>
+      <section id="tab-overview" class="tab-panel active" data-panel="overview" role="tabpanel">
+        <div id="overview" class="panel empty">분석을 선택하세요.</div>
+        <section class="panel"><div class="panel-heading"><h2>준비 상태</h2><span class="meta">저장 기록 기준</span></div><div id="readiness" class="readiness-grid"></div></section>
+        <section id="comparison-panel" class="panel hidden"><div class="panel-heading"><h2>분석 실행 비교</h2><button id="compare-close" class="small-button" type="button">닫기</button></div><div id="comparison" class="comparison-grid"></div></section>
       </section>
-      <section class="panel">
-        <h2>분석 파이프라인</h2>
-        <div id="pipeline" class="pipeline"></div>
+      <section id="tab-progress" class="tab-panel" data-panel="progress" role="tabpanel" hidden>
+        <section class="panel status-grid-panel"><div class="panel-heading"><h2 id="status-grid-title">가설 상태 격자</h2><span id="status-grid-count" class="meta">항목 불러오는 중</span></div><div class="status-legend"><span>대기</span><span>분석 중</span><span>완료·미확정</span><span>확정</span><span>차단·실패</span></div><div id="status-grid" class="status-grid" role="grid" aria-label="가설별 분석 상태"></div><div class="page-controls"><button id="status-page-prev" class="small-button" type="button">이전 200개</button><span id="status-page-label" class="meta">—</span><button id="status-page-next" class="small-button" type="button">다음 200개</button></div></section>
+        <section class="panel overall-progress-panel"><h2>전체 진행</h2><div class="progress-lane"><div class="status-row"><span>정적 검사 커버리지</span><strong id="discovery-progress-label">—</strong></div><progress id="discovery-progress" max="100"></progress></div><div class="progress-lane"><div class="status-row"><span>가설 검증 진행</span><strong id="verification-progress-label">—</strong></div><progress id="verification-progress" max="100"></progress></div></section>
+        <section class="panel history-panel"><div class="panel-heading"><h2>최근 실행 이력</h2><a class="text-link tab-link" href="#logs" data-open-tab="logs">로그에서 자세히 보기</a></div><div class="history-scroll"><table><thead><tr><th>시각</th><th>단계·도구</th><th>결과</th><th>수량</th><th>상태</th></tr></thead><tbody id="execution-history"></tbody></table></div></section>
+        <section class="panel"><div class="panel-heading"><h2>분석 파이프라인</h2><div class="actions"><button id="replay-toggle" class="small-button" type="button">재생</button><button id="replay-reset" class="small-button" type="button">초기화</button></div></div><input id="replay-slider" class="replay-slider" type="range" min="0" max="0" value="0"><div id="replay-status" class="meta"></div><div id="pipeline" class="pipeline"></div></section>
+        <section class="panel failure-panel"><div class="panel-heading"><h2>실패·복구 요약</h2><a class="text-link tab-link" href="#logs" data-open-tab="logs">상세 이벤트 보기</a></div><div id="failure-guidance" class="stack"></div></section>
       </section>
-      <div class="grid">
-        <section class="panel"><h2>가설 진행 상태</h2><div id="hypotheses" class="stack"></div></section>
-        <section class="panel">
-          <div class="panel-heading">
-            <h2>Agent 활동·로그</h2>
-            <a id="logs-download" class="text-link" href="#">로그 다운로드</a>
-          </div>
-          <div class="filters">
-            <input id="log-search" type="search" placeholder="로그 검색" aria-label="로그 검색">
-            <select id="log-status" aria-label="로그 상태 필터">
-              <option value="">전체 상태</option>
-              <option value="FAILED">실패</option>
-              <option value="BLOCKED">차단</option>
-              <option value="SUCCEEDED">성공</option>
-            </select>
-          </div>
-          <div id="events" class="timeline" role="log" aria-live="polite"></div>
-        </section>
-      </div>
-      <section class="panel"><h2>체이닝 관계</h2><div id="chains" class="stack"></div></section>
-      <section class="panel">
-        <div class="panel-heading"><h2>단계별 JSON·파일 아티팩트</h2><span id="artifact-count" class="meta"></span></div>
-        <div class="filters">
-          <input id="artifact-search" type="search" placeholder="종류·단계·가설 검색" aria-label="아티팩트 검색">
-        </div>
-        <div class="artifact-layout">
-          <div id="artifacts" class="artifact-list"></div>
-          <div id="artifact-viewer" class="viewer empty">아티팩트를 선택하세요.</div>
-        </div>
+      <section id="tab-findings" class="tab-panel" data-panel="findings" role="tabpanel" hidden>
+        <section class="panel"><div class="panel-heading"><h2>가설 판정과 Gate</h2><span id="hypothesis-page-label" class="meta"></span></div><div id="hypotheses" class="stack"></div><div class="page-controls"><button id="hypothesis-prev" class="small-button" type="button">이전</button><button id="hypothesis-next" class="small-button" type="button">다음</button></div></section>
+        <section class="panel chain-panel"><div class="panel-heading"><h2>Source → Sink·체이닝</h2><span class="meta">가설·부모 관계 기준</span></div><div id="chains" class="chain-graph"></div></section>
+        <section class="panel finding-trace-panel"><div class="panel-heading"><h2>Finding 관계</h2><span id="finding-pin-status" class="meta"></span></div><div id="finding-traces" class="stack"></div></section>
       </section>
-      <section class="panel">
-        <h2>LLM 요청·응답</h2>
-        <div id="llm-invocations" class="stack"></div>
-      </section>
-      <div class="grid">
-        <section class="panel"><h2>검증된 PoC</h2><div id="poc" class="stack"></div></section>
-        <section class="panel"><h2>정적·동적 증거</h2><div id="evidence" class="stack"></div></section>
-      </div>
-      <section class="panel">
-        <h2>Markdown 보고서</h2>
-        <div id="reports" class="reports"></div>
-        <article id="report-viewer" class="markdown-viewer empty">보고서를 선택하세요.</article>
-      </section>
+      <section id="tab-coverage" class="tab-panel" data-panel="coverage" role="tabpanel" hidden><section class="panel"><div class="panel-heading"><h2>정적 분석 Coverage</h2><span class="meta">실제 저장된 검증 범위</span></div><div id="coverage-summary" class="coverage-summary"></div></section><section class="panel"><h2>정적분석 도구</h2><div id="static-tools" class="tool-grid"></div><div id="static-tool-findings" class="tool-overlap"></div></section></section>
+      <section id="tab-artifacts" class="tab-panel" data-panel="artifacts" role="tabpanel" hidden><section class="panel"><div class="panel-heading"><h2>분석 아티팩트</h2><span id="artifact-count" class="meta"></span></div><div class="filters"><input id="artifact-search" type="search" placeholder="이름·용도·단계·Agent·가설 검색"></div><div class="artifact-layout"><div><div id="artifacts" class="artifact-list"></div><div class="page-controls"><button id="artifact-prev" class="small-button" type="button">이전</button><button id="artifact-next" class="small-button" type="button">다음</button></div></div><div id="artifact-viewer" class="viewer empty">아티팩트를 선택하세요.</div></div></section><section class="panel"><h2>아티팩트 관계 추적</h2><div id="artifact-relations" class="relation-graph"></div></section></section>
+      <section id="tab-llm" class="tab-panel" data-panel="llm" role="tabpanel" hidden><section class="panel"><div class="panel-heading"><h2>LLM 호출</h2><span id="llm-page-label" class="meta"></span></div><div class="llm-layout"><div><div id="llm-invocations" class="invocation-list"></div><div class="page-controls"><button id="llm-prev" class="small-button" type="button">이전</button><button id="llm-next" class="small-button" type="button">다음</button></div></div><article id="llm-detail" class="llm-detail empty"><div id="llm-metadata" class="llm-metadata"></div><div id="llm-view-tabs" class="subtabs" role="tablist"><button data-llm-view="response" aria-selected="true">응답 결과</button><button data-llm-view="system">시스템 프롬프트</button><button data-llm-view="user">사용자 프롬프트</button><button data-llm-view="request-json">저장 원문 요청 JSON</button><button data-llm-view="response-json">저장 원문 응답 JSON</button></div><div id="llm-viewer" class="code-view">LLM 호출을 선택하세요.</div></article></div></section></section>
+      <section id="tab-outputs" class="tab-panel" data-panel="outputs" role="tabpanel" hidden><div class="grid"><section class="panel"><h2>검증된 PoC</h2><div id="poc" class="stack"></div></section><section class="panel"><h2>정적·동적 증거</h2><div id="evidence" class="stack"></div></section></div><section class="panel"><h2>Markdown 보고서</h2><div id="reports" class="reports"></div><article id="report-viewer" class="markdown-viewer empty">보고서를 선택하세요.</article></section></section>
+      <section id="tab-logs" class="tab-panel" data-panel="logs" role="tabpanel" hidden><section class="panel"><div class="panel-heading"><h2>Agent 활동·이벤트</h2><div class="actions"><span id="log-stream-status" class="stream-status">로그 대기 중</span><a id="logs-download" class="text-link" href="#">로그 다운로드</a></div></div><div class="filters"><input id="log-search" type="search" placeholder="로그 검색"><select id="log-status"><option value="">전체 상태</option><option value="FAILED">실패</option><option value="BLOCKED">차단</option><option value="SUCCEEDED">성공</option></select></div><div id="events" class="timeline" role="log"></div><div class="page-controls"><button id="log-prev" class="small-button" type="button">최신 쪽</button><span id="log-page-label" class="meta"></span><button id="log-next" class="small-button" type="button">이전 기록</button></div></section></section>
     </section>
   </main>
   <script src="/static/app.js" defer></script>
