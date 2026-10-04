@@ -54,9 +54,11 @@ from .models import (
     ArtifactRelationView,
     ArtifactView,
     DashboardKpiView,
+    DashboardShellView,
     FindingReportView,
     FindingTraceView,
     HypothesisProgressView,
+    LLMInvocationDetailView,
     LLMInvocationView,
     ReadinessCheckView,
     StageProgressView,
@@ -73,6 +75,7 @@ _RULE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 1024 * 1024
 _MAX_ARTIFACTS = 512
+_INCOMPLETE_ARTIFACT_PREVIEW = 32
 _MAX_PROJECTED_ARTIFACT_BYTES = 64 * 1024 * 1024
 _STALE_SECONDS = 30
 _STAGE_LABELS: dict[SimpleStage, str] = {
@@ -198,6 +201,278 @@ class DashboardQuery:
             return AnalysisDetailView(**summary.model_dump())
         return self._project_analysis(analysis_id, list(values), detail=True)
 
+    def get_analysis_shell(self, analysis_id: str) -> DashboardShellView:
+        """Return only data needed outside the selected tab."""
+        exact = self._resolved(analysis_id)
+        values = list(self._checkpoints(exact))
+        if not values:
+            summary = next(
+                (
+                    item
+                    for item in self._full_runtime_summaries()
+                    if item.analysis_id == exact
+                ),
+                None,
+            )
+            if summary is None:
+                raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
+            return DashboardShellView(**summary.model_dump())
+        summary = self._project_analysis(exact, values)
+        run = self._simple_run(exact)
+        groups = self._hypothesis_groups(values)
+        known_ids = set(run.hypothesis_ids) if run is not None else set()
+        total = len(known_ids | set(groups)) if run is not None or groups else None
+        verified = sum(self._final_verdict_saved(items) for items in groups.values())
+        validated = sum(self._validated_poc(items) for items in groups.values())
+        confirmed = sum(self._confirmed_hypothesis(items) for items in groups.values())
+        coverage = self._static_coverage_projection(values)
+        return DashboardShellView.model_validate(
+            {
+                **summary.model_dump(),
+                "kpis": DashboardKpiView(
+                    discovery_done=cast(
+                        int | None, coverage.get("static_coverage_verified")
+                    ),
+                    discovery_total=cast(
+                        int | None, coverage.get("static_coverage_expected")
+                    ),
+                    verification_done=verified if total is not None else None,
+                    verification_total=total,
+                    remaining_work=(
+                        max(0, total - verified) if total is not None else None
+                    ),
+                    confirmed_findings=confirmed,
+                ),
+                "validated_poc_count": validated if total is not None else None,
+                "llm_token_usage_known": self._known_token_usage(exact),
+                "logs_url": f"/api/analyses/{exact}/logs/download",
+                "bundle_url": f"/api/analyses/{exact}/bundle.zip",
+                "presentation_bundle_url": f"/api/analyses/{exact}/presentation.zip",
+            }
+        )
+
+    def get_analysis_tab(
+        self,
+        analysis_id: str,
+        tab: str,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """Build only the selected tab's projection."""
+        if tab not in {
+            "overview",
+            "progress",
+            "findings",
+            "coverage",
+            "artifacts",
+            "llm",
+            "outputs",
+            "logs",
+        }:
+            raise DashboardNotFound("DASHBOARD_TAB_NOT_FOUND")
+        if (
+            type(offset) is not int
+            or type(limit) is not int
+            or offset < 0
+            or not 1 <= limit <= 200
+        ):
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        exact = self._resolved(analysis_id)
+        values = list(self._checkpoints(exact))
+        run = self._simple_run(exact)
+        if not values and run is None:
+            raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
+        if not values:
+            return {
+                "tab": tab,
+                "items": [],
+                "total": 0,
+                "offset": offset,
+                "limit": limit,
+            }
+
+        groups = self._hypothesis_groups(values)
+        hypotheses = tuple(
+            self._project_hypothesis(exact, hypothesis_id, checkpoints, run)
+            for hypothesis_id, checkpoints in sorted(groups.items())
+        )
+        reports = self._reports(exact)
+        coverage = self._static_coverage_projection(values)
+
+        if tab == "overview":
+            static_tools = self._static_tools(run, values, coverage) if run else ()
+            artifact_count = len(
+                {
+                    ref.content_hash
+                    for checkpoint in values
+                    for ref in (*checkpoint.input_refs, *checkpoint.output_refs)
+                    if ref.data_kind == "artifact"
+                }
+            )
+            return {
+                "tab": tab,
+                "readiness": [
+                    item.model_dump(mode="json")
+                    for item in self._readiness(
+                        exact, run, static_tools, artifact_count, reports
+                    )
+                ],
+            }
+        if tab == "progress":
+            events = self._event_models(exact)
+            return {
+                "tab": tab,
+                "pipeline": [
+                    item.model_dump(mode="json") for item in self._pipeline(values, run)
+                ],
+                "history": [
+                    self._activity_view(item).model_dump(mode="json")
+                    for item in events[-12:]
+                ],
+            }
+        if tab == "logs":
+            return {"tab": tab, "logs_url": f"/api/analyses/{exact}/logs/download"}
+
+        artifacts: tuple[ArtifactView, ...] = ()
+        contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
+        invocations: tuple[LLMInvocationView, ...] = ()
+        poc_ids: tuple[str, ...] = ()
+        evidence_ids: tuple[str, ...] = ()
+        omitted = 0
+        if run is not None:
+            artifacts, contents, invocations, poc_ids, evidence_ids, omitted = (
+                self._artifact_projection(exact, values, run)
+            )
+            hypotheses = self._with_hypothesis_metadata(hypotheses, contents)
+        traces = self._finding_traces(
+            exact, reports, hypotheses, artifacts, contents, poc_ids, evidence_ids
+        )
+
+        if tab == "findings":
+            finding_page = hypotheses[offset : offset + limit]
+            return {
+                "tab": tab,
+                "items": [item.model_dump(mode="json") for item in finding_page],
+                "total": len(hypotheses),
+                "offset": offset,
+                "limit": limit,
+                "finding_traces": [item.model_dump(mode="json") for item in traces],
+            }
+        if tab == "coverage":
+            static_tools = self._static_tools(run, values, coverage) if run else ()
+            return {
+                "tab": tab,
+                **coverage,
+                "static_tools": [item.model_dump(mode="json") for item in static_tools],
+                "static_tool_findings": [
+                    item.model_dump(mode="json")
+                    for item in self._static_tool_findings(contents)
+                ],
+            }
+        if tab == "artifacts":
+            artifact_page = artifacts[offset : offset + limit]
+            return {
+                "tab": tab,
+                "items": [item.model_dump(mode="json") for item in artifact_page],
+                "total": len(artifacts),
+                "offset": offset,
+                "limit": limit,
+                "omitted_count": omitted,
+                "projection_complete": omitted == 0,
+                "relations": [
+                    item.model_dump(mode="json")
+                    for item in self._artifact_relations(contents)
+                ],
+            }
+        if tab == "llm":
+            by_hypothesis: dict[str, tuple[str, ...]] = {
+                item.hypothesis_id: (item.display_id,)
+                for item in traces
+                if item.hypothesis_id is not None
+            }
+            enriched = tuple(
+                item.model_copy(
+                    update={
+                        "finding_ids": by_hypothesis.get(item.hypothesis_id or "", ())
+                    }
+                )
+                for item in invocations
+            )
+            invocation_page = enriched[offset : offset + limit]
+            return {
+                "tab": tab,
+                "items": [item.model_dump(mode="json") for item in invocation_page],
+                "total": len(enriched),
+                "offset": offset,
+                "limit": limit,
+            }
+        output_artifact_ids = set(poc_ids) | set(evidence_ids)
+        output_artifacts = tuple(
+            item for item in artifacts if item.artifact_id in output_artifact_ids
+        )
+        return {
+            "tab": tab,
+            "reports": [item.model_dump(mode="json") for item in reports],
+            "finding_traces": [item.model_dump(mode="json") for item in traces],
+            "artifacts": [item.model_dump(mode="json") for item in output_artifacts],
+            "poc_artifact_ids": list(poc_ids),
+            "evidence_artifact_ids": list(evidence_ids),
+        }
+
+    def get_llm_invocation(
+        self, analysis_id: str, invocation_id: str
+    ) -> LLMInvocationDetailView:
+        exact = self._resolved(analysis_id)
+        values = list(self._checkpoints(exact))
+        run = self._simple_run(exact)
+        if run is None or not values:
+            raise DashboardNotFound("DASHBOARD_INVOCATION_NOT_FOUND")
+        artifacts, contents, invocations, poc_ids, evidence_ids, _ = (
+            self._artifact_projection(exact, values, run)
+        )
+        invocation = next(
+            (item for item in invocations if item.invocation_id == invocation_id), None
+        )
+        if invocation is None:
+            raise DashboardNotFound("DASHBOARD_INVOCATION_NOT_FOUND")
+        hypotheses = tuple(
+            self._project_hypothesis(exact, hypothesis_id, checkpoints, run)
+            for hypothesis_id, checkpoints in sorted(
+                self._hypothesis_groups(values).items()
+            )
+        )
+        reports = self._reports(exact)
+        traces = self._finding_traces(
+            exact,
+            reports,
+            self._with_hypothesis_metadata(hypotheses, contents),
+            artifacts,
+            contents,
+            poc_ids,
+            evidence_ids,
+        )
+        finding_ids = tuple(
+            trace.display_id
+            for trace in traces
+            if trace.hypothesis_id == invocation.hypothesis_id
+        )
+        invocation = invocation.model_copy(update={"finding_ids": finding_ids})
+
+        request = self._invocation_payload(contents, invocation.request_artifact_id)
+        response = self._invocation_payload(contents, invocation.response_artifact_id)
+        system_prompt = self._prompt_text(request, "system_prompt", "system")
+        user_prompt = self._prompt_text(request, "user_prompt", "prompt", "user")
+        result = response.get("response") if isinstance(response, dict) else None
+        return LLMInvocationDetailView(
+            invocation=invocation,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_result=cast(Any, result),
+            stored_request_json=cast(Any, request),
+            stored_response_json=cast(Any, response),
+        )
+
     def list_status_cells(
         self, analysis_id: str, *, offset: int = 0, limit: int = 100
     ) -> StatusCellPageView:
@@ -294,31 +569,72 @@ class DashboardQuery:
                     (analysis_id, cursor[0]),
                 ).fetchall()
         events = [AgentActivityEvent.model_validate_json(row[0]) for row in rows]
-        return tuple(
-            AgentActivityView(
-                event_id=event.event_id,
-                analysis_id=event.analysis_id,
-                hypothesis_id=event.hypothesis_id,
-                stage=event.stage,
-                agent_role=event.agent_role,
-                attempt_id=event.attempt_id,
-                sequence=event.sequence,
-                kind=event.kind,
-                status=event.status,
-                summary_ko=event.summary_ko,
-                tool_name=event.tool_name,
-                error_code=event.error_code,
-                started_at=event.started_at,
-                finished_at=event.finished_at,
-                elapsed_ms=event.elapsed_ms,
-                provider=event.provider,
-                model=event.model,
-                prompt_digest=event.prompt_digest,
-                output_digest=event.output_digest,
-                substage=event.substage,
-                metrics=event.metrics,
-            )
-            for event in events
+        return tuple(self._activity_view(event) for event in events)
+
+    def list_event_page(
+        self, analysis_id: str, *, offset: int = 0, limit: int = 50
+    ) -> dict[str, object]:
+        if (
+            type(offset) is not int
+            or type(limit) is not int
+            or offset < 0
+            or not 1 <= limit <= 200
+        ):
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        exact = self._resolved(analysis_id)
+        with self._connect() as connection:
+            if not self._table_exists(connection, "agent_activity_events"):
+                return {"items": [], "total": 0, "offset": offset, "limit": limit}
+            total_row = connection.execute(
+                "SELECT COUNT(*) FROM agent_activity_events WHERE analysis_id = ?",
+                (exact,),
+            ).fetchone()
+            total = int(total_row[0]) if total_row is not None else 0
+            rows = connection.execute(
+                """
+                SELECT event_json FROM agent_activity_events
+                WHERE analysis_id = ? ORDER BY rowid DESC LIMIT ? OFFSET ?
+                """,
+                (exact, limit, offset),
+            ).fetchall()
+        items: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                event = AgentActivityEvent.model_validate_json(row[0])
+            except ValueError:
+                continue
+            items.append(self._activity_view(event).model_dump(mode="json"))
+        return {
+            "items": items,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
+
+    @staticmethod
+    def _activity_view(event: AgentActivityEvent) -> AgentActivityView:
+        return AgentActivityView(
+            event_id=event.event_id,
+            analysis_id=event.analysis_id,
+            hypothesis_id=event.hypothesis_id,
+            stage=event.stage,
+            agent_role=event.agent_role,
+            attempt_id=event.attempt_id,
+            sequence=event.sequence,
+            kind=event.kind,
+            status=event.status,
+            summary_ko=event.summary_ko,
+            tool_name=event.tool_name,
+            error_code=event.error_code,
+            started_at=event.started_at,
+            finished_at=event.finished_at,
+            elapsed_ms=event.elapsed_ms,
+            provider=event.provider,
+            model=event.model,
+            prompt_digest=event.prompt_digest,
+            output_digest=event.output_digest,
+            substage=event.substage,
+            metrics=event.metrics,
         )
 
     def artifact_content(
@@ -653,14 +969,19 @@ class DashboardQuery:
         sources: dict[str, dict[str, set[str]]] = defaultdict(
             lambda: {"stages": set(), "hypotheses": set()}
         )
+        agents: dict[str, set[str]] = defaultdict(set)
+        created_at: dict[str, datetime] = {}
         refs: dict[str, StoredDataRef] = {}
         expected_artifacts: set[str] = set()
         queue: list[tuple[StoredDataRef, str, str | None]] = []
+        projection_limit = _MAX_ARTIFACTS
 
         def enqueue(
             ref: StoredDataRef | None,
             stage: str,
             hypothesis: str | None,
+            agent_role: str | None = None,
+            timestamp: datetime | None = None,
         ) -> None:
             if ref is None:
                 return
@@ -675,33 +996,77 @@ class DashboardQuery:
             sources[digest]["stages"].add(stage)
             if hypothesis:
                 sources[digest]["hypotheses"].add(hypothesis)
-            if digest not in refs and len(refs) < _MAX_ARTIFACTS:
+            if agent_role:
+                agents[digest].add(agent_role)
+            if timestamp is not None and (
+                digest not in created_at or timestamp < created_at[digest]
+            ):
+                created_at[digest] = timestamp
+            if digest not in refs and len(refs) < projection_limit:
                 refs[digest] = ref
                 queue.append((ref, stage, hypothesis))
 
-        enqueue(run.repository_profile_ref, "REPOSITORY", None)
-        enqueue(run.static_bundle_ref, SimpleStage.STATIC_DONE.value, None)
+        enqueue(
+            run.repository_profile_ref, "REPOSITORY", None, "Runtime", run.started_at
+        )
+        enqueue(
+            run.static_bundle_ref,
+            SimpleStage.STATIC_DONE.value,
+            None,
+            "Static Analysis",
+            run.started_at,
+        )
         for checkpoint in values:
             stage = checkpoint.stage.value
             hypothesis = checkpoint.identity.hypothesis_id
             for ref in (*checkpoint.input_refs, *checkpoint.output_refs):
-                enqueue(ref, stage, hypothesis)
+                enqueue(
+                    ref,
+                    stage,
+                    hypothesis,
+                    ROLE_BY_STAGE.get(checkpoint.stage),
+                    checkpoint.updated_at,
+                )
             for optional_ref in (
                 checkpoint.recipe_ref,
                 checkpoint.validated_poc_ref,
                 checkpoint.report_ref,
             ):
-                enqueue(optional_ref, stage, hypothesis)
+                enqueue(
+                    optional_ref,
+                    stage,
+                    hypothesis,
+                    ROLE_BY_STAGE.get(checkpoint.stage),
+                    checkpoint.updated_at,
+                )
         events = self._event_models(analysis_id)
         for event in events:
             for ref in (*event.input_refs, *event.output_refs, *event.tool_result_refs):
-                enqueue(ref, event.stage, event.hypothesis_id)
+                enqueue(
+                    ref,
+                    event.stage,
+                    event.hypothesis_id,
+                    event.agent_role,
+                    event.started_at,
+                )
+
+        # Once the safety limit is exceeded, a small representative preview is
+        # enough to explain the omission and support selected downloads. Reading
+        # hundreds of files here would delay every legacy detail request even
+        # though the complete export is deliberately blocked below.
+        if len(expected_artifacts) > _MAX_ARTIFACTS:
+            projection_limit = _INCOMPLETE_ARTIFACT_PREVIEW
+            preview_digests = set(tuple(refs)[:projection_limit])
+            refs = {
+                digest: ref for digest, ref in refs.items() if digest in preview_digests
+            }
+            queue = [item for item in queue if item[0].content_hash in preview_digests]
 
         contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
         token_usage: dict[str, tuple[int | None, int | None]] = {}
         projected_bytes = 0
         index = 0
-        while index < len(queue) and len(contents) < _MAX_ARTIFACTS:
+        while index < len(queue) and len(contents) < projection_limit:
             ref, stage, hypothesis = queue[index]
             index += 1
             if ref.content_hash in contents:
@@ -758,6 +1123,10 @@ class DashboardQuery:
                 size_bytes=len(item[2]),
                 stages=tuple(sorted(sources[digest]["stages"])),
                 hypothesis_ids=tuple(sorted(sources[digest]["hypotheses"])),
+                label_ko=self._artifact_label(item[0]),
+                purpose_ko=self._artifact_purpose(item[0]),
+                agent_roles=tuple(sorted(agents[digest])),
+                created_at=created_at.get(digest),
                 view_url=f"/api/analyses/{analysis_id}/artifacts/{digest}",
                 download_url=(
                     f"/api/analyses/{analysis_id}/artifacts/{digest}?download=1"
@@ -1185,7 +1554,10 @@ class DashboardQuery:
             if run is not None or hypothesis_groups
             else None
         )
-        verification_done = sum(item.status == "COMPLETE" for item in hypotheses)
+        verification_done = sum(
+            self._final_verdict_saved(checkpoints)
+            for checkpoints in hypothesis_groups.values()
+        )
         confirmed_count = sum(
             self._confirmed_hypothesis(checkpoints)
             for checkpoints in hypothesis_groups.values()
@@ -1210,6 +1582,12 @@ class DashboardQuery:
             stage_count=len(values),
             hypothesis_count=len(hypotheses),
             finding_count=len(reports),
+            confirmed_finding_count=confirmed_count,
+            failed_stage=(
+                progress.current_stage
+                if progress.status in {"FAILED", "BLOCKED"}
+                else None
+            ),
             inconclusive_hypothesis_count=progress.inconclusive_hypothesis_count,
             rejected_hypothesis_count=progress.rejected_hypothesis_count,
             llm_provider=(run.llm_provider if run else None),
@@ -1351,6 +1729,104 @@ class DashboardQuery:
                 }
             )
         return data
+
+    @staticmethod
+    def _hypothesis_groups(
+        values: list[StageCheckpoint],
+    ) -> dict[str, list[StageCheckpoint]]:
+        groups: dict[str, list[StageCheckpoint]] = defaultdict(list)
+        for checkpoint in values:
+            if checkpoint.identity.hypothesis_id is not None:
+                groups[checkpoint.identity.hypothesis_id].append(checkpoint)
+        return groups
+
+    @staticmethod
+    def _final_verdict_saved(values: list[StageCheckpoint]) -> bool:
+        return any(
+            item.stage is SimpleStage.VERIFICATION_FINAL_DONE
+            and item.status is StageStatus.SUCCEEDED
+            and item.verdict in {"TRUE", "FALSE", "HOLD"}
+            for item in values
+        )
+
+    @staticmethod
+    def _validated_poc(values: list[StageCheckpoint]) -> bool:
+        return any(
+            item.stage is SimpleStage.POC_EXECUTION_DONE
+            and item.status is StageStatus.SUCCEEDED
+            and item.validated_poc_ref is not None
+            for item in values
+        )
+
+    def _known_token_usage(self, analysis_id: str) -> bool:
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_llm_attempts"):
+                return False
+            row = connection.execute(
+                """
+                SELECT COUNT(*) FROM simple_llm_attempts
+                WHERE analysis_id = ?
+                  AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
+                """,
+                (analysis_id,),
+            ).fetchone()
+        return row is not None and int(row[0]) > 0
+
+    @staticmethod
+    def _invocation_payload(
+        contents: dict[str, tuple[str, str, bytes, Any | None]],
+        artifact_id: str | None,
+    ) -> dict[str, Any] | None:
+        if artifact_id is None:
+            return None
+        item = contents.get(artifact_id)
+        if item is None or not isinstance(item[3], dict):
+            return None
+        return cast(dict[str, Any], item[3])
+
+    @staticmethod
+    def _prompt_text(payload: dict[str, Any] | None, *keys: str) -> str | None:
+        if payload is None:
+            return None
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return None
+
+    @staticmethod
+    def _artifact_label(kind: str) -> str:
+        exact = {
+            "simple_llm_request": "LLM 요청",
+            "simple_llm_response": "LLM 응답",
+            "simple_static_fact_bundle": "정적분석 사실 묶음",
+            "simple_validated_poc": "검증된 PoC",
+            "simple_poc_execution": "PoC 실행 결과",
+            "simple_dynamic_interpretation": "동적 검증 해석",
+            "simple_hypothesis_proposal": "취약점 가설",
+            "simple_policy_snapshot": "정책 스냅샷",
+        }
+        if kind in exact:
+            return exact[kind]
+        return kind.replace("simple_", "").replace("_", " ").strip().title()
+
+    @staticmethod
+    def _artifact_purpose(kind: str) -> str:
+        if "llm_request" in kind:
+            return "Agent가 Provider에 전달한 정제된 요청 기록"
+        if "llm_response" in kind:
+            return "Provider 응답에서 저장한 정제된 결과 기록"
+        if "poc" in kind:
+            return "취약점 재현과 검증에 사용된 PoC 자료"
+        if "evidence" in kind or "static_fact" in kind:
+            return "Finding 판정을 뒷받침하는 정적·동적 근거"
+        if "report" in kind:
+            return "검증 결과를 정리한 보고서 자료"
+        if "hypothesis" in kind:
+            return "검증 대상으로 생성된 취약점 가설"
+        if "policy" in kind:
+            return "Scope Gate 판정에 사용된 정책 근거"
+        return "분석 단계에서 생성·참조된 저장 아티팩트"
 
     @staticmethod
     def _confirmed_hypothesis(values: list[StageCheckpoint]) -> bool:
@@ -1745,12 +2221,13 @@ class DashboardQuery:
         analysis_id: str,
         run: SimpleAnalysisRun | None,
         static_tools: tuple[StaticToolProgressView, ...],
-        artifacts: tuple[ArtifactView, ...],
+        artifacts: tuple[ArtifactView, ...] | int,
         reports: tuple[FindingReportView, ...],
     ) -> tuple[ReadinessCheckView, ...]:
         def present(value: object) -> bool:
             return value is not None and str(value).strip() != ""
 
+        artifact_count = artifacts if isinstance(artifacts, int) else len(artifacts)
         tool_status = {item.tool: item.status for item in static_tools}
         core = [tool_status.get("AST"), tool_status.get("OpenGrep")]
         if any(status in {"FAILED", "BLOCKED"} for status in core):
@@ -1841,9 +2318,11 @@ class DashboardQuery:
             ReadinessCheckView(
                 key="presentation-output",
                 label_ko="발표 결과물",
-                status=("READY" if artifacts and (reports or log_ready) else "WAITING"),
+                status=(
+                    "READY" if artifact_count and (reports or log_ready) else "WAITING"
+                ),
                 detail_ko=(
-                    f"아티팩트 {len(artifacts)}개·보고서 {len(reports)}개"
+                    f"아티팩트 {artifact_count}개·보고서 {len(reports)}개"
                     + ("·로그 있음" if log_ready else "·로그 없음")
                 ),
                 required=False,

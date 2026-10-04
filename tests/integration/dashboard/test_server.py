@@ -294,6 +294,10 @@ def test_demo_mode_uses_synthetic_memory_data_without_touching_database(
             ).read()
         )
         events = json.loads(request(f"{base}/api/analyses/DEMO-001/events").read())
+        llm_page = json.loads(request(f"{base}/api/analyses/DEMO-001/tabs/llm").read())
+        llm_detail = json.loads(
+            request(f"{base}/api/analyses/DEMO-001/llm/demo-invocation-1").read()
+        )
         page = request(base).read().decode()
         assert meta == {"demo": True}
         assert 'id="demo-banner"' in page
@@ -307,6 +311,9 @@ def test_demo_mode_uses_synthetic_memory_data_without_touching_database(
         assert events and all(
             event["analysis_id"] == "demo-analysis" for event in events
         )
+        assert llm_page["total"] == 1
+        assert llm_detail["invocation"]["model"] == "demo-model"
+        assert llm_detail["response_result"]["verdict"] == "HOLD"
         assert request(f"{base}/api/analyses/DEMO-001/bundle.zip").status == 404
         assert request(f"{base}/api/analyses", method="POST").status == 405
     assert list(tmp_path.iterdir()) == []
@@ -888,6 +895,46 @@ def test_event_cursor_keeps_late_written_event(tmp_path) -> None:
             request(f"{base}/api/analyses/A-001/events?after=event-llm-1").read()
         )
     assert [item["event_id"] for item in later] == ["event-late-write"]
+
+
+def test_tabbed_dashboard_serves_shell_pages_and_llm_detail(tmp_path) -> None:
+    seed(tmp_path)
+    with running_server(tmp_path) as base:
+        shell = json.loads(request(f"{base}/api/analyses/A-001/summary").read())
+        assert shell["kpis"]["verification_total"] == 1
+        assert shell["kpis"]["verification_done"] == 0
+        assert shell["validated_poc_count"] == 0
+
+        overview = json.loads(
+            request(f"{base}/api/analyses/A-001/tabs/overview").read()
+        )
+        assert overview["tab"] == "overview"
+        assert isinstance(overview["readiness"], list)
+
+        artifacts = json.loads(
+            request(f"{base}/api/analyses/A-001/tabs/artifacts?offset=0&limit=2").read()
+        )
+        assert artifacts["limit"] == 2
+        assert artifacts["total"] >= len(artifacts["items"])
+        assert all(item["label_ko"] for item in artifacts["items"])
+
+        llm = json.loads(
+            request(f"{base}/api/analyses/A-001/tabs/llm?offset=0&limit=50").read()
+        )
+        assert llm["items"]
+        invocation_id = llm["items"][0]["invocation_id"]
+        detail = json.loads(
+            request(f"{base}/api/analyses/A-001/llm/{invocation_id}").read()
+        )
+        assert detail["invocation"]["agent_role"]
+        assert "stored_request_json" in detail
+        assert "stored_response_json" in detail
+
+        events = json.loads(
+            request(f"{base}/api/analyses/A-001/event-page?offset=0&limit=1").read()
+        )
+        assert events["limit"] == 1
+        assert len(events["items"]) <= 1
 
 
 # mypy: disable-error-code="no-untyped-def"

@@ -22,6 +22,8 @@ class AnalysisSummaryView(ContractModel):
     stage_count: int
     hypothesis_count: int
     finding_count: int
+    confirmed_finding_count: int | None = None
+    failed_stage: str | None = None
     inconclusive_hypothesis_count: int = 0
     rejected_hypothesis_count: int = 0
     llm_provider: str | None = None
@@ -50,6 +52,17 @@ class AnalysisSummaryView(ContractModel):
     finished_at: datetime | None = None
     last_updated_at: datetime | None = None
     stale: bool = False
+
+
+class DashboardShellView(AnalysisSummaryView):
+    """Small always-visible projection; tab payloads are fetched separately."""
+
+    kpis: DashboardKpiView = Field(default_factory=lambda: DashboardKpiView())
+    validated_poc_count: int | None = None
+    llm_token_usage_known: bool = False
+    logs_url: str | None = None
+    bundle_url: str | None = None
+    presentation_bundle_url: str | None = None
 
 
 class StageProgressView(ContractModel):
@@ -108,6 +121,10 @@ class ArtifactView(ContractModel):
     size_bytes: int
     stages: tuple[str, ...] = ()
     hypothesis_ids: tuple[str, ...] = ()
+    label_ko: str | None = None
+    purpose_ko: str | None = None
+    agent_roles: tuple[str, ...] = ()
+    created_at: datetime | None = None
     view_url: str
     download_url: str
 
@@ -132,6 +149,16 @@ class LLMInvocationView(ContractModel):
     retry_count: int = 0
     request_artifact_id: str | None = None
     response_artifact_id: str | None = None
+    finding_ids: tuple[str, ...] = ()
+
+
+class LLMInvocationDetailView(ContractModel):
+    invocation: LLMInvocationView
+    system_prompt: str | None = None
+    user_prompt: str | None = None
+    response_result: JsonValue | str | None = None
+    stored_request_json: JsonValue | None = None
+    stored_response_json: JsonValue | None = None
 
 
 class ArtifactContentView(ContractModel):
@@ -304,11 +331,13 @@ __all__ = [
     "ArtifactView",
     "AnalysisDetailView",
     "AnalysisSummaryView",
+    "DashboardShellView",
     "DashboardKpiView",
     "FindingReportView",
     "FindingTraceView",
     "HypothesisProgressView",
     "LLMInvocationView",
+    "LLMInvocationDetailView",
     "ReadinessCheckView",
     "StageProgressView",
     "StatusCellPageView",

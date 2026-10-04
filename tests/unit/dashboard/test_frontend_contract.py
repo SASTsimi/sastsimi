@@ -13,13 +13,17 @@ _STATIC = (
 )
 
 
-def test_dashboard_has_four_kpi_labels_grid_progress_and_history() -> None:
+def test_dashboard_has_compact_kpis_grid_progress_and_history() -> None:
     html = (_STATIC / "index.html").read_text(encoding="utf-8")
     for label in (
         "정적 검사 커버리지",
         "가설 검증 진행",
-        "남은 가설",
-        "확정 Finding",
+        "TRUE Finding",
+        "검증된 PoC",
+        "검증 완료 가설",
+        "LLM 호출",
+        "LLM 토큰",
+        "확인된 LLM 비용",
     ):
         assert label in html
     for element_id in (
@@ -99,3 +103,50 @@ def test_priority_view_has_narrow_layout_and_visible_keyboard_focus() -> None:
     assert "@media (max-width: 620px)" in css
     assert ".status-cell:focus-visible" in css
     assert "prefers-reduced-motion" in css
+
+
+def test_dashboard_has_agreed_tabs_summary_and_llm_detail_views() -> None:
+    html = (_STATIC / "index.html").read_text(encoding="utf-8")
+    for label in (
+        "개요",
+        "진행",
+        "Finding∙검증",
+        "Coverage",
+        "아티팩트",
+        "LLM",
+        "PoC∙증거∙보고서",
+        "로그",
+    ):
+        assert label in html
+    for label in (
+        "TRUE Finding",
+        "검증된 PoC",
+        "검증 완료 가설",
+        "LLM 사용량",
+        "응답 결과",
+        "시스템 프롬프트",
+        "사용자 프롬프트",
+        "저장 원문 요청 JSON",
+        "저장 원문 응답 JSON",
+    ):
+        assert label in html
+    assert "Raw JSON" not in html
+
+
+def test_dashboard_fetches_tabs_and_long_llm_content_on_demand() -> None:
+    source = (_STATIC / "app.js").read_text(encoding="utf-8")
+    assert "/tabs/${tab}?offset=${offset}&limit=${PAGE_SIZE}" in source
+    assert "/llm/${encodeURIComponent(item.invocation_id)}" in source
+    assert "/event-page?offset=${offset}&limit=${PAGE_SIZE}" in source
+    assert "state.tabCache" in source
+    assert "version !== state.requestVersion" in source
+
+
+def test_tab_navigation_is_sticky_and_mobile_analysis_list_is_a_drawer() -> None:
+    css = (_STATIC / "app.css").read_text(encoding="utf-8")
+    assert ".dashboard-tabs" in css
+    assert "position:sticky" in css.replace(" ", "")
+    assert ".header-summary" in css
+    assert ".header-kpi:hover::after" in css
+    assert ".header-kpi:focus-visible::after" in css
+    assert ".drawer-open #analysis-sidebar" in css

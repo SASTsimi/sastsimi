@@ -11,7 +11,10 @@ from .models import (
     AnalysisDetailView,
     AnalysisSummaryView,
     DashboardKpiView,
+    DashboardShellView,
     HypothesisProgressView,
+    LLMInvocationDetailView,
+    LLMInvocationView,
     StageProgressView,
     StaticToolProgressView,
     StatusCellPageView,
@@ -43,6 +46,11 @@ class DemoDashboardQuery(DashboardQuery):
             stage_count=4,
             hypothesis_count=4,
             finding_count=0,
+            llm_attempt_count=1,
+            llm_input_tokens=248,
+            llm_output_tokens=96,
+            provider="demo-provider",
+            model="demo-model",
             progress_percent=75,
             static_coverage_expected=24,
             static_coverage_verified=24,
@@ -147,6 +155,24 @@ class DemoDashboardQuery(DashboardQuery):
                 ),
             )
         )
+        self._invocation = LLMInvocationView(
+            invocation_id="demo-invocation-1",
+            agent_role="verification",
+            provider="demo-provider",
+            model="demo-model",
+            template_revision="demo-v1",
+            stage="VERIFICATION_INITIAL",
+            hypothesis_id=_HYPOTHESIS_IDS[2],
+            status="SUCCEEDED",
+            started_at=_TIME + timedelta(minutes=1),
+            finished_at=_TIME + timedelta(minutes=1, seconds=2),
+            elapsed_ms=2100,
+            input_tokens=248,
+            output_tokens=96,
+            attempt_number=1,
+            retry_count=0,
+            finding_ids=(),
+        )
 
     def list_analyses(self) -> tuple[AnalysisSummaryView, ...]:
         detail = self._detail.model_dump()
@@ -156,6 +182,114 @@ class DemoDashboardQuery(DashboardQuery):
     def get_analysis(self, analysis_id: str) -> AnalysisDetailView:
         self._ensure_demo_id(analysis_id)
         return self._detail
+
+    def get_analysis_shell(self, analysis_id: str) -> DashboardShellView:
+        self._ensure_demo_id(analysis_id)
+        detail = self._detail.model_dump()
+        fields = DashboardShellView.model_fields
+        payload = {name: detail[name] for name in fields if name in detail}
+        payload.update(
+            {
+                "kpis": self._detail.kpis,
+                "validated_poc_count": 0,
+                "llm_token_usage_known": True,
+            }
+        )
+        return DashboardShellView.model_validate(payload)
+
+    def get_analysis_tab(
+        self,
+        analysis_id: str,
+        tab: str,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        self._ensure_demo_id(analysis_id)
+        if tab == "overview":
+            return {"tab": tab, "readiness": []}
+        if tab == "progress":
+            return {
+                "tab": tab,
+                "pipeline": [
+                    item.model_dump(mode="json") for item in self._detail.pipeline
+                ],
+                "history": [item.model_dump(mode="json") for item in self._events],
+            }
+        if tab == "findings":
+            items = self._detail.hypotheses[offset : offset + limit]
+            return {
+                "tab": tab,
+                "items": [item.model_dump(mode="json") for item in items],
+                "total": len(self._detail.hypotheses),
+                "offset": offset,
+                "limit": limit,
+                "finding_traces": [],
+            }
+        if tab == "coverage":
+            return {
+                "tab": tab,
+                "static_coverage_expected": self._detail.static_coverage_expected,
+                "static_coverage_verified": self._detail.static_coverage_verified,
+                "static_coverage_gap_count": self._detail.static_coverage_gap_count,
+                "static_coverage_engines": self._detail.static_coverage_engines,
+                "static_tools": [
+                    item.model_dump(mode="json") for item in self._detail.static_tools
+                ],
+                "static_tool_findings": [],
+            }
+        if tab == "logs":
+            return {"tab": tab, "logs_url": None}
+        if tab == "llm":
+            invocation_items = (self._invocation,)[offset : offset + limit]
+            return {
+                "tab": tab,
+                "items": [item.model_dump(mode="json") for item in invocation_items],
+                "total": 1,
+                "offset": offset,
+                "limit": limit,
+            }
+        return {"tab": tab, "items": [], "total": 0, "offset": offset, "limit": limit}
+
+    def get_llm_invocation(
+        self, analysis_id: str, invocation_id: str
+    ) -> LLMInvocationDetailView:
+        self._ensure_demo_id(analysis_id)
+        if invocation_id != self._invocation.invocation_id:
+            raise DashboardNotFound("DASHBOARD_INVOCATION_NOT_FOUND")
+        return LLMInvocationDetailView(
+            invocation=self._invocation,
+            system_prompt=(
+                "당신은 저장된 근거만으로 가설을 검증하는 시연용 Agent입니다."
+            ),
+            user_prompt="시연용 가설의 Source→Sink 경로와 검증 상태를 요약하세요.",
+            response_result={
+                "verdict": "HOLD",
+                "summary": "시연 데이터이므로 실제 취약점 판정을 만들지 않습니다.",
+            },
+            stored_request_json={
+                "model": "demo-model",
+                "messages": [
+                    {"role": "user", "content": "[DEMO] 시연용 가설을 검토하세요."}
+                ],
+            },
+            stored_response_json={
+                "status": "synthetic",
+                "result": {"verdict": "HOLD"},
+            },
+        )
+
+    def list_event_page(
+        self, analysis_id: str, *, offset: int = 0, limit: int = 50
+    ) -> dict[str, object]:
+        self._ensure_demo_id(analysis_id)
+        items = tuple(reversed(self._events))[offset : offset + limit]
+        return {
+            "items": [item.model_dump(mode="json") for item in items],
+            "total": len(self._events),
+            "offset": offset,
+            "limit": limit,
+        }
 
     def list_status_cells(
         self, analysis_id: str, *, offset: int = 0, limit: int = 100

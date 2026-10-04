@@ -82,7 +82,15 @@ def create_server(
                     or (
                         len(parts) >= 4
                         and parts[:2] == ("api", "analyses")
-                        and parts[3] not in {"status-cells", "events"}
+                        and parts[3]
+                        not in {
+                            "summary",
+                            "tabs",
+                            "status-cells",
+                            "events",
+                            "event-page",
+                            "llm",
+                        }
                     )
                 ):
                     raise DashboardNotFound("DASHBOARD_DEMO_ROUTE_NOT_FOUND")
@@ -115,6 +123,30 @@ def create_server(
                     self._json({"demo": demo}, send_body)
                 elif parts == ("api", "analyses"):
                     self._json(query.list_analyses(), send_body)
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "summary"
+                ):
+                    self._json(query.get_analysis_shell(parts[2]), send_body)
+                elif (
+                    len(parts) == 5
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "tabs"
+                ):
+                    offset, limit = self._page(parsed.query, default_limit=50)
+                    self._json(
+                        query.get_analysis_tab(
+                            parts[2], parts[4], offset=offset, limit=limit
+                        ),
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 5
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "llm"
+                ):
+                    self._json(query.get_llm_invocation(parts[2], parts[4]), send_body)
                 elif (
                     len(parts) == 5
                     and parts[:2] == ("api", "analyses")
@@ -277,6 +309,16 @@ def create_server(
                         query.list_events(parts[2], after_event_id=after),
                         send_body,
                     )
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "event-page"
+                ):
+                    offset, limit = self._page(parsed.query, default_limit=50)
+                    self._json(
+                        query.list_event_page(parts[2], offset=offset, limit=limit),
+                        send_body,
+                    )
                 elif len(parts) == 3 and parts[0] == "reports":
                     if not parts[2].endswith(".md"):
                         raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
@@ -405,6 +447,23 @@ def create_server(
                 "application/json; charset=utf-8",
                 send_body,
             )
+
+        @staticmethod
+        def _page(query_string: str, *, default_limit: int) -> tuple[int, int]:
+            parameters = parse_qs(query_string, keep_blank_values=True)
+            if any(
+                len(parameters.get(name, ())) != 1
+                for name in ("offset", "limit")
+                if name in parameters
+            ):
+                raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+            try:
+                return (
+                    int(parameters.get("offset", ["0"])[0]),
+                    int(parameters.get("limit", [str(default_limit)])[0]),
+                )
+            except ValueError as error:
+                raise DashboardBadRequest("DASHBOARD_PAGE_INVALID") from error
 
         def _file(self, path: Path, content_type: str, send_body: bool) -> None:
             try:
