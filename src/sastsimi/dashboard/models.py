@@ -25,6 +25,8 @@ class AnalysisSummaryView(ContractModel):
     stage_count: int
     hypothesis_count: int
     finding_count: int
+    finding_group_count: int | None = None
+    finding_group_undetermined_count: int | None = None
     candidate_total_count: int | None = None
     candidate_decision_counts: dict[str, int] = Field(default_factory=dict)
     deep_analysis_running_count: int = 0
@@ -185,6 +187,27 @@ class FindingReportView(ContractModel):
     attachment_urls: dict[str, str] = {}
 
 
+class FindingGroupMemberView(ContractModel):
+    display_id: str
+    hypothesis_id: str
+    finding_hash: str
+    validated_poc_hash: str
+    candidate_ids: tuple[str, ...] = ()
+    candidate_origins: tuple[dict[str, str | int], ...] = ()
+    surface_id: str | None = None
+    scope_status: str
+    undetermined_reason: str | None = None
+
+
+class FindingGroupView(ContractModel):
+    group_id: str
+    representative_id: str
+    member_ids: tuple[str, ...]
+    status: Literal["PROVEN_SAME_FLOW", "GROUPING_UNDETERMINED"]
+    scope_status: str
+    members: tuple[FindingGroupMemberView, ...]
+
+
 class AnalysisDetailView(AnalysisSummaryView):
     artifact_projection_complete: bool = True
     artifact_omitted_count: int = 0
@@ -213,6 +236,7 @@ class AnalysisDetailView(AnalysisSummaryView):
     static_codeql_scope: str | None = None
     hypotheses: tuple[HypothesisProgressView, ...] = ()
     reports: tuple[FindingReportView, ...] = ()
+    finding_groups: tuple[FindingGroupView, ...] = ()
     pipeline: tuple[StageProgressView, ...] = ()
     static_tools: tuple[StaticToolProgressView, ...] = ()
     artifacts: tuple[ArtifactView, ...] = ()
@@ -239,6 +263,8 @@ __all__ = [
     "AnalysisDetailView",
     "AnalysisSummaryView",
     "FindingReportView",
+    "FindingGroupMemberView",
+    "FindingGroupView",
     "HypothesisProgressView",
     "LLMInvocationView",
     "StageProgressView",

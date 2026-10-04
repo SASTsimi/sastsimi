@@ -1198,6 +1198,8 @@ def test_current_accepted_report_remains_accessible(tmp_path) -> None:
     detail = query.get_analysis("analysis-a")
 
     assert detail.reports[0].display_id == "F-001"
+    assert detail.finding_group_count is None
+    assert detail.finding_groups == ()
     assert query.report_path("analysis-a", "F-001") == report_path
 
 

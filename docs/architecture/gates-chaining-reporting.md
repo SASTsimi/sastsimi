@@ -53,6 +53,33 @@ Reporter Agent는 upstream artifact에 존재하는 사실만 사용해 한 번�
 되지 않은 `ALLOW`는 제보 가능한 결과로 내보내지 않으며 제한된 Markdown을 별도
 `.restricted.md` 파일로 export합니다. 기존 내부 원본은 그대로 보존합니다.
 
+## 검증된 Finding 묶음
+
+Finding 생성 후의 **읽기 전용 표시 투영**은 원본 Finding과 보고서를 변경하지
+않습니다. 현재 `FINDING_DONE`의 TRUE·검증된 PoC·승인된 Technical Gate와
+원본 제안·CWE·후보 출처를 다시 확인합니다. AST manifest의 파일별 SHA-256과
+현재 고정 workspace의 실제 Python 파일이 일치할 때만, AST에서 해당 요청
+입력의 키·함수/route·def-use 경로·분기·위험 호출의 위치와 인자 번호를
+식별합니다. CodeQL 경로가 있으면 실제 입력 줄과 끝 위험 호출 줄이 경로에
+존재하는지도 확인합니다. 동일한 전체 anchor만 버전이 붙은 안정적인 그룹
+ID로 묶고, 대표는 가장 작은 기존 `F-NNN`입니다. 다른 입력 키·분기·위험
+호출 또는 모호한 경로는 합치지 않습니다. 지원되지 않는 CWE/표현과 예전
+기록의 부족한 출처는 `GROUPING_UNDETERMINED` 단독 항목으로 남습니다.
+
+`finding_count`는 원본 Finding 수, `finding_group_count`는 입증된 그룹과
+미확정 단독 항목을 합친 표시 묶음 수, `finding_group_undetermined_count`는
+근거 부족·미지원 패턴의 단독 항목 수입니다. 현재 resolver는 CWE-78의
+직접 import된 Flask `request`와 단일 정적 Flask route, 제한된 명령 호출만
+지원합니다. 대시보드는 현재 보고서를 열 수 있는 Finding만 묶음 투영하므로
+보고서 생성 전에는 원본 Finding 수와 표시 묶음 수가 다를 수 있습니다.
+독립 저장소의 이전 시험 기록을 읽기 전용으로 재생했을 때 Antony Flask는
+원본 11건→표시 6묶음(6건 동일 경로, 미확정 단독 5건), Python Vulns GNU는
+원본 12건→표시 10묶음(3건 동일 경로, 미확정 단독 9건)이었습니다. 이는
+두 시험 기록의 표시 결과이지 전체 중복 탐지율이 아닙니다. DB 해시는
+재생 전후 동일했습니다. 각 원본 `F-NNN`의 PoC·국문/영문 보고서·직접 URL·
+ZIP 포함 여부는 유지됩니다. 그룹은 취약점 확정 판정이나 외부 제보 허가가
+아니고 `COMPLETE`/`PARTIAL`에도 영향을 주지 않습니다.
+
 ## 코드 위치
 
 - CWE·Gate·Finding·Reporter stage: `src/sastsimi/simple_runtime/stages.py`
@@ -63,6 +90,9 @@ Reporter Agent는 upstream artifact에 존재하는 사실만 사용해 한 번�
 - 영·국문 렌더링과 첨부 검증: `src/sastsimi/reporting/bilingual_bundle.py`,
   `src/sastsimi/reporting/bundle_files.py`
 - Finding ID: `src/sastsimi/reporting/finding_display_id.py`
+- 흐름 anchor·보수적 묶음·조회 투영: `src/sastsimi/simple_runtime/finding_flow.py`,
+  `src/sastsimi/simple_runtime/finding_groups.py`,
+  `src/sastsimi/simple_runtime/finding_group_projection.py`
 - 읽기 전용 조회: `src/sastsimi/dashboard/query.py`
 
 ## 지켜야 하는 계약
