@@ -24,4 +24,11 @@ def test_the_same_error_with_other_values_matches() -> None:
 
 def test_timeout_and_silent_exit_have_their_own_fingerprints() -> None:
     assert _failure_fingerprint(b"", 2, True) == "timeout"
-    assert _failure_fingerprint(b"no traceback here", 127, False) == "exit127"
+    assert _failure_fingerprint(b"", 127, False) == "exit127"
+
+
+def test_a_script_that_reports_in_its_own_words_is_told_apart() -> None:
+    one = _failure_fingerprint(b"ERROR_TYPE: SetupError no python3\n", 2, False)
+    other = _failure_fingerprint(b"ERROR_TYPE: HarnessError no app\n", 2, False)
+
+    assert one != other

@@ -474,7 +474,14 @@ def _failure_fingerprint(stderr: bytes, exit_code: int, timed_out: bool) -> str:
     pattern = r"^([\w.]*(?:Error|Exception))\b[:\s]?([^\n]{0,60})"
     errors = re.findall(pattern, text, re.M)
     if not errors:
-        return f"exit{exit_code}"
+        # A script that reports in its own words ("ERROR_TYPE: EnvironmentSetup...")
+        # has no exception line to read; its last line is the next best thing.
+        last = next(
+            (line.strip() for line in reversed(text.splitlines()) if line.strip()), ""
+        )
+        if not last:
+            return f"exit{exit_code}"
+        return re.sub(r"'[^']*'|\"[^\"]*\"|\d+|/[\w./-]+", "X", last)[:70]
     kind, detail = errors[-1]
     detail = re.sub(r"'[^']*'|\"[^\"]*\"|\d+", "X", detail).strip()
     return f"{kind}:{detail}"[:90]
