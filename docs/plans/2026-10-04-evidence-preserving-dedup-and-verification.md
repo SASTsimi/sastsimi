@@ -4,7 +4,7 @@
 
 **Goal:** Review each proven static alert once, display one report for each proven verified root cause, and prevent final verification from losing its exact hypothesis and pinned source.
 
-**Architecture:** Static normalization uses a versioned exact-evidence identity for new scopes while legacy scopes retain their persisted candidate IDs. A family-specific pinned-source resolver extends the existing read-only verified Finding projection; unknowns remain separate. A shared, bounded hypothesis/source anchor is prepended to downstream verification prompts, and only affected stale Final checkpoints are re-evaluated.
+**Architecture:** Static normalization uses a versioned exact-evidence identity for new scopes while legacy scopes retain their persisted candidate IDs. A family-specific pinned-source resolver extends the existing read-only verified Finding projection; unknowns remain separate. A shared, bounded hypothesis/source anchor is prepended to downstream verification prompts. All prior Final v2 verdicts re-enter Final v3 and their dependent gates, while prior Pro/Con and validated PoC work is reused; this avoids silently trusting a verdict reached without the new required evidence.
 
 **Tech Stack:** Python 3.12, SQLite checkpoint store, Pydantic, pytest, Ruff, mypy.
 
@@ -58,7 +58,7 @@
 
 **Interfaces:** `resolve_root_cause_anchor(...) -> RootCauseAnchor | None` takes the same pinned source, proposal, CWE, and optional trace inputs as the existing command resolver; a non-`None` result certifies exact entry/input/path/operation/sink/control equivalence. The versioned group key hashes this certificate plus analysis/workspace/commit.
 
-- [ ] Add failing positives for duplicate SQL injection, reflected/stored XSS, SSRF, code evaluation, and supported file/path operations from independent engines or hypotheses.
+- [ ] Add failing positives for duplicate direct SQLite SQL injection, reflected XSS, SSRF, code evaluation, and supported read-only file/path operations from independent engines or hypotheses. Stored XSS remains an intentional singleton until a DB-crossing proof is available.
 - [ ] Add failing negatives for differing input keys, source/sink paths, branches, sink arguments, resources, sanitizer/guard state, CWE family, source hash, and unsupported constructs. Unknowns remain singleton.
 - [ ] Implement small family resolvers with shared pinned-source guard and no LLM duplicate vote; retain existing CWE-78 behavior.
 - [ ] Verify original Finding/PoC/report refs remain unchanged and replay saved Antony/GNU data read-only; commit this task.
@@ -81,3 +81,9 @@
 - [ ] Run full pytest suite under a writable temporary directory, Ruff, and mypy; distinguish pre-existing environment/baseline failures.
 - [ ] Request independent code review, fix material findings, and document residual undetermined duplicate classes and missed-vulnerability limits.
 - [ ] Update README and architecture docs with raw vs canonical counts, proof/abstain rules, exact resume behavior, and validated outcomes; commit.
+
+## Implementation verification (2026-10-04)
+
+The implementation retains original raw alerts, Finding artifacts, PoCs, and direct report access. New scopes deduplicate only precisely identified complete flows; location-only hints and incomplete flows remain separate. Existing scope IDs and decisions are not migrated. Final v2 resumes through v3 with saved Pro/Con and PoC work reused, including when a prior report exists. The default ZIP contains one representative per proven group and retains every original bundle under `reports/originals/`.
+
+CI-equivalent local checks passed: `pytest -q -n 4 -p no:cacheprovider tests` reported 5,051 passed and 30 skipped; `ruff check src tests`, `ruff format --check src tests`, `mypy --strict src tests` (895 files), and `scripts/validate-current-docs.ps1` passed. The skipped and warning-bearing tests are not evidence of a successful live Docker or target-repository security analysis. The earlier Antony/GNU read-only grouping counts in the architecture document describe the prior CWE-78-only resolver; this version has not been assigned a new measured recall or false-positive rate.

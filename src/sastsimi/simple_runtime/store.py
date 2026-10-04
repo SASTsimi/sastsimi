@@ -2148,6 +2148,7 @@ class SimpleCheckpointStore:
                     ).fetchall()
                     stages: dict[SimpleStage, StageCheckpoint] = {}
                     stale_poc = False
+                    stale_final = False
                     for item in checkpoints:
                         checkpoint = StageCheckpoint.model_validate_json(
                             item["checkpoint_json"]
@@ -2162,6 +2163,12 @@ class SimpleCheckpointStore:
                             != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
                         ):
                             stale_poc = True
+                        if (
+                            checkpoint.stage is SimpleStage.VERIFICATION_FINAL_DONE
+                            and checkpoint.stage_version
+                            != STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE]
+                        ):
+                            stale_final = True
                         if (
                             checkpoint.status is StageStatus.SUCCEEDED
                             and checkpoint.stage_version
@@ -2189,7 +2196,7 @@ class SimpleCheckpointStore:
                         is not None
                         or SimpleStage.REPORT_DONE in stages
                     )
-                    if stale_poc or not terminal:
+                    if stale_poc or stale_final or not terminal:
                         selected.append(hypothesis_id)
                         if len(selected) >= limit:
                             break

@@ -16,7 +16,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from .candidates import CandidateOrigin
 from .finding_flow import FlowAnchor
 
-_GROUP_VERSION = "verified-python-flow-v1"
+_GROUP_VERSION = "verified-python-flow-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,14 +71,25 @@ def _digest(value: dict[str, object]) -> str:
 
 
 def _group_key(member: VerifiedFindingMember) -> str:
+    legacy_identity = (
+        member.anchor is None
+        or member.anchor.cwe == "CWE-78"
+        and not member.anchor.trace_nodes
+    )
     common: dict[str, object] = {
-        "version": _GROUP_VERSION,
+        # Preserve existing command-flow group IDs across resume. Newly
+        # supported families and trace-aware keys use another version.
+        "version": "verified-python-flow-v1" if legacy_identity else _GROUP_VERSION,
         "analysis_id": member.analysis_id,
         "workspace_id": member.workspace_id,
         "commit_id": member.commit_id,
     }
     if member.anchor is not None:
-        return _digest({**common, "flow": asdict(member.anchor)})
+        flow = asdict(member.anchor)
+        if not member.anchor.trace_nodes:
+            # v1 serialized anchors predate the optional trace identity.
+            flow.pop("trace_nodes")
+        return _digest({**common, "flow": flow})
     return _digest(
         {
             **common,

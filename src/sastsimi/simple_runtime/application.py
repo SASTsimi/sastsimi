@@ -1432,6 +1432,13 @@ class SimpleAnalysisApplication:
             if run.candidate_scope_fingerprint is None:
                 run = run.model_copy(update={"candidate_scope_fingerprint": scope})
                 self._store.save_analysis_run(run)
+            saved_candidates = self._store.list_candidates(identity, scope, limit=1)
+            identity_version = (
+                "legacy"
+                if saved_candidates
+                and not saved_candidates[0].evidence_key.startswith("exact-v2:")
+                else "exact-v2"
+            )
             ingest_static_candidates(
                 identity,
                 scope,
@@ -1439,6 +1446,7 @@ class SimpleAnalysisApplication:
                 artifacts,
                 self._store,
                 workspace=static.workspace_path,
+                identity_version=identity_version,
             )
         except (OSError, ValueError, sqlite3.Error) as error:
             return self._candidate_bootstrap_failure(
@@ -3508,6 +3516,12 @@ class SimpleAnalysisApplication:
         if (
             poc is not None
             and poc.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+        ):
+            return False
+        if (
+            final is not None
+            and final.stage_version
+            != STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE]
         ):
             return False
         return bool(

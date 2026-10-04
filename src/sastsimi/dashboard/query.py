@@ -415,6 +415,54 @@ class DashboardQuery:
             raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
         if report_ids is not None and not report_ids <= known_reports:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        exported_reports = report_ids if report_ids is not None else known_reports
+        if report_ids is None and detail.finding_group_count is not None:
+            group_members = tuple(
+                member_id
+                for group in detail.finding_groups
+                for member_id in group.member_ids
+            )
+            if (
+                len(group_members) == len(known_reports)
+                and set(group_members) == known_reports
+                and all(
+                    group.representative_id in group.member_ids
+                    for group in detail.finding_groups
+                )
+            ):
+                grouped_exports = [
+                    group
+                    for group in detail.finding_groups
+                    if group.status == "PROVEN_SAME_FLOW" and len(group.member_ids) > 1
+                ]
+                if grouped_exports:
+                    omitted = {
+                        member_id
+                        for group in grouped_exports
+                        for member_id in group.member_ids
+                        if member_id != group.representative_id
+                    }
+                    exported_reports = known_reports - omitted
+                    members["reports/export-selection.json"] = json.dumps(
+                        {
+                            "mode": "PROVEN_FLOW_DEDUP",
+                            "groups": [
+                                {
+                                    "group_id": group.group_id,
+                                    "representative_id": group.representative_id,
+                                    "member_ids": group.member_ids,
+                                    "original_paths": {
+                                        member_id: f"reports/originals/{member_id}/"
+                                        for member_id in group.member_ids
+                                        if member_id != group.representative_id
+                                    },
+                                }
+                                for group in grouped_exports
+                            ],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ).encode("utf-8")
         values = list(self._checkpoints(exact))
         run = self._simple_run(exact)
         contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
@@ -431,11 +479,18 @@ class DashboardQuery:
             safe_kind = re.sub(r"[^A-Za-z0-9_.-]", "-", kind)[:80] or "artifact"
             members[f"artifacts/{safe_kind}-{artifact.artifact_id[:12]}{suffix}"] = raw
         for report in detail.reports:
-            if report_ids is not None and report.display_id not in report_ids:
+            if report_ids is not None and report.display_id not in exported_reports:
                 continue
-            members[f"reports/{report.display_id}.md"] = self.report_markdown(
-                exact, report.display_id
-            ).encode("utf-8")
+            grouped_original = report.display_id not in exported_reports
+            if grouped_original:
+                original_prefix = f"reports/originals/{report.display_id}"
+                members[f"{original_prefix}/report_kr.md"] = self.report_markdown(
+                    exact, report.display_id
+                ).encode("utf-8")
+            else:
+                members[f"reports/{report.display_id}.md"] = self.report_markdown(
+                    exact, report.display_id
+                ).encode("utf-8")
             try:
                 manifest, _, artifacts = self._report_bundle(exact, report.display_id)
             except DashboardNotFound as error:
@@ -469,7 +524,9 @@ class DashboardQuery:
                     body, _ = read_bundle_file(manifest, entry.path, read_verified)
                 except (OSError, ValueError) as error:
                     raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
-                if entry.path == "report_kr.md":
+                if grouped_original:
+                    members[f"{original_prefix}/{entry.path}"] = body
+                elif entry.path == "report_kr.md":
                     members[f"reports/{report.display_id}.md"] = body
                 elif entry.path == "report_en.md":
                     members[f"reports/en/{report.display_id}.md"] = body
