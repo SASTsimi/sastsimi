@@ -12,7 +12,7 @@ SASTSIMI의 Python 제품 코드 분석에서 미탐을 줄이는 것이 첫 번
 
 ## 현재 동작과 선택한 접근
 
-현재 정적 결과의 원본과 정확한 후보 출처는 보존된다. Discovery의 `EXCLUDE`는 후속 심층 분석에서 빠지고 `UNDECIDED`는 진행한다. PR #213의 `finding_flow.py`, `finding_groups.py`, `finding_group_projection.py`는 검증된 동일 Python 입력→위험 동작 흐름만 읽기 시점에 묶는다. 그러나 `simple_runtime_composition.py`의 `report(finding_id)`와 `export_report_bundle(finding_id)`는 Finding별로 작동한다. 따라서 화면의 그룹 수가 줄어도 실제 제출용 묶음은 여전히 여러 개다. 기존 오프라인 재생에서 일부 화면 그룹은 줄었지만 정적 후보 수는 변하지 않았고, 새 코드의 실분석 미탐 개선은 아직 입증되지 않았다.
+현재 정적 결과의 원본과 정확한 후보 출처는 보존된다. Discovery의 `EXCLUDE`는 후속 심층 분석에서 빠지고 `UNDECIDED`는 진행한다. PR #213의 `finding_flow.py`, `finding_groups.py`, `finding_group_projection.py`는 검증된 동일 Python 입력→위험 동작 흐름만 읽기 시점에 묶는다. 대시보드 전체 ZIP에도 대표 보고서를 앞에 두고 다른 회원의 원본을 별도 경로에 담는 선택 정보가 있다. 그러나 `simple_runtime_composition.py`의 `report(finding_id)`와 `export_report_bundle(finding_id)`는 Finding별로 작동하며, 모든 회원의 사실·PoC·증거를 검증해 담은 제출용 그룹 묶음은 없다. 기존 오프라인 재생에서 일부 화면 그룹은 줄었지만 정적 후보 수는 변하지 않았고, 새 코드의 실분석 미탐 개선은 아직 입증되지 않았다.
 
 후보를 CWE·파일·sink 이름만으로 초기에 합치면 비용은 줄 수 있으나 다른 입력과 분기를 지워 미탐 위험을 높인다. 자유 형식 LLM 중복 판정은 추가 비용과 거짓 병합 위험이 있다. 선택한 방식은 **후보 단계는 원본 보존, 최종 단계는 검증된 동일 흐름의 보수적 통합**이다. 증명이 부족한 Finding은 별도 보고서로 남으며, 자동 통합률을 높이기 위해 판정 기준을 완화하지 않는다.
 
