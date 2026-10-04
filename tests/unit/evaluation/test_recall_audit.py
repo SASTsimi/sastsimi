@@ -404,6 +404,23 @@ def test_partial_scan_is_not_counted_as_a_false_negative(tmp_path: Path) -> None
     assert result["analysis_complete"] is False
 
 
+def test_full_static_evidence_is_traced_separately_from_partial_pipeline(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path, terminal="PARTIAL")
+    _candidate(data_dir, database, deep_status="NO_HYPOTHESIS")
+
+    result = audit_analysis(
+        data_dir,
+        "analysis-1",
+        _oracle(vetted_candidate_ids=("candidate-1",), finding_inventory_reviewed=True),
+    )
+
+    assert result["cases"][0]["candidate_ids"] == ["candidate-1"]
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+    assert result["cases"][0]["first_gap"] == "PIPELINE_UNFINISHED"
+
+
 def test_complete_marker_without_static_evidence_is_not_a_measured_miss(
     tmp_path: Path,
 ) -> None:
@@ -528,6 +545,42 @@ def test_corrupt_current_poc_is_not_counted_as_detected(tmp_path: Path) -> None:
             vetted_candidate_ids=("candidate-1",),
             vetted_hypothesis_ids=("hyp-1",),
         ),
+    )
+
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+    assert result["cases"][0]["first_gap"] == "FINDING_EVIDENCE_UNVERIFIED"
+
+
+def test_partial_pipeline_reports_stale_confirmed_finding_evidence(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path, terminal="PARTIAL")
+    _verified_finding_chain(data_dir, database)
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            ("analysis-1", "hyp-1", SimpleStage.VERIFICATION_FINAL_DONE.value),
+        ).fetchone()
+        assert row is not None
+        stale = StageCheckpoint.model_validate_json(row[0]).model_copy(
+            update={"stage_version": "old"}
+        )
+        connection.execute(
+            "UPDATE simple_runtime_checkpoints SET checkpoint_json = ? "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            (
+                stale.model_dump_json(),
+                "analysis-1",
+                "hyp-1",
+                SimpleStage.VERIFICATION_FINAL_DONE.value,
+            ),
+        )
+
+    result = audit_analysis(
+        data_dir,
+        "analysis-1",
+        _oracle(vetted_hypothesis_ids=("hyp-1",)),
     )
 
     assert result["cases"][0]["status"] == "INCOMPLETE"

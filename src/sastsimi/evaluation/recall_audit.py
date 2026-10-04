@@ -62,21 +62,14 @@ def _static_product_paths(
 ) -> frozenset[str] | None:
     """Require exact, hash-verified full static evidence before measuring a miss."""
 
-    terminal = run.candidate_terminal
     bundle_ref = run.static_bundle_ref
     coverage_ref = run.static_coverage_ref
     scope = run.candidate_scope_fingerprint
     if (
         run.static_disposition != "FULL"
-        or terminal is None
-        or terminal.status != "COMPLETE"
-        or not terminal.producer_finished
-        or terminal.pending_child_count != 0
         or not scope
-        or terminal.scope_fingerprint != scope
         or bundle_ref is None
         or coverage_ref is None
-        or terminal.bundle_hash != bundle_ref.content_hash
     ):
         return None
     rows = connection.execute(
@@ -182,6 +175,25 @@ def _static_product_paths(
     ):
         return None
     return frozenset(selected)
+
+
+def _pipeline_complete(run: SimpleAnalysisRun) -> bool:
+    terminal = run.candidate_terminal
+    return bool(
+        terminal is not None
+        and terminal.status == "COMPLETE"
+        and terminal.producer_finished
+        and terminal.pending_child_count == 0
+        and terminal.scope_fingerprint == run.candidate_scope_fingerprint
+        and run.static_bundle_ref is not None
+        and terminal.bundle_hash == run.static_bundle_ref.content_hash
+        and not any(
+            terminal.decision_counts.get(key, 0) for key in ("PENDING", "ERROR")
+        )
+        and not any(
+            terminal.deep_counts.get(key, 0) for key in ("PENDING", "RUNNING", "ERROR")
+        )
+    )
 
 
 def _matches(case: OracleCase, candidate: StaticCandidate) -> bool:
@@ -317,6 +329,7 @@ def audit_analysis(
         if run.commit_id != oracle.commit or run.repository != oracle.repository:
             raise ValueError("RECALL_ORACLE_TARGET_MISMATCH")
         static_paths = _static_product_paths(connection, data_dir, run)
+        pipeline_complete = static_paths is not None and _pipeline_complete(run)
         cursor = connection.execute(
             "SELECT candidate_id, candidate_json, decision, deep_status "
             "FROM simple_static_candidates "
@@ -366,7 +379,11 @@ def audit_analysis(
                 for key, value in stages.items()
                 if key in case.vetted_hypothesis_ids
             }
-            complete = static_paths is not None and case.path in static_paths
+            complete = (
+                static_paths is not None
+                and pipeline_complete
+                and case.path in static_paths
+            )
             if set(case.vetted_candidate_ids) - set(vetted_ids):
                 status, first_gap = "INCOMPLETE", "ORACLE_CANDIDATE_MAPPING_INVALID"
             elif any(
@@ -390,13 +407,22 @@ def audit_analysis(
                     )
                     else "AGENT_ERROR",
                 )
+            elif any(
+                (final := item.get(SimpleStage.VERIFICATION_FINAL_DONE)) is not None
+                and final.status is StageStatus.SUCCEEDED
+                and final.verdict == "TRUE"
+                for item in vetted_stages.values()
+            ):
+                status, first_gap = "INCOMPLETE", "FINDING_EVIDENCE_UNVERIFIED"
             elif not complete:
                 status, first_gap = (
                     "INCOMPLETE",
                     (
-                        "ORACLE_OUT_OF_SCOPE"
-                        if static_paths is not None
-                        else "STATIC_EVIDENCE_UNVERIFIED"
+                        "STATIC_EVIDENCE_UNVERIFIED"
+                        if static_paths is None
+                        else "ORACLE_OUT_OF_SCOPE"
+                        if case.path not in static_paths
+                        else "PIPELINE_UNFINISHED"
                     ),
                 )
             elif not matched and not case.vetted_hypothesis_ids:
@@ -439,13 +465,6 @@ def audit_analysis(
                 for item in stages.values()
             ):
                 status, first_gap = "INCOMPLETE", "VALIDATION_UNFINISHED"
-            elif any(
-                (final := item.get(SimpleStage.VERIFICATION_FINAL_DONE)) is not None
-                and final.status is StageStatus.SUCCEEDED
-                and final.verdict == "TRUE"
-                for item in vetted_stages.values()
-            ):
-                status, first_gap = "INCOMPLETE", "FINDING_EVIDENCE_UNVERIFIED"
             else:
                 status, first_gap = (
                     ("MISSED", "VALIDATION")
@@ -471,7 +490,7 @@ def audit_analysis(
     return {
         "analysis_id": analysis_id,
         "oracle_commit": oracle.commit,
-        "analysis_complete": static_paths is not None,
+        "analysis_complete": pipeline_complete,
         "cases": cases,
         "counts": dict(Counter(str(item["status"]) for item in cases)),
     }
