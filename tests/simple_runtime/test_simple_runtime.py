@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -270,6 +271,178 @@ async def test_unsupported_requirement_at_attempt_cap_stays_blocked(
     assert outcome.error_code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
     assert calls == []
     assert store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE) == failed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage_version", ("4", STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE])
+)
+async def test_offline_base_failure_retries_initial_stage_after_local_preflight(
+    tmp_path, stage_version: str
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "base-recovery" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.PRO_CON_DONE)
+    pro_con = store.require(_identity(), SimpleStage.PRO_CON_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        store.input_refs_for(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE),
+        attempt_id="missing-base-attempt",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code="POC_OFFLINE_BASE_IMAGE_UNAVAILABLE",
+            retryable=False,
+            safe_message="Local base image probe failed",
+        ),
+        StageStatus.BLOCKED,
+    ).model_copy(update={"stage_version": stage_version})
+    store.save_checkpoint(failed)
+    calls: list[SimpleStage] = []
+    preflight_count = 0
+
+    async def local_base_ready() -> bool:
+        nonlocal preflight_count
+        preflight_count += 1
+        return True
+
+    handlers = _recording_handlers(calls)
+    initial_ref = _ref("base-recovery-initial")
+
+    async def initial(_checkpoint: StageCheckpoint, _prior: object) -> StageResult:
+        calls.append(SimpleStage.VERIFICATION_INITIAL_DONE)
+        return StageResult(
+            output_refs=(initial_ref,),
+            verdict="HOLD",
+            external_prerequisites_ref=initial_ref,
+        )
+
+    handlers[SimpleStage.VERIFICATION_INITIAL_DONE] = initial
+    outcome = await SimpleRuntimeRunner(
+        store, handlers, offline_base_ready=local_base_ready
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.SUCCEEDED
+    assert calls == [SimpleStage.VERIFICATION_INITIAL_DONE]
+    assert preflight_count == 1
+    assert store.require(_identity(), SimpleStage.PRO_CON_DONE) == pro_con
+    assert (
+        store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE).attempt_number
+        == 2
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code,attempt_number,probe_result,in_flight,expected_probes",
+    [
+        ("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE", 1, False, False, 1),
+        ("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE", 1, None, False, 0),
+        ("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE", 3, True, False, 0),
+        ("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE", 1, True, True, 0),
+        ("POC_OFFLINE_MANIFEST_UNSUPPORTED", 1, True, False, 0),
+    ],
+)
+async def test_offline_base_recovery_preserves_blocked_checkpoint_without_guard(
+    tmp_path,
+    error_code: str,
+    attempt_number: int,
+    probe_result: bool | None,
+    in_flight: bool,
+    expected_probes: int,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "base-guard" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.PRO_CON_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        store.input_refs_for(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE),
+        attempt_id="base-guard-attempt",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code=error_code,
+            retryable=False,
+            safe_message="Offline preparation failed",
+        ),
+        StageStatus.BLOCKED,
+    ).model_copy(update={"attempt_number": attempt_number})
+    store.save_checkpoint(failed)
+    if in_flight:
+        assert store.begin_codex_call(
+            "unresolved-offline-replay", _identity().analysis_id
+        )
+    probes = 0
+
+    async def local_base_ready() -> bool:
+        nonlocal probes
+        probes += 1
+        assert probe_result is not None
+        return probe_result
+
+    calls: list[SimpleStage] = []
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        offline_base_ready=local_base_ready if probe_result is not None else None,
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == error_code
+    assert store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE) == failed
+    assert calls == []
+    assert probes == expected_probes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ["db", "docker"])
+async def test_offline_base_recovery_fails_closed_when_preflight_errors(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, failure_point: str
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "probe-error" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.PRO_CON_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        store.input_refs_for(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE),
+        attempt_id="probe-error-attempt",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code="POC_OFFLINE_BASE_IMAGE_UNAVAILABLE",
+            retryable=False,
+            safe_message="Local base image probe failed",
+        ),
+        StageStatus.BLOCKED,
+    )
+    if failure_point == "db":
+
+        def fail_db(_analysis_id: str) -> str:
+            raise sqlite3.OperationalError("database locked")
+
+        monkeypatch.setattr(store, "unresolved_codex_call", fail_db)
+    probes = 0
+
+    async def local_base_ready() -> bool:
+        nonlocal probes
+        probes += 1
+        raise RuntimeError("Docker probe failed")
+
+    calls: list[SimpleStage] = []
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        offline_base_ready=local_base_ready,
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == "POC_OFFLINE_BASE_IMAGE_UNAVAILABLE"
+    assert store.require(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE) == failed
+    assert calls == []
+    assert probes == (0 if failure_point == "db" else 1)
 
 
 def _cleanup_confirmation(

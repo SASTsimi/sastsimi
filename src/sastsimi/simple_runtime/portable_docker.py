@@ -1128,6 +1128,18 @@ class DirectEnvironmentPreparer:
         self._wheel_bundle_sha256 = wheel_bundle_sha256
         self._git_executable = git_executable
 
+    async def offline_base_ready(self) -> bool:
+        """Probe and pin the configured offline base without pulling an image."""
+
+        if self._wheel_bundle_path is None:
+            return False
+        try:
+            digest = await self._docker.local_base_image_digest(_OFFLINE_BASE_IMAGE)
+            await self._docker.pin_local_base(digest)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return True
+
     async def prepare(
         self,
         checkpoint: StageCheckpoint,

@@ -170,6 +170,54 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert created == [identity, identity]
 
 
+@pytest.mark.asyncio
+async def test_composition_wires_local_only_offline_base_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel_path = tmp_path / "wheels.tar"
+    wheel_path.write_bytes(b"fixture")
+    profile = _profile(tmp_path).model_copy(
+        update={
+            "poc_wheel_archive_path": wheel_path,
+            "poc_wheel_archive_sha256": "a" * 64,
+        }
+    )
+    application = composition.build_analysis_application(_config(tmp_path), profile)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref(identity, "profile"),
+        static_bundle_ref=_ref(identity, "bundle"),
+        workspace_path=tmp_path / "workspace",
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def inspect(_docker: object, image: str) -> str:
+        calls.append(("inspect", image))
+        return "sha256:" + "b" * 64
+
+    async def pin(_docker: object, digest: str) -> str:
+        calls.append(("tag", digest))
+        return "sastsimi-offline-base:" + "b" * 64
+
+    monkeypatch.setattr(
+        composition.PortableDockerRuntime, "local_base_image_digest", inspect
+    )
+    monkeypatch.setattr(composition.PortableDockerRuntime, "pin_local_base", pin)
+    runner = application._runner_factory(application._store, identity, static)
+
+    assert runner.offline_base_ready is not None
+    assert await runner.offline_base_ready() is True
+    assert calls == [
+        ("inspect", "python:3.12-slim"),
+        ("tag", "sha256:" + "b" * 64),
+    ]
+
+
 def test_public_candidate_status_marks_unleased_running_stage_interrupted(
     tmp_path: Path,
 ) -> None:

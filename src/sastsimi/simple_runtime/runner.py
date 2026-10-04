@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -72,6 +72,7 @@ class SimpleRuntimeRunner:
         policy_snapshot_ref: StoredDataRef | None = None,
         codex_invalid_output_resume: bool = False,
         cleanup_artifacts: SimpleArtifactRepository | None = None,
+        offline_base_ready: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self.store = store
         self.handlers = handlers
@@ -79,6 +80,7 @@ class SimpleRuntimeRunner:
         self.policy_snapshot_ref = policy_snapshot_ref
         self.codex_invalid_output_resume = codex_invalid_output_resume
         self.cleanup_artifacts = cleanup_artifacts
+        self.offline_base_ready = offline_base_ready
 
     async def resume_analysis(self, identity: CheckpointIdentity) -> RunOutcome:
         return await self.resume_hypothesis(identity)
@@ -143,6 +145,13 @@ class SimpleRuntimeRunner:
                     and existing.stage_version != STAGE_VERSION[stage]
                 ):
                     if (
+                        stage is SimpleStage.VERIFICATION_INITIAL_DONE
+                        and existing.status is StageStatus.BLOCKED
+                        and existing.error_code == "POC_OFFLINE_BASE_IMAGE_UNAVAILABLE"
+                    ):
+                        # The guarded retry below also handles legacy stage versions.
+                        pass
+                    elif (
                         stage is SimpleStage.VERIFICATION_INITIAL_DONE
                         and existing.status is StageStatus.BLOCKED
                         and existing.error_code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
@@ -501,6 +510,48 @@ class SimpleRuntimeRunner:
                 ),
                 StageStatus.BLOCKED,
             )
+        if (
+            checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
+            and checkpoint.status is StageStatus.BLOCKED
+            and checkpoint.error_code == "POC_OFFLINE_BASE_IMAGE_UNAVAILABLE"
+        ):
+            if (
+                checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+                or self.offline_base_ready is None
+            ):
+                return RunOutcome(
+                    current_stage=checkpoint.stage,
+                    status=checkpoint.status,
+                    error_code=checkpoint.error_code,
+                    attempt_id=checkpoint.attempt_id,
+                )
+            try:
+                if self.store.unresolved_codex_call(checkpoint.identity.analysis_id):
+                    ready = False
+                else:
+                    ready = await self.offline_base_ready()
+            except (sqlite3.Error, OSError, RuntimeError, ValueError):
+                ready = False
+            if not ready:
+                return RunOutcome(
+                    current_stage=checkpoint.stage,
+                    status=checkpoint.status,
+                    error_code=checkpoint.error_code,
+                    attempt_id=checkpoint.attempt_id,
+                )
+            self.store.replace_from(
+                checkpoint.model_copy(
+                    update={
+                        "stage_version": STAGE_VERSION[checkpoint.stage],
+                        "status": StageStatus.PENDING,
+                        "output_refs": (),
+                        "attempt_id": None,
+                        "error_code": None,
+                        "retryable": False,
+                    }
+                )
+            )
+            return False
         if (
             checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
             and checkpoint.status is StageStatus.BLOCKED

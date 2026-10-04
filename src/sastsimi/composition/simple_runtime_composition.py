@@ -470,6 +470,7 @@ def build_analysis_application(
             ),
             codex_invalid_output_resume=profile.provider == "codex",
             cleanup_artifacts=artifacts,
+            offline_base_ready=environments.offline_base_ready,
             recovery=recovery_factory(identity),
             policy_snapshot_ref=static.policy_snapshot_ref,
         )
