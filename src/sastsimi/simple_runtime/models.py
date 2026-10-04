@@ -135,6 +135,10 @@ class StageFailure(ContractModel):
     safe_message: str
     invalid_field: str | None = None
     evidence_refs: tuple[StoredDataRef, ...] = ()
+    # What the stall counter compares instead of `code` when the same code can
+    # hide different causes: a PoC that fails on a missing setting, then on a
+    # duplicate table, is moving, not stuck.
+    stall_key: str | None = None
 
 
 # Bound to every agent's instructions in this pipeline (stages.py and

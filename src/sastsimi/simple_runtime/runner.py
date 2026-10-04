@@ -273,13 +273,14 @@ class SimpleRuntimeRunner:
                             status=status,
                             error_code=failure.code,
                         )
-                    novel = failure.code not in seen_codes
+                    stall_key = failure.stall_key or failure.code
+                    novel = stall_key not in seen_codes
                     streak = 1 if novel else prior_streak + 1
                     checkpoint = checkpoint.model_copy(
                         update={
                             "stall_streak": streak,
                             "stall_codes": (
-                                seen_codes if not novel else (*seen_codes, failure.code)
+                                seen_codes if not novel else (*seen_codes, stall_key)
                             ),
                         }
                     )
