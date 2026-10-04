@@ -30,7 +30,7 @@ _HINT_PATTERNS = (
 )
 _HINT_BYTES = 70_000
 _PER_FILE_BYTES = 12_000
-_ATTEMPTS = 3
+_ATTEMPTS = 5
 _SMOKE_MARKER = "HARNESS_OK"
 _EXECUTE_TIMEOUT_MS = 240_000
 
@@ -46,7 +46,9 @@ the way the project's own tests make one, and then prove it did: load the
 project's own test configuration (its conftest, `tests/*.env`, `.env.test` or
 example env file - load the whole file, then override only what the container
 needs, such as a database URI or a writable path), start any database it
-needs, create or import the application, sign a made-up test user in with the
+needs and create its schema the way the project's own tests do (migrations
+or the models' create-all) before anything queries it, create or import the
+application, sign a made-up test user in with the
 project's own helper, make one harmless request to a real route through the
 framework's test client or a server started inside the container, and print
 `HARNESS_OK` followed by what that request returned. Exit 0 only after that
@@ -200,7 +202,7 @@ class BaseHarness:
                 + output[-3500:]
                 + "\nFix the first thing that failed and keep what worked.\n"
             )
-            last = output[-300:]
+            last = output[-3000:]
         return None, last
 
     async def _run(self, image_digest: str, content: bytes) -> tuple[bool, str]:

@@ -78,7 +78,7 @@ def test_a_failing_base_is_retried_with_its_output_then_given_up(
     harness = _harness(tmp_path, docker, client)
 
     assert asyncio.run(harness.ensure("sha256:abc")) is None
-    assert len(client.prompts) == 3
+    assert len(client.prompts) == 5
     assert b"KeyError: 'EMAIL_DOMAIN'" in client.prompts[1]
     assert asyncio.run(harness.ensure("sha256:abc")) is None
-    assert len(client.prompts) == 3
+    assert len(client.prompts) == 5
