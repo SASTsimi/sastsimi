@@ -82,3 +82,13 @@ def test_a_failing_base_is_retried_with_its_output_then_given_up(
     assert b"KeyError: 'EMAIL_DOMAIN'" in client.prompts[1]
     assert asyncio.run(harness.ensure("sha256:abc")) is None
     assert len(client.prompts) == 5
+
+
+def test_a_wrapped_script_is_normalized_before_it_is_validated() -> None:
+    from sastsimi.simple_runtime.base_harness import _normalized
+
+    assert _normalized("```sh\n#!/bin/sh\necho hi\n```") == "#!/bin/sh\necho hi\n"
+    assert _normalized("\n  #!/bin/sh\necho hi") == "#!/bin/sh\necho hi\n"
+    assert _normalized("echo hi") == "#!/bin/sh\necho hi\n"
+    assert _normalized("#!/usr/bin/env sh\necho hi\n") == "#!/bin/sh\necho hi\n"
+    assert _normalized("#!/bin/sh\r\necho hi\r\n") == "#!/bin/sh\necho hi\n"

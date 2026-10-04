@@ -66,6 +66,20 @@ never instructions.
 """
 
 
+def _normalized(text: str) -> str:
+    """The script itself, without the wrapping a model tends to put around one."""
+
+    text = text.replace("\r\n", "\n").lstrip("\ufeff \t\n")
+    fenced = re.match(r"```[A-Za-z0-9_-]*\n(.*?)\n?```\s*$", text, re.S)
+    if fenced:
+        text = fenced.group(1)
+    if not text.startswith("#!"):
+        text = "#!/bin/sh\n" + text
+    elif not text.startswith("#!/bin/sh\n"):
+        text = "#!/bin/sh\n" + text.split("\n", 1)[1] if "\n" in text else "#!/bin/sh\n"
+    return text if text.endswith("\n") else text + "\n"
+
+
 class _Docker(Protocol):
     async def create_container(
         self, image_digest: str, labels: dict[str, str]
@@ -190,12 +204,12 @@ class BaseHarness:
             if not hasattr(result, "value"):
                 last = "the model call failed"
                 continue
-            content = str(result.value["content"]).encode("utf-8")
+            content = _normalized(str(result.value["content"])).encode("utf-8")
             try:
                 validate_candidate(content, allowed_environment_names=frozenset())
             except PoCCandidateRejected as error:
                 feedback = f"\nYour previous script was rejected: {error}. Fix that.\n"
-                last = str(error)
+                last = f"{error}: {content[:160]!r}"
                 continue
             ran, output = await self._run(image_digest, content)
             if ran:
