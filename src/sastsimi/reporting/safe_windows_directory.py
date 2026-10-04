@@ -149,3 +149,9 @@ def _guarded_windows_replace_directory(path: Path) -> Iterator[None]:
             pass
         except OSError as error:
             raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
+
+
+# Public, narrowly scoped handles for the composition root's group publisher.
+capture_directory_identity = _capture_directory_identity
+locked_windows_directory = _locked_windows_directory
+guarded_windows_replace_directory = _guarded_windows_replace_directory

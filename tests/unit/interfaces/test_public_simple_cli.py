@@ -54,6 +54,9 @@ class _PublicApplication:
     def export_report_bundle(self, finding_id: str) -> str:
         return f"reports/analysis/{finding_id}/bundle.zip"
 
+    def export_report_group(self, analysis_id: str, group_id: str) -> str:
+        return f"reports/{analysis_id}/groups/{group_id}/digest/bundle.zip"
+
 
 def test_result_text_distinguishes_raw_findings_from_verified_groups() -> None:
     stream = StringIO()
@@ -149,6 +152,22 @@ def test_public_report_export_includes_additive_bundle_path(
         "finding_id": "F-001",
         "path": "reports/analysis/F-001.md",
         "bundle_path": "reports/analysis/F-001/bundle.zip",
+    }
+
+
+def test_public_group_export_has_explicit_analysis_and_group_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    group_id = "a" * 64
+    assert main(
+        ["report", "export-group", "A-001", group_id, "--format", "json"],
+        public_application=_PublicApplication(),
+        user_config_store=_config(tmp_path),
+    ) == int(ExitCode.OK)
+    assert json.loads(capsys.readouterr().out)["data"] == {
+        "analysis_id": "A-001",
+        "group_id": group_id,
+        "bundle_path": f"reports/A-001/groups/{group_id}/digest/bundle.zip",
     }
 
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, SQLite, Pydantic contracts, ZIP, pytest, vanilla dashboard JS, PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-10-04-recall-first-grouped-reports-design.md`
+**Spec:** `docs/plans/2026-10-04-recall-first-grouped-reports-design.md`
 
 ## Global Constraints
 

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.evaluation.recall_audit import Oracle, OracleCase, audit_analysis
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.candidates import CandidateOrigin, StaticCandidate
 from sastsimi.simple_runtime.models import (
@@ -20,11 +20,17 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
+from sastsimi.simple_runtime.recall_audit import Oracle, OracleCase, audit_analysis
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 def _saved_run(
-    tmp_path: Path, *, terminal: str = "COMPLETE", static_proof: bool = True
+    tmp_path: Path,
+    *,
+    terminal: Literal["COMPLETE", "PARTIAL"] = "COMPLETE",
+    static_proof: bool = True,
+    manifest_paths: tuple[str, ...] = ("app.py",),
+    coverage_overrides: dict[str, object] | None = None,
 ) -> tuple[Path, Path]:
     data_dir = tmp_path / "data"
     database = RuntimePaths(data_dir).database
@@ -36,28 +42,34 @@ def _saved_run(
         hypothesis_id=None,
     )
     static_artifacts = SimpleArtifactRepository(data_dir, static_identity)
-    coverage_ref = static_artifacts.put_json(
-        {
-            "kind": "simple_static_coverage_v1",
-            "analysis_id": "analysis-1",
-            "workspace_id": "workspace-1",
-            "commit_id": "a" * 40,
-            "fingerprint": "scope-1",
-            "expected_count": 1,
-            "verified_count": 1,
-            "gaps": [],
-            "unsupported_files": [],
-            "excluded_test_files": [],
-            "out_of_scope_product_files": [],
-            "unavailable_paths": [],
-            "ast_parse_errors": [],
-            "ast_truncated": False,
-            "engine_errors": [],
-            "codeql_configured": False,
-        }
-    )
+    coverage = {
+        "kind": "simple_static_coverage_v1",
+        "analysis_id": "analysis-1",
+        "workspace_id": "workspace-1",
+        "commit_id": "a" * 40,
+        "fingerprint": "scope-1",
+        "expected_count": 1,
+        "verified_count": 1,
+        "gaps": [],
+        "unsupported": [],
+        "unsupported_files": [],
+        "excluded_test_files": [],
+        "out_of_scope_product_files": [],
+        "unavailable_paths": [],
+        "unavailable": False,
+        "ast_parse_errors": [],
+        "ast_parse_error_count": 0,
+        "ast_oversize_paths": [],
+        "ast_oversize_count": 0,
+        "ast_truncated": False,
+        "engine_errors": [],
+        "codeql_configured": False,
+        "codeql_error": None,
+    }
+    coverage.update(coverage_overrides or {})
+    coverage_ref = static_artifacts.put_json(coverage)
     manifest_ref = static_artifacts.put_json(
-        {"kind": "simple_tracked_sources", "paths": ["app.py"]}
+        {"kind": "simple_tracked_sources", "paths": list(manifest_paths)}
     )
     bundle_ref = static_artifacts.put_json(
         {
@@ -115,6 +127,30 @@ def _saved_run(
                     static_checkpoint.updated_at.isoformat(),
                 ),
             )
+        root_ref = static_artifacts.put_json({"kind": "simple_surface_index"})
+        root_checkpoint = StageCheckpoint(
+            identity=static_identity,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(bundle_ref,),
+            input_hash=input_reference_hash((bundle_ref,)),
+            output_refs=(root_ref,),
+        )
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "INSERT INTO simple_runtime_checkpoints "
+                "(analysis_id, hypothesis_key, stage, checkpoint_json, input_hash, "
+                "updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "analysis-1",
+                    "",
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                    root_checkpoint.model_dump_json(),
+                    root_checkpoint.input_hash,
+                    root_checkpoint.updated_at.isoformat(),
+                ),
+            )
     return data_dir, database
 
 
@@ -160,7 +196,7 @@ def _candidate(
     database: Path,
     *,
     candidate_id: str = "candidate-1",
-    kind: str = "FLOW",
+    kind: Literal["ENTRY_POINT", "FLOW", "HINT"] = "FLOW",
     line: int = 20,
     decision: str = "INCLUDE",
     deep_status: str = "COMPLETE",
@@ -200,6 +236,27 @@ def _candidate(
                 deep_status,
             ),
         )
+    store = SimpleCheckpointStore(database)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    run = store.require_analysis_run("analysis-1")
+    assert run.candidate_terminal is not None
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_terminal": run.candidate_terminal.model_copy(
+                    update={
+                        "decision_counts": store.candidate_counts(identity, "scope-1"),
+                        "deep_counts": store.candidate_deep_counts(identity, "scope-1"),
+                    }
+                )
+            }
+        )
+    )
 
 
 def _link(database: Path, candidate_id: str = "candidate-1") -> None:
@@ -392,6 +449,104 @@ def test_complete_scan_without_candidate_reports_static_gap_without_writing(
     assert result["cases"][0]["status"] == "MISSED"
     assert result["counts"] == {"MISSED": 1}
     assert database.read_bytes() == before
+
+
+def test_lost_candidate_row_does_not_become_a_static_miss(tmp_path: Path) -> None:
+    data_dir, database = _saved_run(tmp_path)
+    store = SimpleCheckpointStore(database)
+    run = store.require_analysis_run("analysis-1")
+    assert run.candidate_terminal is not None
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_terminal": run.candidate_terminal.model_copy(
+                    update={
+                        "decision_counts": {"INCLUDE": 1},
+                        "deep_counts": {"COMPLETE": 1},
+                    }
+                )
+            }
+        )
+    )
+
+    result = audit_analysis(
+        data_dir, "analysis-1", _oracle(finding_inventory_reviewed=True)
+    )
+
+    assert result["analysis_complete"] is False
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+    assert result["cases"][0]["first_gap"] == "CANDIDATE_LEDGER_MISMATCH"
+
+
+def test_full_python_scan_with_stub_file_is_measurable(tmp_path: Path) -> None:
+    data_dir, _ = _saved_run(tmp_path, manifest_paths=("app.py", "types.pyi"))
+
+    result = audit_analysis(
+        data_dir, "analysis-1", _oracle(finding_inventory_reviewed=True)
+    )
+
+    assert result["analysis_complete"] is True
+    assert result["cases"][0]["status"] == "MISSED"
+
+
+@pytest.mark.parametrize(
+    "limitation",
+    [
+        {"unsupported": [{"extension": ".py", "file_count": 1}]},
+        {"out_of_scope_product_files": ["app.py"]},
+        {"ast_oversize_count": 1, "ast_oversize_paths": ["app.py"]},
+        {"ast_parse_error_count": 1},
+        {"codeql_error": "query failed"},
+        {"unavailable": True},
+    ],
+)
+def test_static_limitation_is_not_a_measured_miss(
+    tmp_path: Path, limitation: dict[str, object]
+) -> None:
+    data_dir, _ = _saved_run(tmp_path, coverage_overrides=limitation)
+
+    result = audit_analysis(
+        data_dir, "analysis-1", _oracle(finding_inventory_reviewed=True)
+    )
+
+    assert result["analysis_complete"] is False
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+
+
+def test_blocked_root_hypothesis_evidence_is_not_a_static_miss(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path)
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+            "WHERE analysis_id = ? AND hypothesis_key = '' AND stage = ?",
+            ("analysis-1", SimpleStage.HYPOTHESIS_DONE.value),
+        ).fetchone()
+        assert row is not None
+        checkpoint = StageCheckpoint.model_validate_json(row[0]).model_copy(
+            update={
+                "status": StageStatus.BLOCKED,
+                "error_code": "HYPOTHESIS_EVIDENCE_INVALID",
+            }
+        )
+        connection.execute(
+            "UPDATE simple_runtime_checkpoints SET checkpoint_json = ? "
+            "WHERE analysis_id = ? AND hypothesis_key = '' AND stage = ?",
+            (
+                checkpoint.model_dump_json(),
+                "analysis-1",
+                SimpleStage.HYPOTHESIS_DONE.value,
+            ),
+        )
+
+    result = audit_analysis(
+        data_dir, "analysis-1", _oracle(finding_inventory_reviewed=True)
+    )
+
+    assert result["analysis_complete"] is False
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+    assert result["cases"][0]["first_gap"] == "ROOT_HYPOTHESIS_UNVERIFIED"
 
 
 def test_partial_scan_is_not_counted_as_a_false_negative(tmp_path: Path) -> None:
@@ -636,7 +791,9 @@ def test_failed_poc_is_execution_error_not_disproof(tmp_path: Path) -> None:
     _link(database)
     _checkpoint(database, SimpleStage.POC_EXECUTION_DONE, status=StageStatus.FAILED)
 
-    result = audit_analysis(data_dir, "analysis-1", _oracle())
+    result = audit_analysis(
+        data_dir, "analysis-1", _oracle(vetted_candidate_ids=("candidate-1",))
+    )
 
     assert result["cases"][0]["status"] == "INCOMPLETE"
     assert result["cases"][0]["first_gap"] == "POC_EXECUTION_ERROR"
@@ -679,6 +836,32 @@ def test_vetted_inconclusive_candidate_is_hypothesis_gap_after_full_review(
 
     assert result["cases"][0]["status"] == "MISSED"
     assert result["cases"][0]["first_gap"] == "HYPOTHESIS"
+
+
+def test_unvetted_nearby_candidate_error_does_not_override_discovery_miss(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path)
+    _candidate(
+        data_dir,
+        database,
+        candidate_id="candidate-1",
+        decision="EXCLUDE",
+        deep_status="NO_HYPOTHESIS",
+    )
+    _candidate(data_dir, database, candidate_id="candidate-2")
+    _link(database, candidate_id="candidate-2")
+    _checkpoint(database, SimpleStage.POC_EXECUTION_DONE, status=StageStatus.FAILED)
+
+    result = audit_analysis(
+        data_dir,
+        "analysis-1",
+        _oracle(vetted_candidate_ids=("candidate-1",), finding_inventory_reviewed=True),
+    )
+
+    assert result["cases"][0]["candidate_ids"] == ["candidate-1", "candidate-2"]
+    assert result["cases"][0]["status"] == "MISSED"
+    assert result["cases"][0]["first_gap"] == "DISCOVERY"
 
 
 def test_oracle_commit_mismatch_refuses_comparison(tmp_path: Path) -> None:

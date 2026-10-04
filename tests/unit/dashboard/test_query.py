@@ -1326,7 +1326,7 @@ def test_default_bundle_exports_only_proven_group_representative_and_mapping(
     query, finding_ref = _two_current_reports(tmp_path, attach_bundles=True)
     grouped = group_verified_findings(_export_group_members(proven=True))
     with patch(
-        "sastsimi.dashboard.query.project_current_finding_groups",
+        "sastsimi.dashboard.query.current_report_groups",
         return_value=grouped,
     ):
         detail = query.get_analysis("analysis-a")
@@ -1380,7 +1380,7 @@ def test_default_bundle_preserves_legacy_nonrepresentative_report(
     query, _ = _two_current_reports(tmp_path)
     grouped = group_verified_findings(_export_group_members(proven=True))
     with patch(
-        "sastsimi.dashboard.query.project_current_finding_groups",
+        "sastsimi.dashboard.query.current_report_groups",
         return_value=grouped,
     ):
         members = query.bundle_members("analysis-a", artifact_ids=frozenset())
@@ -1411,7 +1411,7 @@ def test_default_bundle_rejects_corrupt_nonrepresentative_attachment(
     archive_path.write_bytes(b"corrupted archive")
     grouped = group_verified_findings(_export_group_members(proven=True))
     with patch(
-        "sastsimi.dashboard.query.project_current_finding_groups",
+        "sastsimi.dashboard.query.current_report_groups",
         return_value=grouped,
     ):
         with pytest.raises(
@@ -1435,7 +1435,7 @@ def test_default_bundle_keeps_undetermined_and_incomplete_groups_raw(
     incomplete = group_verified_findings(_export_group_members(proven=True)[:1])
     for projection in (complete_but_unknown, incomplete):
         with patch(
-            "sastsimi.dashboard.query.project_current_finding_groups",
+            "sastsimi.dashboard.query.current_report_groups",
             return_value=projection,
         ):
             members = query.bundle_members("analysis-a", artifact_ids=frozenset())

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, SQLite read-only URI, Pydantic stage/candidate contracts, pytest, PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-10-04-recall-first-grouped-reports-design.md`
+**Spec:** `docs/plans/2026-10-04-recall-first-grouped-reports-design.md`
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 
 ## File map
 
-- `src/sastsimi/evaluation/recall_audit.py`: typed oracle and read-only stage attribution; no runtime writes.
+- `src/sastsimi/simple_runtime/recall_audit.py`: typed oracle and read-only stage attribution; no runtime writes.
 - `src/sastsimi/evaluation/__init__.py`: package marker.
 - `tools/recall_audit.py`: one-line PowerShell-friendly CLI wrapper for JSON output.
 - `tests/unit/evaluation/test_recall_audit.py`: synthetic DB cases for all stage boundaries.
@@ -40,7 +40,7 @@
 
 **Files:**
 - Create: `src/sastsimi/evaluation/__init__.py`
-- Create: `src/sastsimi/evaluation/recall_audit.py`
+- Create: `src/sastsimi/simple_runtime/recall_audit.py`
 - Test: `tests/unit/evaluation/test_recall_audit.py`
 
 **Interfaces:**

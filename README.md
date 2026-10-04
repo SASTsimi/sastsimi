@@ -123,11 +123,17 @@ SQLite SQL 주입(CWE-89), 반사형 XSS(CWE-79), SSRF(CWE-918), `eval`
 sastsimi poc F-001
 sastsimi report show F-001
 sastsimi report export F-001 --format markdown
+sastsimi report export-group A-001 <group-id> --format json
 ```
 
 `F-001`도 예시이며, Finding이 없으면 이 명령의 대상이 없습니다. 명령별
 옵션과 재개·오류 처리 방법은 [사용법](docs/usage.md)과
 [문제 해결](docs/troubleshooting.md)을 참고하세요.
+`export-group`은 같은 입력→위험 동작 흐름이 **입증된** 둘 이상의 현재 Finding에
+한해 영문·국문 검토 초안과 각 원본 보고서·PoC·증거를 담은 ZIP의 경로를
+반환합니다. 알 수 없거나 근거가 손상된 그룹은 내보내지 않습니다. 원본 `F-NNN`
+링크와 개별 ZIP은 계속 유지되며, 묶음이나 ZIP 생성은 취약점 확정 또는
+제보 허가를 뜻하지 않습니다.
 
 ```powershell
 sastsimi dashboard
@@ -141,6 +147,11 @@ sastsimi dashboard
 입증된 묶음당 대표 보고서 하나와 대표·원본 ID의 매핑을 넣습니다. 명시적으로
 원본 `F-NNN`을 선택하면 해당 보고서를 그대로 내보낼 수 있으며, 모든 원본
 보고서·PoC·첨부 링크와 저장된 근거는 삭제하거나 덮어쓰지 않습니다.
+과거 형식처럼 묶음 근거가 없는 보고서가 섞여 있으면, 입증된 그룹만 대표로
+묶고 나머지는 원본 보고서로 유지합니다. 발표 ZIP 요약에 그룹 적용 범위와
+원본 유지 ID를 표시합니다.
+`PoC∙증거∙보고서` 탭에는 근거가 유효한 그룹의 별도 검토 ZIP 링크가 표시되고,
+같은 화면에서 원본 Finding별 보고서와 첨부도 내려받을 수 있습니다.
 
 ## 분석 흐름과 결과물
 

@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 # A script launched from tools/ does not otherwise see this checkout's src/.
 # Prefer the adjacent source over a stale editable install from another worktree.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from sastsimi.evaluation.recall_audit import (  # noqa: E402
+from sastsimi.simple_runtime.recall_audit import (  # noqa: E402
     Oracle,
     OracleCase,
     audit_analysis,
