@@ -42,7 +42,16 @@ _SAFE_PROCESS_VARIABLES = frozenset(
 
 
 class PoCCandidateRejected(ValueError):
-    pass
+    """Raised with the violated rule's code; ``detail`` names the exact offender.
+
+    ``str(error)`` stays the bare code, since callers match on it exactly (the
+    repair-guidance lookup, the stall fingerprint); ``detail`` is for a human or
+    an agent to read, not for matching.
+    """
+
+    def __init__(self, code: str, detail: str | None = None) -> None:
+        super().__init__(code)
+        self.detail = detail
 
 
 def validate_candidate(
@@ -77,8 +86,11 @@ def validate_candidate(
         (match.group("braced") or match.group("plain")).decode("ascii")
         for match in _SHELL_VARIABLE.finditer(content)
     }
-    if variables - allowed:
-        raise PoCCandidateRejected("POC_UNDECLARED_INPUT")
+    undeclared = variables - allowed
+    if undeclared:
+        raise PoCCandidateRejected(
+            "POC_UNDECLARED_INPUT", detail=", ".join(sorted(undeclared))
+        )
     lowered = content.lower()
     if b"inconclusive" in lowered and re.search(rb"\bexit\s+2\b", lowered):
         raise PoCCandidateRejected("POC_PLACEHOLDER_FORBIDDEN")

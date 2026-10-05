@@ -208,8 +208,11 @@ class BaseHarness:
             try:
                 validate_candidate(content, allowed_environment_names=frozenset())
             except PoCCandidateRejected as error:
-                feedback = f"\nYour previous script was rejected: {error}. Fix that.\n"
-                last = f"{error}: {content[:160]!r}"
+                detail = f" ({error.detail})" if error.detail else ""
+                feedback = (
+                    f"\nYour previous script was rejected: {error}{detail}. Fix that.\n"
+                )
+                last = f"{error}{detail}"
                 continue
             ran, output = await self._run(image_digest, content)
             if ran:
