@@ -134,3 +134,63 @@ def test_guards_are_attached_with_their_definitions(tmp_path: Path) -> None:
     assert "def require_api_auth" in definitions[key]
     admin = by_handler["show"]["guards"][0]["defined_at"][0]
     assert "is_admin" in definitions[admin]
+
+
+_DJANGO_VIEWS = '''
+def helper(args):
+    return args
+'''
+
+_DJANGO_URLS = '''
+from django.urls import path
+from django.views.decorators.http import require_http_methods
+from .views import list_items, detail_view
+
+
+urlpatterns = [
+    path("items/", list_items, name="list_items"),
+    path("items/<int:pk>/", detail_view, name="detail"),
+]
+'''
+
+_DJANGO_VIEWS_REAL = '''
+from django.views.decorators.http import require_http_methods
+
+
+@require_http_methods(["GET", "POST"])
+def list_items(request):
+    return request.GET.get("q")
+
+
+def detail_view(request, pk):
+    return pk
+'''
+
+
+def test_django_views_routed_from_urls_py_are_found(tmp_path: Path) -> None:
+    (tmp_path / "views.py").write_text(_DJANGO_VIEWS_REAL, encoding="utf-8")
+    (tmp_path / "urls.py").write_text(_DJANGO_URLS, encoding="utf-8")
+
+    result = extract_flows(tmp_path, ["views.py", "urls.py"])
+
+    by_handler = {entry["handler"]: entry for entry in result["entry_points"]}
+    assert by_handler["list_items"]["routes"] == [
+        {"verb": "get", "path": "items/", "methods": ["GET", "POST"]}
+    ]
+    assert by_handler["detail_view"]["routes"] == [
+        {"verb": "any", "path": "items/<int:pk>/", "methods": ["ANY"]}
+    ]
+    assert by_handler["list_items"]["inputs"] == ["request"]
+
+
+def test_a_same_named_function_without_a_request_parameter_is_not_matched(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "helpers.py").write_text(
+        "def list_items(args):\n    return args\n", encoding="utf-8"
+    )
+    (tmp_path / "urls.py").write_text(_DJANGO_URLS, encoding="utf-8")
+
+    result = extract_flows(tmp_path, ["helpers.py", "urls.py"])
+
+    assert result["entry_points"] == []

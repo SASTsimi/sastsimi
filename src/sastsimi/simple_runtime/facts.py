@@ -282,6 +282,66 @@ def _request_globals(tree: ast.Module) -> set[str]:
     }
 
 
+# Django routes a view by name from a urls.py file the view itself may never
+# appear in - `path("x/", some_view)` - rather than by a decorator on the view
+# function, so the route and the handler have to be matched by name across
+# the whole checkout, the same way `defined` already resolves a call's callee.
+_URLCONF_FUNCTIONS = frozenset({"path", "re_path"})
+
+
+def _django_route_targets(tree: ast.Module) -> dict[str, list[dict[str, Any]]]:
+    """Every name a `path()`/`re_path()` call in this file routes to."""
+
+    targets: dict[str, list[dict[str, Any]]] = {}
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.Call)
+            or _name(node.func) not in _URLCONF_FUNCTIONS
+            or len(node.args) < 2
+        ):
+            continue
+        route, view = node.args[0], node.args[1]
+        path_literal = (
+            route.value
+            if isinstance(route, ast.Constant) and isinstance(route.value, str)
+            else None
+        )
+        # `SomeView.as_view()`: the routed name is the class, whose own
+        # undecorated verb methods the existing class-based-view scan already
+        # covers (Django's base View class matches its base-hint check).
+        if (
+            isinstance(view, ast.Call)
+            and isinstance(view.func, ast.Attribute)
+            and view.func.attr == "as_view"
+        ):
+            continue
+        name = view.attr if isinstance(view, ast.Attribute) else _name(view)
+        if name is None:
+            continue
+        targets.setdefault(name, []).append({"path": path_literal})
+    return targets
+
+
+def _django_methods(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str] | None:
+    """The method list a `@require_http_methods([...])` decorator states, if any."""
+
+    for decorator in node.decorator_list:
+        if (
+            isinstance(decorator, ast.Call)
+            and _name(decorator.func) == "require_http_methods"
+            and decorator.args
+            and isinstance(decorator.args[0], (ast.List, ast.Tuple, ast.Set))
+        ):
+            methods = [
+                item.value
+                for item in decorator.args[0].elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            ]
+            if methods:
+                return methods
+    return None
+
+
 def _injected(argument: ast.arg, default: ast.expr | None) -> bool:
     """A parameter the framework fills from the server side, not the request."""
 
@@ -614,6 +674,10 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 definitions.setdefault(node.name, []).append((path, node))
+    django_route_targets: dict[str, list[dict[str, Any]]] = {}
+    for tree in trees.values():
+        for name, routed in _django_route_targets(tree).items():
+            django_route_targets.setdefault(name, []).extend(routed)
     guard_definitions: dict[str, str] = {}
     guard_bytes = 0
     entries: list[dict[str, Any]] = []
@@ -638,6 +702,28 @@ def extract_flows(workspace: Path, sources: Sequence[str]) -> dict[str, Any]:
                 routes = [cbv_routes[id(node)]]
             if not routes and id(node) in non_http_routes:
                 routes = [non_http_routes[id(node)]]
+            # The name match alone is too loose - an unrelated same-named
+            # function elsewhere matched a view routed in some urls.py purely
+            # by sharing its name. Django's own convention, that every view's
+            # first parameter is the request, cuts most of that out.
+            looks_like_a_view = (
+                bool(node.args.args) and node.args.args[0].arg == "request"
+            )
+            if (
+                not routes
+                and looks_like_a_view
+                and node.name in django_route_targets
+            ):
+                methods = _django_methods(node)
+                verb = methods[0].lower() if methods else "any"
+                routes = [
+                    {
+                        "verb": verb,
+                        "path": routed.get("path"),
+                        "methods": methods or ["ANY"],
+                    }
+                    for routed in django_route_targets[node.name]
+                ]
             if not routes:
                 continue
             arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
