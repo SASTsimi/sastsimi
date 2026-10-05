@@ -713,6 +713,7 @@ class SimpleAnalysisApplication:
             self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         if self._max_tokens == "unlimited":
             self._store.reopen_token_budget_failures(exact)
+        self._reopen_failed_anchor_verification(exact)
         static_checkpoint = self._store.get(identity, SimpleStage.STATIC_DONE)
         if (
             run.workspace_path is None
@@ -807,6 +808,35 @@ class SimpleAnalysisApplication:
             except StaticEvidenceInvalid:
                 return self._invalid_hypothesis_resume(run, identity)
         return await self._run_hypotheses(run, identity, static)
+
+    def _reopen_failed_anchor_verification(self, analysis_id: str) -> None:
+        """Retry fixed anchor validation without replaying prior child work."""
+
+        for checkpoint in self._store.list_checkpoints(analysis_id):
+            if (
+                checkpoint.identity.hypothesis_id is None
+                or checkpoint.stage
+                not in {
+                    SimpleStage.VERIFICATION_INITIAL_DONE,
+                    SimpleStage.VERIFICATION_FINAL_DONE,
+                }
+                or checkpoint.status is not StageStatus.FAILED
+                or checkpoint.error_code != "HYPOTHESIS_ANCHOR_INVALID"
+                or checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+            ):
+                continue
+            self._store.replace_from(
+                checkpoint.model_copy(
+                    update={
+                        "stage_version": STAGE_VERSION[checkpoint.stage],
+                        "status": StageStatus.PENDING,
+                        "output_refs": (),
+                        "attempt_id": None,
+                        "error_code": None,
+                        "retryable": False,
+                    }
+                )
+            )
 
     def _downstream_terminal(self, run: SimpleAnalysisRun) -> bool:
         if not run.hypothesis_ids:
