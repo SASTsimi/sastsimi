@@ -296,6 +296,7 @@ def main(
     )
     resume_parser.add_argument("analysis_id")
     resume_parser.add_argument("--no-progress", action="store_true")
+    resume_parser.add_argument("--repair-exhausted-hypothesis")
     resume_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
@@ -694,19 +695,57 @@ def main(
             if public_application is not None or args.analysis_id.startswith("A-"):
                 application = resolve_public_application()
                 progress_call = getattr(application, "resume_with_progress", None)
-                if (
-                    output_format != "json"
-                    and not args.no_progress
-                    and callable(progress_call)
-                ):
-                    renderer = dashboard_command.progress_renderer(
-                        config.data_dir,
-                        sys.stdout,
-                        is_tty=sys.stdout.isatty(),
+                try:
+                    if (
+                        output_format != "json"
+                        and not args.no_progress
+                        and callable(progress_call)
+                    ):
+                        renderer = dashboard_command.progress_renderer(
+                            config.data_dir,
+                            sys.stdout,
+                            is_tty=sys.stdout.isatty(),
+                        )
+                        if args.repair_exhausted_hypothesis is None:
+                            data = progress_call(args.analysis_id, renderer.render)
+                        else:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_exhausted_hypothesis=(
+                                    args.repair_exhausted_hypothesis
+                                ),
+                            )
+                    elif args.repair_exhausted_hypothesis is None:
+                        data = application.resume(args.analysis_id)
+                    else:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_exhausted_hypothesis=args.repair_exhausted_hypothesis,
+                        )
+                except ValueError as error:
+                    if args.repair_exhausted_hypothesis is None or not str(
+                        error
+                    ).startswith("OFFLINE_REPAIR_"):
+                        raise
+                    code = (
+                        ExitCode.CONFIG_ERROR
+                        if str(error)
+                        in {
+                            "OFFLINE_REPAIR_NOT_CONFIGURED",
+                            "OFFLINE_REPAIR_PREFLIGHT_FAILED",
+                            "OFFLINE_REPAIR_PREFLIGHT_INVALID",
+                        }
+                        else ExitCode.INTEGRITY_ERROR
                     )
-                    data = progress_call(args.analysis_id, renderer.render)
-                else:
-                    data = application.resume(args.analysis_id)
+                    emit_result(
+                        code,
+                        output_format,
+                        sys.stderr,
+                        command=command_name,
+                        reason_code=str(error),
+                    )
+                    return int(code)
                 public_command.emit_public(
                     output_format,
                     sys.stdout,
@@ -714,6 +753,8 @@ def main(
                     data=data,
                 )
                 return int(ExitCode.OK)
+            if args.repair_exhausted_hypothesis is not None:
+                raise _InputError
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)
         if args.command == "cancel":
             command_name = "cancel"

@@ -251,7 +251,9 @@ PoC 초안은 validated PoC가 아닙니다. 같은 attempt에서 실제 실행�
 
 PoC Agent에는 Pro·Con Agent가 요청한 저장소 상대 경로 중 고정 commit의 Git 추적 파일만 전달합니다. 본문은 현재 작업 폴더가 아니라 고정 commit의 Git blob에서 읽어 재개 중 파일 변경의 영향을 받지 않습니다. 경로 이탈, 심볼릭 링크, 비추적 파일과 크기 한도 초과 파일은 거부하고 `simple_requested_sources` artifact에 제공·거부 내역을 남깁니다. PoC 단계는 원본 소스 총량 128,000바이트, 요청 경로 32개, JSON 변환 후 프롬프트 source artifact 96,000바이트로 제한합니다. 큰 파일은 내용을 읽기 전에 거부하고, 포장 후 한도를 넘는 파일은 `PROMPT_BUDGET_EXHAUSTED`로 남깁니다. 이 근거 제공은 재현 코드의 성공을 보장하지 않습니다.
 
-동적 실행 오류의 복구 계보가 최대 3회 시도를 소진하면 `RECOVERY_EXHAUSTED`로 남습니다. `resume`은 이미 소진된 시도를 자동으로 초기화하지 않으므로 같은 오류를 반복 호출해도 해결되지 않습니다. 도구 수정 후 새 분석을 시작하고 이전 분석·artifact는 보존하세요.
+동적 실행 오류의 복구 계보가 최대 3회 시도를 소진하면 `RECOVERY_EXHAUSTED`로 남습니다. 일반 `resume`은 이미 소진된 시도를 자동으로 초기화하지 않으므로 같은 오류를 반복 호출해도 해결되지 않습니다. 아래의 명시적 오프라인 base-image 수리 조건에 해당하지 않으면 원인을 수정한 뒤 새 분석을 시작하고 이전 분석·artifact를 보존하세요.
+
+오프라인 PoC의 **base-image 환경 결함을 별도로 확인한 경우**, 로컬에 준비한 **Python 3.12·헤드리스 브라우저 포함 Linux 이미지의 고정 digest**를 실행 프로필의 `poc_offline_base_image_digest`에 지정할 수 있습니다. 브라우저 부재는 실제 분석에서 확인된 예시이며, PoC 논리·취약점 근거·정책 오류는 이미지 변경으로 해결되지 않습니다. 이미지는 신뢰할 수 있는 소스에서 별도로 준비해야 하며 실제 PoC 빌드·실행에는 네트워크를 열지 않습니다. 현재 분석 ID와 실패한 `hypothesis-...` ID를 확인한 다음 `sastsimi resume A-001 --repair-exhausted-hypothesis hypothesis-...`로 명시적으로 요청하세요. 도구는 `POC_EXECUTION_DONE`의 정확한 소진 기록과 오프라인 레시피, 새 digest가 이전 레시피와 다른지, 로컬 이미지가 네트워크 없는 비루트·읽기 전용 컨테이너에서 Python과 브라우저를 실제 실행하는지 검사합니다. 검사가 통과할 때에만 해당 가설의 환경 단계부터 **추가 시도 1회**를 허용하고 기존 실패 아티팩트와 다른 완료 작업은 보존합니다. 이것은 원래 오류가 이미지 때문임을 자동 증명하거나 PoC 성공을 보장하지 않습니다. 새 시도도 실패하면 `BLOCKED`를 유지하며, 다른 단계의 소진 오류나 증거 손상에는 이 경로를 사용하지 않습니다.
 
 Technical Gate의 `REVISE`는 Docker 오류가 아니라 검증 근거 보완 요청입니다. Runtime은 요청을 저장하고 해당 가설의 PoC 후보부터 Docker 실행·최종 Verification·Gate를 새 시도로 진행합니다. Gate 결정은 최대 세 번이며, 마지막에도 `REVISE`이면 `INCONCLUSIVE`, 명시적으로 `REJECT`이면 제보 불가로 끝납니다. 이 두 결과는 Finding 없이 분석을 끝낼 수 있지만 정적 누락이 남으면 최종 상태는 `PARTIAL`입니다. 취약점 반증이나 제보 승인을 뜻하지 않습니다. Docker·인증·Provider·DB 실행 오류는 `BLOCKED` 또는 `FAILED`가 우선합니다.
 

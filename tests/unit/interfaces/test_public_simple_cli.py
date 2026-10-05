@@ -36,7 +36,10 @@ class _PublicApplication:
             "error_code": "RECOVERY_EXHAUSTED",
         }
 
-    def resume(self, analysis_id: str) -> dict[str, object]:
+    def resume(
+        self, analysis_id: str, *, repair_exhausted_hypothesis: str | None = None
+    ) -> dict[str, object]:
+        del repair_exhausted_hypothesis
         return {"analysis_id": analysis_id, "status": "COMPLETE", "percent": 100}
 
     def result(self, analysis_id: str) -> dict[str, object]:
@@ -108,13 +111,73 @@ class _ProgressApplication(_PublicApplication):
 
 
 class _BusyPublicApplication(_PublicApplication):
-    def resume(self, analysis_id: str) -> dict[str, object]:
+    def resume(
+        self, analysis_id: str, *, repair_exhausted_hypothesis: str | None = None
+    ) -> dict[str, object]:
+        del repair_exhausted_hypothesis
         return {
             "analysis_id": analysis_id,
             "status": "RUNNING",
             "percent": 60,
             "resume_skipped_reason": "ANALYSIS_ALREADY_RUNNING",
         }
+
+
+class _RepairPublicApplication(_PublicApplication):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str | None]] = []
+
+    def resume(
+        self, analysis_id: str, *, repair_exhausted_hypothesis: str | None = None
+    ) -> dict[str, object]:
+        self.calls.append(("plain", analysis_id, repair_exhausted_hypothesis))
+        return super().resume(analysis_id)
+
+    def resume_with_progress(
+        self,
+        analysis_id: str,
+        _callback: Callable[[ProgressSnapshot], None],
+        *,
+        repair_exhausted_hypothesis: str | None = None,
+    ) -> dict[str, object]:
+        self.calls.append(("progress", analysis_id, repair_exhausted_hypothesis))
+        return super().resume(analysis_id)
+
+
+def test_repair_flag_reaches_json_and_progress_resume(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    application = _RepairPublicApplication()
+    store = _config(tmp_path)
+    arguments = [
+        "resume",
+        "A-001",
+        "--repair-exhausted-hypothesis",
+        "hypothesis-1",
+    ]
+
+    assert (
+        main(
+            [*arguments, "--format", "json"],
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "COMPLETE"
+    assert (
+        main(
+            arguments,
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert application.calls == [
+        ("plain", "A-001", "hypothesis-1"),
+        ("progress", "A-001", "hypothesis-1"),
+    ]
 
 
 class _StaleReportApplication(_PublicApplication):
