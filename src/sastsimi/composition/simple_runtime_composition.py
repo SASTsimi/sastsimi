@@ -290,7 +290,6 @@ def build_analysis_application(
             workspace=static.workspace_path,
             docker=docker,
             client=client,
-            analysis_id=identity.analysis_id,
             labels={
                 "sastsimi.owner": "simple-runtime",
                 "sastsimi.analysis-id": identity.analysis_id,

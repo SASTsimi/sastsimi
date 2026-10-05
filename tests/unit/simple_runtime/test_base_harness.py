@@ -46,16 +46,32 @@ class _Client:
 
 
 def _harness(tmp_path: Path, docker: _Docker, client: _Client) -> BaseHarness:
-    (tmp_path / "ws" / "tests").mkdir(parents=True)
+    (tmp_path / "ws" / "tests").mkdir(parents=True, exist_ok=True)
     (tmp_path / "ws" / "tests" / "test.env").write_text("DB_URI=x\n")
     return BaseHarness(
         data_dir=tmp_path / "data",
         workspace=tmp_path / "ws",
         docker=docker,  # type: ignore[arg-type]
         client=client,  # type: ignore[arg-type]
-        analysis_id="a",
         labels={},
     )
+
+
+def test_a_proved_base_is_shared_across_separate_harness_instances(
+    tmp_path: Path,
+) -> None:
+    """A rerun or a fresh analysis of the same image should not re-prove it."""
+
+    docker, client = _Docker([(0, "HARNESS_OK 200", "")]), _Client()
+    first = asyncio.run(_harness(tmp_path, docker, client).ensure("sha256:abc"))
+
+    other_client = _Client()
+    second = asyncio.run(
+        _harness(tmp_path, docker, other_client).ensure("sha256:abc")
+    )
+
+    assert first and second == first
+    assert other_client.prompts == []
 
 
 def test_a_proved_base_is_returned_and_reused(tmp_path: Path) -> None:

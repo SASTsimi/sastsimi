@@ -111,19 +111,22 @@ class BaseHarness:
         workspace: Path,
         docker: _Docker,
         client: SimpleLLMClient,
-        analysis_id: str,
         labels: dict[str, str],
     ) -> None:
         self._dir = data_dir / "base-harness"
         self._workspace = workspace
         self._docker = docker
         self._client = client
-        self._analysis_id = analysis_id
         self._labels = labels
 
     def _path(self, image_digest: str) -> Path:
-        seed = f"{self._analysis_id}\0{image_digest}".encode()
-        return self._dir / f"{hashlib.sha256(seed).hexdigest()[:24]}.json"
+        # Keyed on the image alone, not this run: the image digest already
+        # covers the exact Dockerfile and checkout, so a harness proved for it
+        # is just as valid for a later rerun or a fresh analysis of the same
+        # commit - rebuilding it there wastes the attempts and the containers
+        # a proof costs, for a result that would come out identical.
+        digest = hashlib.sha256(image_digest.encode()).hexdigest()
+        return self._dir / f"{digest[:24]}.json"
 
     def _hints(self) -> str:
         found: list[tuple[str, str]] = []
