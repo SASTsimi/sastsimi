@@ -19,7 +19,7 @@ from typing import Any, ClassVar, Protocol
 from sastsimi.sandbox.docker_adapter import DockerOperationError
 
 from .poc import PoCCandidateRejected, validate_candidate
-from .provider import SimpleLLMClient
+from .provider import SimpleLLMClient, conversation_with
 
 _HINT_PATTERNS = (
     re.compile(r"(^|/)conftest\.py$"),
@@ -184,48 +184,54 @@ class BaseHarness:
 
     async def _build(self, image_digest: str) -> tuple[str | None, str]:
         hints = self._hints()
-        feedback = ""
+        schema = {
+            "type": "object",
+            "properties": {"content": {"type": "string"}},
+            "required": ["content"],
+            "additionalProperties": False,
+        }
         last = "no attempt"
-        for attempt in range(_ATTEMPTS):
-            prompt = (
+        feedback = b""
+        # One held conversation for every attempt, not one call each: a retry
+        # here is a follow-up turn the live process reads from its own prior
+        # context, not a fresh call that resends the full prompt and hopes the
+        # prefix matches the cache closely enough to be read instead of
+        # written again.
+        async with conversation_with(
+            self._client, output_schema=schema, timeout_ms=360_000
+        ) as talk:
+            opening = (
                 _INSTRUCTIONS.strip()
                 + "\n\n<UNTRUSTED_EXACT_INPUTS>\n"
                 + hints
                 + "\n</UNTRUSTED_EXACT_INPUTS>\n"
-                + feedback
             ).encode("utf-8")
-            result = await self._client.call(
-                prompt=prompt,
-                output_schema={
-                    "type": "object",
-                    "properties": {"content": {"type": "string"}},
-                    "required": ["content"],
-                    "additionalProperties": False,
-                },
-                timeout_ms=360_000,
-            )
-            if not hasattr(result, "value"):
-                last = "the model call failed"
-                continue
-            content = _normalized(str(result.value["content"])).encode("utf-8")
-            try:
-                validate_candidate(content, allowed_environment_names=frozenset())
-            except PoCCandidateRejected as error:
-                detail = f" ({error.detail})" if error.detail else ""
+            for attempt in range(_ATTEMPTS):
+                result = await talk.ask(opening if attempt == 0 else feedback)
+                if not hasattr(result, "value"):
+                    last = "the model call failed"
+                    feedback = b"The previous call failed. Try again.\n"
+                    continue
+                content = _normalized(str(result.value["content"])).encode("utf-8")
+                try:
+                    validate_candidate(content, allowed_environment_names=frozenset())
+                except PoCCandidateRejected as error:
+                    detail = f" ({error.detail})" if error.detail else ""
+                    feedback = (
+                        f"\nYour previous script was rejected: {error}{detail}. "
+                        "Fix that.\n"
+                    ).encode()
+                    last = f"{error}{detail}"
+                    continue
+                ran, output = await self._run(image_digest, content)
+                if ran:
+                    return content.decode("utf-8"), f"proved on attempt {attempt + 1}"
                 feedback = (
-                    f"\nYour previous script was rejected: {error}{detail}. Fix that.\n"
-                )
-                last = f"{error}{detail}"
-                continue
-            ran, output = await self._run(image_digest, content)
-            if ran:
-                return content.decode("utf-8"), f"proved on attempt {attempt + 1}"
-            feedback = (
-                "\nYour previous script ran and failed. Its last output was:\n"
-                + output[-3500:]
-                + "\nFix the first thing that failed and keep what worked.\n"
-            )
-            last = output[-3000:]
+                    "\nYour previous script ran and failed. Its last output was:\n"
+                    + output[-3500:]
+                    + "\nFix the first thing that failed and keep what worked.\n"
+                ).encode("utf-8")
+                last = output[-3000:]
         return None, last
 
     async def _run(self, image_digest: str, content: bytes) -> tuple[bool, str]:
