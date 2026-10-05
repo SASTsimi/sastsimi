@@ -16,6 +16,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import (
     redact_projected_json,
     redact_untrusted_text,
+    redact_untrusted_text_preserving_lines,
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.reporting import (
@@ -47,6 +48,7 @@ from .attack_surfaces import SurfaceIndex, surface_index_from_json
 from .attempt_owner import AttemptOwner, PromptByteCounts
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .gate_guard import technical_gate_accepted
+from .hypothesis_pages import redact_source_page_bytes
 from .models import (
     STAGE_ORDER,
     STAGE_VERSION,
@@ -676,7 +678,11 @@ def _verification_anchor_refs(
                 ):
                     raise ValueError("pinned source hash mismatch")
                 source_hashes[path] = hashlib.sha256(raw).hexdigest()
-                decoded_lines = raw.decode("utf-8").splitlines()
+                decoded_lines = (
+                    redact_untrusted_text_preserving_lines(raw)
+                    .data.decode("utf-8")
+                    .splitlines()
+                )
                 cited_lines = {line for cited_path, line in cited if cited_path == path}
                 for line in cited_lines:
                     if line > len(decoded_lines):
@@ -710,7 +716,15 @@ def _verification_anchor_refs(
                 if path in source_hashes and source_hashes[path] != actual_sha:
                     raise ValueError("pinned source hash mismatch")
                 source_hashes[path] = actual_sha
-                decoded_lines = raw.decode("utf-8").splitlines()
+                decoded_lines = (
+                    (
+                        redact_source_page_bytes(raw)
+                        if kind == "simple_hypothesis_source_page"
+                        else redact_untrusted_text_preserving_lines(raw).data
+                    )
+                    .decode("utf-8")
+                    .splitlines()
+                )
                 for (available_path, line), text in available.items():
                     if available_path == path and any(
                         available_path == cited_path and abs(line - cited_line) <= 2

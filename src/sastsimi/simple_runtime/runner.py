@@ -145,6 +145,22 @@ class SimpleRuntimeRunner:
                     and existing.stage_version != STAGE_VERSION[stage]
                 ):
                     if (
+                        stage
+                        in {
+                            SimpleStage.VERIFICATION_INITIAL_DONE,
+                            SimpleStage.VERIFICATION_FINAL_DONE,
+                        }
+                        and existing.status is StageStatus.FAILED
+                        and existing.error_code == "HYPOTHESIS_ANCHOR_INVALID"
+                        and existing.attempt_number >= MAX_RECOVERY_ATTEMPTS
+                    ):
+                        return RunOutcome(
+                            current_stage=stage,
+                            status=existing.status,
+                            error_code=existing.error_code,
+                            attempt_id=existing.attempt_id,
+                        )
+                    if (
                         stage is SimpleStage.VERIFICATION_INITIAL_DONE
                         and existing.status is StageStatus.BLOCKED
                         and existing.error_code == "POC_OFFLINE_BASE_IMAGE_UNAVAILABLE"

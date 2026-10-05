@@ -20,7 +20,8 @@
     "sastsimi.python.request-source",
     "sastsimi.python.sanitizer",
     "sastsimi.python.sql-sink",
-    "sastsimi.python.validator"
+    "sastsimi.python.validator",
+    "sastsimi.python.weak-password-hash"
   ],
   "selected_rule_packs": ["sastsimi/opengrep-web-candidate@1.0.0"],
   "status": "CANDIDATE",

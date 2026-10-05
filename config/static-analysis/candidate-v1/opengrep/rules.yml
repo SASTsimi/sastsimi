@@ -154,10 +154,22 @@ rules:
       - pattern: request.form.get(...)
       - pattern: request.values.get(...)
       - pattern: request.json
+      - pattern: request.get_json(...)
+      - pattern: request.cookies.get(...)
+      - pattern: request.cookies[$KEY]
+      - pattern: request.headers.get(...)
+      - pattern: request.headers[$KEY]
       - pattern: $REQUEST.GET.get(...)
       - pattern: $REQUEST.POST.get(...)
       - pattern: $REQUEST.GET[$KEY]
       - pattern: $REQUEST.POST[$KEY]
+      - pattern: await $REQUEST.post()
+      - pattern: await $REQUEST.json()
+      - pattern: "@$APP.post(...)"
+      - pattern: "@$APP.get(...)"
+      - pattern: "@$APP.put(...)"
+      - pattern: "@$APP.patch(...)"
+      - pattern: "@$APP.delete(...)"
 
   - id: sastsimi.python.sanitizer
     languages: [python]
@@ -178,6 +190,18 @@ rules:
       - pattern: $CURSOR.executemany(...)
       - pattern: $MODEL.objects.raw(...)
       - pattern: $CONNECTION.execute(...)
+
+  - id: sastsimi.python.weak-password-hash
+    languages: [python]
+    message: Candidate weak password hashing; inspect usage before drawing a verdict.
+    severity: INFO
+    patterns:
+      - pattern-either:
+          - pattern: md5($PASSWORD.encode(...)).hexdigest()
+          - pattern: hashlib.md5($PASSWORD.encode(...)).hexdigest()
+      - metavariable-regex:
+          metavariable: $PASSWORD
+          regex: (?i).*(?:password|passwd|passphrase|pwd).*
 
   - id: sastsimi.python.validator
     languages: [python]

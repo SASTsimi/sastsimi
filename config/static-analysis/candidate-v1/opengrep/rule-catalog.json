@@ -19,7 +19,8 @@
     {"description": "Candidate web-request source", "languages": ["python"], "rule_id": "sastsimi.python.request-source"},
     {"description": "Candidate output sanitizer", "languages": ["python"], "rule_id": "sastsimi.python.sanitizer"},
     {"description": "Candidate database-query sink", "languages": ["python"], "rule_id": "sastsimi.python.sql-sink"},
-    {"description": "Candidate input validator", "languages": ["python"], "rule_id": "sastsimi.python.validator"}
+    {"description": "Candidate input validator", "languages": ["python"], "rule_id": "sastsimi.python.validator"},
+    {"description": "Candidate weak password hash hint", "languages": ["python"], "rule_id": "sastsimi.python.weak-password-hash"}
   ],
   "schema_version": 1,
   "status": "CANDIDATE",

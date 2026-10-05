@@ -11,8 +11,10 @@ from typing import Any
 import pytest
 from pydantic import JsonValue
 
+from sastsimi.contracts.prompt_redaction import redact_untrusted_text_preserving_lines
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.hypothesis_pages import redact_source_page_bytes
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
@@ -473,6 +475,202 @@ async def test_modern_context_citation_is_commit_pinned(
     assert len(client.prompts) == 1
     assert b"pinned-modern-marker" in client.prompts[0]
     assert b"changed current checkout" not in client.prompts[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", [False, True])
+async def test_commit_pinned_anchor_checks_redacted_source_without_disclosing_secret(
+    tmp_path: Path, tamper: bool
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    source_path = checkout / "web.py"
+    pinned = (
+        "user = request.form.get('username')\n"
+        "password = 'not-a-real-secret'\n"
+        "query = f\"SELECT * FROM users WHERE user='{user}' "
+        "AND password='{password}'\"\n"
+    )
+    source_path.write_text(pinned, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "web.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode()
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    redacted_line = (
+        redact_untrusted_text_preserving_lines(pinned.encode())
+        .data.decode()
+        .splitlines()[2]
+    )
+    if tamper:
+        redacted_line = redacted_line.replace("SELECT", "DELETE")
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_file_context_v1",
+            "path": "web.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": hashlib.sha256(pinned.encode()).hexdigest(),
+            "source_lines": [{"line": 3, "text": redacted_line}],
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "shared_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"title": "SQL injection", "code_locations": ["web.py:3"]},
+        }
+    )
+    source_path.write_text("changed current checkout", encoding="utf-8")
+    client = _ContextClient()
+    final = FinalVerificationStage(
+        client, artifacts, workspace_path=checkout, require_anchor=True
+    )
+    checkpoint = _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity)
+    prior = {
+        SimpleStage.PRO_CON_DONE: _checkpoint(
+            SimpleStage.PRO_CON_DONE,
+            identity=identity,
+            inputs=(proposal_ref, source_ref),
+        )
+    }
+    if tamper:
+        with pytest.raises(StageFailed) as caught:
+            await final(checkpoint, prior)
+        assert caught.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
+        assert client.prompts == []
+    else:
+        await final(checkpoint, prior)
+        assert len(client.prompts) == 1
+        assert b"[REDACTED:CREDENTIAL]" in client.prompts[0]
+        assert b"not-a-real-secret" not in client.prompts[0]
+        assert b"changed current checkout" not in client.prompts[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", [False, True])
+async def test_commit_pinned_page_anchor_uses_page_redaction_policy(
+    tmp_path: Path, tamper: bool
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    source_path = checkout / "web.py"
+    pinned = (
+        "password = 'not-a-real-secret'\n"
+        "query = f\"SELECT * FROM users WHERE password='{password}'\"\n"
+    )
+    source_path.write_text(pinned, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "web.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode()
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    manifest_ref = artifacts.put_json(
+        {"kind": "simple_tracked_sources", "paths": ["web.py"]}
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "source_manifest_ref": manifest_ref.model_dump(mode="json"),
+        }
+    )
+    safe_code = redact_source_page_bytes(pinned.encode()).decode()
+    if tamper:
+        safe_code = safe_code.replace("SELECT", "DELETE")
+    page_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_source_page",
+            "analysis_id": identity.analysis_id,
+            "static_bundle_ref": bundle_ref.model_dump(mode="json"),
+            "source_manifest_ref": manifest_ref.model_dump(mode="json"),
+            "page": {
+                "kind": "simple_hypothesis_source_page_v1",
+                "static_bundle_hash": bundle_ref.content_hash,
+                "source_manifest_hash": manifest_ref.content_hash,
+                "segments": [
+                    {
+                        "path": "web.py",
+                        "start_line": 1,
+                        "end_line": 2,
+                        "code": safe_code,
+                    }
+                ],
+            },
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "page_input_ref": page_ref.model_dump(mode="json"),
+            "proposal": {"title": "SQL injection", "code_locations": ["web.py:2"]},
+        }
+    )
+    source_path.write_text("changed current checkout", encoding="utf-8")
+    client = _ContextClient()
+    final = FinalVerificationStage(
+        client, artifacts, workspace_path=checkout, require_anchor=True
+    )
+    checkpoint = _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity)
+    prior = {
+        SimpleStage.PRO_CON_DONE: _checkpoint(
+            SimpleStage.PRO_CON_DONE,
+            identity=identity,
+            inputs=(proposal_ref, page_ref),
+        )
+    }
+    if tamper:
+        with pytest.raises(StageFailed) as caught:
+            await final(checkpoint, prior)
+        assert caught.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
+        assert client.prompts == []
+    else:
+        await final(checkpoint, prior)
+        assert len(client.prompts) == 1
+        assert b"[REDACTED:CREDENTIAL]" in client.prompts[0]
+        assert b"not-a-real-secret" not in client.prompts[0]
+        assert b"changed current checkout" not in client.prompts[0]
 
 
 @pytest.mark.asyncio
