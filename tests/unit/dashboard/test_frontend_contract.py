@@ -244,7 +244,7 @@ def test_progress_phases_use_accessible_donuts_without_horizontal_bars() -> None
     assert "progress-warning:not(.progress-unknown)" in css
     assert "--color-coverage: #5b8def" in css
     assert "progress-coverage:not(.progress-unknown)" in css
-    assert 'primary.append(stage, overall)' in source
+    assert "primary.append(stage, overall)" in source
     assert "@media (max-width: 340px)" in css
 
 
@@ -262,9 +262,21 @@ def test_analysis_sidebar_groups_repository_runs_and_removes_comparison() -> Non
     html = (_STATIC / "index.html").read_text(encoding="utf-8")
     source = (_STATIC / "app.js").read_text(encoding="utf-8")
     css = (_STATIC / "app.css").read_text(encoding="utf-8")
-    for removed in ("compare-controls", "compare-analysis", "compare-button", "comparison-panel", "compare-close", "comparison-grid"):
+    for removed in (
+        "compare-controls",
+        "compare-analysis",
+        "compare-button",
+        "comparison-panel",
+        "compare-close",
+        "comparison-grid",
+    ):
         assert removed not in html
-    for removed in ("renderComparisonOptions", "compareSelectedAnalysis", 'getElementById("compare-button")', 'getElementById("compare-close")'):
+    for removed in (
+        "renderComparisonOptions",
+        "compareSelectedAnalysis",
+        'getElementById("compare-button")',
+        'getElementById("compare-close")',
+    ):
         assert removed not in source
     for removed in (".compare-controls", ".comparison-grid", ".comparison-card"):
         assert removed not in css
@@ -273,7 +285,9 @@ def test_analysis_sidebar_groups_repository_runs_and_removes_comparison() -> Non
     assert "initialHistoryExpansionHandled: false" in source
     assert "function groupAnalyses(items = [])" in source
     assert "function initializeSelectedHistoryExpansion(groups)" in source
-    assert "if (selectedHistory) state.expandedRepositories.add(group.key)" not in source
+    assert (
+        "if (selectedHistory) state.expandedRepositories.add(group.key)" not in source
+    )
     assert 'toggle.setAttribute("aria-expanded"' in source
     assert 'toggle.setAttribute("aria-controls", historyId)' in source
     assert 'el("button", "최신 실행 보기", "analysis-latest-action")' in source
@@ -291,20 +305,43 @@ def test_repository_grouping_uses_full_identity_and_stable_latest_sort() -> None
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const context = { window: { location: { pathname: '/' } }, document: {}, Intl, Date, Number, URLSearchParams, console };
+const context = {
+  window: { location: { pathname: '/' } },
+  document: {},
+  Intl, Date, Number, URLSearchParams, console,
+};
 vm.createContext(context);
 const source = fs.readFileSync(process.argv[1], 'utf8').split(
   'document.getElementById("log-search").addEventListener'
 )[0];
 vm.runInContext(source, context);
 const groups = vm.runInContext(`groupAnalyses([
-  { analysis_id: 'same-time-first', repository: 'https://one.example/shared', started_at: '2026-10-01T09:00:00Z' },
-  { analysis_id: 'older-one', repository: 'https://one.example/shared', started_at: '2026-09-30T09:00:00Z' },
-  { analysis_id: 'same-time-second', repository: 'https://two.example/shared', started_at: '2026-10-01T09:00:00Z' },
-  { analysis_id: 'fallback-time', repository: 'https://two.example/shared', last_updated_at: '2026-09-29T09:00:00Z' },
+  {
+    analysis_id: 'same-time-first',
+    repository: 'https://one.example/shared',
+    started_at: '2026-10-01T09:00:00Z',
+  },
+  {
+    analysis_id: 'older-one',
+    repository: 'https://one.example/shared',
+    started_at: '2026-09-30T09:00:00Z',
+  },
+  {
+    analysis_id: 'same-time-second',
+    repository: 'https://two.example/shared',
+    started_at: '2026-10-01T09:00:00Z',
+  },
+  {
+    analysis_id: 'fallback-time',
+    repository: 'https://two.example/shared',
+    last_updated_at: '2026-09-29T09:00:00Z',
+  },
   { analysis_id: 'missing-a', repository: null },
   { analysis_id: 'missing-b', repository: null }
-]).map((group) => ({ key: group.key, ids: group.items.map((entry) => entry.item.analysis_id) }))`, context);
+]).map((group) => ({
+  key: group.key,
+  ids: group.items.map((entry) => entry.item.analysis_id),
+}))`, context);
 assert.deepEqual(JSON.parse(JSON.stringify(groups)), [
   { key: 'https://one.example/shared', ids: ['same-time-first', 'older-one'] },
   { key: 'https://two.example/shared', ids: ['same-time-second', 'fallback-time'] },
@@ -314,20 +351,50 @@ assert.deepEqual(JSON.parse(JSON.stringify(groups)), [
 const expansion = vm.runInContext(`(() => {
   state.selected = 'older-one';
   const grouped = groupAnalyses([
-    { analysis_id: 'latest-one', repository: 'https://one.example/shared', started_at: '2026-10-01T09:00:00Z' },
-    { analysis_id: 'older-one', repository: 'https://one.example/shared', started_at: '2026-09-30T09:00:00Z' }
+    {
+      analysis_id: 'latest-one',
+      repository: 'https://one.example/shared',
+      started_at: '2026-10-01T09:00:00Z',
+    },
+    {
+      analysis_id: 'older-one',
+      repository: 'https://one.example/shared',
+      started_at: '2026-09-30T09:00:00Z',
+    }
   ]);
   initializeSelectedHistoryExpansion(grouped);
-  const initiallyExpanded = state.expandedRepositories.has('https://one.example/shared');
+  const initiallyExpanded = state.expandedRepositories.has(
+    'https://one.example/shared'
+  );
   state.expandedRepositories.delete('https://one.example/shared');
   state.collapsedRepositories.add('https://one.example/shared');
   state.initialHistoryExpansionHandled = false;
   initializeSelectedHistoryExpansion(grouped);
-  return { initiallyExpanded, remainsCollapsed: !state.expandedRepositories.has('https://one.example/shared'), manuallyCollapsed: state.collapsedRepositories.has('https://one.example/shared'), handled: state.initialHistoryExpansionHandled };
+  return {
+    initiallyExpanded,
+    remainsCollapsed: !state.expandedRepositories.has(
+      'https://one.example/shared'
+    ),
+    manuallyCollapsed: state.collapsedRepositories.has(
+      'https://one.example/shared'
+    ),
+    handled: state.initialHistoryExpansionHandled,
+  };
 })()`, context);
-assert.deepEqual(JSON.parse(JSON.stringify(expansion)), { initiallyExpanded: true, remainsCollapsed: true, manuallyCollapsed: true, handled: true });
+assert.deepEqual(JSON.parse(JSON.stringify(expansion)), {
+  initiallyExpanded: true,
+  remainsCollapsed: true,
+  manuallyCollapsed: true,
+  handled: true,
+});
 """
-    result = subprocess.run([node, "-e", script, str(source)], capture_output=True, text=True, timeout=10, check=False)
+    result = subprocess.run(
+        [node, "-e", script, str(source)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -344,7 +411,10 @@ const nodes = new Map();
 class Element {
   constructor(tag = 'div') {
     this.tag = tag; this.children = []; this.textContent = ''; this.attrs = {};
-    this.style = { values: {}, setProperty: (key, value) => { this.style.values[key] = value; } };
+    this.style = {
+      values: {},
+      setProperty: (key, value) => { this.style.values[key] = value; },
+    };
   }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
@@ -352,21 +422,31 @@ class Element {
 }
 const document = {
   createElement(tag) { return new Element(tag); },
-  getElementById(id) { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); },
+  getElementById(id) {
+    if (!nodes.has(id)) nodes.set(id, new Element());
+    return nodes.get(id);
+  },
 };
-const context = { window: { location: { pathname: '/' } }, document, Intl, Date, Number, console };
+const context = {
+  window: { location: { pathname: '/' } },
+  document, Intl, Date, Number, console,
+};
 vm.createContext(context);
 const source = fs.readFileSync(process.argv[1], 'utf8').split(
   'document.getElementById("log-search").addEventListener'
 )[0];
 vm.runInContext(source, context);
 const text = (node) => [node.textContent, ...node.children.map(text)].join(' ');
-const zero = vm.runInContext(`phaseProgressMetric('정적 검사 범위 확인률', ratioPercent(0, 4), 0, 4, 'coverage')`, context);
+const zero = vm.runInContext(`phaseProgressMetric(
+  '정적 검사 범위 확인률', ratioPercent(0, 4), 0, 4, 'coverage'
+)`, context);
 const zeroDonut = zero.children[1];
 assert.match(text(zero), /0%/); assert.match(text(zero), /0 \/ 4/);
 assert.equal(zeroDonut.attrs['aria-valuenow'], '0');
 assert.equal(zeroDonut.attrs['aria-label'], '정적 검사 범위 확인률 0%, 4개 중 0개');
-const unknown = vm.runInContext(`phaseProgressMetric('가설 검증 진행률', ratioPercent(null, null), null, null, 'warning')`, context);
+const unknown = vm.runInContext(`phaseProgressMetric(
+  '가설 검증 진행률', ratioPercent(null, null), null, null, 'warning'
+)`, context);
 const unknownDonut = unknown.children[1];
 assert.match(text(unknown), /—/); assert.doesNotMatch(text(unknown), /0%/);
 assert.equal(unknownDonut.attrs['aria-valuetext'], '미확인');
