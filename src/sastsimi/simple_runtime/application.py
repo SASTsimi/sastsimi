@@ -48,6 +48,7 @@ from .chaining import (
 )
 from .discovery import BUDGET_PAUSE_CODES, CandidateDiscovery
 from .models import (
+    HYPOTHESIS_STAGES,
     STAGE_VERSION,
     CandidateTerminal,
     CheckpointIdentity,
@@ -520,11 +521,14 @@ class SimpleAnalysisApplication:
         )
         if self._store.unresolved_codex_call(exact) is not None:
             try:
-                self._store._reconcile_unspawned_codex_call_with_lease(
+                if not self._store._reconcile_unspawned_codex_call_with_lease(
                     run, self._data_dir
-                )
+                ):
+                    self._store._reconcile_exited_codex_call_with_lease(
+                        run, self._data_dir
+                    )
             except (OSError, ValueError, sqlite3.Error):
-                # A missing or unverifiable pre-spawn proof stays unresolved.
+                # A missing or unverifiable process proof stays unresolved.
                 pass
         checkpoints = self._store.list_checkpoints(exact)
         if self._store.unresolved_codex_call(exact) is not None:
@@ -1841,7 +1845,11 @@ class SimpleAnalysisApplication:
         context = json.loads(artifacts.read(batch.shared_context_ref))
         if (
             not isinstance(context, dict)
-            or context.get("kind") != "simple_candidate_file_context_v1"
+            or context.get("kind")
+            not in {
+                "simple_candidate_file_context_v1",
+                "simple_candidate_file_context_v2",
+            }
             or context.get("path") != batch.path
         ):
             raise ValueError("CANDIDATE_BATCH_CONTEXT_INVALID")
@@ -2124,6 +2132,22 @@ class SimpleAnalysisApplication:
         incomplete: RunOutcome | None = None
         seen_batch_ids: set[str] = set()
         seen_candidate_ids: set[str] = set()
+        try:
+            bundle = json.loads(artifacts.read(static.static_bundle_ref))
+            value = (
+                bundle.get("candidate_context_version")
+                if isinstance(bundle, dict)
+                else None
+            )
+            context_version = value if value in {2, 3, 4} else 1
+        except (OSError, TypeError, ValueError):
+            return self._candidate_bootstrap_failure(
+                run,
+                identity,
+                static,
+                "CANDIDATE_STATIC_BUNDLE_INVALID",
+                current_checkpoint=checkpoint,
+            )
         batches = iter_candidate_batches(
             self._store,
             identity,
@@ -2132,6 +2156,7 @@ class SimpleAnalysisApplication:
             ast_summary=ast_summary,
             workspace=static.workspace_path,
             max_prompt_bytes=128 * 1024,
+            context_version=context_version,
         )
         for batch in batches:
             if batch.batch_id in seen_batch_ids:
@@ -2598,7 +2623,9 @@ class SimpleAnalysisApplication:
         surfaces_by_id = {surface.surface_id: surface for surface in index.surfaces}
         for surface_id, first_contexts in contexts_by_surface.items():
             effective_contexts[surface_id] = first_contexts
-            if self._surface_expansion_needed(index, first_contexts, progress):
+            if self._surface_expansion_needed(
+                index, first_contexts, progress, artifacts=artifacts
+            ):
                 second = list(
                     expanded_surface_contexts(
                         index,
@@ -2658,19 +2685,47 @@ class SimpleAnalysisApplication:
                         complete = False
                 for hypothesis_id in record.hypothesis_ids:
                     child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                    initial_checkpoint = self._store.get(
+                        child, SimpleStage.VERIFICATION_INITIAL_DONE
+                    )
+                    poc_checkpoint = self._store.get(
+                        child, SimpleStage.POC_EXECUTION_DONE
+                    )
                     final = self._store.get(child, SimpleStage.VERIFICATION_FINAL_DONE)
-                    if (
-                        not self._candidate_hypothesis_terminal(identity, hypothesis_id)
-                        or final is None
-                        or final.status is not StageStatus.SUCCEEDED
-                        or not final.output_refs
-                    ):
+                    if not self._candidate_hypothesis_terminal(identity, hypothesis_id):
                         complete = False
                         continue
-                    for ref in final.output_refs:
+                    if (
+                        initial_checkpoint is not None
+                        and self._store.verified_terminal_initial_outcome(
+                            initial_checkpoint
+                        )
+                        is not None
+                    ):
+                        # An environment/prerequisite HOLD ends this child
+                        # safely, but it did not verify the attack surface.
+                        complete = False
+                        output_refs = initial_checkpoint.output_refs
+                    elif (
+                        poc_checkpoint is not None
+                        and self._store.verified_terminal_poc_outcome(poc_checkpoint)
+                        is not None
+                    ):
+                        complete = False
+                        output_refs = poc_checkpoint.output_refs
+                    elif (
+                        final is not None
+                        and final.status is StageStatus.SUCCEEDED
+                        and final.output_refs
+                    ):
+                        output_refs = final.output_refs
+                    else:
+                        complete = False
+                        continue
+                    for ref in output_refs:
                         artifacts.read(ref)
                     if context.context_id in effective_ids:
-                        evidence_refs.extend(final.output_refs)
+                        evidence_refs.extend(output_refs)
             reviews.append(
                 SurfaceReview(
                     surface_id=surface_id,
@@ -2712,15 +2767,33 @@ class SimpleAnalysisApplication:
         index: SurfaceIndex,
         contexts: Sequence[SurfaceContext],
         progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
+        *,
+        artifacts: SimpleArtifactRepository | None = None,
     ) -> bool:
         if index.index_version != 2 or not contexts:
             return False
-        if not any(
-            progress.get((item.surface_id, item.context_id)) is not None
-            and progress[(item.surface_id, item.context_id)].status
-            == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
-            for item in contexts
-        ):
+        needs_more_evidence = False
+        required_parts = {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
+        for context in contexts:
+            record = progress.get((context.surface_id, context.context_id))
+            if record is None:
+                continue
+            if record.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS":
+                needs_more_evidence = True
+                break
+            if record.status != "HYPOTHESES" or artifacts is None:
+                continue
+            try:
+                result = json.loads(artifacts.read(record.result_ref))
+                reviewed_parts = result.get("reviewed_parts")
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(reviewed_parts, list) or not required_parts <= set(
+                reviewed_parts
+            ):
+                needs_more_evidence = True
+                break
+        if not needs_more_evidence:
             return False
         return any(
             item.source_unavailable_reason is None
@@ -3051,7 +3124,9 @@ class SimpleAnalysisApplication:
                     updated = self._store.list_surface_exploration_progress(
                         identity, scope
                     )
-                    if self._surface_expansion_needed(index, contexts, updated):
+                    if self._surface_expansion_needed(
+                        index, contexts, updated, artifacts=artifacts
+                    ):
                         yield from expanded_surface_contexts(
                             index,
                             surfaces[surface_id],
@@ -3123,7 +3198,11 @@ class SimpleAnalysisApplication:
                             run,
                             identity,
                             static,
-                            result.code,
+                            (
+                                "HYPOTHESIS_SURFACE_PROVIDER_FAILED"
+                                if result.code == "FAILED"
+                                else result.code
+                            ),
                             paused=result.code in BUDGET_PAUSE_CODES,
                             evidence_refs=result.evidence_refs,
                             current_checkpoint=checkpoint,
@@ -3609,6 +3688,12 @@ class SimpleAnalysisApplication:
         self, identity: CheckpointIdentity, hypothesis_id: str
     ) -> bool:
         child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        if any(
+            checkpoint is not None and checkpoint.stage_version != STAGE_VERSION[stage]
+            for stage in HYPOTHESIS_STAGES
+            if (checkpoint := self._store.get(child, stage)) is not None
+        ):
+            return False
         initial = self._store.get(child, SimpleStage.VERIFICATION_INITIAL_DONE)
         final = self._store.get(child, SimpleStage.VERIFICATION_FINAL_DONE)
         poc = self._store.get(child, SimpleStage.POC_EXECUTION_DONE)

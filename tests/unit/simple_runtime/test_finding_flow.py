@@ -9,6 +9,7 @@ from sastsimi.simple_runtime.finding_flow import (
     FlowEvidenceInvalid,
     resolve_flow_anchor,
 )
+from sastsimi.simple_runtime.finding_group_projection import _normalized_trace
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "finding_groups"
 
@@ -980,6 +981,250 @@ def hello():
     )
 
 
+def test_sql_grouping_distinguishes_cited_request_fields_at_one_sink(
+    tmp_path: Path,
+) -> None:
+    source = """import sqlite3
+from flask import Flask, request
+app = Flask(__name__)
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    conn = sqlite3.connect(':memory:')
+    cursor = conn.cursor()
+    query = f\"SELECT * FROM users WHERE name='{username}' AND password='{password}'\"
+    return cursor.execute(query)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+
+    username = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:6", "app.py:11"]},
+        "CWE-89",
+    )
+    password = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:7", "app.py:11"]},
+        "CWE-89",
+    )
+    source_less = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:10", "app.py:11"]},
+        "CWE-89",
+    )
+
+    assert username is not None
+    assert password is not None
+    assert username.source_key == "username"
+    assert password.source_key == "password"
+    assert username != password
+    assert source_less is None
+
+
+def test_sql_grouping_supports_a_direct_execute_fetchone_result(tmp_path: Path) -> None:
+    source = """import sqlite3
+from flask import Flask, request
+app = Flask(__name__)
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    conn = sqlite3.connect(':memory:')
+    cursor = conn.cursor()
+    query = f\"SELECT * FROM users WHERE name='{username}' AND password='{password}'\"
+    result = cursor.execute(query).fetchone()
+    return result
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:6", "app.py:11"]},
+        "CWE-89",
+    )
+
+    assert anchor is not None
+    assert anchor.source_key == "username"
+    assert anchor.sink_callee == "cursor.execute"
+
+
+def test_xss_grouping_supports_a_direct_html_f_string_return(tmp_path: Path) -> None:
+    source = """from flask import Flask, request
+app = Flask(__name__)
+@app.route('/search')
+def search():
+    query = request.args.get('q')
+    return f'<h1>{query}</h1>'
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:5", "app.py:6"]},
+        "CWE-79",
+    )
+
+    assert anchor is not None
+    assert anchor.sink_callee == "return_html"
+    assert anchor.source_key == "q"
+
+
+def test_codeql_import_preamble_preserves_a_single_proven_sql_flow(
+    tmp_path: Path,
+) -> None:
+    source = """import sqlite3
+from flask import Flask, request
+app = Flask(__name__)
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form.get('username')
+    conn = sqlite3.connect(':memory:')
+    cursor = conn.cursor()
+    query = f\"SELECT * FROM users WHERE name='{username}'\"
+    return cursor.execute(query)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    trace = _normalized_trace(
+        {
+            "codeFlows": [
+                {
+                    "threadFlows": [
+                        {
+                            "locations": [
+                                {
+                                    "location": {
+                                        "physicalLocation": {
+                                            "artifactLocation": {"uri": "app.py"},
+                                            "region": {"startLine": 1},
+                                        },
+                                        "message": {
+                                            "text": "ControlFlowNode for ImportMember"
+                                        },
+                                    }
+                                },
+                                {
+                                    "location": {
+                                        "physicalLocation": {
+                                            "artifactLocation": {"uri": "app.py"},
+                                            "region": {"startLine": 1},
+                                        },
+                                        "message": {
+                                            "text": "ControlFlowNode for request"
+                                        },
+                                    }
+                                },
+                                *(
+                                    {
+                                        "location": {
+                                            "physicalLocation": {
+                                                "artifactLocation": {"uri": "app.py"},
+                                                "region": {"startLine": line},
+                                            }
+                                        }
+                                    }
+                                    for line in (6, 9, 10)
+                                ),
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "app.py",
+        tmp_path,
+    )
+    assert trace == {
+        "sarif_steps": [
+            {"path": "app.py", "line": 6},
+            {"path": "app.py", "line": 9},
+            {"path": "app.py", "line": 10},
+        ]
+    }
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:6", "app.py:10"]},
+        "CWE-89",
+        trace,
+    )
+
+    assert anchor is not None
+    assert anchor.source_key == "username"
+    assert anchor.sink_line == 10
+
+
+def test_codeql_trace_with_another_request_input_still_abstains(tmp_path: Path) -> None:
+    source = """import os
+from flask import Flask, request
+app = Flask(__name__)
+@app.route('/run')
+def run():
+    left = request.args.get('left')
+    right = request.args.get('right')
+    os.system(right)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:7", "app.py:8"]},
+            "CWE-78",
+            {
+                "sarif_steps": [
+                    {"path": "app.py", "line": 1},
+                    {"path": "app.py", "line": 6},
+                    {"path": "app.py", "line": 7},
+                    {"path": "app.py", "line": 8},
+                ]
+            },
+        )
+        is None
+    )
+
+
+def test_xss_grouping_supports_a_client_controlled_cookie_value(tmp_path: Path) -> None:
+    source = """from flask import Flask, request
+app = Flask(__name__)
+@app.route('/dashboard')
+def dashboard():
+    user = request.cookies.get('session', 'guest')
+    return f'<h1>{user}</h1>'
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:5", "app.py:6"]},
+        "CWE-79",
+    )
+
+    assert anchor is not None
+    assert anchor.source_access == "request.cookies"
+    assert anchor.source_key == "session"
+
+
 def test_distinct_valid_trace_steps_do_not_share_a_group_anchor(tmp_path: Path) -> None:
     source = """import os
 from flask import Flask, request
@@ -1025,3 +1270,374 @@ def ping():
     assert first is not None and second is not None
     assert first != second
     assert impossible is None
+
+
+def test_fastapi_typed_request_query_source_has_a_proven_route(tmp_path: Path) -> None:
+    source = """import os
+from fastapi import FastAPI, Request
+app = FastAPI()
+@app.get('/run')
+async def run(req: Request):
+    command = req.query_params.get('cmd')
+    os.system(command)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:6", "app.py:7"]},
+        "CWE-78",
+    )
+
+    assert anchor is not None
+    assert anchor.route == "/run"
+    assert anchor.source_access == "req.query_params"
+    assert anchor.source_key == "cmd"
+    assert anchor.sink_callee == "os.system"
+
+
+def test_fastapi_query_keys_at_one_sink_remain_distinct(tmp_path: Path) -> None:
+    source = """import os
+from fastapi import FastAPI, Request
+app = FastAPI()
+@app.post('/run')
+async def run(req: Request):
+    left = req.query_params.get('left')
+    right = req.query_params.get('right')
+    os.system(f'{left} {right}')
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+
+    left = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:6", "app.py:8"]},
+        "CWE-78",
+    )
+    right = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:7", "app.py:8"]},
+        "CWE-78",
+    )
+    ambiguous = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:8"]},
+        "CWE-78",
+    )
+
+    assert left is not None and right is not None
+    assert left.route == right.route == "/run"
+    assert left.source_key == "left"
+    assert right.source_key == "right"
+    assert left != right
+    assert ambiguous is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        """import os
+from fake import FastAPI
+from fastapi import Request
+api = FastAPI()
+@api.get('/run')
+async def run(req: Request):
+    command = req.query_params.get('cmd')
+    os.system(command)
+""",
+        """import os
+from fastapi import FastAPI
+from fake import Request
+api = FastAPI()
+@api.get('/run')
+async def run(req: Request):
+    command = req.query_params.get('cmd')
+    os.system(command)
+""",
+        """import os
+from fastapi import FastAPI, Request
+api = FastAPI()
+@api.get('/run')
+async def run(req: Request):
+    command = req.query_params.get('cmd')
+    os.system(command)
+api.add_api_route('/another', run)
+""",
+        """import os
+from fastapi import FastAPI, Request
+api = FastAPI()
+@api.get('/run')
+@api.post('/run')
+async def run(req: Request):
+    command = req.query_params.get('cmd')
+    os.system(command)
+""",
+        """import os
+from fastapi import FastAPI, Request
+api = FastAPI()
+@api.get('/run')
+async def run(req: Request):
+    req = replacement
+    command = req.query_params.get('cmd')
+    os.system(command)
+""",
+    ],
+)
+def test_fastapi_unproven_route_or_request_abstains(
+    tmp_path: Path, source: str
+) -> None:
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    sink_line = source.splitlines().index("    os.system(command)") + 1
+
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": [f"app.py:{sink_line}"]},
+            "CWE-78",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("shadowed", ["FastAPI", "Request"])
+def test_fastapi_import_alias_shadowing_abstains(
+    tmp_path: Path, shadowed: str
+) -> None:
+    source = f"""import os
+from fastapi import FastAPI, Request
+import fake as {shadowed}
+api = FastAPI()
+@api.get('/run')
+async def run(req: Request):
+    command = req.query_params.get('cmd')
+    os.system(command)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:8"]},
+            "CWE-78",
+        )
+        is None
+    )
+
+
+def test_fastapi_wildcard_import_cannot_prove_a_builtin_sink(tmp_path: Path) -> None:
+    source = """from fastapi import FastAPI, Request
+from fake import *
+api = FastAPI()
+@api.get('/file')
+async def file(req: Request):
+    path = req.query_params.get('path')
+    return open(path).read()
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:7"]},
+            "CWE-22",
+        )
+        is None
+    )
+
+
+def test_fastapi_awaited_json_key_has_a_proven_body_source(tmp_path: Path) -> None:
+    source = """import os
+from fastapi import FastAPI, Request
+app = FastAPI()
+@app.post('/run')
+async def run(req: Request):
+    data = await req.json()
+    command = data.get('cmd')
+    os.system(command)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:7", "app.py:8"]},
+        "CWE-78",
+    )
+
+    assert anchor is not None
+    assert anchor.route == "/run"
+    assert anchor.source_line == 6
+    assert anchor.source_access == "req.json"
+    assert anchor.source_key == "cmd"
+
+
+def test_fastapi_bare_string_parameter_is_a_query_source(tmp_path: Path) -> None:
+    source = """import os
+from fastapi import FastAPI
+app = FastAPI()
+@app.get('/select')
+async def select(username: str):
+    os.system(username)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:5", "app.py:6"]},
+        "CWE-78",
+    )
+
+    assert anchor is not None
+    assert anchor.route == "/select"
+    assert anchor.source_line == 5
+    assert anchor.source_access == "fastapi.query"
+    assert anchor.source_key == "username"
+
+
+def test_fastapi_optional_string_query_with_unused_body_argument(
+    tmp_path: Path,
+) -> None:
+    source = """import os
+from typing import Optional
+from fastapi import FastAPI
+class User:
+    pass
+app = FastAPI()
+@app.delete('/user')
+async def delete(username: Optional[str] = '', user: Optional[User] = None):
+    os.system(username)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:8", "app.py:9"]},
+        "CWE-78",
+    )
+
+    assert anchor is not None
+    assert anchor.route == "/user"
+    assert anchor.source_line == 8
+    assert anchor.source_access == "fastapi.query"
+    assert anchor.source_key == "username"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        """import os
+from fastapi import FastAPI
+app = FastAPI()
+@app.get('/run')
+async def run(left: str, right: str):
+    os.system(f'{left} {right}')
+""",
+        """import os
+from fastapi import FastAPI
+app = FastAPI()
+@app.get('/run/{username}')
+async def run(username: str):
+    os.system(username)
+""",
+        """import os
+from fastapi import FastAPI
+import fake as str
+app = FastAPI()
+@app.get('/run')
+async def run(username: str):
+    os.system(username)
+""",
+        """import os
+from typing import Optional
+from fastapi import FastAPI
+import fake as Optional
+app = FastAPI()
+@app.get('/run')
+async def run(username: Optional[str] = ''):
+    os.system(username)
+""",
+        """import os
+from fastapi import FastAPI
+app = FastAPI()
+@app.get('/run')
+async def run(username: str):
+    username = replacement
+    os.system(username)
+""",
+        """import os
+from fastapi import FastAPI, Request
+app = FastAPI()
+@app.post('/run')
+async def run(req: Request):
+    req = replacement
+    data = await req.json()
+    os.system(data.get('cmd'))
+""",
+        """import os
+from fastapi import FastAPI, Request
+app = FastAPI()
+@app.post('/run')
+async def run(req: Request):
+    data = req.json()
+    os.system(data.get('cmd'))
+""",
+        """import os
+from fastapi import FastAPI, Request
+app = FastAPI()
+@app.post('/run')
+async def run(req: Request):
+    data = await req.json()
+    left = data.get('left')
+    right = data.get('right')
+    os.system(f'{left} {right}')
+""",
+    ],
+)
+def test_fastapi_ambiguous_source_or_route_abstains(
+    tmp_path: Path, source: str
+) -> None:
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    sink_line = next(
+        index
+        for index, line in enumerate(source.splitlines(), start=1)
+        if "os.system(" in line
+    )
+
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": [f"app.py:{sink_line}"]},
+            "CWE-78",
+        )
+        is None
+    )

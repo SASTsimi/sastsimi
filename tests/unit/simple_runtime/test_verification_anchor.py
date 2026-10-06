@@ -11,8 +11,14 @@ from typing import Any
 import pytest
 from pydantic import JsonValue
 
+from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    redact_untrusted_text_preserving_lines,
+)
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.hypothesis_pages import redact_source_page_bytes
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
@@ -319,6 +325,382 @@ async def test_production_final_requires_pro_con_anchor(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pinned_anchor_includes_direct_same_file_http_caller_context(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    pinned = (
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "\n"
+        "def save_comment(value):\n"
+        "    return database.execute(value)\n"
+        "\n"
+        "@app.post('/submit')\n"
+        "def submit():\n"
+        "    return save_comment(request.form['comment'])\n"
+    )
+    source_path = checkout / "web.py"
+    source_path.write_text(pinned, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "web.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode("ascii")
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_file_context_v1",
+            "path": "web.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": hashlib.sha256(pinned.encode("utf-8")).hexdigest(),
+            "source_lines": [
+                {"line": 5, "text": "    return database.execute(value)"}
+            ],
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "shared_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {
+                "title": "Stored SQL query",
+                "code_locations": ["web.py:5"],
+            },
+        }
+    )
+    client = _ContextClient()
+    await FinalVerificationStage(
+        client,
+        artifacts,
+        workspace_path=checkout,
+        require_anchor=True,
+    )(
+        _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity),
+        {
+            SimpleStage.PRO_CON_DONE: _checkpoint(
+                SimpleStage.PRO_CON_DONE,
+                identity=identity,
+                inputs=(proposal_ref, source_ref),
+            )
+        },
+    )
+
+    assert b"request.form['comment']" in client.prompts[0]
+    assert b"def submit" in client.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_redacted_pinned_context_is_verified_against_its_source_commit(
+    tmp_path: Path,
+) -> None:
+    """A safe projected source context must not be mistaken for corruption."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    pinned = (
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "\n"
+        "def run_query():\n"
+        "    api_key = 'top-secret-value'\n"
+        "    return database.execute(request.form['query'])\n"
+        "\n"
+        "@app.post('/search')\n"
+        "def search():\n"
+        "    return run_query()\n"
+    )
+    source_path = checkout / "web.py"
+    source_path.write_text(pinned, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "web.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode("ascii")
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    raw_context = {
+        "kind": "simple_candidate_file_context_v1",
+        "path": "web.py",
+        "source_status": "AVAILABLE",
+        "source_sha256": hashlib.sha256(pinned.encode("utf-8")).hexdigest(),
+        "source_lines": [
+            {"line": 5, "text": "    api_key = 'top-secret-value'"},
+            {"line": 6, "text": "    return database.execute(request.form['query'])"},
+        ],
+    }
+    projected_context = json.loads(
+        redact_projected_json(canonical_bytes(raw_context)).data
+    )
+    assert projected_context != raw_context
+    source_ref = artifacts.put_json(projected_context)
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "shared_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {
+                "title": "Untrusted query execution",
+                "code_locations": ["web.py:6"],
+            },
+        }
+    )
+    client = _ContextClient()
+    await FinalVerificationStage(
+        client,
+        artifacts,
+        workspace_path=checkout,
+        require_anchor=True,
+    )(
+        _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity),
+        {
+            SimpleStage.PRO_CON_DONE: _checkpoint(
+                SimpleStage.PRO_CON_DONE,
+                identity=identity,
+                inputs=(proposal_ref, source_ref),
+            )
+        },
+    )
+
+    assert b"[REDACTED:CREDENTIAL]" in client.prompts[0]
+    assert b"top-secret-value" not in client.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_line_preserving_redacted_context_matches_pinned_commit(
+    tmp_path: Path,
+) -> None:
+    """Anchor validation compares a file-context line using its own redactor."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    pinned = (
+        "user = request.form.get('username')\n"
+        "password = 'not-a-real-secret'\n"
+        "query = f\"SELECT * FROM users WHERE user='{user}' "
+        "AND password='{password}'\"\n"
+    )
+    source_path = checkout / "web.py"
+    source_path.write_text(pinned, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "web.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode("ascii")
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    safe_lines = (
+        redact_untrusted_text_preserving_lines(pinned.encode("utf-8"))
+        .data.decode("utf-8")
+        .splitlines()
+    )
+    assert "not-a-real-secret" not in safe_lines[1]
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_file_context_v1",
+            "path": "web.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": hashlib.sha256(pinned.encode("utf-8")).hexdigest(),
+            "source_lines": [
+                {"line": 2, "text": safe_lines[1]},
+                {"line": 3, "text": safe_lines[2]},
+            ],
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "shared_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {
+                "title": "SQL injection",
+                "code_locations": ["web.py:3"],
+            },
+        }
+    )
+    client = _ContextClient()
+    await FinalVerificationStage(
+        client,
+        artifacts,
+        workspace_path=checkout,
+        require_anchor=True,
+    )(
+        _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity),
+        {
+            SimpleStage.PRO_CON_DONE: _checkpoint(
+                SimpleStage.PRO_CON_DONE,
+                identity=identity,
+                inputs=(proposal_ref, source_ref),
+            )
+        },
+    )
+
+    assert len(client.prompts) == 1
+    assert b"[REDACTED:CREDENTIAL]" in client.prompts[0]
+    assert b"not-a-real-secret" not in client.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_source_page_anchor_uses_source_page_redaction_policy(
+    tmp_path: Path,
+) -> None:
+    """A page masks AST-identified secret values before its anchor is checked."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    pinned = (
+        "settings = {'session': 'not-a-real-secret'}\n"
+        "query = f\"SELECT * FROM users WHERE name='{name}'\"\n"
+    )
+    source_path = checkout / "web.py"
+    source_path.write_text(pinned, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "web.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode("ascii")
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    manifest_ref = artifacts.put_json(
+        {"kind": "simple_tracked_sources", "paths": ["web.py"]}
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "source_manifest_ref": manifest_ref.model_dump(mode="json"),
+        }
+    )
+    safe_code = redact_source_page_bytes(pinned.encode("utf-8")).decode("utf-8")
+    assert "not-a-real-secret" not in safe_code
+    page_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_source_page",
+            "analysis_id": identity.analysis_id,
+            "static_bundle_ref": bundle_ref.model_dump(mode="json"),
+            "source_manifest_ref": manifest_ref.model_dump(mode="json"),
+            "page": {
+                "kind": "simple_hypothesis_source_page_v1",
+                "static_bundle_hash": bundle_ref.content_hash,
+                "source_manifest_hash": manifest_ref.content_hash,
+                "segments": [
+                    {
+                        "path": "web.py",
+                        "start_line": 1,
+                        "end_line": 2,
+                        "code": safe_code,
+                    }
+                ],
+            },
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "page_input_ref": page_ref.model_dump(mode="json"),
+            "proposal": {
+                "title": "SQL injection",
+                "code_locations": ["web.py:2"],
+            },
+        }
+    )
+    client = _ContextClient()
+    await FinalVerificationStage(
+        client,
+        artifacts,
+        workspace_path=checkout,
+        require_anchor=True,
+    )(
+        _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity),
+        {
+            SimpleStage.PRO_CON_DONE: _checkpoint(
+                SimpleStage.PRO_CON_DONE,
+                identity=identity,
+                inputs=(proposal_ref, page_ref),
+            )
+        },
+    )
+
+    assert len(client.prompts) == 1
+    assert b"[REDACTED:CREDENTIAL]" in client.prompts[0]
+    assert b"not-a-real-secret" not in client.prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_gate_cannot_omit_oversized_final_verdict(tmp_path: Path) -> None:
     artifacts = SimpleArtifactRepository(tmp_path, _identity())
     proposal_ref, source_ref = _anchor_refs(artifacts)
@@ -473,6 +855,120 @@ async def test_modern_context_citation_is_commit_pinned(
     assert len(client.prompts) == 1
     assert b"pinned-modern-marker" in client.prompts[0]
     assert b"changed current checkout" not in client.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_candidate_context_v2_pins_cross_file_call_path(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    routes = (
+        "from dao import sink\n"
+        "@app.post('/run')\n"
+        "def endpoint(name):\n"
+        "    return sink(name)  # route-source-marker\n"
+    )
+    dao = "def sink(name):\n    return connection.execute(name)  # sink-marker\n"
+    (checkout / "routes.py").write_text(routes, encoding="utf-8")
+    (checkout / "dao.py").write_text(dao, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "routes.py", "dao.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode("ascii")
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_file_context_v2",
+            "path": "dao.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": hashlib.sha256(dao.encode("utf-8")).hexdigest(),
+            "source_lines": [
+                {
+                    "line": 2,
+                    "text": "    return connection.execute(name)  # sink-marker",
+                }
+            ],
+            "related_source_files": [
+                {
+                    "path": "routes.py",
+                    "source_status": "AVAILABLE",
+                    "source_sha256": hashlib.sha256(routes.encode("utf-8")).hexdigest(),
+                    "source_lines": [
+                        {"line": 2, "text": "@app.post('/run')"},
+                        {
+                            "line": 4,
+                            "text": "    return sink(name)  # route-source-marker",
+                        },
+                    ],
+                }
+            ],
+            "candidate_call_paths": [
+                {
+                    "candidate_id": "candidate-1",
+                    "status": "AVAILABLE",
+                    "gaps": [],
+                    "paths": [
+                        {
+                            "kind": "call_path_v1",
+                            "provenance": "python_syntax",
+                            "assurance": "SYNTACTIC_REACHABILITY",
+                            "status": "AVAILABLE",
+                            "gaps": [],
+                            "steps": [
+                                {"role": "ROUTE_ENTRY", "path": "routes.py", "line": 2},
+                                {"role": "CALL", "path": "routes.py", "line": 4},
+                                {"role": "SINK", "path": "dao.py", "line": 2},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "candidate_id": "candidate-1",
+            "shared_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"title": "Cross-file flow", "code_locations": ["dao.py:2"]},
+        }
+    )
+    client = _ContextClient()
+    await FinalVerificationStage(
+        client, artifacts, workspace_path=checkout, require_anchor=True
+    )(
+        _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity),
+        {
+            SimpleStage.PRO_CON_DONE: _checkpoint(
+                SimpleStage.PRO_CON_DONE,
+                identity=identity,
+                inputs=(proposal_ref, source_ref),
+            )
+        },
+    )
+
+    assert len(client.prompts) == 1
+    assert b"route-source-marker" in client.prompts[0]
+    assert b"sink-marker" in client.prompts[0]
 
 
 @pytest.mark.asyncio

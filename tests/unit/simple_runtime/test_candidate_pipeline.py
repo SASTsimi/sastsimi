@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -424,7 +425,9 @@ def _setup(
             static_disposition="PARTIAL" if partial else "FULL",
         )
     )
-    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    store = SimpleCheckpointStore(
+        data_dir / "db" / "sastsimi.sqlite3", artifact_data_dir=data_dir
+    )
     client = _Client(budget=budget, decision=decision)
     hypotheses = _Hypotheses()
     ids = iter(("analysis-1", "workspace-1"))
@@ -1199,6 +1202,273 @@ async def test_v2_codex_resume_keeps_spawn_intent_unresolved(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_v2_codex_resume_keeps_exited_parent_unresolved_without_tree_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absent direct PID cannot rule out a surviving descendant."""
+
+    app, store, _, _ = _setup(tmp_path, pipeline_version=2)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+            provider="codex",
+            llm_provider="codex",
+            started_at=datetime.now(UTC),
+            candidate_pipeline_version=2,
+        )
+    )
+    assert app._display.get_or_allocate(identity.analysis_id) == "A-001"
+    interrupted = store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="interrupted-root"
+    )
+    call_id = "captured-exited-call"
+    assert store.begin_codex_call(call_id, identity.analysis_id)
+    store.begin_codex_child_spawn(
+        call_id=call_id, analysis_id=identity.analysis_id, phase="EXEC"
+    )
+    store.record_codex_child_spawn(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="EXEC",
+        pid=4242,
+        start_identity="windows:captured-child",
+    )
+    store.mark_codex_child_exited(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="EXEC",
+        pid=4242,
+        start_identity="windows:captured-child",
+    )
+    blocked = store.mark_failure(
+        interrupted,
+        StageFailure(
+            code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+            retryable=False,
+            safe_message="Codex cleanup was interrupted",
+        ),
+        StageStatus.BLOCKED,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: False,
+    )
+
+    resumed = await app.resume(identity.analysis_id)
+
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert store.unresolved_codex_call(identity.analysis_id) == call_id
+    assert not store.has_codex_cleanup_confirmation(
+        blocked, SimpleArtifactRepository(tmp_path / "data", identity)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("child_identity_still_matches", [False, None, True])
+async def test_v2_codex_resume_keeps_outer_timeout_unresolved_without_tree_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_identity_still_matches: bool | None,
+) -> None:
+    """Recorded direct exits do not prove the absence of Codex descendants."""
+
+    app, store, _, _ = _setup(tmp_path, pipeline_version=2)
+    root = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=root.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=root.workspace_id,
+            commit_id=root.commit_id,
+            repository="https://github.com/example/repo",
+            provider="codex",
+            llm_provider="codex",
+            started_at=datetime.now(UTC),
+            candidate_pipeline_version=2,
+        )
+    )
+    assert app._display.get_or_allocate(root.analysis_id) == "A-001"
+    affected_identity = root.model_copy(update={"hypothesis_id": "H-affected"})
+    sibling_identity = root.model_copy(update={"hypothesis_id": "H-sibling"})
+    affected_running = store.mark_running(
+        affected_identity,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        (),
+        attempt_id="affected-stage-attempt",
+    )
+    sibling_running = store.mark_running(
+        sibling_identity,
+        SimpleStage.PRO_CON_DONE,
+        (),
+        attempt_id="sibling-stage-attempt",
+    )
+    root_running = store.mark_running(
+        root, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="root-stage-attempt"
+    )
+    call_id = "outer-timeout-call"
+    assert store.begin_codex_call(call_id, root.analysis_id)
+    attempt_ref = SimpleArtifactRepository(tmp_path / "data", root).put_json(
+        {"kind": "simple_llm_attempt", "status": "TIMED_OUT"}
+    )
+    store.record_llm_attempt(
+        attempt_id=call_id,
+        analysis_id=root.analysis_id,
+        agent="initial_verification",
+        model="gpt-6-sol",
+        attempt_number=1,
+        status="TIMED_OUT",
+        elapsed_ms=789327,
+        input_tokens=None,
+        output_tokens=None,
+        cost_cents=None,
+        artifact_ref=attempt_ref,
+    )
+    for phase, pid in (("VERSION", 101), ("LOGIN", 102), ("EXEC", 103)):
+        store.begin_codex_child_spawn(
+            call_id=call_id, analysis_id=root.analysis_id, phase=phase
+        )
+        store.record_codex_child_spawn(
+            call_id=call_id,
+            analysis_id=root.analysis_id,
+            phase=phase,
+            pid=pid,
+            start_identity=f"windows:original-{phase}",
+        )
+        store.mark_codex_child_exited(
+            call_id=call_id,
+            analysis_id=root.analysis_id,
+            phase=phase,
+            pid=pid,
+            start_identity=f"windows:original-{phase}",
+        )
+    affected = store.mark_failure(
+        affected_running,
+        StageFailure(
+            code="CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            retryable=False,
+            safe_message="Prior Codex call unresolved",
+        ),
+        StageStatus.FAILED,
+    )
+    sibling = store.mark_failure(
+        sibling_running,
+        StageFailure(
+            code="CODEX_CALL_IN_FLIGHT_UNRESOLVED",
+            retryable=False,
+            safe_message="Prior Codex call unresolved",
+        ),
+        StageStatus.FAILED,
+    )
+    store.mark_failure(
+        root_running,
+        StageFailure(
+            code=(
+                "CANDIDATE_CHILD_CODEX_STATE_PENDING:"
+                "H-affected:affected-stage-attempt"
+            ),
+            retryable=False,
+            safe_message="Affected child needs Codex cleanup proof",
+        ),
+        StageStatus.FAILED,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: child_identity_still_matches,
+    )
+
+    resumed = await app.resume(root.analysis_id)
+
+    assert resumed.status == "BLOCKED"
+    assert resumed.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert store.unresolved_codex_call(root.analysis_id) == call_id
+    assert not store.has_codex_cleanup_confirmation(
+        affected, SimpleArtifactRepository(tmp_path / "data", affected_identity)
+    )
+    assert not store.has_codex_cleanup_confirmation(
+        sibling, SimpleArtifactRepository(tmp_path / "data", sibling_identity)
+    )
+
+
+@pytest.mark.asyncio
+async def test_v2_codex_resume_keeps_unknown_captured_child_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Access denial is not evidence that the prior Codex child exited."""
+
+    app, store, _, _ = _setup(tmp_path, pipeline_version=2)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://github.com/example/repo",
+            provider="codex",
+            llm_provider="codex",
+            started_at=datetime.now(UTC),
+            candidate_pipeline_version=2,
+        )
+    )
+    assert app._display.get_or_allocate(identity.analysis_id) == "A-001"
+    interrupted = store.mark_running(
+        identity, SimpleStage.HYPOTHESIS_DONE, (), attempt_id="interrupted-root"
+    )
+    call_id = "captured-unknown-call"
+    assert store.begin_codex_call(call_id, identity.analysis_id)
+    store.begin_codex_child_spawn(
+        call_id=call_id, analysis_id=identity.analysis_id, phase="EXEC"
+    )
+    store.record_codex_child_spawn(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="EXEC",
+        pid=4242,
+        start_identity="windows:captured-child",
+    )
+    store.mark_failure(
+        interrupted,
+        StageFailure(
+            code="CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+            retryable=False,
+            safe_message="Codex cleanup was interrupted",
+        ),
+        StageStatus.BLOCKED,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+
+    blocked = await app.resume(identity.analysis_id)
+
+    assert blocked.status == "BLOCKED"
+    assert blocked.error_code == "CODEX_CALL_IN_FLIGHT_UNRESOLVED"
+    assert store.unresolved_codex_call(identity.analysis_id) == call_id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("missing_proof", ["provider", "version", "attempt"])
 async def test_v2_codex_resume_rejects_incomplete_pre_spawn_proof(
     tmp_path: Path, missing_proof: str
@@ -1781,13 +2051,14 @@ async def test_candidate_focus_redacts_credential_shaped_excerpt_before_hypothes
     app._candidate_hypotheses = hypotheses
     app._runner_factory = lambda *_: _SuccessRunner(store)
 
-    outcome = await app.analyze(
+    await app.analyze(
         SimpleAnalysisRequest(
             data_dir=tmp_path / "data",
             repository="https://github.com/example/repo",
             commit="a" * 40,
         )
     )
+    outcome = await app.resume("analysis-1")
 
     assert outcome.status == "COMPLETE", outcome.error_code
     assert client.calls == hypotheses.calls == 1
@@ -2113,6 +2384,217 @@ async def test_v2_targeted_exploration_checkpoints_each_surface_without_source_p
     assert terminal.surface_coverage_hash in {
         ref.content_hash for ref in recertified.output_refs
     }
+
+
+@pytest.mark.asyncio
+async def test_v2_surface_terminal_initial_inconclusive_does_not_cover_surface(
+    tmp_path: Path,
+) -> None:
+    """A verified HOLD avoids replay but is not completed PoC coverage."""
+
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class SurfaceWithExternalPrerequisite:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def propose_batch(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Excluded candidates must not be proposed")
+
+        async def propose_surface(
+            self,
+            identity: CheckpointIdentity,
+            static: StaticBootstrapResult,
+            context: SurfaceContext,
+        ) -> SurfaceProposalResult:
+            self.calls += 1
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            payload = json.loads(artifacts.read(context.context_ref))
+            location = f"{payload['path']}:{payload['line']}"
+            hypothesis_id = "hypothesis-terminal-initial"
+            status = "HYPOTHESES" if self.calls == 1 else "NO_HYPOTHESIS"
+            result_ref = artifacts.put_json(
+                {
+                    "kind": (
+                        "simple_surface_hypothesis_result_v2"
+                        if payload["kind"] == "simple_surface_context_v2"
+                        else "simple_surface_hypothesis_result_v1"
+                    ),
+                    "analysis_id": identity.analysis_id,
+                    "surface_id": context.surface_id,
+                    "context_id": context.context_id,
+                    "part_index": context.part_index,
+                    "part_count": context.part_count,
+                    "context_hash": context.context_hash,
+                    "static_bundle_hash": static.static_bundle_ref.content_hash,
+                    "status": status,
+                    "reason": "One route needs an external backend.",
+                    "reviewed_parts": [
+                        "ENTRY",
+                        "SENSITIVE_OPERATION",
+                        "TRUST_BOUNDARY",
+                    ],
+                    "evidence_locations": [location],
+                    "seed_ids": [hypothesis_id] if status == "HYPOTHESES" else [],
+                }
+            )
+            seeds: tuple[HypothesisSeed, ...] = ()
+            if status == "HYPOTHESES":
+                proposal_ref = artifacts.put_prompt_proposal(
+                    {
+                        "kind": "simple_hypothesis_proposal",
+                        "analysis_id": identity.analysis_id,
+                        "hypothesis_id": hypothesis_id,
+                        "surface_id": context.surface_id,
+                        "context_id": context.context_id,
+                        "part_index": context.part_index,
+                        "part_count": context.part_count,
+                        "static_bundle_ref": static.static_bundle_ref.model_dump(
+                            mode="json"
+                        ),
+                        "surface_context_ref": context.context_ref.model_dump(
+                            mode="json"
+                        ),
+                        "surface_result_ref": result_ref.model_dump(mode="json"),
+                        "proposal": {"code_locations": [location]},
+                        "qualification": {"evidence_locations": [location]},
+                    }
+                )
+                seeds = (
+                    HypothesisSeed(
+                        hypothesis_id=hypothesis_id,
+                        proposal_ref=proposal_ref,
+                    ),
+                )
+            return SurfaceProposalResult(
+                surface_id=context.surface_id,
+                context_id=context.context_id,
+                part_index=context.part_index,
+                part_count=context.part_count,
+                status=status,
+                reason="One route needs an external backend.",
+                seeds=seeds,
+                result_ref=result_ref,
+                reviewed_parts=frozenset(
+                    {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
+                ),
+                evidence_locations=(location,),
+            )
+
+    class ExternalPrerequisiteRunner(SimpleRuntimeRunner):
+        def __init__(
+            self, backing: SimpleCheckpointStore, root: CheckpointIdentity
+        ) -> None:
+            super().__init__(backing, {})
+            self.handlers = {
+                SimpleStage.CHAINING_DONE: SimpleChainingStage(
+                    store=backing,
+                    client=_Client(),
+                    artifacts=SimpleArtifactRepository(tmp_path / "data", root),
+                )
+            }
+
+        async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
+            artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+            evidence_ref = artifacts.put_json(
+                {
+                    "kind": "simple_initial_verification",
+                    "attempt_id": "hold-attempt",
+                    "result": {
+                        "unmet_external_prerequisites": [
+                            "An external backend is unavailable."
+                        ]
+                    },
+                }
+            )
+            self.store.save_checkpoint(
+                StageCheckpoint(
+                    identity=identity,
+                    stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+                    stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+                    status=StageStatus.SUCCEEDED,
+                    input_refs=(),
+                    input_hash=input_reference_hash(()),
+                    output_refs=(evidence_ref,),
+                    attempt_id="hold-attempt",
+                    verdict="HOLD",
+                    external_prerequisites_ref=evidence_ref,
+                )
+            )
+            return RunOutcome(
+                current_stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+                status=StageStatus.SUCCEEDED,
+            )
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    static = cast(_Static, app._static).result
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    bundle = json.loads(artifacts.read(static.static_bundle_ref))
+    ast_summary = cast(dict[str, object], bundle["ast_summary"])
+    index = build_attack_surface_index(bundle, ast_summary, (), artifacts=artifacts)
+    index = replace(index, surfaces=(index.surfaces[0],))
+    index_ref = artifacts.put_json(index.to_json())
+    context = next(
+        iter(
+            iter_uncovered_surface_contexts(
+                index,
+                evaluate_surface_coverage(index, ()),
+                64 * 1024,
+                artifacts=artifacts,
+                ast_summary=ast_summary,
+                workspace=static.workspace_path,
+            )
+        )
+    )
+    proposal = SurfaceWithExternalPrerequisite()
+    result = await proposal.propose_surface(identity, static, context)
+    seed = result.seeds[0]
+    child = identity.model_copy(update={"hypothesis_id": seed.hypothesis_id})
+    inputs = (seed.proposal_ref, context.context_ref)
+    pending = StageCheckpoint(
+        identity=child,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.PENDING,
+        input_refs=inputs,
+        input_hash=input_reference_hash(inputs),
+    )
+    store.commit_surface_exploration(
+        identity,
+        "scope-1",
+        context.surface_id,
+        context.context_id,
+        static_bundle_hash=static.static_bundle_ref.content_hash,
+        index_hash=index_ref.content_hash,
+        context_hash=context.context_hash,
+        source_sha256=context.source_sha256,
+        status=result.status,
+        result_ref=result.result_ref,
+        registrations=[(seed.hypothesis_id, seed.proposal_ref, pending)],
+        proposal_version=app._surface_context_version(artifacts, context),
+    )
+    await ExternalPrerequisiteRunner(store, identity).resume_hypothesis(child)
+
+    coverage = app._final_surface_coverage(
+        identity,
+        static,
+        "scope-1",
+        artifacts,
+        ast_summary,
+        index,
+        index_ref,
+    )
+
+    assert coverage.surfaces[0].coverage_status == "INSUFFICIENT"
 
 
 def test_v2_targeted_exploration_keeps_candidate_surface_without_role_bound_proof(

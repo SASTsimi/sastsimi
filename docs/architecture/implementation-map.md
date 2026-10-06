@@ -37,7 +37,7 @@ CLI
 - Repository Loader와 정적 도구: `src/sastsimi/static_analysis`
 - LLM 연결·분석별 호출 예산: `src/sastsimi/simple_runtime/provider.py`,
   `src/sastsimi/simple_runtime/call_queue.py`, `src/sastsimi/providers`
-- PoC·Docker와 오프라인 wheel 검증: `src/sastsimi/simple_runtime/poc.py`,
+- PoC·Docker와 자동/오프라인 wheel 검증: `src/sastsimi/simple_runtime/poc.py`,
   `src/sastsimi/simple_runtime/portable_docker.py`,
   `src/sastsimi/simple_runtime/offline_wheels.py`, `src/sastsimi/sandbox`
 - Chaining: `src/sastsimi/simple_runtime/chaining.py`

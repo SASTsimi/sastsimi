@@ -14,6 +14,7 @@ from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
 from .ast_facts import index_ast_manifest
+from .call_path_facts import PythonCallPathIndex, build_python_call_path_index
 from .candidates import StaticCandidate
 from .file_context import (
     PreparedFileContext,
@@ -101,10 +102,21 @@ def _assemble_batch(
     candidates: Sequence[StaticCandidate],
     scope_fingerprint: str,
     max_prompt_bytes: int,
+    call_path_index: PythonCallPathIndex | None = None,
+    include_downstream: bool = False,
+    include_enclosing: bool = False,
 ) -> CandidateBatch:
     path = prepared.path
     context_ref = build_file_context(
-        artifacts, ast_summary, workspace, path, candidates, prepared=prepared
+        artifacts,
+        ast_summary,
+        workspace,
+        path,
+        candidates,
+        prepared=prepared,
+        call_path_index=call_path_index,
+        include_downstream=include_downstream,
+        include_enclosing=include_enclosing,
     )
     context_payload = json.loads(artifacts.read(context_ref))
     prompt_bytes = PROMPT_HEADROOM_BYTES + len(
@@ -144,12 +156,22 @@ def iter_candidate_batches(
     workspace: Path,
     max_prompt_bytes: int,
     db_page_size: int = 32,
+    context_version: int = 1,
 ) -> Iterator[CandidateBatch]:
     """Yield selected candidates in stable file order across database pages."""
 
-    if max_prompt_bytes < 1024 or db_page_size < 1:
+    if (
+        max_prompt_bytes < 1024
+        or db_page_size < 1
+        or context_version not in {1, 2, 3, 4}
+    ):
         raise ValueError("CANDIDATE_BATCH_BUDGET_INVALID")
     manifest_index = index_ast_manifest(artifacts, ast_summary)
+    call_path_index = (
+        build_python_call_path_index(workspace, tuple(manifest_index))
+        if context_version in {2, 3, 4}
+        else None
+    )
     after: tuple[str, str] | None = None
     prepared: PreparedFileContext | None = None
     pending: list[StaticCandidate] = []
@@ -189,6 +211,9 @@ def iter_candidate_batches(
                     candidates=proposed,
                     scope_fingerprint=scope_fingerprint,
                     max_prompt_bytes=max_prompt_bytes,
+                    call_path_index=call_path_index,
+                    include_downstream=context_version in {3, 4},
+                    include_enclosing=context_version == 4,
                 )
             except CandidateContextOverflow:
                 if current_batch is None:
@@ -203,6 +228,9 @@ def iter_candidate_batches(
                     candidates=pending,
                     scope_fingerprint=scope_fingerprint,
                     max_prompt_bytes=max_prompt_bytes,
+                    call_path_index=call_path_index,
+                    include_downstream=context_version in {3, 4},
+                    include_enclosing=context_version == 4,
                 )
             else:
                 pending = proposed

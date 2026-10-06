@@ -123,7 +123,7 @@ sastsimi setup --non-interactive --auth api-key --provider openai --model <model
 
 설정 파일은 운영체제의 사용자 설정 폴더에, 실행 데이터는 사용자 데이터 폴더에 생성됩니다. 파일에는 환경변수 이름이나 공식 로그인 사용 여부만 저장하며 key·token·cookie를 저장하지 않습니다.
 
-선택형 오프라인 PoC 의존성이 필요하면 `setup` 출력의 실행 프로필 `profile.toml`에 승인한 wheel TAR의 `poc_wheel_archive_path`와 소문자 SHA-256인 `poc_wheel_archive_sha256`을 함께 지정하고, 기존 `docker_network`을 `NONE`으로 유지합니다. 이 두 필드는 `setup` 옵션이 아니며 `setup`을 다시 실행하면 프로필에 다시 지정해야 합니다. 평탄한 TAR 생성과 로컬 Docker base image 확인 방법은 [Docker 또는 PoC 실패](troubleshooting.md#docker-또는-poc-실패)에 있습니다.
+기본 `AUTO` 모드는 `python:3.12-slim` 태그를 확인하고 로컬에 없을 때만 받은 뒤 그 실행의 local digest와 안전한 Python binary wheel을 자동으로 준비합니다. 고정 commit의 제품 manifest와 PEP 621 build-system 요구사항은 권위 있는 입력이며 제거·대체하지 않습니다. manifest와 정규화한 이름이 겹치지 않는 Agent 추가 `pip:` 항목만 정확한 `No matching distribution` 진단과 다른 요구사항이 남는 경우에 receipt와 함께 제외할 수 있고, 해당 제외 판단과 receipt 참조는 recipe의 `dependency_resolution_omitted_agent_requirements`와 `dependency_resolution_omission_attempt_refs`에 남습니다. 반대로 고정 manifest·build 요구사항의 no-match는 제외하거나 같은 입력으로 자동 재시도하지 않으며, 연결된 receipt가 검증되면 PoC·Finding 없는 `INCONCLUSIVE`로 종료합니다. timeout·지원하지 않는 manifest는 `BLOCKED`로 남습니다. resolver에는 대상 저장소를 마운트하지 않고, 최종 PoC 빌드·실행은 `docker_network = "NONE"`으로 유지합니다. 외부 통신을 전혀 허용하지 않으려면 `setup` 출력의 실행 프로필 `profile.toml`에서 `OFFLINE_ONLY`를 선택하고 승인한 wheel TAR의 `poc_wheel_archive_path`와 소문자 SHA-256인 `poc_wheel_archive_sha256`을 함께 지정하세요. 이 세 필드는 `setup` 옵션이 아니며 `setup`을 다시 실행하면 다시 지정해야 합니다. 평탄한 TAR 생성과 Docker 환경 확인 방법은 [Docker 또는 PoC 실패](troubleshooting.md#docker-또는-poc-실패)에 있습니다.
 
 `READY`는 현재 컴퓨터에서 필요한 실행 파일과 인증 상태를 확인했다는 뜻입니다. 실제 model 접근, 저장소 의존성 설치와 Docker build는 첫 분석에서 추가로 확인될 수 있습니다.
 

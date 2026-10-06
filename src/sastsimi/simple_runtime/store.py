@@ -2148,8 +2148,7 @@ class SimpleCheckpointStore:
                         (identity.analysis_id, hypothesis_id),
                     ).fetchall()
                     stages: dict[SimpleStage, StageCheckpoint] = {}
-                    stale_poc = False
-                    stale_final = False
+                    stale_stage = False
                     for item in checkpoints:
                         checkpoint = StageCheckpoint.model_validate_json(
                             item["checkpoint_json"]
@@ -2159,17 +2158,11 @@ class SimpleCheckpointStore:
                         ):
                             raise ValueError("CANDIDATE_HYPOTHESIS_CHECKPOINT_CORRUPT")
                         if (
-                            checkpoint.stage is SimpleStage.POC_EXECUTION_DONE
+                            checkpoint.stage in HYPOTHESIS_STAGES
                             and checkpoint.stage_version
-                            != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+                            != STAGE_VERSION[checkpoint.stage]
                         ):
-                            stale_poc = True
-                        if (
-                            checkpoint.stage is SimpleStage.VERIFICATION_FINAL_DONE
-                            and checkpoint.stage_version
-                            != STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE]
-                        ):
-                            stale_final = True
+                            stale_stage = True
                         if (
                             checkpoint.status is StageStatus.SUCCEEDED
                             and checkpoint.stage_version
@@ -2197,7 +2190,7 @@ class SimpleCheckpointStore:
                         is not None
                         or SimpleStage.REPORT_DONE in stages
                     )
-                    if stale_poc or stale_final or not terminal:
+                    if stale_stage or not terminal:
                         selected.append(hypothesis_id)
                         if len(selected) >= limit:
                             break
@@ -3392,6 +3385,18 @@ class SimpleCheckpointStore:
         finally:
             connection.close()
 
+    def _reconcile_exited_codex_call_with_lease(
+        self, run: SimpleAnalysisRun, data_dir: Path
+    ) -> bool:
+        """Never infer a stopped process tree from direct-child PID absence.
+
+        A Codex child may have exited while an untracked descendant remains.
+        Only an independently audited cleanup confirmation may release the
+        durable IN_FLIGHT reservation after a parent crash.
+        """
+
+        return False
+
     def confirmed_codex_call_covering(
         self, analysis_id: str, observed_at: datetime
     ) -> bool:
@@ -4434,6 +4439,7 @@ class SimpleCheckpointStore:
             "container_id": result.container_id or checkpoint.container_id,
             "validated_poc_ref": result.validated_poc_ref,
             "external_prerequisites_ref": result.external_prerequisites_ref,
+            "environment_block_ref": result.environment_block_ref,
             "report_ref": result.report_ref,
             "bundle_manifest_ref": result.bundle_manifest_ref,
             "bundle_archive_ref": result.bundle_archive_ref,
@@ -4924,14 +4930,21 @@ class SimpleCheckpointStore:
         resolution: RecoveryResolution,
         *,
         fail_before_commit: bool = False,
-    ) -> None:
+    ) -> StageCheckpoint:
         if resolution.decision.action is not RecoveryAction.STOP:
             raise ValueError("RECOVERY_STOP_ACTION_REQUIRED")
+        stopped = failed.model_copy(
+            update={
+                "retryable": False,
+                "updated_at": datetime.now(UTC),
+            }
+        )
         self.record_recovery_decision(
-            failed,
+            stopped,
             resolution,
             fail_before_commit=fail_before_commit,
         )
+        return stopped
 
     def record_recovery_decision(
         self,
@@ -4985,6 +4998,96 @@ class SimpleCheckpointStore:
             ),
         )
         return exhausted
+
+    def promote_initial_environment_inconclusive(
+        self,
+        blocked: StageCheckpoint,
+        *,
+        artifacts: SimpleArtifactRepository,
+    ) -> StageCheckpoint:
+        """Atomically terminalize an exact non-retryable resolver incompatibility.
+
+        The method only upgrades immutable evidence that was already linked to
+        the failed initial-verification checkpoint.  It does not create or alter
+        an Agent result, and it leaves every other recovery STOP blocked.
+        """
+
+        if (
+            blocked.stage is not SimpleStage.VERIFICATION_INITIAL_DONE
+            or blocked.stage_version
+            != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+            or blocked.status is not StageStatus.BLOCKED
+            or blocked.error_code
+            not in {"POC_AUTO_BUNDLE_DOWNLOAD_FAILED", "RECOVERY_EXHAUSTED"}
+            or blocked.attempt_id is None
+            or blocked.attempt_number < 1
+            or blocked.recipe_ref is not None
+            or blocked.validated_poc_ref is not None
+            or blocked.external_prerequisites_ref is not None
+            or blocked.environment_block_ref is not None
+            or artifacts.identity != blocked.identity
+        ):
+            raise ValueError("INITIAL_ENVIRONMENT_INCONCLUSIVE_PROMOTION_INVALID")
+        environment_block_ref = (
+            artifacts.build_initial_environment_block_from_checkpoint(blocked)
+        )
+        if environment_block_ref is None:
+            raise ValueError("INITIAL_ENVIRONMENT_INCONCLUSIVE_EVIDENCE_INVALID")
+        completed = blocked.model_copy(
+            update={
+                "status": StageStatus.SUCCEEDED,
+                "output_refs": tuple(
+                    dict.fromkeys((*blocked.output_refs, environment_block_ref))
+                ),
+                "environment_block_ref": environment_block_ref,
+                "verdict": "HOLD",
+                "error_code": None,
+                "retryable": False,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        if artifacts.verified_terminal_initial_outcome(completed) is None:
+            raise ValueError("INITIAL_ENVIRONMENT_INCONCLUSIVE_EVIDENCE_INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    blocked.identity.analysis_id,
+                    self._hypothesis_key(blocked.identity),
+                    blocked.stage.value,
+                ),
+            ).fetchone()
+            if (
+                row is None
+                or StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                != blocked
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_INCONCLUSIVE_PROMOTION_STALE")
+            self._upsert_checkpoint_connection(connection, completed)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    completed,
+                    ActivityKind.STAGE_COMPLETED,
+                    sequence=self._stage_sequence(completed.stage, 2),
+                    status=StageStatus.SUCCEEDED,
+                    summary_ko=(
+                        "고정된 Python 배포본의 재현 환경 비호환을 "
+                        "검증된 미확정 상태로 기록했습니다."
+                    ),
+                    output_refs=completed.output_refs,
+                ),
+            )
+            connection.commit()
+            return completed
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def promote_inconclusive_execution(
         self,

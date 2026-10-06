@@ -36,7 +36,11 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.portable_docker import PortableDockerRuntime
 from sastsimi.simple_runtime.run_lease import analysis_run_lease
-from sastsimi.simple_runtime.stages import PoCCandidateStage, RuleScopeGateStage
+from sastsimi.simple_runtime.stages import (
+    InitialVerificationStage,
+    PoCCandidateStage,
+    RuleScopeGateStage,
+)
 
 
 def _config(tmp_path: Path) -> UserConfig:
@@ -176,6 +180,38 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert isinstance(scope_gate, RuleScopeGateStage)
     assert scope_gate._repository_url == saved_repository
     assert created == [identity, identity]
+
+
+def test_composition_reuses_wheel_cache_across_hypothesis_runners(
+    tmp_path: Path,
+) -> None:
+    application = composition.build_analysis_application(
+        _config(tmp_path), _profile(tmp_path)
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref(identity, "profile"),
+        static_bundle_ref=_ref(identity, "bundle"),
+        workspace_path=tmp_path / "workspace",
+    )
+    first = application._runner_factory(application._store, identity, static)
+    second_identity = identity.model_copy(update={"hypothesis_id": "hypothesis-2"})
+    second = application._runner_factory(application._store, second_identity, static)
+
+    first_stage = first.handlers[SimpleStage.VERIFICATION_INITIAL_DONE]
+    second_stage = second.handlers[SimpleStage.VERIFICATION_INITIAL_DONE]
+    assert isinstance(first_stage, InitialVerificationStage)
+    assert isinstance(second_stage, InitialVerificationStage)
+    assert first_stage._environments is not second_stage._environments
+    assert (
+        first_stage._environments._auto_bundle_cache
+        is second_stage._environments._auto_bundle_cache
+    )
 
 
 @pytest.mark.parametrize("configured_digest", [None, "sha256:" + "b" * 64])

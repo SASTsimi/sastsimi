@@ -29,6 +29,7 @@ from sastsimi.simple_runtime.recovery import (
     SimpleRecoveryCoordinator,
     validate_environment_patch,
 )
+from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 
 
 class DecisionClient:
@@ -68,6 +69,25 @@ class RaisingDecisionClient(DecisionClient):
     async def call(self, **_kwargs: Any) -> SimpleLLMCallResult | StageFailure:
         self.calls += 1
         raise RuntimeError("provider process crashed")
+
+
+def test_poc_retry_stage_reuses_the_existing_poc_candidate() -> None:
+    """A transient Docker failure must not spend another LLM call on a new PoC."""
+
+    assert (
+        SimpleRuntimeRunner._recovery_restart_stage(
+            SimpleStage.POC_EXECUTION_DONE,
+            RecoveryAction.RETRY_STAGE,
+        )
+        is SimpleStage.POC_EXECUTION_DONE
+    )
+    assert (
+        SimpleRuntimeRunner._recovery_restart_stage(
+            SimpleStage.POC_EXECUTION_DONE,
+            RecoveryAction.REGENERATE_INPUT,
+        )
+        is SimpleStage.POC_CANDIDATE_DONE
+    )
 
 
 def _running_checkpoint(*refs: StoredDataRef) -> StageCheckpoint:
@@ -119,6 +139,116 @@ async def test_non_retryable_failure_never_calls_recovery_llm(tmp_path: Path) ->
     assert result.decision.action is RecoveryAction.STOP
     assert b'"kind":"simple_recovery_decision"' in artifacts.read(result.decision_ref)
     assert json.loads(artifacts.read(result.decision_ref))["decision_origin"] == "RULE"
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_download_failure_retries_without_recovery_llm(
+    tmp_path: Path,
+) -> None:
+    """A PyPI read timeout must retain one bounded stage retry."""
+
+    checkpoint = _running_checkpoint().model_copy(
+        update={
+            "stage": SimpleStage.VERIFICATION_INITIAL_DONE,
+            "stage_version": STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+            "attempt_number": 2,
+        }
+    )
+    client = DecisionClient({})
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    attempt_ref = _auto_bundle_attempt(
+        artifacts,
+        checkpoint,
+        stderr=b"ReadTimeoutError: connection to package index timed out",
+        timed_out=True,
+    )
+
+    result = await SimpleRecoveryCoordinator(
+        client=client,
+        artifacts=artifacts,
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_AUTO_BUNDLE_DOWNLOAD_FAILED",
+            retryable=True,
+            safe_message="Python dependency bundle download timed out",
+            evidence_refs=(attempt_ref,),
+        ),
+    )
+
+    assert result.decision.category is RecoveryCategory.TRANSIENT_TOOL
+    assert result.decision.action is RecoveryAction.RETRY_STAGE
+    assert client.calls == 0
+
+
+def _auto_bundle_attempt(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    *,
+    stderr: bytes,
+    timed_out: bool = False,
+) -> StoredDataRef:
+    stderr_ref = artifacts.put_bytes(stderr, "text/plain")
+    return artifacts.put_json(
+        {
+            "kind": "simple_dependency_bundle_attempt",
+            "identity": checkpoint.identity.model_dump(mode="json"),
+            "attempt_id": checkpoint.attempt_id,
+            "status": "FAILED",
+            "dependency_bundle_source": "AUTO_RESOLVED",
+            "base_image_digest": "sha256:" + "a" * 64,
+            "manifest_sha256": "b" * 64,
+            "requirements_sha256": "c" * 64,
+            "requirement_count": 18,
+            "error_code": "POC_AUTO_BUNDLE_DOWNLOAD_FAILED",
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+            "stdout_ref": None,
+            "timed_out": timed_out,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_missing_distribution_stops_without_retry(
+    tmp_path: Path,
+) -> None:
+    """An incompatible pinned dependency must not be retried unchanged."""
+
+    checkpoint = _running_checkpoint().model_copy(
+        update={
+            "stage": SimpleStage.VERIFICATION_INITIAL_DONE,
+            "stage_version": STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+        }
+    )
+    client = DecisionClient({})
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    attempt_ref = _auto_bundle_attempt(
+        artifacts,
+        checkpoint,
+        stderr=(
+            b"ERROR: Could not find a version that satisfies the requirement "
+            b"aiohttp==3.5.3\nERROR: No matching distribution found for "
+            b"aiohttp==3.5.3\n"
+        ),
+    )
+
+    result = await SimpleRecoveryCoordinator(
+        client=client,
+        artifacts=artifacts,
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_AUTO_BUNDLE_DOWNLOAD_FAILED",
+            retryable=True,
+            safe_message="Python dependency bundle download did not complete",
+            evidence_refs=(attempt_ref,),
+        ),
+    )
+
+    assert result.decision.category is RecoveryCategory.TERMINAL
+    assert result.decision.action is RecoveryAction.STOP
+    assert "aiohttp==3.5.3" in result.decision.diagnosis
     assert client.calls == 0
 
 
@@ -251,16 +381,26 @@ async def test_missing_python_playwright_browser_rebuilds_only_the_container_ima
     assert client.calls == 0
 
 
+@pytest.mark.parametrize(
+    ("stderr", "setter_trace"),
+    [
+        (b"Traceback: Path(root).mkdir\nPermissionError: storage", False),
+        (
+            b"PermissionError: runtime_error\n"
+            b"traceback: exec_module > set_storage > makedirs",
+            True,
+        ),
+    ],
+)
 @pytest.mark.asyncio
 async def test_poc_permission_error_regenerates_input_without_widening_workspace(
     tmp_path: Path,
+    stderr: bytes,
+    setter_trace: bool,
 ) -> None:
     checkpoint = _running_checkpoint()
     artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
-    stderr_ref = artifacts.put_bytes(
-        b"Traceback: Path(root).mkdir\nPermissionError: storage",
-        "text/plain",
-    )
+    stderr_ref = artifacts.put_bytes(stderr, "text/plain")
     execution_ref = artifacts.put_json(
         {
             "kind": "simple_poc_execution",
@@ -287,6 +427,61 @@ async def test_poc_permission_error_regenerates_input_without_widening_workspace
     assert result.decision.action is RecoveryAction.REGENERATE_INPUT
     assert result.decision.environment_patch == ""
     assert "/tmp" in result.decision.guidance
+    assert ("module-level setter" in result.decision.guidance) is setter_trace
+    if setter_trace:
+        assert "wrap the library setter before importing" in result.decision.guidance
+        assert "keep the working directory at /workspace" in result.decision.guidance
+        assert "os.chdir" not in result.decision.guidance
+    assert client.calls == 0
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        b"OperationalError\nTraceback (most recent call last):\n  in init_db",
+        b"OperationalError: runtime_error\n"
+        b"Traceback: exec_module > frame > init_db",
+    ],
+)
+@pytest.mark.asyncio
+async def test_poc_import_time_database_write_error_regenerates_input(
+    tmp_path: Path,
+    stderr: bytes,
+) -> None:
+    """A redacted SQLite import failure is a PoC setup error, not a verdict."""
+
+    checkpoint = _running_checkpoint()
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    stderr_ref = artifacts.put_bytes(stderr, "text/plain")
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "attempt_id": checkpoint.attempt_id,
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    client = DecisionClient({})
+
+    result = await SimpleRecoveryCoordinator(
+        client=client,
+        artifacts=artifacts,
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=(execution_ref, stderr_ref),
+        ),
+    )
+
+    assert result.decision.category is RecoveryCategory.GENERATED_INPUT
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert result.decision.environment_patch == ""
+    assert "/tmp" in result.decision.guidance
+    assert "before importing" in result.decision.guidance
+    assert "keep the working directory at /workspace" in result.decision.guidance
+    assert "os.chdir" not in result.decision.guidance
     assert client.calls == 0
 
 

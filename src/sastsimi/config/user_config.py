@@ -314,6 +314,7 @@ class SimpleExecutionProfile(BaseModel):
     poc_wheel_archive_path: Path | None = None
     poc_wheel_archive_sha256: str | None = None
     poc_offline_base_image_digest: str | None = None
+    poc_dependency_bundle_mode: Literal["AUTO", "OFFLINE_ONLY"] = "AUTO"
     tools: dict[str, SimpleToolBinding]
     agent_models: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
@@ -422,6 +423,8 @@ class SimpleExecutionProfile(BaseModel):
                 if self.poc_offline_base_image_digest is not None
                 else []
             ),
+            "poc_dependency_bundle_mode = "
+            f"{_quoted(self.poc_dependency_bundle_mode)}",
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",

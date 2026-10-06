@@ -74,6 +74,21 @@ class _ExternalUrlRepairClient(_RepairClient):
         )
 
 
+class _DollarLiteralRepairClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        content = (
+            "#!/bin/sh\npython - <<'PY'\nquery = {'$ne': None}\nPY\n"
+            if len(self.prompts) == 1
+            else "#!/bin/sh\npython - <<'PY'\nquery = {chr(36) + 'ne': None}\nPY\n"
+        )
+        return SimpleLLMCallResult(
+            value={"content": content},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
 class _SourceRecordingClient:
     def __init__(self) -> None:
         self.prompt = b""
@@ -238,9 +253,20 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     assert b"private-marker" not in client.prompt
     assert b"/workspace is read-only" in client.prompt
     assert b"runtime storage" in client.prompt
+    assert b"__file__-derived workspace path" in client.prompt
+    assert b"temporary runtime wrapper" in client.prompt
     assert b"ModuleNotFoundError" in client.prompt
     assert b"exc.name" in client.prompt
-    assert b"static import" in b" ".join(client.prompt.split())
+    assert b"safe dotted module identifier" in b" ".join(client.prompt.split())
+    assert b"one coherent import root" in client.prompt
+    assert b"Do not put both /workspace and a child source directory" in client.prompt
+    assert b"For a Python NameError" in client.prompt
+    assert b"safe simple identifier" in client.prompt
+    assert b"transitive closure" in client.prompt
+    assert b"Keep the working directory at /workspace" in client.prompt
+    assert b"relative static" in client.prompt
+    assert b"For a Python AttributeError" in client.prompt
+    assert b"module-level setter" in client.prompt
     candidate = json.loads(artifacts.read(result.output_refs[0]))
     source_records = [
         json.loads(artifacts.read(StoredDataRef.model_validate(raw_ref)))
@@ -417,3 +443,36 @@ async def test_external_url_repair_keeps_network_off_and_builds_fixture_at_runti
     assert b"construct them at runtime" in client.prompts[0]
     assert b"must not make an external network request" in client.prompts[1]
     assert b"construct the URL fixture at runtime" in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_literal_dollar_data_key_guidance_preserves_candidate_guard(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _DollarLiteralRepairClient()
+    stage = PoCCandidateStage(
+        client=client,
+        artifacts=SimpleArtifactRepository(tmp_path, identity),
+    )
+
+    result = await stage(checkpoint, {})
+
+    assert result.output_refs
+    assert len(client.prompts) == 2
+    assert b"chr(36)" in client.prompts[0]
+    assert b"POC_UNDECLARED_INPUT" in client.prompts[1]
+    assert b"chr(36)" in client.prompts[1]

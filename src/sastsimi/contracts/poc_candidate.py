@@ -10,7 +10,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import inspect_poc_candidate_json
 
 _SHELL_VARIABLE = re.compile(
-    rb"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[-=?+][^}]*)?\}|"
+    rb"\$(?:\{#?(?P<braced>[A-Za-z_][A-Za-z0-9_]*)|"
     rb"(?P<plain>[A-Za-z_][A-Za-z0-9_]*))"
 )
 _SHELL_ASSIGNMENT = re.compile(

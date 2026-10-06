@@ -193,6 +193,41 @@ class SimpleRecoveryCoordinator:
                 ),
             )
 
+        if failure.code == "POC_AUTO_BUNDLE_DOWNLOAD_FAILED":
+            stderr = self._auto_bundle_stderr(checkpoint, failure)
+            if stderr is not None:
+                missing = re.search(
+                    rb"No matching distribution found for "
+                    rb"([A-Za-z0-9][A-Za-z0-9_.+\-<>=!~\[\]]{0,127})",
+                    stderr,
+                    re.IGNORECASE,
+                )
+                if missing is not None:
+                    requirement = missing.group(1).decode("ascii")
+                    return self._store(
+                        checkpoint,
+                        failure,
+                        self._stop(
+                            f"Python distribution unavailable: {requirement}",
+                            "Use a compatible pinned Python environment or "
+                            "review the repository dependency; unchanged "
+                            "downloads will not be retried",
+                        ),
+                    )
+            return self._store(
+                checkpoint,
+                failure,
+                RecoveryDecision(
+                    category=RecoveryCategory.TRANSIENT_TOOL,
+                    action=RecoveryAction.RETRY_STAGE,
+                    diagnosis="Python dependency bundle download did not complete",
+                    guidance=(
+                        "Retry the bounded dependency download without changing "
+                        "the pinned source or PoC inputs"
+                    ),
+                ),
+            )
+
         missing_browser = self._missing_playwright_browser(checkpoint, failure)
         if missing_browser is not None:
             return self._store(
@@ -211,8 +246,31 @@ class SimpleRecoveryCoordinator:
 
         stderr = self._poc_execution_stderr(checkpoint, failure)
         if stderr is not None and (
-            b"PermissionError" in stderr or b"Read-only file system" in stderr
+            b"PermissionError" in stderr
+            or b"Read-only file system" in stderr
+            or self._import_time_storage_write_error(stderr)
         ):
+            guidance = (
+                "Keep /workspace read-only and keep the working directory at "
+                "/workspace; configure only verified writable runtime storage "
+                "and scratch paths under /tmp before startup"
+            )
+            if b"exec_module" in stderr and b"set_storage" in stderr:
+                guidance += (
+                    "; wrap the library setter before importing the target "
+                    "so its module-level setter rewrites only the verified "
+                    "writable storage argument to /tmp. If a later client "
+                    "constructor uses that same relative storage path, "
+                    "redirect it too; changing the client only after the "
+                    "setter runs does not prevent the initial write"
+                )
+            if self._import_time_storage_write_error(stderr):
+                guidance += (
+                    "; if import-time database initialization opens a relative "
+                    "path, redirect only that database-specific open or "
+                    "constructor to /tmp before importing the target; keep "
+                    "read-only assets resolved from /workspace"
+                )
             return self._store(
                 checkpoint,
                 failure,
@@ -220,10 +278,7 @@ class SimpleRecoveryCoordinator:
                     category=RecoveryCategory.GENERATED_INPUT,
                     action=RecoveryAction.REGENERATE_INPUT,
                     diagnosis="PoC runtime write was denied inside the container",
-                    guidance=(
-                        "Keep /workspace read-only; configure application runtime "
-                        "storage and scratch paths under /tmp before startup"
-                    ),
+                    guidance=guidance,
                 ),
             )
 
@@ -284,6 +339,36 @@ class SimpleRecoveryCoordinator:
             checkpoint, failure, decision, decision_origin=decision_origin
         )
 
+    def _auto_bundle_stderr(
+        self, checkpoint: StageCheckpoint, failure: StageFailure
+    ) -> bytes | None:
+        """Read only the exact resolver attempt attached to this failed stage."""
+
+        for ref in failure.evidence_refs:
+            try:
+                attempt = json.loads(self._artifacts.read_bounded(ref, 64 * 1024))
+            except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if (
+                not isinstance(attempt, dict)
+                or attempt.get("kind") != "simple_dependency_bundle_attempt"
+                or attempt.get("attempt_id") != checkpoint.attempt_id
+                or attempt.get("identity")
+                != checkpoint.identity.model_dump(mode="json")
+                or attempt.get("error_code") != failure.code
+                or attempt.get("timed_out") is True
+            ):
+                continue
+            raw_ref = attempt.get("stderr_ref")
+            if raw_ref is None:
+                continue
+            try:
+                stderr_ref = StoredDataRef.model_validate(raw_ref)
+                return self._artifacts.read_bounded(stderr_ref, 64 * 1024)
+            except (OSError, ValueError):
+                continue
+        return None
+
     def _missing_playwright_browser(
         self, checkpoint: StageCheckpoint, failure: StageFailure
     ) -> str | None:
@@ -297,6 +382,15 @@ class SimpleRecoveryCoordinator:
             if b"ms-playwright/" + browser.encode("ascii") in stderr:
                 return browser
         return None
+
+    @staticmethod
+    def _import_time_storage_write_error(stderr: bytes) -> bool:
+        """Recognize a redacted, import-time SQLite write failure conservatively."""
+
+        return b"OperationalError: writable_storage" in stderr or (
+            b"OperationalError" in stderr
+            and (b"in init_db" in stderr or b"> init_db" in stderr)
+        )
 
     def _poc_execution_stderr(
         self, checkpoint: StageCheckpoint, failure: StageFailure

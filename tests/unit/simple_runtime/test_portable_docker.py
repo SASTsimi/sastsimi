@@ -216,6 +216,90 @@ def test_archive_context_has_only_pinned_checkout_and_wheels(tmp_path: Path) -> 
         assert wheel_file.read() == wheel
 
 
+def test_root_node_manifest_does_not_hide_python_subproject(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    backend = workspace / "backend"
+    backend.mkdir()
+    (workspace / "requirements.txt").replace(backend / "requirements.txt")
+    (backend / "service.py").write_text("print('backend')\n", encoding="utf-8")
+    (workspace / "package.json").write_text('{"name":"monorepo"}\n', encoding="utf-8")
+    ui = workspace / "ui"
+    ui.mkdir()
+    (ui / "package.json").write_text('{"name":"ui"}\n', encoding="utf-8")
+    (ui / ".npmrc").write_text("token=not-for-python\n", encoding="utf-8")
+    subprocess.run(
+        ("git", "-C", str(workspace), "rm", "-q", "requirements.txt"),
+        check=True,
+    )
+    commit = _commit_fixture(workspace, "node root with python backend")
+
+    raw = build_pinned_context(
+        workspace,
+        commit,
+        b"FROM python:3.12-slim\n",
+        {},
+        target_python_manifest="backend/requirements.txt",
+    )
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = set(archive.getnames())
+    assert {"backend/requirements.txt", "backend/service.py", "package.json"} <= names
+    assert {"ui/package.json", "ui/.npmrc"}.isdisjoint(names)
+
+
+def test_node_subtree_with_python_source_stays_in_python_context(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    frontend = workspace / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text('{"name":"frontend"}\n', encoding="utf-8")
+    (frontend / "shared_auth.py").write_text(
+        "def check(): return True\n", encoding="utf-8"
+    )
+    (workspace / "app.py").write_text(
+        "from frontend.shared_auth import check\nprint(check())\n", encoding="utf-8"
+    )
+    commit = _commit_fixture(workspace, "shared Python code in Node subtree")
+
+    raw = build_pinned_context(
+        workspace,
+        commit,
+        b"FROM python:3.12-slim\n",
+        {},
+        target_python_manifest="requirements.txt",
+    )
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = set(archive.getnames())
+    assert {"app.py", "frontend/package.json", "frontend/shared_auth.py"} <= names
+
+
+def test_node_subtree_with_python_source_keeps_secret_denial(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    frontend = workspace / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text('{"name":"frontend"}\n', encoding="utf-8")
+    (frontend / "shared_auth.py").write_text(
+        "def check(): return True\n", encoding="utf-8"
+    )
+    (frontend / ".npmrc").write_text("token=product-secret\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "shared Python code and registry secret")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(
+            workspace,
+            commit,
+            b"FROM python:3.12-slim\n",
+            {},
+            target_python_manifest="requirements.txt",
+        )
+
+
 def test_archive_context_rejects_source_symlink_or_changed_content(
     tmp_path: Path,
 ) -> None:

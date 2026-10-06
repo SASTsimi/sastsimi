@@ -440,3 +440,58 @@ def test_old_checkpoint_context_set_unchanged(tmp_path: Path) -> None:
         (context,),
         {(context.surface_id, context.context_id): record},
     )
+
+
+def test_v2_expands_an_omitted_hypothesis_context_missing_review_parts(
+    tmp_path: Path,
+) -> None:
+    fixture = _setup(
+        tmp_path,
+        "def route(value):\n"
+        + "    # earlier\n" * 20
+        + "    check_permission(value)\n",
+        surface_line=22,
+    )
+    index, _coverage, artifacts, _summary, _workspace = fixture
+    context = _contexts(fixture)[0]
+    partial_ref = artifacts.put_json(
+        {"kind": "surface-result", "reviewed_parts": ["SENSITIVE_OPERATION"]}
+    )
+    partial = SurfaceExplorationProgressRecord(
+        surface_id=context.surface_id,
+        context_id=context.context_id,
+        static_bundle_hash=index.static_bundle_hash,
+        index_hash="e" * 64,
+        context_hash=context.context_hash,
+        source_sha256=context.source_sha256,
+        status="HYPOTHESES",
+        result_ref=partial_ref,
+        hypothesis_ids=(),
+        proposal_version=1,
+    )
+    complete_ref = artifacts.put_json(
+        {
+            "kind": "surface-result",
+            "reviewed_parts": [
+                "ENTRY",
+                "SENSITIVE_OPERATION",
+                "TRUST_BOUNDARY",
+            ],
+        }
+    )
+    complete = replace(partial, result_ref=complete_ref)
+    version_two = replace(index, index_version=2)
+
+    assert (context.omitted_source_line_count or 0) > 0
+    assert SimpleAnalysisApplication._surface_expansion_needed(
+        version_two,
+        (context,),
+        {(context.surface_id, context.context_id): partial},
+        artifacts=artifacts,
+    )
+    assert not SimpleAnalysisApplication._surface_expansion_needed(
+        version_two,
+        (context,),
+        {(context.surface_id, context.context_id): complete},
+        artifacts=artifacts,
+    )

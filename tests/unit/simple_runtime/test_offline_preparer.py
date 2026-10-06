@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
 import subprocess
 import tarfile
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
 from pydantic import JsonValue
 
+import sastsimi.simple_runtime.portable_docker as portable_docker
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import ActivityKind
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -26,8 +29,10 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.portable_docker import (
+    DependencyBundleResolutionError,
     DirectEnvironmentPreparer,
     DockerBuildAttemptsError,
+    PortableDockerRuntime,
     offline_recipe_cache_key,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
@@ -253,6 +258,1120 @@ async def test_configured_offline_base_is_pinned_and_changes_recipe_cache(
         json.loads(artifacts.read(default_result.recipe_ref))["base_image_digest"]
         == "sha256:" + "b" * 64
     )
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_resolves_safe_python_requirements_before_offline_build(
+    tmp_path: Path,
+) -> None:
+    """A normal requirements.txt must not fall back to a source-only image."""
+
+    workspace, commit, bundle_path, _ = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _AutoBundleDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolution_requests: list[tuple[str, tuple[str, ...], int]] = []
+
+        async def download_python_wheels(
+            self,
+            *,
+            base_image: str,
+            requirements: tuple[str, ...],
+            timeout_seconds: int,
+        ) -> bytes:
+            self.resolution_requests.append((base_image, requirements, timeout_seconds))
+            return bundle_path.read_bytes()
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == "sha256:" + "b" * 64:
+                return base_image
+            return await super().local_base_image_digest(base_image)
+
+    docker = _AutoBundleDocker()
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, ())
+
+    assert docker.resolution_requests == [
+        ("sastsimi-offline-base:" + "b" * 64, ("sample-pkg==1.0",), 300)
+    ]
+    dockerfile, _cache_key, context = docker.calls[0]
+    assert dockerfile.startswith(
+        ("FROM sastsimi-offline-base:" + "b" * 64 + "\n").encode("ascii")
+    )
+    assert b"--no-index --find-links=/opt/sastsimi-wheels" in dockerfile
+    assert b"apt-get" not in dockerfile
+    assert context is not None
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["dependency_bundle_source"] == "AUTO_RESOLVED"
+    assert recipe["build_network"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_auto_resolver_has_network_only_without_repository_mount(
+    tmp_path: Path,
+) -> None:
+    _workspace, _commit, bundle_path, _digest = _fixture(tmp_path)
+    with tarfile.open(bundle_path, "r:") as archive:
+        member = archive.getmember("sample_pkg-1.0-py3-none-any.whl")
+        stream = archive.extractfile(member)
+        assert stream is not None
+        wheel = stream.read()
+
+    class _RecordedRuntime(PortableDockerRuntime):
+        def __init__(self) -> None:
+            self._network = "none"
+            self.commands: list[tuple[str, ...]] = []
+
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds, input_bytes
+            self.commands.append(tuple(args))
+            if args[0] == "run":
+                mount = args[args.index("--mount") + 1]
+                source = mount.split("source=", 1)[1].split(",target=", 1)[0]
+                wheel_path = Path(source) / "wheels" / "sample_pkg-1.0-py3-none-any.whl"
+                wheel_path.write_bytes(wheel)
+                return DockerCommandOutcome(0, b"downloaded", b"", False)
+            if args[:2] == ("container", "inspect"):
+                return DockerCommandOutcome(
+                    1,
+                    b"[]\n",
+                    (
+                        f"Error response from daemon: No such container: {args[-1]}\n"
+                    ).encode(),
+                    False,
+                )
+            return DockerCommandOutcome(1, b"", b"already removed", False)
+
+    runtime = _RecordedRuntime()
+    bundle = await runtime.download_python_wheels(
+        base_image="sastsimi-offline-base:" + "b" * 64,
+        requirements=("sample-pkg==1.0",),
+        timeout_seconds=30,
+    )
+
+    command = runtime.commands[0]
+    assert ("--network", "bridge") == command[
+        command.index("--network") : command.index("--network") + 2
+    ]
+    assert "--read-only" in command
+    assert ("--cap-drop", "ALL") == command[
+        command.index("--cap-drop") : command.index("--cap-drop") + 2
+    ]
+    assert ("--only-binary=:all:") in command
+    assert ("--retries", "3") == command[
+        command.index("--retries") : command.index("--retries") + 2
+    ]
+    assert ("--timeout", "45") == command[
+        command.index("--timeout") : command.index("--timeout") + 2
+    ]
+    assert str(_workspace) not in "\n".join(command)
+    assert runtime.commands[1][:2] == ("rm", "--force")
+    assert runtime.commands[2][:2] == ("container", "inspect")
+    assert bundle
+
+
+@pytest.mark.asyncio
+async def test_auto_resolver_fails_closed_when_timed_out_helper_may_remain() -> None:
+    class _UnremovedRuntime(PortableDockerRuntime):
+        def __init__(self) -> None:
+            self._network = "none"
+            self.commands: list[tuple[str, ...]] = []
+
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds, input_bytes
+            self.commands.append(tuple(args))
+            if args[0] == "run":
+                return DockerCommandOutcome(-1, b"", b"download timed out", True)
+            if args[0] == "rm":
+                return DockerCommandOutcome(1, b"", b"daemon busy", False)
+            if args[:2] == ("container", "inspect"):
+                return DockerCommandOutcome(0, b"still-running-id", b"", False)
+            raise AssertionError(args)
+
+    runtime = _UnremovedRuntime()
+    with pytest.raises(ValueError, match="POC_AUTO_BUNDLE_CLEANUP_FAILED"):
+        await runtime.download_python_wheels(
+            base_image="sastsimi-offline-base:" + "b" * 64,
+            requirements=("sample-pkg==1.0",),
+            timeout_seconds=30,
+        )
+
+    assert runtime.commands[1][:2] == ("rm", "--force")
+
+
+@pytest.mark.asyncio
+async def test_auto_base_resolver_pulls_missing_default_image_once() -> None:
+    """AUTO mode must recover a missing, fixed default base image."""
+
+    class _PullingRuntime(PortableDockerRuntime):
+        def __init__(self) -> None:
+            self._network = "none"
+            self.pulled = False
+            self.commands: list[tuple[str, ...]] = []
+
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds, input_bytes
+            self.commands.append(tuple(args))
+            if args[:2] == ("image", "inspect"):
+                if not self.pulled:
+                    return DockerCommandOutcome(1, b"", b"missing", False)
+                return DockerCommandOutcome(0, b"linux|sha256:" + b"a" * 64, b"", False)
+            if tuple(args) == ("image", "pull", "python:3.12-slim"):
+                self.pulled = True
+                return DockerCommandOutcome(0, b"pulled", b"", False)
+            raise AssertionError(args)
+
+    runtime = _PullingRuntime()
+
+    digest, source = await runtime.resolve_offline_base(
+        "python:3.12-slim", allow_pull=True
+    )
+
+    assert digest == "sha256:" + "a" * 64
+    assert source == "AUTO_PULLED"
+    assert runtime.commands == [
+        ("image", "inspect", "--format", "{{.Os}}|{{.Id}}", "python:3.12-slim"),
+        ("image", "pull", "python:3.12-slim"),
+        ("image", "inspect", "--format", "{{.Os}}|{{.Id}}", "python:3.12-slim"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_auto_base_resolver_reports_unavailable_when_pull_fails() -> None:
+    """A registry failure must remain a safe availability error."""
+
+    class _UnavailableRuntime(PortableDockerRuntime):
+        def __init__(self) -> None:
+            self._network = "none"
+
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds, input_bytes
+            if args[:2] == ("image", "inspect"):
+                return DockerCommandOutcome(1, b"", b"missing", False)
+            if tuple(args) == ("image", "pull", "python:3.12-slim"):
+                return DockerCommandOutcome(1, b"", b"registry unavailable", False)
+            raise AssertionError(args)
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_BASE_IMAGE_UNAVAILABLE"):
+        await _UnavailableRuntime().resolve_offline_base(
+            "python:3.12-slim", allow_pull=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_auto_base_resolver_deduplicates_concurrent_default_pull() -> None:
+    """Concurrent AUTO checks must share one pull of the fixed base image."""
+
+    class _ConcurrentRuntime(PortableDockerRuntime):
+        def __init__(self) -> None:
+            self._network = "none"
+            self.pulled = False
+            self.pull_count = 0
+
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds, input_bytes
+            if args[:2] == ("image", "inspect"):
+                if not self.pulled:
+                    return DockerCommandOutcome(1, b"", b"missing", False)
+                return DockerCommandOutcome(0, b"linux|sha256:" + b"a" * 64, b"", False)
+            if tuple(args) == ("image", "pull", "python:3.12-slim"):
+                self.pull_count += 1
+                await asyncio.sleep(0)
+                self.pulled = True
+                return DockerCommandOutcome(0, b"pulled", b"", False)
+            raise AssertionError(args)
+
+    runtime = _ConcurrentRuntime()
+    results = await asyncio.gather(
+        runtime.resolve_offline_base("python:3.12-slim", allow_pull=True),
+        runtime.resolve_offline_base("python:3.12-slim", allow_pull=True),
+    )
+
+    assert results[0] == ("sha256:" + "a" * 64, "AUTO_PULLED")
+    assert results[1] == ("sha256:" + "a" * 64, "LOCAL")
+    assert runtime.pull_count == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_deduplicates_concurrent_matching_resolution(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, bundle_path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _SlowResolverDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolver_calls = 0
+
+        async def download_python_wheels(
+            self,
+            **_kwargs: object,
+        ) -> bytes:
+            self.resolver_calls += 1
+            await asyncio.sleep(0)
+            return bundle_path.read_bytes()
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == "sha256:" + "b" * 64:
+                return base_image
+            return await super().local_base_image_digest(base_image)
+
+    docker = _SlowResolverDocker()
+    preparer = DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    )
+    await asyncio.gather(
+        preparer.prepare(checkpoint, {}, ()),
+        preparer.prepare(checkpoint, {}, ()),
+    )
+
+    assert docker.resolver_calls == 1
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+@pytest.mark.asyncio
+async def test_auto_bundle_reuses_resolution_across_distinct_hypothesis_preparers(
+    tmp_path: Path,
+    concurrent: bool,
+) -> None:
+    """A new runner for the next hypothesis must not redownload identical wheels."""
+
+    workspace, commit, bundle_path, _digest = _fixture(tmp_path)
+    artifacts, first = _checkpoint(tmp_path, commit)
+    second_identity = first.identity.model_copy(update={"hypothesis_id": "second"})
+    second = first.model_copy(update={"identity": second_identity})
+
+    class _CountingDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolver_calls = 0
+
+        async def download_python_wheels(self, **_kwargs: object) -> bytes:
+            self.resolver_calls += 1
+            await asyncio.sleep(0)
+            return bundle_path.read_bytes()
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == "sha256:" + "b" * 64:
+                return base_image
+            return await super().local_base_image_digest(base_image)
+
+    docker = _CountingDocker()
+    shared_cache = portable_docker.AutoWheelBundleCache()
+    first_preparer = DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+        auto_bundle_cache=shared_cache,
+    )
+    second_preparer = DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=SimpleArtifactRepository(tmp_path / "data", second_identity),
+        workspace=workspace,
+        auto_dependency_bundle=True,
+        auto_bundle_cache=shared_cache,
+    )
+
+    if concurrent:
+        await asyncio.gather(
+            first_preparer.prepare(first, {}, ()),
+            second_preparer.prepare(second, {}, ()),
+        )
+    else:
+        await first_preparer.prepare(first, {}, ())
+        await second_preparer.prepare(second, {}, ())
+
+    assert docker.resolver_calls == 1
+
+
+def test_auto_bundle_cache_is_analysis_scoped_and_memory_bounded() -> None:
+    cache = portable_docker.AutoWheelBundleCache(max_bytes=4, max_entries=2)
+    cache.put("analysis-a", "same-content-key", b"one")
+
+    assert cache.get("analysis-b", "same-content-key") is None
+    assert cache.get("analysis-a", "same-content-key") == b"one"
+
+    cache.put("analysis-a", "next-content-key", b"two")
+    assert cache.get("analysis-a", "same-content-key") is None
+    assert cache.get("analysis-a", "next-content-key") == b"two"
+
+    cache.put("analysis-a", "oversize-key", b"larger")
+    assert cache.get("analysis-a", "oversize-key") is None
+
+
+def test_auto_bundle_cache_rejects_archive_with_mismatched_hash() -> None:
+    cache = portable_docker.AutoWheelBundleCache()
+    cache.put("analysis-a", "content-key", b"valid archive")
+    cache._entries[("analysis-a", "content-key")] = ("0" * 64, b"valid archive")
+
+    assert cache.get("analysis-a", "content-key") is None
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_keeps_stdlib_only_project_offline_without_resolver(
+    tmp_path: Path,
+) -> None:
+    """A project with no dependency manifest must not be blocked by AUTO mode."""
+
+    workspace = tmp_path / "stdlib-checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('stdlib only')\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(workspace)), check=True)
+    subprocess.run(("git", "-C", str(workspace), "add", "app.py"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "stdlib fixture",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    docker = _Docker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, ())
+
+    assert len(docker.calls) == 1
+    dockerfile, _cache_key, context = docker.calls[0]
+    assert b"FROM python:3.12-slim" in dockerfile
+    assert b"pip install" not in dockerfile
+    assert context is None
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["dockerfile_source"] == "GENERATED"
+    assert "dependency_bundle_source" not in recipe
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_resolves_literal_dockerfile_pip_requirements(
+    tmp_path: Path,
+) -> None:
+    """A safe Dockerfile declaration can seed an offline Python runtime."""
+
+    workspace, _commit, bundle_path, _digest = _fixture(tmp_path)
+    (workspace / "requirements.txt").unlink()
+    (workspace / "Dockerfile").write_text(
+        "FROM python:3.9-slim\n"
+        "RUN apt-get update && apt-get install -y sqlite3\n"
+        "RUN pip install Flask==2.3.0\n",
+        encoding="utf-8",
+    )
+    subprocess.run(("git", "-C", str(workspace), "add", "-A"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "dockerfile python dependencies",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _AutoBundleDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolution_requests: list[tuple[str, tuple[str, ...], int]] = []
+
+        async def download_python_wheels(
+            self,
+            *,
+            base_image: str,
+            requirements: tuple[str, ...],
+            timeout_seconds: int,
+        ) -> bytes:
+            self.resolution_requests.append((base_image, requirements, timeout_seconds))
+            return bundle_path.read_bytes()
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == "sha256:" + "b" * 64:
+                return base_image
+            return await super().local_base_image_digest(base_image)
+
+    docker = _AutoBundleDocker()
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, ())
+
+    assert docker.resolution_requests == [
+        ("sastsimi-offline-base:" + "b" * 64, ("Flask==2.3.0",), 300)
+    ]
+    dockerfile, _cache_key, context = docker.calls[0]
+    assert context is not None
+    assert b"Flask==2.3.0" in dockerfile
+    assert b"apt-get" not in dockerfile
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["dependency_resolution_input_kind"] == (
+        "DOCKERFILE_LITERAL_PIP_REQUIREMENTS"
+    )
+    assert recipe["dependency_provisioning_input_kind"] == (
+        "DOCKERFILE_LITERAL_PIP_REQUIREMENTS"
+    )
+    assert recipe["environment_fidelity"] == "DERIVED_PYTHON_RUNTIME"
+    assert recipe["target_manifest_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_rejects_dirty_checkout_before_resolving_wheels(
+    tmp_path: Path,
+) -> None:
+    """A mutable checkout must not cause an external dependency download."""
+
+    workspace, commit, bundle_path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    (workspace / "requirements.txt").write_text("other-package==9\n", encoding="utf-8")
+
+    class _ObservedDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolution_requests = 0
+
+        async def download_python_wheels(self, **_kwargs: object) -> bytes:
+            self.resolution_requests += 1
+            return bundle_path.read_bytes()
+
+    docker = _ObservedDocker()
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_CHANGED"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            auto_dependency_bundle=True,
+        ).prepare(checkpoint, {}, ())
+
+    assert docker.resolution_requests == 0
+
+
+@pytest.mark.asyncio
+async def test_python_runtime_omits_nested_node_project_from_python_context(
+    tmp_path: Path,
+) -> None:
+    """An unrelated Node subtree must not enter a derived Python PoC image."""
+
+    workspace, _commit, bundle_path, digest = _fixture(tmp_path)
+    node_project = workspace / "ui"
+    node_project.mkdir()
+    (node_project / "package.json").write_text(
+        '{"name":"unrelated-ui","private":true}\n', encoding="utf-8"
+    )
+    (node_project / ".npmrc").write_text(
+        "//registry.example.invalid/:_authToken=not-for-container\n",
+        encoding="utf-8",
+    )
+    subprocess.run(("git", "-C", str(workspace), "add", "ui"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "nested node credentials",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    docker = _Docker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=bundle_path,
+        wheel_bundle_sha256=digest,
+    ).prepare(checkpoint, {}, ())
+
+    _dockerfile, _cache_key, context = docker.calls[0]
+    assert context is not None
+    assert b"not-for-container" not in context
+    with tarfile.open(fileobj=io.BytesIO(context), mode="r:") as archive:
+        assert "ui/.npmrc" not in archive.getnames()
+        assert "ui/package.json" not in archive.getnames()
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["omitted_foreign_runtime_path_count"] == 2
+    assert recipe["omitted_foreign_runtime_secret_path_count"] == 1
+    assert isinstance(recipe["omitted_foreign_runtime_secret_paths_sha256"], str)
+
+
+@pytest.mark.asyncio
+async def test_python_runtime_keeps_secret_in_hybrid_nested_project_blocked(
+    tmp_path: Path,
+) -> None:
+    """A nested project with Python metadata is not safe to omit as Node-only."""
+
+    workspace, _commit, bundle_path, digest = _fixture(tmp_path)
+    hybrid_project = workspace / "ui"
+    hybrid_project.mkdir()
+    (hybrid_project / "package.json").write_text(
+        '{"name":"hybrid-ui"}\n', encoding="utf-8"
+    )
+    (hybrid_project / "requirements.txt").write_text(
+        "sample-pkg==1.0\n", encoding="utf-8"
+    )
+    (hybrid_project / ".npmrc").write_text(
+        "//registry.example.invalid/:_authToken=do-not-copy\n",
+        encoding="utf-8",
+    )
+    subprocess.run(("git", "-C", str(workspace), "add", "ui"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "hybrid credentials",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        await DirectEnvironmentPreparer(
+            docker=_Docker(),  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=bundle_path,
+            wheel_bundle_sha256=digest,
+        ).prepare(checkpoint, {}, ())
+
+
+@pytest.mark.asyncio
+async def test_python_runtime_keeps_setup_py_hybrid_project_blocked(
+    tmp_path: Path,
+) -> None:
+    """A nested setup.py project is Python-capable, not Node-only."""
+
+    workspace, _commit, bundle_path, digest = _fixture(tmp_path)
+    hybrid_project = workspace / "ui"
+    hybrid_project.mkdir()
+    (hybrid_project / "package.json").write_text(
+        '{"name":"hybrid-ui"}\n', encoding="utf-8"
+    )
+    (hybrid_project / "setup.py").write_text(
+        "from setuptools import setup\nsetup(name='hybrid-ui')\n",
+        encoding="utf-8",
+    )
+    (hybrid_project / ".npmrc").write_text(
+        "//registry.example.invalid/:_authToken=do-not-copy\n",
+        encoding="utf-8",
+    )
+    subprocess.run(("git", "-C", str(workspace), "add", "ui"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "setup hybrid credentials",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        await DirectEnvironmentPreparer(
+            docker=_Docker(),  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=bundle_path,
+            wheel_bundle_sha256=digest,
+        ).prepare(checkpoint, {}, ())
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_ignores_untracked_dependency_files(
+    tmp_path: Path,
+) -> None:
+    """AUTO mode discovers manifests and Dockerfiles from the pinned tree only."""
+
+    workspace = tmp_path / "manifestless-checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('stdlib only')\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(workspace)), check=True)
+    subprocess.run(("git", "-C", str(workspace), "add", "app.py"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "manifestless fixture",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    (workspace / "requirements.txt").write_text(
+        "untracked-package==1\n", encoding="utf-8"
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _ObservedDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolution_requests = 0
+
+        async def download_python_wheels(self, **_kwargs: object) -> bytes:
+            self.resolution_requests += 1
+            raise AssertionError("untracked dependency input must not resolve")
+
+    docker = _ObservedDocker()
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, ())
+
+    assert docker.resolution_requests == 0
+    assert (
+        json.loads(artifacts.read(result.recipe_ref))["dockerfile_source"]
+        == "GENERATED"
+    )
+
+
+def test_literal_dockerfile_parser_ignores_shell_and_custom_index_commands() -> None:
+    requirements = DirectEnvironmentPreparer._literal_dockerfile_pip_requirements(
+        b"FROM python:3.12-slim\n"
+        b"RUN pip install Flask==2.3.0 && echo unsafe\n"
+        b"RUN pip install --index-url https://example.invalid private-package\n"
+        b"RUN python -m pip install --no-cache-dir safe-package==1.0\n"
+    )
+
+    assert requirements == ("safe-package==1.0",)
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_installs_explicit_python_requirement_without_manifest(
+    tmp_path: Path,
+) -> None:
+    """A declared PoC runtime library must not require packaging metadata."""
+
+    workspace = tmp_path / "manifestless-checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("print('uses a library')\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q", str(workspace)), check=True)
+    subprocess.run(("git", "-C", str(workspace), "add", "app.py"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "manifestless fixture",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    bundle_root = tmp_path / "bundle-source"
+    bundle_root.mkdir()
+    _unused_workspace, _unused_commit, bundle_path, _unused_digest = _fixture(
+        bundle_root
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _AutoBundleDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolution_requests: list[tuple[str, tuple[str, ...], int]] = []
+
+        async def download_python_wheels(
+            self,
+            *,
+            base_image: str,
+            requirements: tuple[str, ...],
+            timeout_seconds: int,
+        ) -> bytes:
+            self.resolution_requests.append((base_image, requirements, timeout_seconds))
+            return bundle_path.read_bytes()
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == "sha256:" + "b" * 64:
+                return base_image
+            return await super().local_base_image_digest(base_image)
+
+    docker = _AutoBundleDocker()
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, ("pip:sample-pkg==1.0",))
+
+    assert docker.resolution_requests == [
+        ("sastsimi-offline-base:" + "b" * 64, ("sample-pkg==1.0",), 300)
+    ]
+    dockerfile, _cache_key, context = docker.calls[0]
+    assert context is not None
+    assert b"pip install --no-cache-dir --no-index" in dockerfile
+    assert b"sample-pkg==1.0" in dockerfile
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["target_manifest_path"] is None
+    assert recipe["dependency_bundle_source"] == "AUTO_RESOLVED"
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_keeps_empty_requirements_project_offline_without_resolver(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit, _bundle_path, _digest = _fixture(tmp_path, manifest="")
+    (workspace / "Dockerfile").unlink()
+    subprocess.run(("git", "-C", str(workspace), "rm", "-q", "Dockerfile"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "remove dockerfile",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    docker = _Docker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, ())
+
+    assert len(docker.calls) == 1
+    dockerfile, _cache_key, context = docker.calls[0]
+    assert b"FROM python:3.12-slim" in dockerfile
+    assert b"--network" not in dockerfile
+    assert context is None
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["dockerfile_source"] == "GENERATED"
+    assert "dependency_bundle_source" not in recipe
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_records_download_failure_without_source_only_fallback(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, _bundle_path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _UnavailableIndexDocker(_Docker):
+        async def download_python_wheels(
+            self,
+            **_kwargs: object,
+        ) -> bytes:
+            raise DockerOperationError(
+                "POC_AUTO_BUNDLE_DOWNLOAD_FAILED",
+                DockerCommandOutcome(1, b"", b"index unavailable", False),
+            )
+
+    with pytest.raises(DependencyBundleResolutionError) as caught:
+        await DirectEnvironmentPreparer(
+            docker=_UnavailableIndexDocker(),  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            auto_dependency_bundle=True,
+        ).prepare(checkpoint, {}, ())
+
+    assert caught.value.code == "POC_AUTO_BUNDLE_DOWNLOAD_FAILED"
+    assert len(caught.value.attempt_refs) == 1
+    receipt = json.loads(artifacts.read(caught.value.attempt_refs[0]))
+    assert receipt["kind"] == "simple_dependency_bundle_attempt"
+    assert receipt["status"] == "FAILED"
+    assert receipt["error_code"] == "POC_AUTO_BUNDLE_DOWNLOAD_FAILED"
+    assert receipt["requirement_count"] == 1
+    assert receipt["pinned_requirement_provenance"] == {
+        "kind": "simple_pinned_requirement_provenance_v1",
+        "source_kind": "TARGET_MANIFEST",
+        "source_path": "requirements.txt",
+        "source_sha256": receipt["manifest_sha256"],
+        "requirements": ["sample-pkg==1.0"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_does_not_certify_marker_pin_without_resolver_environment(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, _bundle_path, _digest = _fixture(
+        tmp_path, manifest='ghost-extra==1.0; sys_platform == "win32"\n'
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _UnavailableDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests: list[tuple[str, ...]] = []
+
+        async def download_python_wheels(
+            self,
+            *,
+            base_image: str,
+            requirements: tuple[str, ...],
+            timeout_seconds: int,
+        ) -> bytes:
+            del base_image, timeout_seconds
+            self.requests.append(requirements)
+            raise DockerOperationError(
+                "POC_AUTO_BUNDLE_DOWNLOAD_FAILED",
+                DockerCommandOutcome(
+                    1,
+                    b"",
+                    b"ERROR: No matching distribution found for ghost-extra==1.0",
+                    False,
+                ),
+            )
+
+    docker = _UnavailableDocker()
+    with pytest.raises(DependencyBundleResolutionError) as caught:
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            auto_dependency_bundle=True,
+        ).prepare(checkpoint, {}, ("pip:ghost-extra==1.0",))
+
+    assert len(docker.requests) == 1
+    receipt = json.loads(artifacts.read(caught.value.attempt_refs[0]))
+    assert "pinned_requirement_provenance" not in receipt
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_omits_only_unavailable_agent_extra_with_receipt(
+    tmp_path: Path,
+) -> None:
+    """A hallucinated PoC extra must not block the pinned manifest's packages."""
+
+    workspace, commit, bundle_path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _ExtraUnavailableDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests: list[tuple[str, ...]] = []
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == "sha256:" + "b" * 64:
+                return base_image
+            return await super().local_base_image_digest(base_image)
+
+        async def download_python_wheels(
+            self,
+            *,
+            base_image: str,
+            requirements: tuple[str, ...],
+            timeout_seconds: int,
+        ) -> bytes:
+            del base_image, timeout_seconds
+            self.requests.append(requirements)
+            if "ghost-extra==1.0" in requirements:
+                raise DockerOperationError(
+                    "POC_AUTO_BUNDLE_DOWNLOAD_FAILED",
+                    DockerCommandOutcome(
+                        1,
+                        b"",
+                        b"ERROR: No matching distribution found for ghost-extra==1.0",
+                        False,
+                    ),
+                )
+            return bundle_path.read_bytes()
+
+    docker = _ExtraUnavailableDocker()
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, ("python:3.12", "pip:ghost-extra==1.0"))
+
+    assert docker.requests == [
+        ("sample-pkg==1.0", "ghost-extra==1.0"),
+        ("sample-pkg==1.0",),
+    ]
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["dependency_resolution_omitted_agent_requirements"] == [
+        "ghost-extra==1.0"
+    ]
+    attempt_refs = recipe["dependency_resolution_omission_attempt_refs"]
+    assert len(attempt_refs) == 1
+    receipt = json.loads(artifacts.read(StoredDataRef.model_validate(attempt_refs[0])))
+    assert receipt["error_code"] == "POC_AUTO_BUNDLE_DOWNLOAD_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_receipt_lists_every_removed_agent_constraint(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, bundle_path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _UnavailableExtraDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == "sha256:" + "b" * 64:
+                return base_image
+            return await super().local_base_image_digest(base_image)
+
+        async def download_python_wheels(
+            self,
+            *,
+            base_image: str,
+            requirements: tuple[str, ...],
+            timeout_seconds: int,
+        ) -> bytes:
+            del base_image, timeout_seconds
+            if any(value.startswith("ghost-extra") for value in requirements):
+                raise DockerOperationError(
+                    "POC_AUTO_BUNDLE_DOWNLOAD_FAILED",
+                    DockerCommandOutcome(
+                        1,
+                        b"",
+                        b"ERROR: No matching distribution found for ghost-extra>=1",
+                        False,
+                    ),
+                )
+            return bundle_path.read_bytes()
+
+    result = await DirectEnvironmentPreparer(
+        docker=_UnavailableExtraDocker(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        auto_dependency_bundle=True,
+    ).prepare(
+        checkpoint,
+        {},
+        ("python:3.12", "pip:ghost-extra>=1", "pip:ghost-extra!=2"),
+    )
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["dependency_resolution_omitted_agent_requirements"] == [
+        "ghost-extra>=1",
+        "ghost-extra!=2",
+    ]
 
 
 @pytest.mark.asyncio
@@ -987,6 +2106,7 @@ async def test_offline_dependency_failure_is_nonretryable_stage_block(
     assert blocked.value.failure.retryable is False
     assert b"in-process PoC fixtures" in prompts[0]
     assert b"already provided by the pinned checkout" in prompts[0]
+    assert b"pinned HTTP handler is not an external prerequisite" in prompts[0]
 
 
 @pytest.mark.asyncio

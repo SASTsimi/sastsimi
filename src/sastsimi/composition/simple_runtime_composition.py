@@ -99,6 +99,7 @@ from sastsimi.simple_runtime.poc_currentness import (
     stale_successful_poc,
 )
 from sastsimi.simple_runtime.portable_docker import (
+    AutoWheelBundleCache,
     DirectEnvironmentPreparer,
     PortableContainerFactory,
     PortableDockerRuntime,
@@ -414,6 +415,7 @@ def build_analysis_application(
     )
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
+    auto_bundle_cache = AutoWheelBundleCache()
 
     def recovery_factory(
         identity: CheckpointIdentity,
@@ -435,9 +437,13 @@ def build_analysis_application(
             docker=docker,
             artifacts=artifacts,
             workspace=static.workspace_path,
+            auto_bundle_cache=auto_bundle_cache,
             wheel_bundle_path=profile.poc_wheel_archive_path,
             wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
             offline_base_image_digest=profile.poc_offline_base_image_digest,
+            auto_dependency_bundle=(
+                profile.poc_dependency_bundle_mode == "AUTO"
+            ),
             git_executable=(
                 str(profile.tools["git"].executable_path)
                 if "git" in profile.tools
@@ -471,6 +477,7 @@ def build_analysis_application(
                 ),
             ),
             codex_invalid_output_resume=profile.provider == "codex",
+            redacted_anchor_resume=True,
             cleanup_artifacts=artifacts,
             offline_base_ready=environments.offline_base_ready,
             recovery=recovery_factory(identity),

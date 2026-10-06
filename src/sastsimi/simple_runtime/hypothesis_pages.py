@@ -340,6 +340,26 @@ def _mask_sensitive_comments(source: bytes) -> bytes:
     return "".join(safe_lines).encode("utf-8")
 
 
+def redact_source_page_bytes(source: bytes) -> bytes:
+    """Return the exact line-preserving projection used in source pages.
+
+    Verification must use this same projection when it compares a saved page to
+    the commit-pinned source.  A generic JSON redactor is not equivalent: this
+    policy also masks AST-identified values beneath sensitive Python targets.
+    """
+
+    try:
+        return redact_untrusted_text_preserving_lines(
+            _mask_python_secret_values(_mask_sensitive_comments(source))
+        ).data
+    except SourcePageError:
+        raise
+    except UnicodeDecodeError as exc:
+        raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_ENCODING") from exc
+    except ValueError as exc:
+        raise SourcePageError("HYPOTHESIS_PAGE_REDACTION_FAILED") from exc
+
+
 def build_source_page(
     *,
     workspace: Path,
@@ -391,16 +411,7 @@ def build_source_page(
             source = source_stream.read(MAX_SOURCE_FILE_BYTES + 1)
             if len(source) > MAX_SOURCE_FILE_BYTES:
                 raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_TOO_LARGE")
-            try:
-                safe_source = redact_untrusted_text_preserving_lines(
-                    _mask_python_secret_values(_mask_sensitive_comments(source))
-                ).data
-            except SourcePageError:
-                raise
-            except UnicodeDecodeError as exc:
-                raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_ENCODING") from exc
-            except ValueError as exc:
-                raise SourcePageError("HYPOTHESIS_PAGE_REDACTION_FAILED") from exc
+            safe_source = redact_source_page_bytes(source)
         with BytesIO(safe_source) as stream:
             line_index = 0
             if file_index == start_file:

@@ -130,6 +130,10 @@ def test_terminal_initial_requires_explicit_unmet_prerequisite_evidence() -> Non
         terminal_initial_outcome(checkpoint.model_copy(update={"recipe_ref": ref}))
         is None
     )
+    assert (
+        terminal_initial_outcome(checkpoint.model_copy(update={"stage_version": "5"}))
+        is None
+    )
 
 
 @pytest.mark.parametrize(

@@ -13,10 +13,12 @@
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SINK", "rule_id": "sastsimi.python.command-sink"},
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SINK", "rule_id": "sastsimi.python.html-sink"},
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SINK", "rule_id": "sastsimi.python.http-client-sink"},
+    {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SINK", "rule_id": "sastsimi.python.password-fast-hash"},
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SINK", "rule_id": "sastsimi.python.path-sink"},
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "PERMISSION_CHECK", "rule_id": "sastsimi.python.permission-check"},
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SOURCE", "rule_id": "sastsimi.python.request-source"},
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SANITIZER", "rule_id": "sastsimi.python.sanitizer"},
+    {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SINK", "rule_id": "sastsimi.python.session-identity-write"},
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "SINK", "rule_id": "sastsimi.python.sql-sink"},
     {"flow_start_fact_kind": null, "requires_code_flow": false, "result_fact_kind": "VALIDATOR", "rule_id": "sastsimi.python.validator"}
   ],

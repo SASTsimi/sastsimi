@@ -942,6 +942,44 @@ async def test_resume_preserves_other_terminal_poc_failures(
 
 
 @pytest.mark.asyncio
+async def test_poc_candidate_stage_version_upgrade_preserves_exhausted_poc(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "candidate-upgrade" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    old_candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    # A prompt version upgrade must not erase the previous recovery cap.
+    stale_candidate = old_candidate.model_copy(update={"stage_version": "5"})
+    store.save_checkpoint(stale_candidate)
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="exhausted-attempt",
+    )
+    exhausted = store.mark_failure(
+        execution,
+        StageFailure(
+            code="RECOVERY_EXHAUSTED",
+            retryable=False,
+            safe_message="previous candidate could not execute",
+        ),
+        StageStatus.BLOCKED,
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls)
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == "RECOVERY_EXHAUSTED"
+    assert calls == []
+    assert store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE) == stale_candidate
+    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == exhausted
+
+
+@pytest.mark.asyncio
 async def test_legacy_invalid_output_at_attempt_cap_is_not_replayed(tmp_path) -> None:
     store = SimpleCheckpointStore(tmp_path / "legacy-cap" / "sastsimi.sqlite3")
     _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
@@ -1052,7 +1090,13 @@ async def test_legacy_inconclusive_stop_is_not_replayed_by_version_bump(
             evidence_refs=failed.output_refs,
         ),
     )
-    store.record_recovery_stop(failed, resolution)
+    stopped = store.record_recovery_stop(failed, resolution)
+    for upstream in (
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+    ):
+        previous = store.require(_identity(), upstream)
+        store.save_checkpoint(previous.model_copy(update={"stage_version": "5"}))
     calls: list[SimpleStage] = []
 
     outcome = await SimpleRuntimeRunner(
@@ -1065,7 +1109,7 @@ async def test_legacy_inconclusive_stop_is_not_replayed_by_version_bump(
     assert outcome.status is StageStatus.BLOCKED
     assert outcome.error_code == "POC_INCONCLUSIVE"
     assert calls == []
-    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == failed
+    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == stopped
 
 
 @pytest.mark.asyncio
@@ -1293,6 +1337,41 @@ def test_poc_candidate_validator_allows_localhost_url() -> None:
         b"#!/bin/sh\nset -eu\nprintf '%s\\n' 'http://localhost/test'\n",
         allowed_environment_names=frozenset(),
     )
+
+
+def test_poc_candidate_validator_keeps_conservative_literal_dollar_check() -> None:
+    for script in (
+        b"#!/bin/sh\nset -eu\nprintf '%s\\n' '{\"name\":{\"$ne\":null}}'\n",
+        b"#!/bin/sh\npython - <<'PY'\nquery = {'$ne': None}\nprint(query)\nPY\n",
+    ):
+        with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+            validate_candidate(script, allowed_environment_names=frozenset())
+    assert validate_candidate(
+        b"#!/bin/sh\npython - <<'PY'\n"
+        b"query = {chr(36) + 'ne': None}\nprint(query)\nPY\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_still_rejects_expanded_undeclared_inputs() -> None:
+    for script in (
+        b'#!/bin/sh\nprintf "%s\\n" "$ne"\n',
+        b"#!/bin/sh\ncat <<PY\n$ne\nPY\n",
+        b"#!/bin/sh\n# '\nprintf '%s\\n' \"$NE\"\n",
+        b"#!/bin/sh\n# <<'EOF'\nprintf '%s\\n' \"$NE\"\n",
+        b'#!/bin/sh\nX=\nprintf "%s\\n" "${X:-$NE}"\n',
+        b'#!/bin/sh\nprintf "%s\\n" "${NE%foo}"\n',
+        b'#!/bin/sh\nprintf "%s\\n" "${NE#foo}"\n',
+        b'#!/bin/sh\nprintf "%s\\n" "${#NE}"\n',
+    ):
+        with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+            validate_candidate(script, allowed_environment_names=frozenset())
+
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b'#!/bin/sh\nprintf "%s\\n" "${X:-$NE}"\n',
+            allowed_environment_names=frozenset({"NE"}),
+        )
 
 
 def test_poc_candidate_validator_rejects_windows_host_path() -> None:
@@ -1577,7 +1656,7 @@ async def test_stale_exhausted_stage_restarts_at_new_version(tmp_path) -> None:
         SimpleStage.POC_CANDIDATE_DONE,
     ]
     assert store.require(_identity(), SimpleStage.PRO_CON_DONE) == pro_con
-    assert initial.stage_version == "5"
+    assert initial.stage_version == STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
     assert initial.attempt_number == 1
     assert initial.recovery_lineage_id is None
     assert initial.input_refs == inputs
@@ -1628,7 +1707,7 @@ async def test_current_version_exhausted_stage_stays_blocked(tmp_path) -> None:
     exhausted = StageCheckpoint(
         identity=_identity(),
         stage=SimpleStage.VERIFICATION_INITIAL_DONE,
-        stage_version="5",
+        stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
         status=StageStatus.BLOCKED,
         input_refs=inputs,
         input_hash=input_reference_hash(inputs),

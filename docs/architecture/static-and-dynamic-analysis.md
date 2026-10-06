@@ -15,6 +15,17 @@ SimpleRuntime의 OpenGrep은 로컬 규칙을 제품 파일 묶음별로 실행�
 있으면 누락된 Python 파일·규칙을 남긴 `PARTIAL` 결과로 진행하며, 증거 무결성이
 깨졌거나 검증된 조합이 전혀 없으면 `BLOCKED`입니다. 현재 CodeQL 질의는
 Python만 대상으로 하며 OpenGrep 규칙의 커버리지 대체 증거가 아닙니다.
+Python 후보에는 제한된 구문 호출 경로를 붙일 수 있습니다. 지원하는 route 등록·decorator에서
+handler 정의, handler 안의 제한된 request 접근 줄, 정적으로 해석된 직접 call, 후보 sink까지의
+`ROUTE_ENTRY`·`HANDLER_DEFINITION`·`REQUEST_CONTEXT`·`CALL`·`SINK` 역할을 보존합니다.
+이는 taint 전파나 외부 공격자 제어의 증명이 아닙니다. import는 실제 선언된 모듈·심볼만 해석하고,
+추적 목록에 존재한다는 이유로 형제 모듈을 연결하지 않습니다. import·동적 dispatch·경로 길이를 해석하지
+못하면 경로를 지어내지 않고 명시적 gap으로 남깁니다. request 문맥은 handler당 최대 8줄로
+제한하며 초과도 gap으로 기록합니다.
+새 분석의 정적 번들 `candidate_context_version=3`은 입력 후보에서 이어지는 정적 호출과
+크기를 제한한 callee 본문을 후보 문맥에 추가합니다. 기존 v2 분석의 재개는 저장된 문맥과
+해시를 그대로 사용합니다. 이 문맥 확장은 taint·도달성·실행의 증명이 아니며, 현재 문서는
+회수율이나 동적 검증의 실측 개선을 주장하지 않습니다.
 비Python 파일은 Python 파일×규칙 커버리지 분모에 넣지 않습니다. JS/TS 제품 코드는 대상 밖 코드로 경로·이유를 별도 표시하며, 혼합 저장소의 전체 결과는 `PARTIAL`로 제한합니다.
 검증/예상 수와 전체 누락은 별도 coverage artifact가 보유하며 대시보드는 이를
 페이지 단위로 보여 줍니다. 영문·국문 Finding 보고서는 같은 간략한 coverage
@@ -23,6 +34,14 @@ Python만 대상으로 하며 OpenGrep 규칙의 커버리지 대체 증거가 �
 동적 재현은 RepositoryProfile, 코드 근거와 Verification 요구를 이용해 환경 recipe와
 PoC 후보를 만들고 Docker에서 실행합니다. 작성된 script는 PoC 후보이며, 같은 attempt와
 환경에서 실행되어 가설을 지지한 경우에만 validated PoC가 됩니다.
+`AUTO` 의존성 resolver는 고정 commit의 제품 manifest와 PEP 621 build-system 요구사항을
+권위 있는 입력으로 사용합니다. Agent가 제안한 `pip:` 요구사항은 보조 입력일 뿐이며,
+정확한 `No matching distribution` 진단으로 확인되고 manifest와 정규화한 패키지명이 겹치지
+않으며 다른 요구사항이 남을 때만 receipt를 보존하고 제외할 수 있습니다. 이 제외는 recipe
+evidence일 뿐 source manifest나 commit identity를 바꾸지 않습니다. 고정 manifest·build
+요구사항의 no-match는 제외하거나 같은 입력으로 자동 재시도하지 않으며, initial Verification과
+동일한 시도에 연결된 receipt가 검증된 경우에만 PoC·Finding 없는 `INCONCLUSIVE`로
+종료합니다. timeout·증거 연결 실패·지원하지 않는 manifest는 `BLOCKED`로 남습니다.
 Pro·Con의 `requested_paths`는 고정 commit의 검증된 PoC 소스 manifest로 제한해 조회하고,
 본문은 변경될 수 있는 작업 폴더 파일이 아닌 해당 commit의 일반 Git blob에서 읽습니다.
 읽은 본문과 거부 사유를 exact artifact로 저장한 뒤 PoC 후보 생성·재생성에 전달합니다.
@@ -43,6 +62,7 @@ Pro·Con·초기 Verification 근거도 앞쪽에 배치합니다.
 - 정적 실행 구성: `src/sastsimi/composition/simple_runtime_composition.py`
 - 후보 정규화·선별: `src/sastsimi/simple_runtime/candidates.py`,
   `src/sastsimi/simple_runtime/discovery.py`
+- Python 구문 호출 경로: `src/sastsimi/simple_runtime/call_path_facts.py`
 - PoC 검사: `src/sastsimi/simple_runtime/poc.py`
 - 요청 소스 경계: `src/sastsimi/simple_runtime/retrieval.py`,
   `src/sastsimi/simple_runtime/facts.py`
@@ -59,6 +79,11 @@ Pro·Con·초기 Verification 근거도 앞쪽에 배치합니다.
 - `DISPROVED`는 실제 반증 근거가 있을 때만 판정에 사용합니다.
 
 ## 현재 제한
+
+portable 환경 점검의 fixture 범위는 고정 snapshot `vfapi@f36f177e1a32`,
+`insecure-web@5d1b791bb6c2`, `dvpwa@a1d8f89fac2e` 세 곳으로 한정됩니다. 이는
+Python 정적 범위와 PoC 환경 준비의 호환성 점검 범위일 뿐, 각 저장소의 최종 검증 완료나
+전체 취약점 발견·완전한 커버리지를 뜻하지 않습니다.
 
 외부 도구 설치 여부와 실제 활성화 조합은 `sastsimi setup`과 capability 확인 결과에
 따릅니다. 운영 검증되지 않은 언어와 build 방식은 자동으로 지원된다고 간주하지 않습니다.

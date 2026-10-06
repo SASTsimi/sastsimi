@@ -100,6 +100,27 @@ def _group_key(member: VerifiedFindingMember) -> str:
     )
 
 
+def _flow_without_trace_identity(member: VerifiedFindingMember) -> str:
+    """Return the AST-proven identity used to compare optional traces."""
+
+    if member.anchor is None:
+        raise ValueError("FINDING_GROUP_FLOW_ANCHOR_REQUIRED")
+    flow = asdict(member.anchor)
+    flow.pop("trace_nodes")
+    return json.dumps(
+        {
+            "version": "verified-python-flow-v2-base",
+            "analysis_id": member.analysis_id,
+            "workspace_id": member.workspace_id,
+            "commit_id": member.commit_id,
+            "flow": flow,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def group_verified_findings(
     members: Sequence[VerifiedFindingMember],
 ) -> FindingGroupProjection:
@@ -107,12 +128,37 @@ def group_verified_findings(
 
     by_display: set[tuple[str, str]] = set()
     buckets: dict[str, list[VerifiedFindingMember]] = {}
+    flow_buckets: dict[str, list[VerifiedFindingMember]] = {}
     for member in members:
         identity = member.analysis_id, member.display_id
         if identity in by_display:
             raise ValueError("FINDING_GROUP_DUPLICATE_DISPLAY_ID")
         by_display.add(identity)
-        buckets.setdefault(_group_key(member), []).append(member)
+        if member.anchor is None:
+            buckets.setdefault(_group_key(member), []).append(member)
+            continue
+        flow_buckets.setdefault(_flow_without_trace_identity(member), []).append(member)
+
+    for entries in flow_buckets.values():
+        traced: dict[tuple[str, ...], list[VerifiedFindingMember]] = {}
+        untraced: list[VerifiedFindingMember] = []
+        for member in entries:
+            assert member.anchor is not None
+            if member.anchor.trace_nodes:
+                traced.setdefault(member.anchor.trace_nodes, []).append(member)
+            else:
+                untraced.append(member)
+        if len(traced) == 1:
+            trace_members = next(iter(traced.values()))
+            buckets.setdefault(_group_key(trace_members[0]), []).extend(
+                (*trace_members, *untraced)
+            )
+            continue
+        for trace_members in traced.values():
+            buckets.setdefault(_group_key(trace_members[0]), []).extend(trace_members)
+        if untraced:
+            buckets.setdefault(_group_key(untraced[0]), []).extend(untraced)
+
     groups: list[FindingGroup] = []
     for group_id, entries in buckets.items():
         ordered = tuple(

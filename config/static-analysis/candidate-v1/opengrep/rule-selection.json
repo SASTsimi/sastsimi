@@ -15,10 +15,12 @@
     "sastsimi.python.command-sink",
     "sastsimi.python.html-sink",
     "sastsimi.python.http-client-sink",
+    "sastsimi.python.password-fast-hash",
     "sastsimi.python.path-sink",
     "sastsimi.python.permission-check",
     "sastsimi.python.request-source",
     "sastsimi.python.sanitizer",
+    "sastsimi.python.session-identity-write",
     "sastsimi.python.sql-sink",
     "sastsimi.python.validator"
   ],
