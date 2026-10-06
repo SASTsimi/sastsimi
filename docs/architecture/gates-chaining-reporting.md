@@ -10,6 +10,14 @@ Gate 결정은 가설당 최대 세 번이며, 마지막까지 `REVISE`이면 `I
 명시적인 `REJECT`이면 제보 불가로 종료합니다. 두 경우 모두 Finding·보고서를
 만들지 않습니다.
 
+PoC 해석·초기/최종 Verification·Technical Gate에는 해당 Pro/Con 체크포인트의
+가설 제안과 commit에 고정된 인용 소스를 우선 전달합니다. 필수 입력은 256 KiB
+문맥 제한에서 잘라내지 않고, 인용 줄과 주변 줄로 좁혀도 담기지 않거나 해시가
+일치하지 않으면 명시적 근거 오류로 멈춥니다. 저장된 Final Verification v2는
+TRUE·FALSE·HOLD 모두 새 근거 전달 형식(v3)으로 재검토하며, 그 이후 단계는
+새 판정에 맞춰 다시 확인합니다. 이전 Pro/Con 및 검증된 PoC는 재사용하므로
+Docker를 재실행하지 않지만 최종 Agent 호출 비용은 다시 발생할 수 있습니다.
+
 PoC 실행 자체는 끝났지만 보강 상한까지 관찰 근거가 부족한 경우도
 `INCONCLUSIVE`로 종료하고 Final Verification·CWE·Gate·Finding·Reporter를
 건너뜁니다. 이는 Docker·Provider 실행 실패를 미확정으로 바꾸는 규칙이 아닙니다.
@@ -68,16 +76,23 @@ ID로 묶고, 대표는 가장 작은 기존 `F-NNN`입니다. 다른 입력 키
 
 `finding_count`는 원본 Finding 수, `finding_group_count`는 입증된 그룹과
 미확정 단독 항목을 합친 표시 묶음 수, `finding_group_undetermined_count`는
-근거 부족·미지원 패턴의 단독 항목 수입니다. 현재 resolver는 CWE-78의
-직접 import된 Flask `request`와 단일 정적 Flask route, 제한된 명령 호출만
-지원합니다. 대시보드는 현재 보고서를 열 수 있는 Finding만 묶음 투영하므로
+근거 부족·미지원 패턴의 단독 항목 수입니다. resolver는 단일 정적 Flask route와
+고정된 직접 import/내장 함수, 명확한 요청 입력→위험 호출의 함수 내 흐름에 한해
+CWE-78 외에 CWE-89(SQLite 커서 기원), CWE-79(직접 응답), CWE-918
+(`requests` 호출), CWE-95(`eval`), CWE-22(`open`) 일부를 지원합니다.
+저장형 XSS의 요청·DB 경계, 다른 SQL 백엔드, 동적 호출·별칭, 여러 입력/분기와
+불명확한 검증 조건은 안전한 동일성 증명이 없어 단독 항목으로 남습니다.
+대시보드는 현재 보고서를 열 수 있는 Finding만 묶음 투영하므로
 보고서 생성 전에는 원본 Finding 수와 표시 묶음 수가 다를 수 있습니다.
-독립 저장소의 이전 시험 기록을 읽기 전용으로 재생했을 때 Antony Flask는
+이전 CWE-78 전용 구현으로 독립 저장소의 시험 기록을 읽기 전용으로 재생했을 때 Antony Flask는
 원본 11건→표시 6묶음(6건 동일 경로, 미확정 단독 5건), Python Vulns GNU는
 원본 12건→표시 10묶음(3건 동일 경로, 미확정 단독 9건)이었습니다. 이는
 두 시험 기록의 표시 결과이지 전체 중복 탐지율이 아닙니다. DB 해시는
-재생 전후 동일했습니다. 각 원본 `F-NNN`의 PoC·국문/영문 보고서·직접 URL·
-ZIP 포함 여부는 유지됩니다. 그룹은 취약점 확정 판정이나 외부 제보 허가가
+재생 전후 동일했습니다. 새 패턴에 대한 수치가 아니므로 새 그룹 수나 탐지율로
+인용하지 않습니다. 각 원본 `F-NNN`의 PoC·국문/영문 보고서·직접 URL은
+유지됩니다. 기본 전체 ZIP은 입증된 묶음마다 대표 보고서와 원본 ID 매핑을
+넣고, 원본 보고서·PoC·evidence는 `reports/originals/F-NNN/`에 각각 보존합니다.
+명시적 ID 선택으로 원본 보고서를 개별 내보낼 수도 있습니다. 그룹은 취약점 확정 판정이나 외부 제보 허가가
 아니고 `COMPLETE`/`PARTIAL`에도 영향을 주지 않습니다.
 
 ## 코드 위치

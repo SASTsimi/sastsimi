@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, NoReturn, Protocol, cast
+from typing import Any, Literal, NoReturn, Protocol, cast, runtime_checkable
 
 from pydantic import JsonValue
 
@@ -16,6 +16,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import (
     redact_projected_json,
     redact_untrusted_text,
+    redact_untrusted_text_preserving_lines,
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.reporting import (
@@ -42,10 +43,12 @@ from sastsimi.reporting.markdown_export import write_report_markdown
 from sastsimi.sandbox.docker_adapter import DockerAdapter, DockerOperationError
 
 from .artifacts import SimpleArtifactRepository
+from .ast_facts import index_ast_manifest, read_ast_file_facts
 from .attack_surfaces import SurfaceIndex, surface_index_from_json
 from .attempt_owner import AttemptOwner, PromptByteCounts
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .gate_guard import technical_gate_accepted
+from .hypothesis_pages import redact_source_page_bytes
 from .models import (
     STAGE_ORDER,
     STAGE_VERSION,
@@ -58,7 +61,7 @@ from .models import (
 from .poc import PoCCandidateRejected, validate_candidate
 from .provider import SimpleLLMCallResult, SimpleLLMClient, _validate_schema
 from .recovery import MAX_RECOVERY_ATTEMPTS
-from .retrieval import collect_requested_sources
+from .retrieval import _read_pinned_blob, collect_requested_sources
 from .runner import SimpleStageHandler, StageBlocked, StageFailed
 from .scope_policy import (
     project_scope_review,
@@ -77,6 +80,8 @@ _REPORT_DRAFT_MAX_BYTES = 4 * 1024 * 1024
 _PRO_CON_BATCH_MAX_SIZE = 8
 _PRO_CON_BATCH_MAX_PROMPT_BYTES = 256 * 1024
 _PRO_CON_BATCH_MAX_ATTEMPTS = 2
+_VERIFICATION_PROMPT_MAX_BYTES = 256 * 1024
+_FOCUSED_SOURCE_MAX_BYTES = 96 * 1024
 
 
 def _has_python_import_failure(output: bytes) -> bool:
@@ -145,7 +150,26 @@ class ReproductionEnvironmentPreparer(Protocol):
     ) -> ReproductionEnvironment: ...
 
 
+@runtime_checkable
+class OfflineRequirementPreparer(Protocol):
+    @property
+    def offline_mode(self) -> bool: ...
+
+    def validate_requirements(
+        self, requirements: tuple[str, ...], *, commit_id: str
+    ) -> None: ...
+
+
 class _UnavailableEnvironmentPreparer:
+    @property
+    def offline_mode(self) -> bool:
+        return False
+
+    def validate_requirements(
+        self, requirements: tuple[str, ...], *, commit_id: str
+    ) -> None:
+        del requirements, commit_id
+
     async def prepare(
         self,
         checkpoint: StageCheckpoint,
@@ -414,6 +438,399 @@ def _poc_priority_refs(
 ) -> tuple[StoredDataRef, ...]:
     candidate = prior.get(SimpleStage.POC_CANDIDATE_DONE)
     return candidate.output_refs[2:] if candidate is not None else ()
+
+
+def _anchor_failure(code: str) -> StageFailed:
+    return StageFailed(
+        StageFailure(
+            code=code,
+            retryable=False,
+            safe_message="Exact hypothesis and pinned source context are unavailable",
+        )
+    )
+
+
+def _verification_anchor_refs(
+    checkpoint: StageCheckpoint,
+    prior: Mapping[SimpleStage, StageCheckpoint],
+    artifacts: SimpleArtifactRepository,
+    *,
+    workspace_path: Path | None = None,
+    git_executable: str = "git",
+    require_anchor: bool = False,
+) -> tuple[StoredDataRef, StoredDataRef] | tuple[()]:
+    """Resolve the saved Pro/Con inputs into one exact, focused source anchor."""
+
+    pro_con = prior.get(SimpleStage.PRO_CON_DONE)
+    if pro_con is None:
+        if require_anchor:
+            raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID")
+        # Direct isolated stage callers can provide no history. The production
+        # handler factory sets require_anchor for every verification stage.
+        return ()
+    identity = checkpoint.identity
+    if (
+        identity != artifacts.identity
+        or pro_con.identity != identity
+        or len(pro_con.input_refs) < 2
+        or not identity.hypothesis_id
+    ):
+        raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID")
+    proposal_ref, source_ref = pro_con.input_refs[:2]
+    try:
+        proposal = json.loads(artifacts.read_prompt_proposal(proposal_ref))
+        source = json.loads(artifacts.read(source_ref))
+        if not isinstance(proposal, dict) or not isinstance(source, dict):
+            raise ValueError("invalid anchor record")
+        if (
+            proposal.get("analysis_id") != identity.analysis_id
+            or proposal.get("hypothesis_id") != identity.hypothesis_id
+            or proposal.get("workspace_id", identity.workspace_id)
+            != identity.workspace_id
+            or proposal.get("commit_id", identity.commit_id) != identity.commit_id
+            or source.get("workspace_id", identity.workspace_id)
+            != identity.workspace_id
+            or source.get("commit_id", identity.commit_id) != identity.commit_id
+        ):
+            raise ValueError("cross-child anchor")
+        body = proposal.get("proposal")
+        locations = body.get("code_locations") if isinstance(body, dict) else None
+        if (
+            not isinstance(locations, list)
+            or not locations
+            or any(not isinstance(item, str) for item in locations)
+        ):
+            raise ValueError("proposal locations missing")
+        cited: set[tuple[str, int]] = set()
+        for location in locations:
+            assert isinstance(location, str)
+            path, separator, line_text = location.rpartition(":")
+            if (
+                not separator
+                or not path
+                or not line_text.isascii()
+                or not line_text.isdecimal()
+                or int(line_text) < 1
+            ):
+                raise ValueError("invalid cited location")
+            cited.add((path, int(line_text)))
+        available: dict[tuple[str, int], str] = {}
+        source_hashes: dict[str, str] = {}
+        kind = source.get("kind")
+        source_link = {
+            "simple_candidate_file_context_v1": "shared_context_ref",
+            "simple_surface_context_v1": "surface_context_ref",
+            "simple_surface_context_v2": "surface_context_ref",
+            "simple_hypothesis_source_page": "page_input_ref",
+        }.get(kind if isinstance(kind, str) else "")
+        if source_link is not None and (
+            StoredDataRef.model_validate(proposal.get(source_link)) != source_ref
+        ):
+            raise ValueError("source reference mismatch")
+
+        def tracked_path(path: str) -> bool:
+            pure = PurePosixPath(path)
+            return (
+                bool(path)
+                and not pure.is_absolute()
+                and ".." not in pure.parts
+                and "\\" not in path
+                and ":" not in path
+                and "\x00" not in path
+            )
+
+        def bundle_paths(bundle: dict[str, Any]) -> list[str]:
+            if (
+                bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("analysis_id") != identity.analysis_id
+                or bundle.get("workspace_id") != identity.workspace_id
+                or bundle.get("commit_id") != identity.commit_id
+            ):
+                raise ValueError("static bundle identity mismatch")
+            manifest_ref = StoredDataRef.model_validate(bundle["source_manifest_ref"])
+            manifest = json.loads(artifacts.read(manifest_ref))
+            paths = manifest.get("paths") if isinstance(manifest, dict) else None
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(paths, list)
+                or any(
+                    not isinstance(item, str) or not tracked_path(item)
+                    for item in paths
+                )
+            ):
+                raise ValueError("tracked-source manifest invalid")
+            return paths
+
+        if kind in {
+            "simple_candidate_file_context_v1",
+            "simple_surface_context_v1",
+            "simple_surface_context_v2",
+        }:
+            context_path = source.get("path")
+            lines = source.get("source_lines")
+            if (
+                not isinstance(context_path, str)
+                or source.get("source_status") not in {"AVAILABLE", "PARTIAL"}
+                or not isinstance(lines, list)
+                or not isinstance(source.get("source_sha256"), str)
+                or len(source["source_sha256"]) != 64
+                or any(
+                    char not in "0123456789abcdef" for char in source["source_sha256"]
+                )
+            ):
+                raise ValueError("pinned source unavailable")
+            for item in lines:
+                if (
+                    not isinstance(item, dict)
+                    or type(item.get("line")) is not int
+                    or not isinstance(item.get("text"), str)
+                ):
+                    raise ValueError("invalid source line")
+                available[(context_path, item["line"])] = item["text"]
+            source_hashes[context_path] = source["source_sha256"]
+        elif kind == "simple_hypothesis_source_page":
+            page = source.get("page")
+            segments = page.get("segments") if isinstance(page, dict) else None
+            if (
+                source.get("analysis_id") != identity.analysis_id
+                or not isinstance(segments, list)
+                or not isinstance(page, dict)
+            ):
+                raise ValueError("invalid source page")
+            bundle_ref = StoredDataRef.model_validate(source["static_bundle_ref"])
+            manifest_ref = StoredDataRef.model_validate(source["source_manifest_ref"])
+            bundle = json.loads(artifacts.read(bundle_ref))
+            if not isinstance(bundle, dict):
+                raise ValueError("source page bundle invalid")
+            paths = bundle_paths(bundle)
+            if (
+                StoredDataRef.model_validate(bundle["source_manifest_ref"])
+                != manifest_ref
+                or page.get("static_bundle_hash") != bundle_ref.content_hash
+                or page.get("source_manifest_hash") != manifest_ref.content_hash
+            ):
+                raise ValueError("source page manifest mismatch")
+            for segment in segments:
+                if (
+                    not isinstance(segment, dict)
+                    or not isinstance(segment.get("path"), str)
+                    or segment["path"] not in paths
+                    or type(segment.get("start_line")) is not int
+                    or type(segment.get("end_line")) is not int
+                    or not isinstance(segment.get("code"), str)
+                ):
+                    raise ValueError("invalid source segment")
+                lines = segment["code"].splitlines()
+                if len(lines) != segment["end_line"] - segment["start_line"] + 1:
+                    raise ValueError("source segment line mismatch")
+                for offset, text in enumerate(lines):
+                    available[(segment["path"], segment["start_line"] + offset)] = text
+        elif kind == "simple_static_fact_bundle":
+            if (
+                workspace_path is None
+                or StoredDataRef.model_validate(proposal.get("static_bundle_ref"))
+                != source_ref
+            ):
+                raise ValueError("legacy static bundle identity mismatch")
+            paths = bundle_paths(source)
+            summary = source.get("ast_summary")
+            if not isinstance(summary, dict) or summary.get("format_version") not in {
+                2,
+                3,
+            }:
+                raise ValueError("AST manifest unavailable")
+            ast_index = (
+                index_ast_manifest(artifacts, summary)
+                if summary["format_version"] == 3
+                else {}
+            )
+            for path in sorted({path for path, _line in cited}):
+                if not tracked_path(path) or path not in paths:
+                    raise ValueError("cited path is not tracked")
+                expected_sha: str | None = None
+                if summary["format_version"] == 3:
+                    entry = ast_index.get(path)
+                    if entry is None:
+                        raise ValueError("cited AST file absent")
+                    _ast_ref, _facts, reason = read_ast_file_facts(
+                        artifacts, summary, path, manifest_index=ast_index
+                    )
+                    expected_sha = entry.get("source_sha256")
+                    if reason is not None or (
+                        not isinstance(expected_sha, str)
+                        or len(expected_sha) != 64
+                        or any(char not in "0123456789abcdef" for char in expected_sha)
+                    ):
+                        raise ValueError("cited AST file invalid")
+                raw, error = _read_pinned_blob(
+                    workspace_path,
+                    path,
+                    commit=identity.commit_id,
+                    git_executable=git_executable,
+                    remaining=2 * 1024 * 1024,
+                )
+                if (
+                    error is not None
+                    or raw is None
+                    or expected_sha is not None
+                    and hashlib.sha256(raw).hexdigest() != expected_sha
+                ):
+                    raise ValueError("pinned source hash mismatch")
+                source_hashes[path] = hashlib.sha256(raw).hexdigest()
+                decoded_lines = (
+                    redact_untrusted_text_preserving_lines(raw)
+                    .data.decode("utf-8")
+                    .splitlines()
+                )
+                cited_lines = {line for cited_path, line in cited if cited_path == path}
+                for line in cited_lines:
+                    if line > len(decoded_lines):
+                        raise ValueError("cited source line missing")
+                    first = max(1, line - 2)
+                    last = min(len(decoded_lines), line + 2)
+                    for number in range(first, last + 1):
+                        available[(path, number)] = decoded_lines[number - 1]
+        else:
+            raise ValueError("pinned source format unavailable")
+        if not cited.issubset(available):
+            raise ValueError("cited source line missing")
+        if kind != "simple_static_fact_bundle" and (
+            workspace_path is not None or require_anchor
+        ):
+            if workspace_path is None:
+                raise ValueError("pinned workspace unavailable")
+            for path in sorted({path for path, _line in cited}):
+                if not tracked_path(path):
+                    raise ValueError("cited path invalid")
+                raw, error = _read_pinned_blob(
+                    workspace_path,
+                    path,
+                    commit=identity.commit_id,
+                    git_executable=git_executable,
+                    remaining=2 * 1024 * 1024,
+                )
+                if error is not None or raw is None:
+                    raise ValueError("pinned source unavailable")
+                actual_sha = hashlib.sha256(raw).hexdigest()
+                if path in source_hashes and source_hashes[path] != actual_sha:
+                    raise ValueError("pinned source hash mismatch")
+                source_hashes[path] = actual_sha
+                decoded_lines = (
+                    (
+                        redact_source_page_bytes(raw)
+                        if kind == "simple_hypothesis_source_page"
+                        else redact_untrusted_text_preserving_lines(raw).data
+                    )
+                    .decode("utf-8")
+                    .splitlines()
+                )
+                for (available_path, line), text in available.items():
+                    if available_path == path and any(
+                        available_path == cited_path and abs(line - cited_line) <= 2
+                        for cited_path, cited_line in cited
+                    ):
+                        if (
+                            line < 1
+                            or line > len(decoded_lines)
+                            or text != decoded_lines[line - 1]
+                        ):
+                            raise ValueError("pinned source line mismatch")
+
+        def projection(with_nearby: bool) -> dict[str, object]:
+            selected = [
+                {"path": path, "line": line, "text": text}
+                for (path, line), text in sorted(available.items())
+                if (path, line) in cited
+                or with_nearby
+                and any(
+                    path == cited_path and abs(line - cited_line) <= 2
+                    for cited_path, cited_line in cited
+                )
+            ]
+            return {
+                "kind": "simple_focused_pinned_source_v1",
+                "analysis_id": identity.analysis_id,
+                "hypothesis_id": identity.hypothesis_id,
+                "workspace_id": identity.workspace_id,
+                "commit_id": identity.commit_id,
+                "pinned_context_ref": source_ref.model_dump(mode="json"),
+                "source_sha256_by_path": source_hashes,
+                "source_lines": selected,
+            }
+
+        focused = projection(with_nearby=True)
+        if len(canonical_bytes(focused)) > _FOCUSED_SOURCE_MAX_BYTES:
+            focused = projection(with_nearby=False)
+        if len(canonical_bytes(focused)) > _FOCUSED_SOURCE_MAX_BYTES:
+            raise _anchor_failure("HYPOTHESIS_CONTEXT_OVERFLOW")
+        focused_bytes = canonical_bytes(focused)
+        if redact_projected_json(focused_bytes).data != focused_bytes:
+            raise ValueError("cited source would require further redaction")
+        focused_ref = artifacts.put_bytes(focused_bytes, "application/json")
+        return proposal_ref, focused_ref
+    except StageFailed:
+        raise
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        UnicodeError,
+        sqlite3.Error,
+    ) as error:
+        raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID") from error
+
+
+def _verification_required_refs(
+    checkpoint: StageCheckpoint,
+    prior: Mapping[SimpleStage, StageCheckpoint],
+    artifacts: SimpleArtifactRepository,
+    *,
+    include_dynamic: bool,
+    workspace_path: Path | None = None,
+    git_executable: str = "git",
+    require_anchor: bool = False,
+) -> tuple[StoredDataRef, ...]:
+    anchor = _verification_anchor_refs(
+        checkpoint,
+        prior,
+        artifacts,
+        workspace_path=workspace_path,
+        git_executable=git_executable,
+        require_anchor=require_anchor,
+    )
+    relevant = (
+        SimpleStage.POC_CANDIDATE_DONE,
+        SimpleStage.POC_EXECUTION_DONE,
+        SimpleStage.VERIFICATION_FINAL_DONE,
+    )
+    if any(
+        prior[stage].identity != checkpoint.identity
+        for stage in relevant
+        if stage in prior
+    ):
+        raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID")
+    dynamic = prior.get(SimpleStage.POC_EXECUTION_DONE)
+    poc_refs = (
+        dynamic.output_refs
+        + ((dynamic.validated_poc_ref,) if dynamic.validated_poc_ref else ())
+        if include_dynamic and dynamic is not None
+        else ()
+    )
+    final = prior.get(SimpleStage.VERIFICATION_FINAL_DONE)
+    final_refs = (
+        final.output_refs
+        if checkpoint.stage is SimpleStage.TECH_GATE_DONE and final is not None
+        else ()
+    )
+    return _unique_refs(
+        anchor
+        + poc_refs
+        + _poc_priority_refs(prior)
+        + final_refs
+        + checkpoint.input_refs
+    )
 
 
 def _prompt(instructions: str, context: bytes) -> bytes:
@@ -793,11 +1210,17 @@ class PoCExecutionStage:
         artifacts: SimpleArtifactRepository,
         docker: DockerAdapter,
         containers: SimpleContainerFactory,
+        workspace_path: Path | None = None,
+        git_executable: str = "git",
+        require_anchor: bool = False,
     ) -> None:
         self._client = client
         self._artifacts = artifacts
         self._docker = docker
         self._containers = containers
+        self._workspace_path = workspace_path
+        self._git_executable = git_executable
+        self._require_anchor = require_anchor
 
     async def __call__(
         self,
@@ -951,20 +1374,43 @@ class PoCExecutionStage:
             },
             ["outcome", "rationale", "limitations"],
         )
-        context = self._artifacts.prompt_context(
-            (candidate_ref, execution_ref, stdout_ref, stderr_ref)
-        )
-        interpreted = await self._client.call(
-            prompt=_prompt(
-                """
+        interpretation_instructions = """
 You are the Dynamic Reproduction Agent interpreting one completed local PoC
 execution. Return SUPPORTED only when the output and exit code directly support
 the exact hypothesis, DISPROVED only for actual counterevidence, otherwise
 INCONCLUSIVE. The Runtime binds your interpretation to the exact execution
 artifact. Do not reinterpret an execution error as DISPROVED.
-""",
-                context,
-            ),
+"""
+        required_refs = _unique_refs(
+            _verification_anchor_refs(
+                checkpoint,
+                prior,
+                self._artifacts,
+                workspace_path=self._workspace_path,
+                git_executable=self._git_executable,
+                require_anchor=self._require_anchor,
+            )
+            + (candidate_ref, execution_ref, stdout_ref, stderr_ref)
+            + _poc_priority_refs(prior)
+        )
+        budget = (
+            _VERIFICATION_PROMPT_MAX_BYTES
+            - len(_prompt(interpretation_instructions, b""))
+            - len(canonical_bytes(interpretation_schema))
+        )
+        try:
+            context = self._artifacts.prompt_context_prioritized(
+                required_refs, (), max_bytes=budget
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            code = (
+                "HYPOTHESIS_CONTEXT_OVERFLOW"
+                if str(error) == "SIMPLE_RUNTIME_CONTEXT_TOO_LARGE"
+                else "HYPOTHESIS_ANCHOR_INVALID"
+            )
+            raise _anchor_failure(code) from error
+        interpreted = await self._client.call(
+            prompt=_prompt(interpretation_instructions, context),
             output_schema=interpretation_schema,
             timeout_ms=_LOCAL_TIMEOUT_MS,
             agent_name="poc_interpretation",
@@ -1316,13 +1762,31 @@ class _StructuredStage:
         checkpoint: StageCheckpoint,
         refs: tuple[StoredDataRef, ...],
         *,
+        required_refs: tuple[StoredDataRef, ...] | None = None,
         guidance: str = "",
         validate_result: Callable[[dict[str, JsonValue]], None] | None = None,
     ) -> tuple[SimpleLLMCallResult, StoredDataRef]:
+        if required_refs is None:
+            context = self._artifacts.prompt_context(refs)
+        else:
+            budget = (
+                _VERIFICATION_PROMPT_MAX_BYTES
+                - len(_prompt(self._instructions + guidance, b""))
+                - len(canonical_bytes(self._schema))
+            )
+            try:
+                context = self._artifacts.prompt_context_prioritized(
+                    required_refs, refs, max_bytes=budget
+                )
+            except (OSError, ValueError, sqlite3.Error) as error:
+                code = (
+                    "HYPOTHESIS_CONTEXT_OVERFLOW"
+                    if str(error) == "SIMPLE_RUNTIME_CONTEXT_TOO_LARGE"
+                    else "HYPOTHESIS_ANCHOR_INVALID"
+                )
+                raise _anchor_failure(code) from error
         result = await self._client.call(
-            prompt=_prompt(
-                self._instructions + guidance, self._artifacts.prompt_context(refs)
-            ),
+            prompt=_prompt(self._instructions + guidance, context),
             output_schema=self._schema,
             timeout_ms=_LOCAL_TIMEOUT_MS,
             agent_name=self._kind.removeprefix("simple_"),
@@ -1331,10 +1795,13 @@ class _StructuredStage:
             _raise_provider_failure(result)
         if validate_result is not None:
             validate_result(result.value)
+        included_refs = [
+            item["reference"] for item in json.loads(context)["exact_inputs"]
+        ]
         output_ref = self._artifacts.put_json(
             {
                 "kind": self._kind,
-                "source_refs": [ref.model_dump(mode="json") for ref in refs],
+                "source_refs": included_refs,
                 "result": result.value,
                 "prompt_digest": result.prompt_digest,
                 "output_digest": result.output_digest,
@@ -2121,8 +2588,15 @@ class InitialVerificationStage:
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
         environments: ReproductionEnvironmentPreparer,
+        *,
+        workspace_path: Path | None = None,
+        git_executable: str = "git",
+        require_anchor: bool = False,
     ) -> None:
         self._environments = environments
+        self._workspace_path = workspace_path
+        self._git_executable = git_executable
+        self._require_anchor = require_anchor
         self._stage = _StructuredStage(
             client=client,
             artifacts=artifacts,
@@ -2171,38 +2645,135 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
-        result, output_ref = await self._stage.call(
+        required_refs = _verification_required_refs(
             checkpoint,
-            _unique_refs(checkpoint.input_refs + _prior_refs(prior)),
+            prior,
+            self._stage._artifacts,
+            include_dynamic=False,
+            workspace_path=self._workspace_path,
+            git_executable=self._git_executable,
+            require_anchor=self._require_anchor,
         )
-        raw_requirements = result.value["environment_requirements"]
-        if not isinstance(raw_requirements, list):
-            raise ValueError("ENVIRONMENT_REQUIREMENTS_INVALID")
-        requirements = tuple(str(value) for value in raw_requirements)
-        raw_external = result.value["unmet_external_prerequisites"]
-        if not isinstance(raw_external, list) or any(
-            not isinstance(value, str) or not value.strip() for value in raw_external
-        ):
-            raise ValueError("EXTERNAL_PREREQUISITES_INVALID")
-        if raw_external:
-            return StageResult(
-                output_refs=(output_ref,),
-                external_prerequisites_ref=output_ref,
-                verdict="HOLD",
-                activity_events=(
-                    _activity_event(
-                        checkpoint,
-                        ActivityKind.DECISION_RECORDED,
-                        offset=10,
-                        summary_ko=(
-                            "미입증 외부 공격 전제를 기록하고 "
-                            "가설을 미확정으로 종료했습니다."
-                        ),
-                        output_refs=(output_ref,),
-                        llm=result,
+        offline_preparer: OfflineRequirementPreparer | None = None
+        if getattr(self._environments, "offline_mode", False):
+            if not isinstance(self._environments, OfflineRequirementPreparer):
+                raise StageBlocked(
+                    StageFailure(
+                        code="POC_OFFLINE_REQUIREMENT_VALIDATION_UNAVAILABLE",
+                        retryable=False,
+                        safe_message="Offline requirement validation is unavailable",
+                    )
+                )
+            offline_preparer = self._environments
+        guidance = (
+            "\nOn this retry, environment_requirements supports only "
+            "`python:3.12`, `pip:<PEP 508 requirement>`, or "
+            "`Source checkout at commit "
+            f"{checkpoint.identity.commit_id} containing relative/path.py`. "
+            "Do not list the checkout itself or shell utilities already present "
+            "in the base image. Do not invent OS package installations. Put a "
+            "genuinely unavailable utility, service, credential, or attack "
+            "precondition in unmet_external_prerequisites instead.\n"
+            if checkpoint.attempt_number > 1 and offline_preparer is not None
+            else ""
+        )
+        rejected_refs: list[StoredDataRef] = []
+
+        def rejected_activity() -> tuple[AgentActivityEvent, ...]:
+            if not rejected_refs:
+                return ()
+            return (
+                _activity_event(
+                    checkpoint,
+                    ActivityKind.EVIDENCE_RECORDED,
+                    offset=9,
+                    summary_ko=(
+                        "지원되지 않는 오프라인 환경 요구사항 응답을 "
+                        "거절하고 재요청했습니다."
                     ),
+                    output_refs=tuple(rejected_refs),
                 ),
             )
+
+        for request_index in range(2):
+            try:
+                result, output_ref = await self._stage.call(
+                    checkpoint,
+                    _unique_refs(checkpoint.input_refs + _prior_refs(prior)),
+                    required_refs=required_refs,
+                    guidance=guidance,
+                )
+            except (StageBlocked, StageFailed) as error:
+                if not rejected_refs:
+                    raise
+                failure = error.failure.model_copy(
+                    update={
+                        "evidence_refs": _unique_refs(
+                            (*rejected_refs, *error.failure.evidence_refs)
+                        )
+                    }
+                )
+                if isinstance(error, StageBlocked):
+                    raise StageBlocked(failure) from error
+                raise StageFailed(failure) from error
+            raw_requirements = result.value["environment_requirements"]
+            if not isinstance(raw_requirements, list):
+                raise ValueError("ENVIRONMENT_REQUIREMENTS_INVALID")
+            requirements = tuple(str(value) for value in raw_requirements)
+            raw_external = result.value["unmet_external_prerequisites"]
+            if not isinstance(raw_external, list) or any(
+                not isinstance(value, str) or not value.strip()
+                for value in raw_external
+            ):
+                raise ValueError("EXTERNAL_PREREQUISITES_INVALID")
+            if raw_external:
+                return StageResult(
+                    output_refs=(output_ref,),
+                    external_prerequisites_ref=output_ref,
+                    verdict="HOLD",
+                    activity_events=(
+                        *rejected_activity(),
+                        _activity_event(
+                            checkpoint,
+                            ActivityKind.DECISION_RECORDED,
+                            offset=10,
+                            summary_ko=(
+                                "미입증 외부 공격 전제를 기록하고 "
+                                "가설을 미확정으로 종료했습니다."
+                            ),
+                            output_refs=(output_ref,),
+                            llm=result,
+                        ),
+                    ),
+                )
+            try:
+                if offline_preparer is not None:
+                    offline_preparer.validate_requirements(
+                        requirements, commit_id=checkpoint.identity.commit_id
+                    )
+            except ValueError as error:
+                if str(error) != "POC_OFFLINE_REQUIREMENT_UNSUPPORTED":
+                    raise
+                rejected_refs.append(output_ref)
+                if request_index == 0:
+                    guidance += (
+                        "\nThe previous environment_requirements were rejected with "
+                        "POC_OFFLINE_REQUIREMENT_UNSUPPORTED. Return the same JSON "
+                        "schema with a corrected requirements list. Only list "
+                        "installable Python packages as `pip:<PEP 508 requirement>`; "
+                        "do not list natural-language OS packages or shell tools "
+                        "already supplied by the base image.\n"
+                    )
+                    continue
+                raise StageBlocked(
+                    StageFailure(
+                        code="POC_OFFLINE_REQUIREMENT_UNSUPPORTED",
+                        retryable=False,
+                        safe_message="Offline requirements remained unsupported",
+                        evidence_refs=tuple(rejected_refs),
+                    )
+                ) from error
+            break
         try:
             environment = await self._environments.prepare(
                 checkpoint,
@@ -2226,7 +2797,12 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
                     code=code[:160],
                     retryable=not code.startswith(("POC_OFFLINE_", "WHEEL_")),
                     safe_message="Reproduction environment did not complete",
-                    evidence_refs=(output_ref, *attempt_refs, *failed_recipe_refs),
+                    evidence_refs=(
+                        *rejected_refs,
+                        output_ref,
+                        *attempt_refs,
+                        *failed_recipe_refs,
+                    ),
                 )
             ) from error
         return StageResult(
@@ -2234,6 +2810,7 @@ run. If this list is nonempty, the hypothesis is inconclusive, not verified.
             recipe_ref=environment.recipe_ref,
             image_digest=environment.image_digest,
             activity_events=(
+                *rejected_activity(),
                 _activity_event(
                     checkpoint,
                     ActivityKind.DECISION_RECORDED,
@@ -2251,7 +2828,14 @@ class FinalVerificationStage:
         self,
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
+        *,
+        workspace_path: Path | None = None,
+        git_executable: str = "git",
+        require_anchor: bool = False,
     ) -> None:
+        self._workspace_path = workspace_path
+        self._git_executable = git_executable
+        self._require_anchor = require_anchor
         self._stage = _StructuredStage(
             client=client,
             artifacts=artifacts,
@@ -2294,10 +2878,19 @@ repair request and commit-pinned requested source before deciding again.
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
-        refs = _unique_refs(
-            _poc_priority_refs(prior) + _prior_refs(prior) + checkpoint.input_refs
+        required_refs = _verification_required_refs(
+            checkpoint,
+            prior,
+            self._stage._artifacts,
+            include_dynamic=True,
+            workspace_path=self._workspace_path,
+            git_executable=self._git_executable,
+            require_anchor=self._require_anchor,
         )
-        result, output_ref = await self._stage.call(checkpoint, refs)
+        refs = _unique_refs(required_refs + _prior_refs(prior))
+        result, output_ref = await self._stage.call(
+            checkpoint, refs, required_refs=required_refs
+        )
         verdict = cast(Literal["TRUE", "FALSE", "HOLD"], result.value["verdict"])
         dynamic = prior.get(SimpleStage.POC_EXECUTION_DONE)
         if verdict == "TRUE" and (dynamic is None or dynamic.validated_poc_ref is None):
@@ -2390,7 +2983,14 @@ class TechnicalGateStage:
         self,
         client: SimpleLLMClient,
         artifacts: SimpleArtifactRepository,
+        *,
+        workspace_path: Path | None = None,
+        git_executable: str = "git",
+        require_anchor: bool = False,
     ) -> None:
+        self._workspace_path = workspace_path
+        self._git_executable = git_executable
+        self._require_anchor = require_anchor
         self._stage = _StructuredStage(
             client=client,
             artifacts=artifacts,
@@ -2419,9 +3019,19 @@ commit-pinned requested source before deciding again.
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
     ) -> StageResult:
+        required_refs = _verification_required_refs(
+            checkpoint,
+            prior,
+            self._stage._artifacts,
+            include_dynamic=True,
+            workspace_path=self._workspace_path,
+            git_executable=self._git_executable,
+            require_anchor=self._require_anchor,
+        )
         result, output_ref = await self._stage.call(
             checkpoint,
-            _unique_refs(_poc_priority_refs(prior) + _prior_refs(prior)),
+            _unique_refs(required_refs + _prior_refs(prior)),
+            required_refs=required_refs,
         )
         status = cast(Literal["ACCEPT", "REVISE", "REJECT"], result.value["status"])
         if status == "REVISE" and not any(
@@ -3319,6 +3929,9 @@ def build_stage_handlers(
             client,
             artifacts,
             environment_preparer,
+            workspace_path=workspace_path,
+            git_executable=git_executable,
+            require_anchor=True,
         ),
         SimpleStage.POC_CANDIDATE_DONE: PoCCandidateStage(
             client=client,
@@ -3332,13 +3945,25 @@ def build_stage_handlers(
             artifacts=artifacts,
             docker=docker,
             containers=containers,
+            workspace_path=workspace_path,
+            git_executable=git_executable,
+            require_anchor=True,
         ),
         SimpleStage.VERIFICATION_FINAL_DONE: FinalVerificationStage(
             client,
             artifacts,
+            workspace_path=workspace_path,
+            git_executable=git_executable,
+            require_anchor=True,
         ),
         SimpleStage.CWE_DONE: CWEStage(client, artifacts),
-        SimpleStage.TECH_GATE_DONE: TechnicalGateStage(client, artifacts),
+        SimpleStage.TECH_GATE_DONE: TechnicalGateStage(
+            client,
+            artifacts,
+            workspace_path=workspace_path,
+            git_executable=git_executable,
+            require_anchor=True,
+        ),
         SimpleStage.SCOPE_GATE_DONE: RuleScopeGateStage(
             client,
             artifacts,

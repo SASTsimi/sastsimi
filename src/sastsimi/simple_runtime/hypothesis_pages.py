@@ -340,6 +340,14 @@ def _mask_sensitive_comments(source: bytes) -> bytes:
     return "".join(safe_lines).encode("utf-8")
 
 
+def redact_source_page_bytes(source: bytes) -> bytes:
+    """Apply the exact page redaction policy to a pinned source blob."""
+
+    return redact_untrusted_text_preserving_lines(
+        _mask_python_secret_values(_mask_sensitive_comments(source))
+    ).data
+
+
 def build_source_page(
     *,
     workspace: Path,
@@ -392,9 +400,7 @@ def build_source_page(
             if len(source) > MAX_SOURCE_FILE_BYTES:
                 raise SourcePageError("HYPOTHESIS_PAGE_SOURCE_TOO_LARGE")
             try:
-                safe_source = redact_untrusted_text_preserving_lines(
-                    _mask_python_secret_values(_mask_sensitive_comments(source))
-                ).data
+                safe_source = redact_source_page_bytes(source)
             except SourcePageError:
                 raise
             except UnicodeDecodeError as exc:

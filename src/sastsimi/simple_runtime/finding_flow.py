@@ -11,7 +11,7 @@ import hashlib
 import os
 import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -34,6 +34,7 @@ class FlowAnchor:
     sink_argument: int
     branch_nodes: tuple[str, ...]
     cwe: str
+    trace_nodes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,14 @@ _COMMAND_SINKS = {
     "subprocess.run",
     "subprocess.call",
     "subprocess.Popen",
+}
+_DIRECT_SINKS: dict[str, frozenset[str]] = {
+    "CWE-78": frozenset(_COMMAND_SINKS),
+    "CWE-79": frozenset({"make_response", "render_template_string"}),
+    "CWE-89": frozenset(),  # Receiver name is proven through sqlite3 provenance.
+    "CWE-95": frozenset({"eval"}),
+    "CWE-918": frozenset({"requests.get", "requests.post"}),
+    "CWE-22": frozenset({"open"}),
 }
 
 
@@ -272,7 +281,12 @@ def _flask_app_binding(tree: ast.Module, receiver: str) -> bool:
     return True
 
 
-def _stable_imports(tree: ast.Module, function: ast.AST, sink_root: str) -> bool:
+def _stable_imports(
+    tree: ast.Module,
+    function: ast.AST,
+    sink_root: str,
+    sink_binding: tuple[str, str] | None = None,
+) -> bool:
     bindings: dict[str, list[tuple[str, str]]] = {
         "request": [],
         sink_root: [],
@@ -294,7 +308,7 @@ def _stable_imports(tree: ast.Module, function: ast.AST, sink_root: str) -> bool
             if item.name in bindings:
                 return False
     if bindings["request"] != [("flask", "request")] or bindings[sink_root] != [
-        ("import", sink_root)
+        sink_binding or ("import", sink_root)
     ]:
         return False
     if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
@@ -334,6 +348,148 @@ def _stable_imports(tree: ast.Module, function: ast.AST, sink_root: str) -> bool
                 if any(_root_name(target) in protected for target in targets):
                     return False
     return True
+
+
+def _stable_builtin(
+    tree: ast.Module, function: ast.FunctionDef | ast.AsyncFunctionDef, name: str
+) -> bool:
+    """Only treat an unshadowed built-in call as an identity-bearing sink."""
+
+    if not _stable_imports(tree, function, "request", ("flask", "request")):
+        return False
+    if any(
+        isinstance(node, (ast.Import, ast.ImportFrom))
+        and any((alias.asname or alias.name) == name for alias in node.names)
+        for node in ast.walk(tree)
+    ):
+        return False
+    if any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.name == name
+        or isinstance(node, ast.Name)
+        and node.id == name
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        or isinstance(node, ast.Attribute)
+        and node.attr == name
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        for node in ast.walk(tree)
+    ):
+        return False
+    return not any(
+        arg.arg == name
+        for arg in (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+            *((function.args.vararg,) if function.args.vararg else ()),
+            *((function.args.kwarg,) if function.args.kwarg else ()),
+        )
+    )
+
+
+def _sqlite_cursor_setup(
+    definitions: list[_Definition],
+    call: ast.Call,
+    branches: tuple[str, ...],
+    tree: ast.Module,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[int] | None:
+    """Prove a local cursor came from a directly imported sqlite3 connection."""
+
+    if not isinstance(call.func, ast.Attribute) or not isinstance(
+        call.func.value, ast.Name
+    ):
+        return None
+    cursor_name = call.func.value.id
+    cursor_definitions = [item for item in definitions if item.name == cursor_name]
+    if len(cursor_definitions) != 1:
+        return None
+    cursor = cursor_definitions[0]
+    if (
+        cursor.line >= call.lineno
+        or not set(cursor.branches).issubset(branches)
+        or not isinstance(cursor.value, ast.Call)
+        or cursor.value.args
+        or cursor.value.keywords
+        or not isinstance(cursor.value.func, ast.Attribute)
+        or cursor.value.func.attr != "cursor"
+        or not isinstance(cursor.value.func.value, ast.Name)
+    ):
+        return None
+    connection_name = cursor.value.func.value.id
+    connection_definitions = [
+        item for item in definitions if item.name == connection_name
+    ]
+    if len(connection_definitions) != 1:
+        return None
+    connection = connection_definitions[0]
+    connection_arguments = (
+        connection.value.args if isinstance(connection.value, ast.Call) else []
+    )
+    if (
+        connection.line >= cursor.line
+        or not set(connection.branches).issubset(cursor.branches)
+        or not isinstance(connection.value, ast.Call)
+        or _name(connection.value.func) != "sqlite3.connect"
+        or len(connection_arguments) != 1
+        or not (
+            _literal(connection_arguments[0])
+            or _stable_module_string(tree, function, connection_arguments[0])
+        )
+        or any(
+            keyword.arg is None or not _literal(keyword.value)
+            for keyword in connection.value.keywords
+        )
+        or not _stable_imports(tree, function, "sqlite3")
+    ):
+        return None
+    return {id(cursor.value), id(connection.value)}
+
+
+def _stable_module_string(
+    tree: ast.Module,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    expression: ast.expr,
+) -> bool:
+    if not isinstance(expression, ast.Name):
+        return False
+    name = expression.id
+    definitions = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == name
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    ]
+    if len(definitions) != 1:
+        return False
+    if any(
+        isinstance(node, ast.Name)
+        and node.id == name
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        and node is not definitions[0].targets[0]
+        for node in ast.walk(tree)
+    ):
+        return False
+    if any(
+        isinstance(node, (ast.Import, ast.ImportFrom))
+        and any((alias.asname or alias.name) == name for alias in node.names)
+        for node in ast.walk(tree)
+    ):
+        return False
+    return not any(
+        arg.arg == name
+        for arg in (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+            *((function.args.vararg,) if function.args.vararg else ()),
+            *((function.args.kwarg,) if function.args.kwarg else ()),
+        )
+    )
 
 
 def _unsupported_writes(
@@ -479,7 +635,17 @@ def _scan_statements(
 
 
 def _literal(value: ast.expr) -> bool:
-    return isinstance(value, ast.Constant)
+    if isinstance(value, ast.Constant):
+        return True
+    if isinstance(value, (ast.Tuple, ast.List)):
+        return len(value.elts) <= 32 and all(_literal(item) for item in value.elts)
+    if isinstance(value, ast.Dict):
+        return (
+            len(value.keys) <= 32
+            and all(key is not None and _literal(key) for key in value.keys)
+            and all(_literal(item) for item in value.values)
+        )
+    return False
 
 
 def _trace_expression(
@@ -650,42 +816,96 @@ def _trace_agrees(
     request_lines = _request_input_lines(tree)
     if request_lines.count(anchor.source_line) != 1:
         return False
-    steps = flow_trace.get("sarif_steps")
+    has_endpoints = "source" in flow_trace or "sink" in flow_trace
+    if has_endpoints:
+        for end, expected_line in (
+            ("source", anchor.source_line),
+            ("sink", anchor.sink_line),
+        ):
+            endpoint = flow_trace.get(end)
+            if not isinstance(endpoint, Mapping) or (
+                endpoint.get("path") != anchor.source_file
+                or endpoint.get("line") != expected_line
+            ):
+                return False
+    if "sarif_steps" not in flow_trace:
+        return has_endpoints
+    steps = flow_trace["sarif_steps"]
     if isinstance(steps, list) and len(steps) >= 2:
+        allowed_lines = {anchor.source_line, anchor.sink_line}
+        for node in anchor.def_use_nodes:
+            _, separator, number = node.rpartition("@")
+            if separator and number.isdecimal():
+                allowed_lines.add(int(number))
+        for node in anchor.branch_nodes:
+            parts = node.split(":")
+            if len(parts) >= 2 and parts[1].isdecimal():
+                allowed_lines.add(int(parts[1]))
         if not all(
-            isinstance(step, Mapping) and step.get("path") == anchor.source_file
+            isinstance(step, Mapping)
+            and step.get("path") == anchor.source_file
+            and type(step.get("line")) is int
+            and step["line"] in allowed_lines
+            and (
+                "column" not in step
+                or type(step["column"]) is int
+                and step["column"] > 0
+            )
             for step in steps
         ):
             return False
-        last = steps[-1]
-        if any(
-            isinstance(step, Mapping)
-            and step.get("line") in request_lines
-            and step.get("line") != anchor.source_line
-            for step in steps[:-1]
-        ):
-            return False
-        return (
-            isinstance(last, Mapping)
-            and last.get("line") == anchor.sink_line
-            and any(
-                isinstance(step, Mapping) and step.get("line") == anchor.source_line
-                for step in steps[:-1]
-            )
-        )
-    for end, expected_line in (
-        ("source", anchor.source_line),
-        ("sink", anchor.sink_line),
-    ):
-        endpoint = flow_trace.get(end)
-        if not isinstance(endpoint, Mapping):
-            return False
+        lines = [int(step["line"]) for step in steps]
         if (
-            endpoint.get("path") != anchor.source_file
-            or endpoint.get("line") != expected_line
+            lines[0] != anchor.source_line
+            or lines[-1] != anchor.sink_line
+            or any(left > right for left, right in zip(lines, lines[1:], strict=False))
+            or any(
+                line in request_lines and line != anchor.source_line
+                for line in lines[:-1]
+            )
         ):
             return False
-    return True
+        return True
+    return False
+
+
+def _direct_effect_is_unambiguous(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    call: ast.Call,
+    cwe: str,
+) -> bool:
+    if cwe not in {"CWE-22", "CWE-79"}:
+        return True
+    parents = {
+        id(child): parent
+        for parent in ast.walk(function)
+        for child in ast.iter_child_nodes(parent)
+    }
+    parent = parents.get(id(call))
+    if cwe == "CWE-79":
+        return isinstance(parent, ast.Return) and parent.value is call
+    if (
+        not isinstance(parent, ast.Attribute)
+        or parent.value is not call
+        or parent.attr != "read"
+    ):
+        return False
+    reader = parents.get(id(parent))
+    if (
+        not isinstance(reader, ast.Call)
+        or reader.func is not parent
+        or reader.args
+        or reader.keywords
+    ):
+        return False
+    if len(call.args) > 2 or any(keyword.arg != "mode" for keyword in call.keywords):
+        return False
+    modes = ([call.args[1]] if len(call.args) == 2 else []) + [
+        keyword.value for keyword in call.keywords
+    ]
+    return len(modes) <= 1 and all(
+        isinstance(mode, ast.Constant) and mode.value in {"r", "rb"} for mode in modes
+    )
 
 
 def resolve_flow_anchor(
@@ -706,7 +926,9 @@ def resolve_flow_anchor(
     except (UnicodeError, SyntaxError, RecursionError):
         return None
     cited = _locations(proposal, path)
-    if not cited or cwe.upper().replace("_", "-") != "CWE-78":
+    normalized_cwe = cwe.upper().replace("_", "-")
+    allowed_sinks = _DIRECT_SINKS.get(normalized_cwe)
+    if not cited or allowed_sinks is None:
         return None
     matches: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, _Callsite]] = []
     for function in ast.walk(tree):
@@ -720,7 +942,12 @@ def resolve_flow_anchor(
             return None
         for callsite in calls:
             callee = _name(callsite.call.func)
-            if callee in _COMMAND_SINKS and callsite.call.lineno in cited:
+            if (
+                callee in allowed_sinks
+                or normalized_cwe == "CWE-89"
+                and callee is not None
+                and callee.endswith(".execute")
+            ) and callsite.call.lineno in cited:
                 matches.append((function, callsite))
     if len(matches) != 1:
         return None
@@ -732,9 +959,21 @@ def resolve_flow_anchor(
     if callee is None:
         return None
     route = _route(tree, function)
+    sink_root = callee.split(".", 1)[0]
+    if normalized_cwe == "CWE-89":
+        # A same-named local cursor is not proof of a SQL query. Its exact
+        # sqlite3 origin is checked below after collecting definitions.
+        stable_sink = True
+    elif normalized_cwe in {"CWE-95", "CWE-22"}:
+        stable_sink = _stable_builtin(tree, function, sink_root)
+    elif normalized_cwe == "CWE-79":
+        stable_sink = _stable_imports(tree, function, sink_root, ("flask", sink_root))
+    else:
+        stable_sink = _stable_imports(tree, function, sink_root)
     if (
         route is None
-        or not _stable_imports(tree, function, callee.split(".", 1)[0])
+        or not stable_sink
+        or not _direct_effect_is_unambiguous(function, call, normalized_cwe)
         or _unsupported_writes(function, call.lineno)
         or not _only_supported_request_uses(function, call.lineno)
         or len(_request_input_lines(function)) != 1
@@ -756,6 +995,14 @@ def resolve_flow_anchor(
     definitions = []
     try:
         _scan_statements(function.body, (), definitions, [])
+        setup_calls: set[int] = set()
+        if normalized_cwe == "CWE-89":
+            proven_setup = _sqlite_cursor_setup(
+                definitions, call, callsite.branches, tree, function
+            )
+            if proven_setup is None:
+                return None
+            setup_calls = proven_setup
         skipped_return_calls = (
             {
                 id(child)
@@ -774,7 +1021,25 @@ def resolve_flow_anchor(
                     not isinstance(node, ast.Call)
                     or node is call
                     or id(node) in skipped_return_calls
+                    or id(node) in setup_calls
                     or node.lineno > call.lineno
+                ):
+                    continue
+                if (
+                    normalized_cwe == "CWE-95"
+                    and _name(node.func) == "str"
+                    and len(node.args) == 1
+                    and node.args[0] is call
+                    and not node.keywords
+                ):
+                    continue
+                if (
+                    normalized_cwe == "CWE-22"
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.value is call
+                    and node.func.attr == "read"
+                    and not node.args
+                    and not node.keywords
                 ):
                     continue
                 if (
@@ -804,6 +1069,20 @@ def resolve_flow_anchor(
         sink_callee=callee,
         sink_argument=0,
         branch_nodes=callsite.branches,
-        cwe="CWE-78",
+        cwe=normalized_cwe,
     )
-    return anchor if _trace_agrees(flow_trace, anchor, tree) else None
+    if not _trace_agrees(flow_trace, anchor, tree):
+        return None
+    steps = flow_trace.get("sarif_steps") if flow_trace is not None else None
+    if isinstance(steps, list) and len(steps) > 2:
+        interior = [
+            step for step in steps[1:-1] if step != steps[0] and step != steps[-1]
+        ]
+        anchor = replace(
+            anchor,
+            trace_nodes=tuple(
+                f"{step['path']}:{step['line']}:{step.get('column', '')}"
+                for step in interior
+            ),
+        )
+    return anchor

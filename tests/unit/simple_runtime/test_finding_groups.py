@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import hashlib
+import json
+from dataclasses import asdict, replace
+from typing import Any, cast
+
+import pytest
 
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
@@ -137,3 +142,69 @@ def test_workspace_and_commit_are_part_of_group_identity() -> None:
     result = group_verified_findings(members)
     assert result.visible_group_count == 2
     assert result.groups[0].group_id != result.groups[1].group_id
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"source_key": "other"},
+        {"source_access": "request.form"},
+        {"source_line": 6},
+        {"route": "/different"},
+        {"function": "other_handler"},
+        {"def_use_nodes": ("other@7",)},
+        {"sink_line": 9},
+        {"sink_callee": "subprocess.run"},
+        {"branch_nodes": ("if:8:yes",)},
+        {"cwe": "CWE-89"},
+    ],
+)
+def test_different_proven_flow_dimensions_never_merge(
+    change: dict[str, object],
+) -> None:
+    first = _anchor()
+    second = replace(first, **cast(Any, change))
+    result = group_verified_findings(
+        (_member("F-001", first), _member("F-002", second))
+    )
+    assert result.raw_count == result.visible_group_count == 2
+
+
+def test_existing_command_flow_group_id_remains_stable_on_resume() -> None:
+    anchor = _anchor()
+    key = {
+        "version": "verified-python-flow-v1",
+        "analysis_id": "analysis",
+        "workspace_id": "workspace",
+        "commit_id": "commit",
+        "flow": {
+            key: value for key, value in asdict(anchor).items() if key != "trace_nodes"
+        },
+    }
+    expected = hashlib.sha256(
+        json.dumps(
+            key, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    result = group_verified_findings((_member("F-001", anchor),))
+    assert result.groups[0].group_id == expected
+
+
+def test_existing_undetermined_singleton_group_id_remains_stable() -> None:
+    member = _member("F-001")
+    key = {
+        "version": "verified-python-flow-v1",
+        "analysis_id": "analysis",
+        "workspace_id": "workspace",
+        "commit_id": "commit",
+        "singleton_display_id": "F-001",
+        "hypothesis_id": member.hypothesis_id,
+        "finding_hash": member.finding_ref.content_hash,
+    }
+    expected = hashlib.sha256(
+        json.dumps(
+            key, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    result = group_verified_findings((member,))
+    assert result.groups[0].group_id == expected

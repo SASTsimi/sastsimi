@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import sqlite3
+import stat
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import cast
+from uuid import uuid4
 
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
 from sastsimi.config.local_evaluation_profile import LocalCodexSubscriptionSettings
@@ -28,6 +32,7 @@ from sastsimi.policy.adapters.official_http import (
     resolve_public_addresses,
 )
 from sastsimi.ports.public_commands import PublicCommandApplication
+from sastsimi.ports.report_export import ReportUnavailable
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import (
     ProgressProjector,
@@ -36,10 +41,19 @@ from sastsimi.progress.projector import (
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.reporting.grouped_bundle import (
+    GroupBundleUnavailable as GroupBundleUnavailable,
+)
+from sastsimi.reporting.safe_windows_directory import (
+    capture_directory_identity,
+    guarded_windows_replace_directory,
+    locked_windows_directory,
+)
 from sastsimi.runtime.system_support import SystemClock, UUIDIds
 from sastsimi.sandbox.docker_adapter import DockerAdapter
 from sastsimi.setup.service import SystemToolDiscovery
 from sastsimi.simple_runtime.application import (
+    OfflineRepairPreflight,
     SimpleAnalysisApplication,
     SimpleAnalysisOutcome,
     SimpleAnalysisRequest,
@@ -69,6 +83,10 @@ from sastsimi.simple_runtime.finding_group_projection import (
 from sastsimi.simple_runtime.finding_groups import finding_group_rows
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
 from sastsimi.simple_runtime.github_policy import GitHubPolicyDiscovery
+from sastsimi.simple_runtime.group_report_projection import (
+    current_group_bundle,
+    current_report_groups,
+)
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
@@ -106,6 +124,61 @@ from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from .simple_process import LocalProcessExecutor
 
 _MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
+
+
+def _publish_group_archive_posix(
+    root: Path, directory_parts: tuple[str, ...], body: bytes
+) -> None:
+    """Publish a content-addressed ZIP without following writable path links."""
+
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise GroupBundleUnavailable("GROUP_PATH_UNSAFE")
+    directory_flags = os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | os.O_NOFOLLOW
+    with ExitStack() as stack:
+        parent_fd = os.open(root, directory_flags)
+        stack.callback(os.close, parent_fd)
+        for part in directory_parts:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            parent_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            stack.callback(os.close, parent_fd)
+
+        temporary = f".{uuid4().hex}.tmp"
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(
+                    temporary,
+                    "bundle.zip",
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                pass
+        finally:
+            os.unlink(temporary, dir_fd=parent_fd)
+
+        descriptor = os.open(
+            "bundle.zip", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise GroupBundleUnavailable("GROUP_PATH_UNSAFE")
+            if stream.read(len(body) + 1) != body:
+                raise GroupBundleUnavailable("GROUP_PATH_UNSAFE")
+        os.fsync(parent_fd)
 
 
 def _codex_home() -> Path:
@@ -364,6 +437,7 @@ def build_analysis_application(
             workspace=static.workspace_path,
             wheel_bundle_path=profile.poc_wheel_archive_path,
             wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
+            offline_base_image_digest=profile.poc_offline_base_image_digest,
             git_executable=(
                 str(profile.tools["git"].executable_path)
                 if "git" in profile.tools
@@ -398,8 +472,28 @@ def build_analysis_application(
             ),
             codex_invalid_output_resume=profile.provider == "codex",
             cleanup_artifacts=artifacts,
+            offline_base_ready=environments.offline_base_ready,
             recovery=recovery_factory(identity),
             policy_snapshot_ref=static.policy_snapshot_ref,
+        )
+
+    async def offline_repair_preflight(
+        identity: CheckpointIdentity,
+    ) -> OfflineRepairPreflight:
+        preparer = DirectEnvironmentPreparer(
+            docker=docker,
+            artifacts=SimpleArtifactRepository(data_dir, identity),
+            workspace=profile.workspace_root,
+            wheel_bundle_path=profile.poc_wheel_archive_path,
+            wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
+            offline_base_image_digest=profile.poc_offline_base_image_digest,
+        )
+        smoke = await preparer.preflight_offline_repair()
+        return OfflineRepairPreflight(
+            base_image_digest=smoke.base_image_digest,
+            browser_command=smoke.browser_command,
+            python_version=smoke.python_version,
+            smoke_output_digest=smoke.smoke_output_digest,
         )
 
     return SimpleAnalysisApplication(
@@ -446,6 +540,11 @@ def build_analysis_application(
             feed="current",
             store=store,
             llm_timeout_seconds=profile.llm_timeout_seconds,
+        ),
+        offline_repair_preflight=(
+            offline_repair_preflight
+            if profile.poc_offline_base_image_digest is not None
+            else None
         ),
     )
 
@@ -497,9 +596,17 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         outcome = asyncio.run(run())
         return self._outcome(outcome.display_analysis_id, repository, commit)
 
-    def resume(self, analysis_id: str) -> dict[str, object]:
+    def resume(
+        self,
+        analysis_id: str,
+        *,
+        repair_exhausted_hypothesis: str | None = None,
+    ) -> dict[str, object]:
         outcome = asyncio.run(
-            build_analysis_application(self._config, self._profile).resume(analysis_id)
+            build_analysis_application(self._config, self._profile).resume(
+                analysis_id,
+                repair_exhausted_hypothesis=repair_exhausted_hypothesis,
+            )
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
         data = self._outcome(
@@ -515,12 +622,17 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         self,
         analysis_id: str,
         callback: Callable[[ProgressSnapshot], None],
+        *,
+        repair_exhausted_hypothesis: str | None = None,
     ) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
 
         async def run() -> SimpleAnalysisOutcome:
             task = asyncio.create_task(
-                build_analysis_application(self._config, self._profile).resume(exact)
+                build_analysis_application(self._config, self._profile).resume(
+                    exact,
+                    repair_exhausted_hypothesis=repair_exhausted_hypothesis,
+                )
             )
             return await self._track(task, [exact], callback)
 
@@ -1165,6 +1277,86 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             ).as_posix()
         except (KeyError, OSError, ValueError):
             return None
+
+    def export_report_group(self, analysis_id: str, group_id: str) -> str:
+        """Publish a current, independently verified group review ZIP atomically."""
+
+        if re.fullmatch(r"[0-9a-f]{64}", group_id) is None:
+            raise GroupBundleUnavailable("GROUP_ID_INVALID")
+        try:
+            exact = self._display.resolve(analysis_id)
+            run = self._store.require_analysis_run(exact)
+            checkpoints = self._store.list_checkpoints(exact)
+            if candidate_report_currentness_blocked(
+                run,
+                checkpoints,
+                data_dir=self._config.data_dir,
+                store=self._store,
+            ):
+                raise GroupBundleUnavailable("GROUP_NOT_CURRENT")
+            projection = current_report_groups(
+                run,
+                checkpoints,
+                data_dir=self._config.data_dir,
+                database_path=self._store.database_path,
+            )
+            group = next(
+                (item for item in projection.groups if item.group_id == group_id),
+                None,
+            )
+            if group is None:
+                raise GroupBundleUnavailable("GROUP_NOT_CURRENT")
+            body = current_group_bundle(
+                run,
+                checkpoints,
+                group,
+                data_dir=self._config.data_dir,
+                database_path=self._store.database_path,
+            )
+        except (LookupError, OSError, ValueError, sqlite3.Error) as error:
+            if isinstance(error, GroupBundleUnavailable):
+                raise
+            raise GroupBundleUnavailable("GROUP_NOT_CURRENT") from error
+        digest = hashlib.sha256(body).hexdigest()
+        relative = Path("reports") / exact / "groups" / group_id / digest / "bundle.zip"
+        resolved_root = self._config.data_dir.resolve(strict=True)
+        root = (
+            Path("\\\\?\\" + str(resolved_root))
+            if os.name == "nt" and not str(resolved_root).startswith("\\\\?\\")
+            else resolved_root
+        )
+        directory = root / relative.parent
+        try:
+            if os.name != "nt":
+                _publish_group_archive_posix(root, relative.parent.parts, body)
+            else:
+                with ExitStack() as stack:
+                    identity = capture_directory_identity(root)
+                    stack.enter_context(
+                        locked_windows_directory(root, expected_identity=identity)
+                    )
+                    cursor = root
+                    for part in relative.parent.parts[:-1]:
+                        cursor = cursor / part
+                        stack.enter_context(locked_windows_directory(cursor))
+                    stack.enter_context(guarded_windows_replace_directory(directory))
+                    destination = directory / "bundle.zip"
+                    if destination.exists():
+                        if destination.is_symlink() or destination.read_bytes() != body:
+                            raise GroupBundleUnavailable("GROUP_PATH_UNSAFE")
+                    else:
+                        temporary = directory / f".{uuid4().hex}.tmp"
+                        try:
+                            with temporary.open("xb") as stream:
+                                stream.write(body)
+                                stream.flush()
+                                os.fsync(stream.fileno())
+                            os.replace(temporary, destination)
+                        finally:
+                            temporary.unlink(missing_ok=True)
+        except (OSError, ReportUnavailable) as error:
+            raise GroupBundleUnavailable("GROUP_PATH_UNSAFE") from error
+        return relative.as_posix()
 
     def _finding_identity(
         self,

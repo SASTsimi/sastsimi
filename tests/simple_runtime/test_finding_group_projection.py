@@ -109,7 +109,7 @@ def _case(
                 }
             }
         }
-        for line in (1, 10, 11)
+        for line in (10, 11)
     ]
     candidate = StaticCandidate(
         candidate_id="candidate-1",
@@ -484,7 +484,14 @@ def test_dashboard_folds_only_presentation_and_keeps_each_report_path(
     assert query.report_path(run.analysis_id, "F-002").name == "F-002.md"
     exported = query.bundle_members(run.analysis_id, include_logs=False)
     assert "reports/F-001.md" in exported
-    assert "reports/F-002.md" in exported
+    assert "reports/F-002.md" not in exported
+    assert "reports/export-selection.json" in exported
+    original = query.bundle_members(
+        run.analysis_id,
+        include_logs=False,
+        report_ids=frozenset({"F-002"}),
+    )
+    assert "reports/F-002.md" in original
 
 
 def test_public_result_preserves_raw_count_and_adds_proven_group_count(

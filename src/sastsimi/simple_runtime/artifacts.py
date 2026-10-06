@@ -766,6 +766,69 @@ class SimpleArtifactRepository:
             raise ValueError("SIMPLE_RUNTIME_CONTEXT_TOO_LARGE")
         return context
 
+    def prompt_context_prioritized(
+        self,
+        required_refs: tuple[StoredDataRef, ...],
+        optional_refs: tuple[StoredDataRef, ...],
+        *,
+        max_bytes: int = _MAX_CONTEXT_BYTES,
+    ) -> bytes:
+        """Keep each required CAS object whole and identify omitted optional refs."""
+
+        items: list[dict[str, Any]] = []
+        required = tuple(dict.fromkeys(required_refs))
+        optional = tuple(
+            ref for ref in dict.fromkeys(optional_refs) if ref not in required
+        )
+
+        def item_for(ref: StoredDataRef) -> dict[str, Any]:
+            raw = self.read(ref)
+            if not items:
+                try:
+                    proposal = json.loads(raw)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    proposal = None
+                if (
+                    isinstance(proposal, dict)
+                    and proposal.get("kind") == "simple_hypothesis_proposal"
+                ):
+                    self._require_proposal_original(proposal, raw)
+            redacted = self._redacted(raw)
+            if not items and redacted != raw:
+                raise ValueError("SIMPLE_RUNTIME_CONTEXT_REDACTED")
+            payload = raw if not items else redacted
+            try:
+                data: Any = json.loads(payload)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                data = payload.decode("utf-8", errors="strict")
+            return {"reference": ref.model_dump(mode="json"), "data": data}
+
+        for ref in required:
+            items.append(item_for(ref))
+            if len(canonical_bytes({"exact_inputs": items})) > max_bytes:
+                raise ValueError("SIMPLE_RUNTIME_CONTEXT_TOO_LARGE")
+
+        omitted = 0
+        for ref in optional:
+            try:
+                item = item_for(ref)
+            except (OSError, ValueError, UnicodeError, sqlite3.Error):
+                omitted += 1
+                continue
+            proposed = canonical_bytes(
+                {"exact_inputs": [*items, item], "omitted_optional_refs": omitted}
+            )
+            if len(proposed) > max_bytes:
+                omitted += 1
+            else:
+                items.append(item)
+        result = canonical_bytes(
+            {"exact_inputs": items, "omitted_optional_refs": omitted}
+        )
+        if len(result) > max_bytes:
+            raise ValueError("SIMPLE_RUNTIME_CONTEXT_TOO_LARGE")
+        return result
+
     def published_refs(
         self,
         kinds: frozenset[str],

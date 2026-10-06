@@ -212,6 +212,18 @@ def create_server(
                         send_body,
                     )
                 elif (
+                    len(parts) == 6
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "groups"
+                    and parts[5] == "bundle.zip"
+                ):
+                    self._download(
+                        query.group_bundle_bytes(parts[2], parts[4]),
+                        "application/zip",
+                        f"{parts[4]}-group-bundle.zip",
+                        send_body,
+                    )
+                elif (
                     len(parts) == 4
                     and parts[:2] == ("api", "analyses")
                     and parts[3] == "bundle.zip"

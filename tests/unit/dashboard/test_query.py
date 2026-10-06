@@ -12,7 +12,11 @@ import pytest
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
+from sastsimi.dashboard.query import (
+    DashboardIncomplete,
+    DashboardNotFound,
+    DashboardQuery,
+)
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.bundle_files import PublishedBundle, parse_bundle_manifest
@@ -20,6 +24,11 @@ from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.attack_surfaces import AttackSurface, SurfaceIndex
 from sastsimi.simple_runtime.candidates import normalize_candidate_page
+from sastsimi.simple_runtime.finding_flow import FlowAnchor
+from sastsimi.simple_runtime.finding_groups import (
+    VerifiedFindingMember,
+    group_verified_findings,
+)
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
@@ -1203,6 +1212,238 @@ def test_current_accepted_report_remains_accessible(tmp_path) -> None:
     assert query.report_path("analysis-a", "F-001") == report_path
 
 
+def _two_current_reports(
+    tmp_path: Path, *, attach_bundles: bool = False
+) -> tuple[DashboardQuery, StoredDataRef]:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database)
+    run = store.require_analysis_run("analysis-a")
+    store.save_analysis_run(
+        run.model_copy(update={"hypothesis_ids": (*run.hypothesis_ids, "hypothesis-2")})
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-2",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    finding_ref = artifacts.put_json({"kind": "simple_finding", "id": 2})
+    display_id = FindingDisplayIdStore(database).get_or_allocate(
+        "analysis-a", finding_ref
+    )
+    assert display_id == "F-002"
+    gate_ref = artifacts.put_json(
+        {"kind": "simple_technical_gate", "result": {"status": "ACCEPT"}}
+    )
+    report_path = tmp_path / "reports" / "analysis-a" / "F-002.md"
+    report_path.write_text("# second report", encoding="utf-8")
+    for stage, outputs, inputs in (
+        (SimpleStage.TECH_GATE_DONE, (gate_ref,), ()),
+        (SimpleStage.FINDING_DONE, (finding_ref,), ()),
+        (
+            SimpleStage.REPORT_DONE,
+            (
+                artifacts.put_json({"kind": "simple_report_draft"}),
+                artifacts.put_bytes(b"# second report", "text/markdown"),
+            ),
+            (finding_ref,),
+        ),
+    ):
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=identity,
+                stage=stage,
+                stage_version=STAGE_VERSION[stage],
+                status=StageStatus.SUCCEEDED,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                output_refs=outputs,
+                gate_decision="ACCEPT" if stage is SimpleStage.TECH_GATE_DONE else None,
+                markdown_path=str(report_path)
+                if stage is SimpleStage.REPORT_DONE
+                else None,
+            )
+        )
+    if attach_bundles:
+        first_identity = identity.model_copy(update={"hypothesis_id": "hypothesis-1"})
+        attach_current_bundle(tmp_path, first_identity, ref("finding"), "F-001")
+        attach_current_bundle(
+            tmp_path,
+            identity,
+            finding_ref,
+            "F-002",
+            stdout=b"second-proof\n",
+        )
+    return DashboardQuery(tmp_path), finding_ref
+
+
+def _export_group_members(*, proven: bool) -> tuple[VerifiedFindingMember, ...]:
+    anchor = (
+        FlowAnchor(
+            route="/ping",
+            function="ping",
+            source_file="app.py",
+            source_line=7,
+            source_access="request.args",
+            source_key="target",
+            def_use_nodes=("target@7",),
+            sink_file="app.py",
+            sink_line=8,
+            sink_callee="os.system",
+            sink_argument=0,
+            branch_nodes=(),
+            cwe="CWE-78",
+        )
+        if proven
+        else None
+    )
+    return tuple(
+        VerifiedFindingMember(
+            analysis_id="analysis-a",
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            display_id=display_id,
+            finding_ref=ref(f"export-{display_id}"),
+            hypothesis_id=f"hypothesis-{index}",
+            validated_poc_ref=ref(f"poc-{display_id}"),
+            proposal_ref=ref(f"proposal-{display_id}"),
+            cwe_ref=ref(f"cwe-{display_id}"),
+            candidate_ids=(),
+            candidate_origins=(),
+            scope_status="UNCERTAIN",
+            anchor=anchor,
+            undetermined_reason=None if proven else "FLOW_NOT_RESOLVED",
+        )
+        for index, display_id in enumerate(("F-001", "F-002"), start=1)
+    )
+
+
+def test_default_bundle_exports_only_proven_group_representative_and_mapping(
+    tmp_path: Path,
+) -> None:
+    query, finding_ref = _two_current_reports(tmp_path, attach_bundles=True)
+    grouped = group_verified_findings(_export_group_members(proven=True))
+    with patch(
+        "sastsimi.dashboard.query.current_report_groups",
+        return_value=grouped,
+    ):
+        detail = query.get_analysis("analysis-a")
+        members = query.bundle_members("analysis-a", artifact_ids=frozenset())
+        selected = query.bundle_members(
+            "analysis-a",
+            artifact_ids=frozenset(),
+            report_ids=frozenset({"F-002"}),
+        )
+    assert tuple(report.display_id for report in detail.reports) == ("F-001", "F-002")
+    assert detail.finding_group_count == 1
+    manifest = json.loads(members["manifest.json"])
+    assert [report["display_id"] for report in manifest["reports"]] == [
+        "F-001",
+        "F-002",
+    ]
+    assert any(
+        artifact["artifact_id"] == finding_ref.content_hash
+        for artifact in manifest["artifacts"]
+    )
+    assert "reports/F-001.md" in members
+    assert "reports/F-002.md" not in members
+    assert members["reports/originals/F-002/report_kr.md"] == (
+        "# 한국어 보고서\n".encode()
+    )
+    assert members["reports/originals/F-002/report_en.md"] == b"# English report\n"
+    assert members["reports/originals/F-002/poc.sh"].startswith(b"#!/bin/sh")
+    assert members["reports/originals/F-002/evidence/stdout.txt"] == (b"second-proof\n")
+    assert "reports/originals/F-002/evidence/provenance.json" in members
+    mapping = json.loads(members["reports/export-selection.json"])
+    assert mapping["mode"] == "PROVEN_FLOW_DEDUP"
+    assert mapping["groups"] == [
+        {
+            "group_id": grouped.groups[0].group_id,
+            "representative_id": "F-001",
+            "member_ids": ["F-001", "F-002"],
+            "original_paths": {"F-002": "reports/originals/F-002/"},
+        }
+    ]
+    assert "reports/F-002.md" in selected
+    assert "reports/F-001.md" not in selected
+    assert "reports/export-selection.json" not in selected
+    assert "reports/F-002/poc.sh" in selected
+    assert "reports/originals/F-002/poc.sh" not in selected
+    assert query.report_content("analysis-a", "F-002") == b"# second report"
+
+
+def test_default_bundle_preserves_legacy_nonrepresentative_report(
+    tmp_path: Path,
+) -> None:
+    query, _ = _two_current_reports(tmp_path)
+    grouped = group_verified_findings(_export_group_members(proven=True))
+    with patch(
+        "sastsimi.dashboard.query.current_report_groups",
+        return_value=grouped,
+    ):
+        members = query.bundle_members("analysis-a", artifact_ids=frozenset())
+    assert "reports/F-002.md" not in members
+    assert members["reports/originals/F-002/report_kr.md"] == b"# second report"
+
+
+def test_default_bundle_rejects_corrupt_nonrepresentative_attachment(
+    tmp_path: Path,
+) -> None:
+    query, _ = _two_current_reports(tmp_path, attach_bundles=True)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-2",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    archive_ref = store.require(identity, SimpleStage.REPORT_DONE).bundle_archive_ref
+    assert archive_ref is not None
+    archive_path = (
+        tmp_path
+        / "artifacts"
+        / "sha256"
+        / archive_ref.content_hash[:2]
+        / archive_ref.content_hash[2:]
+    )
+    archive_path.write_bytes(b"corrupted archive")
+    grouped = group_verified_findings(_export_group_members(proven=True))
+    with patch(
+        "sastsimi.dashboard.query.current_report_groups",
+        return_value=grouped,
+    ):
+        with pytest.raises(
+            DashboardIncomplete, match="DASHBOARD_REPORT_BUNDLE_UNAVAILABLE"
+        ):
+            query.bundle_members("analysis-a", artifact_ids=frozenset())
+        explicit = query.bundle_members(
+            "analysis-a",
+            artifact_ids=frozenset(),
+            report_ids=frozenset({"F-001"}),
+        )
+    assert "reports/F-001.md" in explicit
+    assert "reports/originals/F-002/report_kr.md" not in explicit
+
+
+def test_default_bundle_keeps_undetermined_and_incomplete_groups_raw(
+    tmp_path: Path,
+) -> None:
+    query, _ = _two_current_reports(tmp_path)
+    complete_but_unknown = group_verified_findings(_export_group_members(proven=False))
+    incomplete = group_verified_findings(_export_group_members(proven=True)[:1])
+    for projection in (complete_but_unknown, incomplete):
+        with patch(
+            "sastsimi.dashboard.query.current_report_groups",
+            return_value=projection,
+        ):
+            members = query.bundle_members("analysis-a", artifact_ids=frozenset())
+        assert "reports/F-001.md" in members
+        assert "reports/F-002.md" in members
+        assert "reports/export-selection.json" not in members
+
+
 def _attach_bundle(tmp_path: Path) -> tuple[CheckpointIdentity, PublishedBundle]:
     identity = CheckpointIdentity(
         analysis_id="analysis-a",
@@ -2065,6 +2306,88 @@ def test_terminal_gate_projects_complete_without_report_or_resume_hint(
     assert detail.hypotheses[0].disposition == expected_disposition
     assert detail.hypotheses[0].resume_available is False
     assert detail.hypotheses[0].error_code is None
+
+
+@pytest.mark.parametrize(
+    "stage",
+    (SimpleStage.VERIFICATION_INITIAL_DONE, SimpleStage.POC_EXECUTION_DONE),
+)
+def test_status_cells_keep_verified_terminal_hold_complete(
+    tmp_path: Path, stage: SimpleStage
+) -> None:
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(database, artifact_data_dir=tmp_path)
+    display = AnalysisDisplayIdStore(database).get_or_allocate("analysis-a")
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id="analysis-a",
+            display_analysis_id=display,
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            repository="https://example.invalid/repository.git",
+            hypothesis_ids=("hypothesis-1",),
+        )
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    attempt_id = "terminal-attempt"
+    external_prerequisites_ref: StoredDataRef | None = None
+    output_refs: tuple[StoredDataRef, ...]
+    attempt_number = 1
+    if stage is SimpleStage.VERIFICATION_INITIAL_DONE:
+        external_prerequisites_ref = artifacts.put_json(
+            {
+                "kind": "simple_initial_verification",
+                "attempt_id": attempt_id,
+                "result": {
+                    "initial_assessment": "HOLD",
+                    "unmet_external_prerequisites": ["attacker control unproven"],
+                },
+            }
+        )
+        output_refs = (external_prerequisites_ref,)
+    else:
+        attempt_number = 3
+        execution_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_execution",
+                "attempt_id": attempt_id,
+                "timed_out": False,
+                "exit_code": 0,
+            }
+        )
+        interpretation_ref = artifacts.put_json(
+            {
+                "kind": "simple_dynamic_interpretation",
+                "execution_ref": execution_ref.model_dump(mode="json"),
+                "result": {"outcome": "INCONCLUSIVE"},
+            }
+        )
+        output_refs = (execution_ref, interpretation_ref)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=stage,
+            stage_version=STAGE_VERSION[stage],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            output_refs=output_refs,
+            attempt_number=attempt_number,
+            attempt_id=attempt_id,
+            verdict="HOLD",
+            external_prerequisites_ref=external_prerequisites_ref,
+        )
+    )
+
+    cells = DashboardQuery(tmp_path).list_status_cells(display).items
+
+    assert [(cell.id, cell.status) for cell in cells] == [("hypothesis-1", "COMPLETE")]
 
 
 # mypy: disable-error-code="no-untyped-def"

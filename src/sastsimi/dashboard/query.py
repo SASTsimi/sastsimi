@@ -32,16 +32,18 @@ from sastsimi.reporting.bundle_files import (
     read_bundle_file,
 )
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.reporting.grouped_bundle import GroupBundleUnavailable
 from sastsimi.simple_runtime.artifacts import (
     SimpleArtifactRepository,
     verified_terminal_projection,
 )
 from sastsimi.simple_runtime.attack_surfaces import surface_index_from_json
-from sastsimi.simple_runtime.finding_group_projection import (
-    project_current_finding_groups,
-)
 from sastsimi.simple_runtime.finding_groups import finding_group_rows
 from sastsimi.simple_runtime.gate_guard import technical_gate_accepted
+from sastsimi.simple_runtime.group_report_projection import (
+    current_group_bundle,
+    current_report_groups,
+)
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
@@ -77,6 +79,7 @@ from .models import (
     ArtifactView,
     DashboardKpiView,
     DashboardShellView,
+    FindingGroupView,
     FindingReportView,
     FindingTraceView,
     HypothesisProgressView,
@@ -99,6 +102,56 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 1024 * 1024
 _MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACTS = 512
+
+
+def _default_report_export_selection(
+    known_reports: frozenset[str], groups: tuple[FindingGroupView, ...]
+) -> tuple[frozenset[str], dict[str, object] | None]:
+    """Deduplicate proven members only; keep ungrouped legacy reports as-is."""
+
+    member_ids = [member for group in groups for member in group.member_ids]
+    if (
+        len(set(member_ids)) != len(member_ids)
+        or not set(member_ids) <= known_reports
+        or any(group.representative_id not in group.member_ids for group in groups)
+    ):
+        return known_reports, None
+    proven = [
+        group
+        for group in groups
+        if group.status == "PROVEN_SAME_FLOW" and len(group.member_ids) > 1
+    ]
+    if not proven:
+        return known_reports, None
+    omitted = {
+        member_id
+        for group in proven
+        for member_id in group.member_ids
+        if member_id != group.representative_id
+    }
+    metadata: dict[str, object] = {
+        "mode": "PROVEN_FLOW_DEDUP",
+        "grouping_coverage": (
+            "FULL" if set(member_ids) == known_reports else "PARTIAL"
+        ),
+        "ungrouped_raw_report_ids": sorted(known_reports - set(member_ids)),
+        "groups": [
+            {
+                "group_id": group.group_id,
+                "representative_id": group.representative_id,
+                "member_ids": group.member_ids,
+                "original_paths": {
+                    member_id: f"reports/originals/{member_id}/"
+                    for member_id in group.member_ids
+                    if member_id != group.representative_id
+                },
+            }
+            for group in proven
+        ],
+    }
+    return known_reports - omitted, metadata
+
+
 _INCOMPLETE_ARTIFACT_PREVIEW = 32
 _MAX_PROJECTED_ARTIFACT_BYTES = 64 * 1024 * 1024
 _STALE_SECONDS = 30
@@ -461,9 +514,47 @@ class DashboardQuery:
         output_artifacts = tuple(
             item for item in artifacts if item.artifact_id in output_artifact_ids
         )
+        group_rows: list[dict[str, object]] = []
+        if (
+            run is not None
+            and reports
+            and not self._candidate_report_blocked(run, values)
+        ):
+            try:
+                projection = current_report_groups(
+                    run, values, data_dir=self._data_dir, database_path=self._database
+                )
+                group_rows = [dict(row) for row in finding_group_rows(projection)]
+                for row, group in zip(group_rows, projection.groups, strict=True):
+                    if group.status != "PROVEN_SAME_FLOW" or len(group.member_ids) < 2:
+                        continue
+                    try:
+                        for member_id in group.member_ids:
+                            self.report_path(exact, member_id)
+                        current_group_bundle(
+                            run,
+                            values,
+                            group,
+                            data_dir=self._data_dir,
+                            database_path=self._database,
+                            _current_projection=projection,
+                        )
+                    except (GroupBundleUnavailable, DashboardNotFound) as error:
+                        row["bundle_unavailable_reason"] = (
+                            error.code
+                            if isinstance(error, GroupBundleUnavailable)
+                            else "GROUP_MEMBER_STALE"
+                        )
+                    else:
+                        row["bundle_url"] = (
+                            f"/api/analyses/{exact}/groups/{group.group_id}/bundle.zip"
+                        )
+            except (OSError, ValueError, sqlite3.Error, LookupError):
+                pass
         return {
             "tab": tab,
             "reports": [item.model_dump(mode="json") for item in reports],
+            "finding_groups": group_rows,
             "finding_traces": [item.model_dump(mode="json") for item in traces],
             "artifacts": [item.model_dump(mode="json") for item in output_artifacts],
             "poc_artifact_ids": list(poc_ids),
@@ -557,7 +648,10 @@ class DashboardQuery:
                 status = "CONFIRMED"
             elif checkpoints:
                 status = (
-                    ProgressProjector(_CheckpointProjection(tuple(checkpoints)))
+                    ProgressProjector(
+                        _CheckpointProjection(tuple(checkpoints)),
+                        artifact_data_dir=self._data_dir,
+                    )
                     .snapshot(exact)
                     .status
                 )
@@ -800,6 +894,15 @@ class DashboardQuery:
             raise DashboardNotFound("DASHBOARD_ARTIFACT_NOT_FOUND")
         if report_ids is not None and not report_ids <= known_reports:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
+        exported_reports = report_ids if report_ids is not None else known_reports
+        if report_ids is None:
+            exported_reports, selection = _default_report_export_selection(
+                frozenset(known_reports), detail.finding_groups
+            )
+            if selection is not None:
+                members["reports/export-selection.json"] = json.dumps(
+                    selection, ensure_ascii=False, indent=2
+                ).encode("utf-8")
         values = list(self._checkpoints(exact))
         run = self._simple_run(exact)
         contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
@@ -816,11 +919,18 @@ class DashboardQuery:
             safe_kind = re.sub(r"[^A-Za-z0-9_.-]", "-", kind)[:80] or "artifact"
             members[f"artifacts/{safe_kind}-{artifact.artifact_id[:12]}{suffix}"] = raw
         for report in detail.reports:
-            if report_ids is not None and report.display_id not in report_ids:
+            if report_ids is not None and report.display_id not in exported_reports:
                 continue
-            members[f"reports/{report.display_id}.md"] = self.report_markdown(
-                exact, report.display_id
-            ).encode("utf-8")
+            grouped_original = report.display_id not in exported_reports
+            if grouped_original:
+                original_prefix = f"reports/originals/{report.display_id}"
+                members[f"{original_prefix}/report_kr.md"] = self.report_markdown(
+                    exact, report.display_id
+                ).encode("utf-8")
+            else:
+                members[f"reports/{report.display_id}.md"] = self.report_markdown(
+                    exact, report.display_id
+                ).encode("utf-8")
             try:
                 manifest, _, artifacts = self._report_bundle(exact, report.display_id)
             except DashboardNotFound as error:
@@ -854,7 +964,9 @@ class DashboardQuery:
                     body, _ = read_bundle_file(manifest, entry.path, read_verified)
                 except (OSError, ValueError) as error:
                     raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
-                if entry.path == "report_kr.md":
+                if grouped_original:
+                    members[f"{original_prefix}/{entry.path}"] = body
+                elif entry.path == "report_kr.md":
                     members[f"reports/{report.display_id}.md"] = body
                 elif entry.path == "report_en.md":
                     members[f"reports/en/{report.display_id}.md"] = body
@@ -866,9 +978,30 @@ class DashboardQuery:
         exact = self._resolved(analysis_id)
         detail = self.get_analysis(exact)
         members = self.bundle_members(exact)
-        english = [
-            report.display_id for report in detail.reports if report.english_available
-        ]
+        english = sorted(
+            path.removeprefix("reports/en/").removesuffix(".md")
+            for path in members
+            if path.startswith("reports/en/") and path.endswith(".md")
+        )
+        originals = sorted(
+            path.split("/")[2]
+            for path in members
+            if path.startswith("reports/originals/") and path.endswith("/report_kr.md")
+        )
+        selection_bytes = members.get("reports/export-selection.json")
+        selection = json.loads(selection_bytes) if selection_bytes is not None else None
+        if isinstance(selection, dict):
+            report_export_mode = "PROVEN_FLOW_DEDUP"
+            grouping_coverage = selection.get("grouping_coverage", "UNVERIFIED")
+            ungrouped_raw_ids = selection.get("ungrouped_raw_report_ids", [])
+        else:
+            report_export_mode = "RAW"
+            grouping_coverage = (
+                "UNVERIFIED"
+                if detail.finding_group_count is None and detail.reports
+                else "FULL"
+            )
+            ungrouped_raw_ids = [report.display_id for report in detail.reports]
         steps = (
             "# SASTSIMI 발표 패키지\n\n"
             "1. manifest.json에서 저장소·commit·분석 상태를 확인합니다.\n"
@@ -876,6 +1009,8 @@ class DashboardQuery:
             "3. artifacts/에서 정적분석·PoC·증거·LLM 안전 사본을 확인합니다.\n"
             "4. reports/에서 한국어 보고서와 준비된 영문 보고서를 엽니다.\n\n"
             f"영문 보고서 준비: {', '.join(english) if english else '없음'}\n"
+            f"그룹 적용 범위: {grouping_coverage}; 원본으로 유지: "
+            f"{', '.join(ungrouped_raw_ids) if ungrouped_raw_ids else '없음'}\n"
         )
         members["presentation/README.md"] = steps.encode("utf-8")
         members["presentation/summary.json"] = json.dumps(
@@ -888,6 +1023,10 @@ class DashboardQuery:
                 "progress_percent": detail.progress_percent,
                 "finding_count": detail.finding_count,
                 "english_report_ids": english,
+                "original_member_report_ids": originals,
+                "report_export_mode": report_export_mode,
+                "grouping_coverage": grouping_coverage,
+                "ungrouped_raw_report_ids": ungrouped_raw_ids,
                 "usage": detail.usage.model_dump(mode="json"),
                 "readiness": [
                     item.model_dump(mode="json") for item in detail.readiness
@@ -1589,6 +1728,38 @@ class DashboardQuery:
         except (OSError, ValueError) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
 
+    def group_bundle_bytes(self, analysis_id: str, group_id: str) -> bytes:
+        """Serve only a recomputed current group; never read a stale ZIP path."""
+
+        exact = self._resolved(analysis_id)
+        if _DIGEST.fullmatch(group_id) is None:
+            raise DashboardNotFound("DASHBOARD_GROUP_NOT_FOUND")
+        run = self._simple_run(exact)
+        values = list(self._checkpoints(exact))
+        if run is None or self._candidate_report_blocked(run, values):
+            raise DashboardNotFound("DASHBOARD_GROUP_NOT_FOUND")
+        try:
+            projection = current_report_groups(
+                run, values, data_dir=self._data_dir, database_path=self._database
+            )
+            group = next(
+                (item for item in projection.groups if item.group_id == group_id),
+                None,
+            )
+            if group is None:
+                raise DashboardNotFound("DASHBOARD_GROUP_NOT_FOUND")
+            for member_id in group.member_ids:
+                self.report_path(exact, member_id)
+            return current_group_bundle(
+                run,
+                values,
+                group,
+                data_dir=self._data_dir,
+                database_path=self._database,
+            )
+        except (LookupError, OSError, ValueError, sqlite3.Error) as error:
+            raise DashboardNotFound("DASHBOARD_GROUP_NOT_FOUND") from error
+
     @overload
     def _project_analysis(
         self,
@@ -1827,23 +1998,25 @@ class DashboardQuery:
             group_rows: tuple[dict[str, object], ...] = ()
             if run is not None:
                 try:
-                    eligible = {
-                        report.display_id: FindingDisplayIdStore.resolve_existing(
-                            self._database, analysis_id, report.display_id
-                        )
-                        for report in reports
-                    }
-                    grouped = project_current_finding_groups(
+                    grouped = current_report_groups(
                         run,
                         values,
-                        eligible,
                         data_dir=self._data_dir,
                         database_path=self._database,
                     )
-                    if grouped.raw_count == len(reports):
+                    report_ids = {report.display_id for report in reports}
+                    group_rows = tuple(
+                        row
+                        for row, group in zip(
+                            finding_group_rows(grouped), grouped.groups, strict=True
+                        )
+                        if set(group.member_ids) <= report_ids
+                    )
+                    if grouped.raw_count == len(reports) and len(group_rows) == len(
+                        grouped.groups
+                    ):
                         group_count = grouped.visible_group_count
                         undetermined_count = grouped.undetermined_count
-                        group_rows = finding_group_rows(grouped)
                 except (OSError, ValueError, sqlite3.Error, LookupError):
                     # Keep the verified raw report list if grouping is unavailable.
                     pass

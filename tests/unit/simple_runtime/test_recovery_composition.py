@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
-from sastsimi.composition import simple_runtime_composition as composition
+import sastsimi.composition.simple_runtime_composition as composition
 from sastsimi.config.user_config import (
     SimpleExecutionProfile,
     SimpleToolBinding,
@@ -16,8 +19,12 @@ from sastsimi.config.user_config import (
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
-from sastsimi.simple_runtime.application import StaticBootstrapResult
+from sastsimi.simple_runtime.application import (
+    SimpleAnalysisOutcome,
+    StaticBootstrapResult,
+)
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import DirectHypothesisBootstrap
 from sastsimi.simple_runtime.models import (
@@ -27,6 +34,7 @@ from sastsimi.simple_runtime.models import (
     StageFailure,
     StageStatus,
 )
+from sastsimi.simple_runtime.portable_docker import PortableDockerRuntime
 from sastsimi.simple_runtime.run_lease import analysis_run_lease
 from sastsimi.simple_runtime.stages import PoCCandidateStage, RuleScopeGateStage
 
@@ -168,6 +176,127 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert isinstance(scope_gate, RuleScopeGateStage)
     assert scope_gate._repository_url == saved_repository
     assert created == [identity, identity]
+
+
+@pytest.mark.parametrize("configured_digest", [None, "sha256:" + "b" * 64])
+@pytest.mark.asyncio
+async def test_composition_wires_local_only_offline_base_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_digest: str | None,
+) -> None:
+    wheel_path = tmp_path / "wheels.tar"
+    wheel_path.write_bytes(b"fixture")
+    profile = _profile(tmp_path).model_copy(
+        update={
+            "poc_wheel_archive_path": wheel_path,
+            "poc_wheel_archive_sha256": "a" * 64,
+            "poc_offline_base_image_digest": configured_digest,
+        }
+    )
+    application = composition.build_analysis_application(_config(tmp_path), profile)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref(identity, "profile"),
+        static_bundle_ref=_ref(identity, "bundle"),
+        workspace_path=tmp_path / "workspace",
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def inspect(_docker: object, image: str) -> str:
+        calls.append(("inspect", image))
+        return "sha256:" + "b" * 64
+
+    async def pin(_docker: object, digest: str) -> str:
+        calls.append(("tag", digest))
+        return "sastsimi-offline-base:" + "b" * 64
+
+    monkeypatch.setattr(PortableDockerRuntime, "local_base_image_digest", inspect)
+    monkeypatch.setattr(PortableDockerRuntime, "pin_local_base", pin)
+    runner = application._runner_factory(application._store, identity, static)
+
+    assert runner.offline_base_ready is not None
+    assert await runner.offline_base_ready() is True
+    assert calls == [
+        ("inspect", configured_digest or "python:3.12-slim"),
+        ("tag", "sha256:" + "b" * 64),
+    ]
+    assert (application._offline_repair_preflight is not None) is (
+        configured_digest is not None
+    )
+
+
+@pytest.mark.parametrize("with_progress", [False, True])
+def test_public_resume_forwards_explicit_offline_repair_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_progress: bool,
+) -> None:
+    public = composition.PublicSimpleRuntimeApplication(
+        _config(tmp_path), _profile(tmp_path)
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    outcome = SimpleAnalysisOutcome(
+        identity=identity,
+        display_analysis_id="A-001",
+        status="BLOCKED",
+        current_stage=SimpleStage.POC_EXECUTION_DONE,
+    )
+    calls: list[tuple[str, str | None]] = []
+
+    class _Application:
+        async def resume(
+            self,
+            analysis_id: str,
+            *,
+            repair_exhausted_hypothesis: str | None = None,
+        ) -> SimpleAnalysisOutcome:
+            calls.append((analysis_id, repair_exhausted_hypothesis))
+            return outcome
+
+    async def track(
+        task: asyncio.Task[SimpleAnalysisOutcome],
+        _started: list[str],
+        _callback: Callable[[ProgressSnapshot], None],
+    ) -> SimpleAnalysisOutcome:
+        return await task
+
+    monkeypatch.setattr(
+        composition, "build_analysis_application", lambda *_args: _Application()
+    )
+    monkeypatch.setattr(public._display, "resolve", lambda _id: "analysis-1")
+    monkeypatch.setattr(
+        public._store,
+        "require_analysis_run",
+        lambda _id: SimpleNamespace(
+            repository="https://example.invalid/repo", commit_id="a" * 40
+        ),
+    )
+    monkeypatch.setattr(
+        public, "_outcome", lambda *_args: {"display_analysis_id": "A-001"}
+    )
+    monkeypatch.setattr(public, "_track", track)
+
+    if with_progress:
+        public.resume_with_progress(
+            "A-001",
+            lambda _snapshot: None,
+            repair_exhausted_hypothesis="hypothesis-1",
+        )
+    else:
+        public.resume("A-001", repair_exhausted_hypothesis="hypothesis-1")
+
+    assert calls == [("analysis-1" if with_progress else "A-001", "hypothesis-1")]
 
 
 def test_public_candidate_status_marks_unleased_running_stage_interrupted(

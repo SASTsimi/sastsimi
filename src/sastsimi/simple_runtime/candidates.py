@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import stat
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -559,6 +560,271 @@ def _kind(
     return "HINT"
 
 
+def _complete_flow_trace(
+    trace: dict[str, object] | None,
+    engine: str,
+    row: Mapping[str, object],
+    sink_path: str,
+    sink_line: int,
+    workspace: Path | None,
+) -> bool:
+    """Allow cross-rule identity only for an identified source-to-sink path."""
+
+    if trace is None or not sink_path or sink_line <= 0:
+        return False
+    if engine == "codeql":
+
+        def explicit_span(
+            location: Mapping[str, object],
+        ) -> tuple[str, int, int, int, int] | None:
+            physical = _mapping(location.get("physicalLocation"))
+            region = _mapping(physical.get("region"))
+            if "startColumn" not in region or "endColumn" not in region:
+                return None
+            try:
+                span = _sarif_location({"locations": [location]}, workspace)
+            except (OSError, ValueError):
+                return None
+            path, line, end_line, start_column, end_column = span
+            if (
+                not path
+                or line <= 0
+                or end_line < line
+                or start_column <= 0
+                or end_column <= 0
+                or (end_line == line and end_column < start_column)
+            ):
+                return None
+            return span
+
+        primary_locations = row.get("locations")
+        if not isinstance(primary_locations, list) or not primary_locations:
+            return False
+        primary = explicit_span(_mapping(primary_locations[0]))
+        if primary is None or primary[:2] != (sink_path, sink_line):
+            return False
+        flows = trace.get("codeFlows")
+        if not isinstance(flows, list) or len(flows) != 1:
+            return False
+        threads = _mapping(flows[0]).get("threadFlows")
+        if not isinstance(threads, list) or len(threads) != 1:
+            return False
+        locations = _mapping(threads[0]).get("locations")
+        if not isinstance(locations, list) or len(locations) < 2:
+            return False
+        last: tuple[str, int, int, int, int] | None = None
+        for item in locations:
+            location = _mapping(item).get("location")
+            if not isinstance(location, dict):
+                return False
+            last = explicit_span(location)
+            if last is None:
+                return False
+        return last == primary
+
+    def located(value: object) -> tuple[str, int] | None:
+        item = _mapping(value)
+        raw_path = item.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+        try:
+            path = _path(raw_path, workspace)
+            line = _line(item.get("line"))
+        except (OSError, ValueError):
+            return None
+        return (path, line) if path and line > 0 else None
+
+    def identified_endpoint(value: object, role: str) -> bool:
+        item = _mapping(value)
+        if located(item) is None:
+            return False
+        try:
+            column = _line(item.get("column"))
+        except ValueError:
+            return False
+        if column <= 0:
+            return False
+        if role == "source":
+            source_key = item.get("source_key")
+            return isinstance(source_key, str) and bool(source_key.strip())
+        sink_argument = item.get("sink_argument")
+        return (isinstance(sink_argument, str) and bool(sink_argument.strip())) or (
+            isinstance(sink_argument, int)
+            and not isinstance(sink_argument, bool)
+            and sink_argument >= 0
+        )
+
+    def identified_intermediate(value: object) -> bool:
+        item = _mapping(value)
+        if located(item) is None:
+            return False
+        try:
+            column = _line(item.get("column"))
+        except ValueError:
+            return False
+        node_id = item.get("node_id")
+        return column > 0 and isinstance(node_id, str) and bool(node_id.strip())
+
+    def sink_span_matches_primary(value: object) -> bool:
+        sink = _mapping(value)
+        start = _mapping(row.get("start"))
+        end = _mapping(row.get("end"))
+        try:
+            raw_start_column = start.get("col")
+            primary_start = _line(
+                raw_start_column
+                if raw_start_column is not None
+                else start.get("column")
+            )
+            raw_end_column = end.get("col")
+            primary_end = _line(
+                raw_end_column if raw_end_column is not None else end.get("column")
+            )
+            primary_end_line = _line(end.get("line"))
+            trace_start = _line(sink.get("column"))
+            trace_end = _line(sink.get("end_column"))
+        except ValueError:
+            return False
+        return (
+            primary_start > 0
+            and primary_end >= primary_start
+            and primary_end_line == sink_line
+            and trace_start == primary_start
+            and trace_end == primary_end
+        )
+
+    intermediates = trace.get("intermediate_vars")
+    return (
+        identified_endpoint(trace.get("taint_source"), "source")
+        and isinstance(intermediates, list)
+        and all(identified_intermediate(item) for item in intermediates)
+        and identified_endpoint(trace.get("taint_sink"), "sink")
+        and sink_span_matches_primary(trace.get("taint_sink"))
+        and located(trace.get("taint_sink")) == (sink_path, sink_line)
+    )
+
+
+def _exact_evidence_key(
+    row: Mapping[str, object],
+    engine: str,
+    kind: CandidateKind,
+    path: str,
+    line: int,
+    end_line: int,
+    start_column: int,
+    end_column: int,
+    rule_id: str,
+    artifact_hash: str,
+    result_index: int,
+    cross_rule_flow_proven: bool,
+) -> str:
+    """Hash the complete normalized match, omitting only scan identity fields."""
+
+    def normalized_cwe(value: object) -> str | None:
+        if isinstance(value, list):
+            if len(value) != 1:
+                return None
+            value = value[0]
+        if not isinstance(value, str):
+            return None
+        matched = re.fullmatch(
+            r"CWE[-_]?0*([1-9][0-9]*)(?:\s*:\s*.*)?", value.strip(), re.IGNORECASE
+        )
+        return f"CWE-{matched.group(1)}" if matched else None
+
+    cwe_values: list[str] = []
+    for source in (
+        _mapping(_mapping(row.get("extra")).get("metadata")),
+        _mapping(row.get("properties")),
+    ):
+        if "cwe" in source:
+            normalized = normalized_cwe(source["cwe"])
+            if normalized is None:
+                cwe_values.clear()
+                break
+            cwe_values.append(normalized)
+    cwe = cwe_values[0] if cwe_values and len(set(cwe_values)) == 1 else None
+    # A non-flow location does not prove identical inputs or control conditions.
+    if kind != "FLOW" or not cross_rule_flow_proven:
+        class_key = f"origin:{engine}:{artifact_hash}:{result_index}"
+    elif cwe is not None and cross_rule_flow_proven:
+        class_key = f"cwe:{cwe}"
+    elif rule_id:
+        class_key = f"rule:{engine}:{rule_id}"
+    else:
+        class_key = f"origin:{engine}:{artifact_hash}:{result_index}"
+
+    bookkeeping = {
+        "check_id",
+        "ruleId",
+        "ruleIndex",
+        "engine",
+        "fingerprint",
+        "fingerprints",
+        "partialFingerprints",
+        "guid",
+        "correlationGuid",
+        "result_index",
+    }
+    match = {key: value for key, value in row.items() if key not in bookkeeping}
+    if engine == "codeql":
+        locations = match.get("locations")
+        if isinstance(locations, list) and locations:
+            first = dict(_mapping(locations[0]))
+            physical = dict(_mapping(first.get("physicalLocation")))
+            artifact = dict(_mapping(physical.get("artifactLocation")))
+            artifact["uri"] = path
+            physical["artifactLocation"] = artifact
+            region = dict(_mapping(physical.get("region")))
+            region["startLine"] = line
+            region["endLine"] = end_line
+            region["startColumn"] = start_column
+            region["endColumn"] = end_column
+            physical["region"] = region
+            first["physicalLocation"] = physical
+            match["locations"] = [first, *locations[1:]]
+    else:
+        match["path"] = path
+        for position, normalized_line, normalized_column in (
+            ("start", line, start_column),
+            ("end", end_line, end_column),
+        ):
+            location = {
+                key: value
+                for key, value in _mapping(row.get(position)).items()
+                if key not in {"line", "col", "column"}
+            }
+            match[position] = {
+                **location,
+                "line": normalized_line,
+                "column": normalized_column,
+            }
+    extra = match.get("extra")
+    if isinstance(extra, dict):
+        normalized_extra = {
+            key: value for key, value in extra.items() if key != "engine_kind"
+        }
+        metadata = normalized_extra.get("metadata")
+        if isinstance(metadata, dict):
+            normalized_metadata = {
+                key: value for key, value in metadata.items() if key != "candidate_kind"
+            }
+            if cwe is not None and "cwe" in normalized_metadata:
+                normalized_metadata["cwe"] = cwe
+            if normalized_metadata:
+                normalized_extra["metadata"] = normalized_metadata
+            else:
+                normalized_extra.pop("metadata", None)
+        match["extra"] = normalized_extra
+    properties = match.get("properties")
+    if cwe is not None and isinstance(properties, dict) and "cwe" in properties:
+        match["properties"] = {**properties, "cwe": cwe}
+    fingerprint = hashlib.sha256(
+        canonical_bytes({"kind": kind, "class": class_key, "match": match})
+    ).hexdigest()
+    return f"exact-v2:{fingerprint}"
+
+
 def normalize_candidate_page(
     identity: CheckpointIdentity,
     scope_fingerprint: str,
@@ -568,10 +834,16 @@ def normalize_candidate_page(
     start_offset: int = 0,
     *,
     workspace: Path | None = None,
+    identity_version: str = "legacy",
 ) -> tuple[StaticCandidate, ...]:
     """Normalize one bounded raw-result page without inventing source-to-sink flow."""
 
-    if not scope_fingerprint or not engine or start_offset < 0:
+    if (
+        not scope_fingerprint
+        or not engine
+        or start_offset < 0
+        or identity_version not in {"legacy", "exact-v2"}
+    ):
         raise ValueError("CANDIDATE_SCOPE_INVALID")
     if (
         str(artifact_ref.workspace_id) != identity.workspace_id
@@ -593,6 +865,7 @@ def normalize_candidate_page(
                         (variant,),
                         index,
                         workspace=workspace,
+                        identity_version=identity_version,
                     ):
                         if candidate.candidate_id not in seen_ids:
                             result.append(candidate)
@@ -648,14 +921,31 @@ def normalize_candidate_page(
             evidence_key = f"trace:{trace_hash}"
         else:
             evidence_key = f"hint:{row_engine}:{rule_id}:{excerpt}"
-        if kind == "HINT" and engine == "codeql":
-            match_hash = _sarif_hint_hash(row)
-        elif kind in {"FLOW", "HINT", "ENTRY_POINT"}:
-            match_hash = _match_hash(row)
+        if identity_version == "exact-v2":
+            evidence_key = _exact_evidence_key(
+                row,
+                engine,
+                kind,
+                path,
+                line,
+                end_line,
+                start_column,
+                end_column,
+                rule_id,
+                artifact_ref.content_hash,
+                index,
+                kind == "FLOW"
+                and _complete_flow_trace(trace, engine, row, path, line, workspace),
+            )
         else:
-            match_hash = None
-        if match_hash is not None:
-            evidence_key = f"{evidence_key}:match:{match_hash}"
+            if kind == "HINT" and engine == "codeql":
+                match_hash = _sarif_hint_hash(row)
+            elif kind in {"FLOW", "HINT", "ENTRY_POINT"}:
+                match_hash = _match_hash(row)
+            else:
+                match_hash = None
+            if match_hash is not None:
+                evidence_key = f"{evidence_key}:match:{match_hash}"
         stable = {
             "scope_fingerprint": scope_fingerprint,
             "commit_id": identity.commit_id,
@@ -706,10 +996,15 @@ def ingest_static_candidates(
     *,
     page_size: int = 100,
     workspace: Path | None = None,
+    identity_version: str = "legacy",
 ) -> int:
     """Resume exact static raw artifacts and persist every candidate before triage."""
 
-    if identity.hypothesis_id is not None or artifacts.identity != identity:
+    if (
+        identity.hypothesis_id is not None
+        or artifacts.identity != identity
+        or identity_version not in {"legacy", "exact-v2"}
+    ):
         raise ValueError("CANDIDATE_SCOPE_INVALID")
     bundle = json.loads(artifacts.read(static_bundle_ref))
     if (
@@ -793,6 +1088,7 @@ def ingest_static_candidates(
                     (row,),
                     position,
                     workspace=workspace,
+                    identity_version=identity_version,
                 )
                 for first in normalized:
                     pair = (first.path, first.origins[0].rule_id)
@@ -802,6 +1098,35 @@ def ingest_static_candidates(
                         if verified_pairs is None or pair in verified_pairs
                     ]
                     if not eligible:
+                        continue
+                    if identity_version == "exact-v2":
+                        by_id: dict[str, StaticCandidate] = {}
+                        for eligible_engine in eligible:
+                            candidate = (
+                                first
+                                if first_engine == eligible_engine
+                                else normalize_candidate_page(
+                                    identity,
+                                    scope_fingerprint,
+                                    eligible_engine,
+                                    ref,
+                                    (row,),
+                                    position,
+                                    workspace=workspace,
+                                    identity_version=identity_version,
+                                )[0]
+                            )
+                            prior = by_id.get(candidate.candidate_id)
+                            by_id[candidate.candidate_id] = (
+                                candidate
+                                if prior is None
+                                else prior.model_copy(
+                                    update={
+                                        "origins": (*prior.origins, *candidate.origins)
+                                    }
+                                )
+                            )
+                        retained.extend(by_id.values())
                         continue
                     primary = (
                         first
@@ -814,6 +1139,7 @@ def ingest_static_candidates(
                             (row,),
                             position,
                             workspace=workspace,
+                            identity_version=identity_version,
                         )[0]
                     )
                     if len(eligible) > 1:

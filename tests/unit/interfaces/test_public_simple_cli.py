@@ -36,7 +36,10 @@ class _PublicApplication:
             "error_code": "RECOVERY_EXHAUSTED",
         }
 
-    def resume(self, analysis_id: str) -> dict[str, object]:
+    def resume(
+        self, analysis_id: str, *, repair_exhausted_hypothesis: str | None = None
+    ) -> dict[str, object]:
+        del repair_exhausted_hypothesis
         return {"analysis_id": analysis_id, "status": "COMPLETE", "percent": 100}
 
     def result(self, analysis_id: str) -> dict[str, object]:
@@ -53,6 +56,9 @@ class _PublicApplication:
 
     def export_report_bundle(self, finding_id: str) -> str:
         return f"reports/analysis/{finding_id}/bundle.zip"
+
+    def export_report_group(self, analysis_id: str, group_id: str) -> str:
+        return f"reports/{analysis_id}/groups/{group_id}/digest/bundle.zip"
 
 
 def test_result_text_distinguishes_raw_findings_from_verified_groups() -> None:
@@ -105,13 +111,73 @@ class _ProgressApplication(_PublicApplication):
 
 
 class _BusyPublicApplication(_PublicApplication):
-    def resume(self, analysis_id: str) -> dict[str, object]:
+    def resume(
+        self, analysis_id: str, *, repair_exhausted_hypothesis: str | None = None
+    ) -> dict[str, object]:
+        del repair_exhausted_hypothesis
         return {
             "analysis_id": analysis_id,
             "status": "RUNNING",
             "percent": 60,
             "resume_skipped_reason": "ANALYSIS_ALREADY_RUNNING",
         }
+
+
+class _RepairPublicApplication(_PublicApplication):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str | None]] = []
+
+    def resume(
+        self, analysis_id: str, *, repair_exhausted_hypothesis: str | None = None
+    ) -> dict[str, object]:
+        self.calls.append(("plain", analysis_id, repair_exhausted_hypothesis))
+        return super().resume(analysis_id)
+
+    def resume_with_progress(
+        self,
+        analysis_id: str,
+        _callback: Callable[[ProgressSnapshot], None],
+        *,
+        repair_exhausted_hypothesis: str | None = None,
+    ) -> dict[str, object]:
+        self.calls.append(("progress", analysis_id, repair_exhausted_hypothesis))
+        return super().resume(analysis_id)
+
+
+def test_repair_flag_reaches_json_and_progress_resume(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    application = _RepairPublicApplication()
+    store = _config(tmp_path)
+    arguments = [
+        "resume",
+        "A-001",
+        "--repair-exhausted-hypothesis",
+        "hypothesis-1",
+    ]
+
+    assert (
+        main(
+            [*arguments, "--format", "json"],
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "COMPLETE"
+    assert (
+        main(
+            arguments,
+            public_application=application,
+            user_config_store=store,
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert application.calls == [
+        ("plain", "A-001", "hypothesis-1"),
+        ("progress", "A-001", "hypothesis-1"),
+    ]
 
 
 class _StaleReportApplication(_PublicApplication):
@@ -149,6 +215,22 @@ def test_public_report_export_includes_additive_bundle_path(
         "finding_id": "F-001",
         "path": "reports/analysis/F-001.md",
         "bundle_path": "reports/analysis/F-001/bundle.zip",
+    }
+
+
+def test_public_group_export_has_explicit_analysis_and_group_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    group_id = "a" * 64
+    assert main(
+        ["report", "export-group", "A-001", group_id, "--format", "json"],
+        public_application=_PublicApplication(),
+        user_config_store=_config(tmp_path),
+    ) == int(ExitCode.OK)
+    assert json.loads(capsys.readouterr().out)["data"] == {
+        "analysis_id": "A-001",
+        "group_id": group_id,
+        "bundle_path": f"reports/A-001/groups/{group_id}/digest/bundle.zip",
     }
 
 

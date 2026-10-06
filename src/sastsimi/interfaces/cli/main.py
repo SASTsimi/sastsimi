@@ -9,6 +9,7 @@ from typing import Any, NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
+from sastsimi.composition.simple_runtime_composition import GroupBundleUnavailable
 from sastsimi.config.production_profile import load_production_profile
 from sastsimi.config.user_config import UserConfigStore
 from sastsimi.interfaces.cli import analyze as analyze_command
@@ -100,6 +101,7 @@ def _normalize_public_argv(argv: list[str] | None) -> list[str] | None:
     if index + 1 >= len(normalized) or normalized[index + 1] in {
         "show",
         "export",
+        "export-group",
         "-h",
         "--help",
     }:
@@ -294,6 +296,7 @@ def main(
     )
     resume_parser.add_argument("analysis_id")
     resume_parser.add_argument("--no-progress", action="store_true")
+    resume_parser.add_argument("--repair-exhausted-hypothesis")
     resume_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
@@ -326,6 +329,10 @@ def main(
     report_export.add_argument(
         "--format", dest="export_format", choices=["markdown"], required=True
     )
+    report_group = report_commands.add_parser("export-group", allow_abbrev=False)
+    report_group.add_argument("analysis_id")
+    report_group.add_argument("group_id")
+    report_group.add_argument("--format", choices=["text", "json"])
     onboarding_parser = subparsers.add_parser(
         "onboarding",
         help="record and verify production provider/prompt approvals",
@@ -688,19 +695,57 @@ def main(
             if public_application is not None or args.analysis_id.startswith("A-"):
                 application = resolve_public_application()
                 progress_call = getattr(application, "resume_with_progress", None)
-                if (
-                    output_format != "json"
-                    and not args.no_progress
-                    and callable(progress_call)
-                ):
-                    renderer = dashboard_command.progress_renderer(
-                        config.data_dir,
-                        sys.stdout,
-                        is_tty=sys.stdout.isatty(),
+                try:
+                    if (
+                        output_format != "json"
+                        and not args.no_progress
+                        and callable(progress_call)
+                    ):
+                        renderer = dashboard_command.progress_renderer(
+                            config.data_dir,
+                            sys.stdout,
+                            is_tty=sys.stdout.isatty(),
+                        )
+                        if args.repair_exhausted_hypothesis is None:
+                            data = progress_call(args.analysis_id, renderer.render)
+                        else:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_exhausted_hypothesis=(
+                                    args.repair_exhausted_hypothesis
+                                ),
+                            )
+                    elif args.repair_exhausted_hypothesis is None:
+                        data = application.resume(args.analysis_id)
+                    else:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_exhausted_hypothesis=args.repair_exhausted_hypothesis,
+                        )
+                except ValueError as error:
+                    if args.repair_exhausted_hypothesis is None or not str(
+                        error
+                    ).startswith("OFFLINE_REPAIR_"):
+                        raise
+                    code = (
+                        ExitCode.CONFIG_ERROR
+                        if str(error)
+                        in {
+                            "OFFLINE_REPAIR_NOT_CONFIGURED",
+                            "OFFLINE_REPAIR_PREFLIGHT_FAILED",
+                            "OFFLINE_REPAIR_PREFLIGHT_INVALID",
+                        }
+                        else ExitCode.INTEGRITY_ERROR
                     )
-                    data = progress_call(args.analysis_id, renderer.render)
-                else:
-                    data = application.resume(args.analysis_id)
+                    emit_result(
+                        code,
+                        output_format,
+                        sys.stderr,
+                        command=command_name,
+                        reason_code=str(error),
+                    )
+                    return int(code)
                 public_command.emit_public(
                     output_format,
                     sys.stdout,
@@ -708,6 +753,8 @@ def main(
                     data=data,
                 )
                 return int(ExitCode.OK)
+            if args.repair_exhausted_hypothesis is not None:
+                raise _InputError
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)
         if args.command == "cancel":
             command_name = "cancel"
@@ -796,6 +843,23 @@ def main(
             return int(ExitCode.OK)
         if args.command == "report":
             command_name = "report " + args.report_command
+            if args.report_command == "export-group":
+                application = resolve_public_application()
+                export_group = getattr(application, "export_report_group", None)
+                if not callable(export_group):
+                    raise GroupBundleUnavailable("GROUP_EXPORT_UNAVAILABLE")
+                bundle_path = export_group(args.analysis_id, args.group_id)
+                emit_data(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data={
+                        "analysis_id": args.analysis_id,
+                        "group_id": args.group_id,
+                        "bundle_path": bundle_path,
+                    },
+                )
+                return int(ExitCode.OK)
             report_application = public_application
             if report_application is None and args.finding_id.startswith("F-"):
                 try:
@@ -1028,6 +1092,15 @@ def main(
         return int(ExitCode.CAPABILITY_UNSUPPORTED)
     except report_command.ReportCommandError:
         code = ExitCode.REPORT_UNAVAILABLE
+    except GroupBundleUnavailable as error:
+        emit_result(
+            ExitCode.REPORT_UNAVAILABLE,
+            output_format,
+            sys.stderr,
+            command=command_name,
+            reason_code=error.code,
+        )
+        return int(ExitCode.REPORT_UNAVAILABLE)
     except result_command.ResultNotFound:
         emit_result(
             ExitCode.INPUT_ERROR,

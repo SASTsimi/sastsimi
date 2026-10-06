@@ -163,12 +163,24 @@ def test_sarif_trace_must_contain_actual_source_and_end_at_sink(tmp_path: Path) 
     proposal = {"code_locations": ["app.py:11"]}
     agreeing = {
         "sarif_steps": [
-            {"path": "app.py", "line": 1},
             {"path": "app.py", "line": 10},
             {"path": "app.py", "line": 11},
         ]
     }
     assert resolve_flow_anchor(workspace, "app.py", sha, proposal, "CWE-78", agreeing)
+    unrelated_import = {
+        "sarif_steps": [
+            {"path": "app.py", "line": 1},
+            {"path": "app.py", "line": 10},
+            {"path": "app.py", "line": 11},
+        ]
+    }
+    assert (
+        resolve_flow_anchor(
+            workspace, "app.py", sha, proposal, "CWE-78", unrelated_import
+        )
+        is None
+    )
     missing_source = {
         "sarif_steps": [{"path": "app.py", "line": 1}, {"path": "app.py", "line": 11}]
     }
@@ -185,6 +197,48 @@ def test_sarif_trace_must_contain_actual_source_and_end_at_sink(tmp_path: Path) 
         resolve_flow_anchor(workspace, "app.py", sha, proposal, "CWE-78", wrong_sink)
         is None
     )
+
+
+def test_supplied_trace_fields_must_all_agree(tmp_path: Path) -> None:
+    workspace, sha = _fixture(tmp_path, "antony_routes.py")
+    proposal = {"code_locations": ["app.py:11"]}
+    correct = {
+        "source": {"path": "app.py", "line": 10},
+        "sink": {"path": "app.py", "line": 11},
+    }
+    steps = [
+        {"path": "app.py", "line": 10},
+        {"path": "app.py", "line": 11},
+    ]
+    for trace in (
+        {**correct, "sarif_steps": steps, "source": {"path": "app.py", "line": 16}},
+        {**correct, "sarif_steps": steps, "sink": {"path": "app.py", "line": 16}},
+        {**correct, "sarif_steps": [{"path": "app.py", "line": 10}]},
+        {**correct, "sarif_steps": "not a list"},
+    ):
+        assert (
+            resolve_flow_anchor(workspace, "app.py", sha, proposal, "CWE-78", trace)
+            is None
+        )
+
+
+def test_repeated_identical_trace_endpoints_do_not_split_group(tmp_path: Path) -> None:
+    workspace, sha = _fixture(tmp_path, "antony_routes.py")
+    proposal = {"code_locations": ["app.py:11"]}
+    source = {"path": "app.py", "line": 10}
+    sink = {"path": "app.py", "line": 11}
+    direct = resolve_flow_anchor(
+        workspace, "app.py", sha, proposal, "CWE-78", {"sarif_steps": [source, sink]}
+    )
+    repeated = resolve_flow_anchor(
+        workspace,
+        "app.py",
+        sha,
+        proposal,
+        "CWE-78",
+        {"sarif_steps": [source, source, sink]},
+    )
+    assert direct is not None and repeated == direct
 
 
 def test_redirected_or_missing_source_fails_closed(tmp_path: Path) -> None:
@@ -664,3 +718,310 @@ globals()['app'].add_url_rule('/y', view_func=run)
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "source,cwe,sink_line,callee,key",
+    [
+        (
+            "import sqlite3\nfrom flask import Flask, request\n"
+            "app = Flask(__name__)\n@app.route('/query')\n"
+            "def query():\n    user = request.args.get('username')\n"
+            "    db = sqlite3.connect(':memory:')\n    cursor = db.cursor()\n"
+            "    sql = f\"SELECT * FROM users WHERE name='{user}'\"\n"
+            "    cursor.execute(sql)\n",
+            "CWE-89",
+            10,
+            "cursor.execute",
+            "username",
+        ),
+        (
+            "import requests\nfrom flask import Flask, request\n"
+            "app = Flask(__name__)\n@app.route('/fetch')\n"
+            "def fetch():\n    url = request.args.get('url')\n"
+            "    return requests.get(url).text\n",
+            "CWE-918",
+            7,
+            "requests.get",
+            "url",
+        ),
+        (
+            "from flask import Flask, request\napp = Flask(__name__)\n"
+            "@app.route('/evaluate')\ndef evaluate():\n"
+            "    payload = request.form.get('payload')\n"
+            "    return str(eval(payload))\n",
+            "CWE-95",
+            6,
+            "eval",
+            "payload",
+        ),
+        (
+            "from flask import Flask, request, make_response\n"
+            "app = Flask(__name__)\n@app.route('/hello')\n"
+            "def hello():\n    name = request.args.get('name')\n"
+            "    body = f'<h1>{name}</h1>'\n"
+            "    return make_response(body)\n",
+            "CWE-79",
+            7,
+            "make_response",
+            "name",
+        ),
+        (
+            "from flask import Flask, request\napp = Flask(__name__)\n"
+            "@app.route('/file')\ndef file():\n"
+            "    path = request.args.get('path')\n"
+            "    return open(path).read()\n",
+            "CWE-22",
+            6,
+            "open",
+            "path",
+        ),
+    ],
+)
+def test_common_python_families_group_only_the_same_cited_flow(
+    tmp_path: Path,
+    source: str,
+    cwe: str,
+    sink_line: int,
+    callee: str,
+    key: str,
+) -> None:
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+    first = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"title": "first engine", "code_locations": [f"app.py:{sink_line}"]},
+        cwe,
+    )
+    second = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"title": "other agent", "code_locations": [f"app.py:{sink_line}"]},
+        cwe,
+    )
+    assert first is not None
+    assert first == second
+    assert first.sink_callee == callee
+    assert first.source_key == key
+    assert first.cwe == cwe
+
+
+@pytest.mark.parametrize(
+    "source,cwe,sink_line",
+    [
+        (
+            "import sqlite3\nfrom flask import Flask, request\n"
+            "app = Flask(__name__)\n@app.route('/query')\n"
+            "def query():\n    user = request.args.get('username')\n"
+            "    db = sqlite3.connect(':memory:')\n    cursor = db.cursor()\n"
+            "    cursor.execute('SELECT * FROM users WHERE name=?', (user,))\n",
+            "CWE-89",
+            9,
+        ),
+        (
+            "from flask import Flask, request, make_response\n"
+            "from markupsafe import escape\napp = Flask(__name__)\n"
+            "@app.route('/hello')\ndef hello():\n"
+            "    name = request.args.get('name')\n"
+            "    return make_response(f'<h1>{escape(name)}</h1>')\n",
+            "CWE-79",
+            7,
+        ),
+        (
+            "from flask import Flask, request\napp = Flask(__name__)\n"
+            "@app.route('/evaluate')\ndef evaluate(eval):\n"
+            "    payload = request.form.get('payload')\n"
+            "    return eval(payload)\n",
+            "CWE-95",
+            6,
+        ),
+        (
+            "import requests\nfrom flask import Flask, request\n"
+            "app = Flask(__name__)\n@app.route('/fetch')\n"
+            "def fetch():\n    url = request.args.get('url')\n"
+            "    requests = object()\n    return requests.get(url)\n",
+            "CWE-918",
+            8,
+        ),
+        (
+            "from flask import Flask, request\napp = Flask(__name__)\n"
+            "@app.route('/file')\ndef file(open):\n"
+            "    path = request.args.get('path')\n    return open(path)\n",
+            "CWE-22",
+            6,
+        ),
+        (
+            "import sqlite3\nfrom flask import Flask, request\n"
+            "app = Flask(__name__)\n@app.route('/query')\n"
+            "def query():\n    user = request.args.get('username')\n"
+            "    cursor = get_cursor()\n"
+            "    cursor.execute(f'SELECT * FROM users WHERE name={user}')\n",
+            "CWE-89",
+            8,
+        ),
+    ],
+)
+def test_common_python_families_abstain_without_exact_proof(
+    tmp_path: Path, source: str, cwe: str, sink_line: int
+) -> None:
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": [f"app.py:{sink_line}"]},
+            cwe,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "source,cwe,sink_line,source_key",
+    [
+        (
+            "import sqlite3\nfrom flask import Flask, request\n"
+            "app = Flask(__name__)\nDB = 'lab.db'\n"
+            "@app.route('/query')\ndef query():\n"
+            "    user = request.args.get('username', '')\n"
+            "    conn = sqlite3.connect(DB)\n    c = conn.cursor()\n"
+            "    sql = f\"SELECT * FROM users WHERE name='{user}'\"\n"
+            "    try:\n        c.execute(sql)\n"
+            "    except Exception:\n        pass\n",
+            "CWE-89",
+            12,
+            "username",
+        ),
+        (
+            "from flask import Flask, request, make_response\n"
+            "app = Flask(__name__)\n@app.route('/hello')\n"
+            "def hello():\n    name = request.args.get('name')\n"
+            "    body = f'<h1>{name}</h1>'\n"
+            "    return make_response(body, 200, {'Content-Type': 'text/html'})\n",
+            "CWE-79",
+            7,
+            "name",
+        ),
+    ],
+)
+def test_realistic_direct_flows_use_exact_local_provenance(
+    tmp_path: Path, source: str, cwe: str, sink_line: int, source_key: str
+) -> None:
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": [f"app.py:{sink_line}"]},
+        cwe,
+    )
+    assert anchor is not None
+    assert anchor.source_key == source_key
+
+
+def test_file_path_grouping_abstains_without_a_proven_read_effect(
+    tmp_path: Path,
+) -> None:
+    source = """from flask import Flask, request
+app = Flask(__name__)
+@app.route('/file')
+def file(flag=False):
+    path = request.args.get('path')
+    handle = open(path, 'r+')
+    if flag:
+        return handle.read()
+    handle.write('fixed')
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:6"]},
+            "CWE-22",
+        )
+        is None
+    )
+
+
+def test_xss_grouping_abstains_when_response_is_mutated_after_sink(
+    tmp_path: Path,
+) -> None:
+    source = """from flask import Flask, request, make_response
+app = Flask(__name__)
+@app.route('/hello')
+def hello():
+    name = request.args.get('name')
+    body = f'<h1>{name}</h1>'
+    response = make_response(body)
+    response.headers['Content-Type'] = 'text/plain'
+    return response
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:7"]},
+            "CWE-79",
+        )
+        is None
+    )
+
+
+def test_distinct_valid_trace_steps_do_not_share_a_group_anchor(tmp_path: Path) -> None:
+    source = """import os
+from flask import Flask, request
+app = Flask(__name__)
+@app.route('/ping')
+def ping():
+    a = request.args.get('cmd')
+    b = a
+    c = b
+    os.system(c)
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+
+    def trace(lines: tuple[int, ...]) -> dict[str, object]:
+        return {"sarif_steps": [{"path": "app.py", "line": line} for line in lines]}
+
+    first = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:9"]},
+        "CWE-78",
+        trace((6, 7, 9)),
+    )
+    second = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:9"]},
+        "CWE-78",
+        trace((6, 8, 9)),
+    )
+    impossible = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:9"]},
+        "CWE-78",
+        trace((6, 3, 9)),
+    )
+    assert first is not None and second is not None
+    assert first != second
+    assert impossible is None

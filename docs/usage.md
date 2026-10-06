@@ -154,9 +154,30 @@ sastsimi result A-001
 sastsimi poc F-001
 sastsimi report show F-001
 sastsimi report export F-001 --format markdown
+sastsimi report export-group A-001 <group-id> --format json
 ```
 
 `result`는 분석 상태와 Finding 목록을, `poc`는 실제 실행에 성공한 validated PoC만 보여 줍니다. `report show`는 current Finding의 기존 한국어 Markdown을 보여 주고 `report export`는 파일 위치를 반환합니다. 검증된 새 번들이 있으면 export 출력에 `bundle_path`가 추가됩니다. 첨부파일은 대시보드에서 개별 다운로드하거나 `bundle.zip`으로 받을 수도 있습니다. 기존 `F-NNN.md` 경로와 저장된 과거 보고서는 그대로 유지합니다.
+
+`report export-group`은 `result A-001 --format json`의 `finding_groups`에서 확인한
+64자리 `group_id`를 사용합니다. 현재 분석에 속한 둘 이상의 Finding이 같은
+입력→위험 동작 경로임이 입증되고, 각 Finding의 보고서·PoC·증거와
+대상 commit·CWE·영향 버전·심각도·Scope 판정이 모두 다시 검증될 때만
+`reports/<analysis_id>/groups/<group_id>/<archive-sha256>/bundle.zip`을 만듭니다.
+JSON 출력의 `bundle_path`는 이 상대 경로입니다. ZIP에는 영문·국문 검토 초안,
+`evidence/group-manifest.json`, `members/F-NNN/` 아래의 원본별 첨부가
+들어갑니다. 내용이 충돌하거나 오래되었으면 명시적 오류를 반환하고,
+일부만 담은 ZIP을 만들지 않습니다. 같은 내용은 같은 경로를 재사용합니다.
+대시보드의 `PoC∙증거∙보고서` 탭에서도 유효한 그룹 ZIP과 각 원본 Finding의
+보고서·첨부 링크를 함께 볼 수 있습니다. 그룹 초안은 첫 번째 Finding의
+검증된 주장만 사용하므로, 제출 전 모든 원본과 영향 범위를 사람이 확인해야
+합니다. 그룹화는 취약점 확정이나 정책상 제보 허가를 부여하지 않습니다.
+기본 전체 결과 ZIP은 입증된 그룹의 대표 보고서만 최상위 보고서로 선택하고
+나머지 그룹 멤버를 `reports/originals/`에 보존합니다. 그룹 근거가 없는 과거
+보고서가 함께 있으면 그 보고서는 원래 경로를 유지합니다.
+`reports/export-selection.json`과 발표 ZIP의 `presentation/summary.json`에
+그룹 적용 범위(`FULL`/`PARTIAL`/`UNVERIFIED`) 및 원본 유지 ID를 기록합니다. 개별 보고서
+ID를 명시해 ZIP을 받으면 그룹 요약 대신 요청한 원본만 내보냅니다.
 
 새 Finding의 보고서 번들은 다음과 같이 저장됩니다.
 

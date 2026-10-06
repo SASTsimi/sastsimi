@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -2148,6 +2149,7 @@ class SimpleCheckpointStore:
                     ).fetchall()
                     stages: dict[SimpleStage, StageCheckpoint] = {}
                     stale_poc = False
+                    stale_final = False
                     for item in checkpoints:
                         checkpoint = StageCheckpoint.model_validate_json(
                             item["checkpoint_json"]
@@ -2162,6 +2164,12 @@ class SimpleCheckpointStore:
                             != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
                         ):
                             stale_poc = True
+                        if (
+                            checkpoint.stage is SimpleStage.VERIFICATION_FINAL_DONE
+                            and checkpoint.stage_version
+                            != STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE]
+                        ):
+                            stale_final = True
                         if (
                             checkpoint.status is StageStatus.SUCCEEDED
                             and checkpoint.stage_version
@@ -2189,7 +2197,7 @@ class SimpleCheckpointStore:
                         is not None
                         or SimpleStage.REPORT_DONE in stages
                     )
-                    if stale_poc or not terminal:
+                    if stale_poc or stale_final or not terminal:
                         selected.append(hypothesis_id)
                         if len(selected) >= limit:
                             break
@@ -4600,6 +4608,213 @@ class SimpleCheckpointStore:
         finally:
             connection.close()
         return pending
+
+    def prepare_offline_environment_repair(
+        self,
+        exhausted: StageCheckpoint,
+        proof_ref: StoredDataRef,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Allow one explicit, evidenced environment correction after PoC exhaustion.
+
+        This is not an automatic recovery retry. The old PoC result remains in
+        immutable artifacts and activity, while only this child's checkpoints
+        from initial verification onward are replaced inside one transaction.
+        """
+
+        identity = exhausted.identity
+        if (
+            identity.hypothesis_id is None
+            or exhausted.stage is not SimpleStage.POC_EXECUTION_DONE
+            or exhausted.stage_version != STAGE_VERSION[exhausted.stage]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.retryable
+            or exhausted.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or exhausted.attempt_id is None
+            or exhausted.recipe_ref is None
+            or not exhausted.output_refs
+            or exhausted.validated_poc_ref is not None
+            or artifacts.identity != identity
+        ):
+            raise ValueError("OFFLINE_REPAIR_EXHAUSTION_INVALID")
+        try:
+            proof = json.loads(artifacts.read_bounded(proof_ref, 256 * 1024))
+            recipe = json.loads(
+                artifacts.read_bounded(exhausted.recipe_ref, 256 * 1024)
+            )
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            raise ValueError("OFFLINE_REPAIR_EVIDENCE_INVALID") from error
+        if not isinstance(proof, dict) or not isinstance(recipe, dict):
+            raise ValueError("OFFLINE_REPAIR_EVIDENCE_INVALID")
+        old_base = recipe.get("base_image_digest")
+        new_base = proof.get("new_base_image_digest")
+        digest_pattern = r"sha256:[0-9a-f]{64}"
+        try:
+            wheel_archive_ref = StoredDataRef.model_validate(
+                recipe.get("wheel_archive_ref")
+            )
+        except ValueError as error:
+            raise ValueError("OFFLINE_REPAIR_RECIPE_INVALID") from error
+        expected_proof = {
+            "kind": "simple_offline_environment_repair",
+            "identity": identity.model_dump(mode="json"),
+            "stage": SimpleStage.POC_EXECUTION_DONE.value,
+            "exhausted_attempt_id": exhausted.attempt_id,
+            "exhausted_attempt_number": exhausted.attempt_number,
+            "exhausted_checkpoint_hash": hashlib.sha256(
+                canonical_bytes(exhausted.model_dump(mode="json"))
+            ).hexdigest(),
+            "old_base_image_digest": old_base,
+        }
+        if (
+            recipe.get("kind") != "simple_environment_recipe"
+            or recipe.get("dockerfile_source") != "GENERATED_OFFLINE_WHEELS"
+            or recipe.get("build_network") != "none"
+            or recipe.get("wheel_archive_sha256") != wheel_archive_ref.content_hash
+            or str(wheel_archive_ref.workspace_id) != identity.workspace_id
+            or str(wheel_archive_ref.commit_id) != identity.commit_id
+            or not isinstance(old_base, str)
+            or re.fullmatch(digest_pattern, old_base) is None
+            or not isinstance(new_base, str)
+            or re.fullmatch(digest_pattern, new_base) is None
+            or new_base == old_base
+            or any(proof.get(key) != value for key, value in expected_proof.items())
+            or not isinstance(proof.get("browser_command"), str)
+            or not proof["browser_command"].startswith("/")
+            or not isinstance(proof.get("python_version"), str)
+            or not proof["python_version"].startswith("3.12.")
+            or not isinstance(proof.get("smoke_output_digest"), str)
+            or re.fullmatch(digest_pattern, proof["smoke_output_digest"]) is None
+        ):
+            raise ValueError("OFFLINE_REPAIR_EVIDENCE_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, self._hypothesis_key(identity), stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            current = checkpoint_at(SimpleStage.POC_EXECUTION_DONE)
+            initial = checkpoint_at(SimpleStage.VERIFICATION_INITIAL_DONE)
+            candidate = checkpoint_at(SimpleStage.POC_CANDIDATE_DONE)
+            if current != exhausted:
+                raise ValueError("OFFLINE_REPAIR_STALE")
+            if (
+                initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version != STAGE_VERSION[initial.stage]
+                or initial.recipe_ref != exhausted.recipe_ref
+                or candidate is None
+                or candidate.status is not StageStatus.SUCCEEDED
+                or candidate.stage_version != STAGE_VERSION[candidate.stage]
+                or candidate.attempt_id != exhausted.attempt_id
+                or candidate.attempt_number != exhausted.attempt_number
+                or candidate.recipe_ref != exhausted.recipe_ref
+                or any(
+                    checkpoint_at(stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("OFFLINE_REPAIR_LINEAGE_INVALID")
+
+            decision_refs = tuple(
+                dict.fromkeys(exhausted.recovery_decision_refs + (proof_ref,))
+            )
+            inputs = tuple(
+                dict.fromkeys(
+                    initial.input_refs
+                    + initial.output_refs
+                    + candidate.input_refs
+                    + candidate.output_refs
+                    + exhausted.input_refs
+                    + exhausted.output_refs
+                    + decision_refs
+                )
+            )
+            lineage_id = (
+                exhausted.recovery_lineage_id
+                or hashlib.sha256(
+                    canonical_bytes(
+                        {
+                            "identity": identity,
+                            "attempt_id": exhausted.attempt_id,
+                            "error_code": exhausted.error_code,
+                        }
+                    )
+                ).hexdigest()
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                attempt_number=exhausted.attempt_number,
+                gate_revision_count=exhausted.gate_revision_count,
+                recovery_lineage_id=lineage_id,
+                # Keep attempt 4 through candidate and execution. `complete`
+                # clears a lineage when its origin stage succeeds.
+                recovery_origin_stage=SimpleStage.POC_EXECUTION_DONE,
+                recovery_decision_refs=decision_refs,
+            )
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    exhausted,
+                    ActivityKind.EVIDENCE_RECORDED,
+                    sequence=self._stage_sequence(exhausted.stage, 101),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "격리된 오프라인 실행 환경을 검증한 뒤 한 번의 수동 재시도를 "
+                        "승인했습니다. 기존 PoC 실패 기록은 보존합니다."
+                    ),
+                    output_refs=(proof_ref,),
+                ).model_copy(
+                    update={
+                        "input_refs": tuple(
+                            dict.fromkeys(exhausted.input_refs + exhausted.output_refs)
+                        )
+                    }
+                ),
+            )
+            stages = tuple(
+                stage.value
+                for stage in STAGE_ORDER[
+                    STAGE_ORDER.index(SimpleStage.VERIFICATION_INITIAL_DONE) :
+                ]
+            )
+            placeholders = ",".join("?" for _ in stages)
+            connection.execute(
+                f"DELETE FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                f"AND hypothesis_key = ? AND stage IN ({placeholders})",  # noqa: S608
+                (identity.analysis_id, self._hypothesis_key(identity), *stages),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def prepare_gate_revision(
         self,

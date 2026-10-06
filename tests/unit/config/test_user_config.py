@@ -357,6 +357,61 @@ def test_old_profile_without_bundle_round_trips(tmp_path: Path) -> None:
 
     assert load_simple_execution_profile(path) == profile
     assert "poc_wheel_archive" not in path.read_text(encoding="utf-8")
+    assert profile.poc_offline_base_image_digest is None
+    assert "poc_offline_base_image_digest" not in path.read_text(encoding="utf-8")
+
+
+def test_profile_round_trips_local_offline_base_digest(tmp_path: Path) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="configured-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        docker_network="NONE",
+        poc_offline_base_image_digest="sha256:" + "b" * 64,
+        tools={},
+    )
+    path = tmp_path / "profile.toml"
+
+    profile.write(path)
+
+    assert load_simple_execution_profile(path) == profile
+    assert (
+        'poc_offline_base_image_digest = "sha256:' + "b" * 64 + '"'
+        in path.read_text(encoding="utf-8")
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_digest",
+    [
+        "python:3.12-slim",
+        "sha256:" + "a" * 63,
+        "sha256:" + "A" * 64,
+        " sha256:" + "a" * 64,
+    ],
+)
+def test_profile_rejects_noncanonical_offline_base_digest(
+    tmp_path: Path, invalid_digest: str
+) -> None:
+    with pytest.raises(ValueError, match="POC_OFFLINE_BASE_IMAGE_DIGEST_INVALID"):
+        SimpleExecutionProfile(
+            provider_profile_ref="local-openai",
+            provider="openai",
+            model="configured-model",
+            auth_mode="API_KEY",
+            credential_ref="env:OPENAI_API_KEY",
+            data_dir=tmp_path / "data",
+            workspace_root=tmp_path / "workspaces",
+            max_cost_minor_units=10_000,
+            docker_network="NONE",
+            poc_offline_base_image_digest=invalid_digest,
+            tools={},
+        )
 
 
 def test_profile_requires_path_and_digest_together(tmp_path: Path) -> None:
