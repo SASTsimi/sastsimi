@@ -98,3 +98,29 @@ confirmed vulnerability, and an incomplete run cannot turn an unprocessed
 README example into a measured false negative. The follow-up also exposed
 PoC fixture/storage failures and unresolved subprocess cleanup; these are
 being fixed independently of vulnerability verdicts.
+
+## Integrated branch checkpoint (2026-10-07)
+
+The `codex/portable-poc-validation` branch includes `main` through the merged
+dashboard change in PR #216. These later runs use new, isolated IDs at the same
+pinned commits; no earlier database was reset. The counts below are terminal
+where a terminal state is shown, but the insecure-web counts are only a live
+snapshot as of 2026-10-07 01:30 KST. They are not controlled before/after
+recall or false-positive rates.
+
+| Repository and run | State | Candidates | Hypotheses | Saved Findings | What the result establishes |
+| --- | --- | ---: | ---: | ---: | --- |
+| vfapi `vfapi-v8` (`a4c3888a8e5c49b1bea13be090d04164`) | `BLOCKED: RECOVERY_EXHAUSTED` | 20 | 11 | 9 | The repository's documented SQL and NoSQL injection classes both appear in saved Findings. A different PoC exhausted three attempts; its last script failed to recognize a keyword-only `aiosqlite.connect(database=...)` call. This is a generated-PoC failure, not a vulnerability disproof or a completed analysis. |
+| insecure-web `insecure-web-v4` (`3ccba250919d469782fc8a3bb9a1c465`) | `RUNNING` at this checkpoint | 12 | 21 | 15 | Findings are still accumulating. Neither a final report count nor a terminal recall rate can be stated yet. |
+| dvpwa `dvpwa-v5` (`71eb210d781f4eb780d76f68a5aef95e`) | `PARTIAL` | 20 | 8 | 0 | All 252 planned Python file-rule checks completed, but seven non-Python product files remain outside the Python-only scan. Pinned `aiohttp==3.5.3` has no compatible binary distribution for the configured Python 3.12 PoC environment, so the eight hypotheses stopped as inconclusive rather than being called false. |
+
+Human review of the current saved Findings sees approximately five distinct
+vfapi request/weakness surfaces among nine raw reports, and three insecure-web
+surfaces among 15 raw reports. This is **not** the tool's verified automatic
+group count or an oracle score. The conservative projection leaves unresolved
+flows separate: its existing final evidence does not prove a shared
+source-to-sink operation across all of these reports. Grouping solely by route
+or weakness could erase distinct vulnerabilities; the original Findings and
+PoCs remain available for review. The vfapi run cannot be resumed past its
+persisted three-attempt exhaustion without a new, supported run. No result in
+this section is automatically ready for external disclosure.
