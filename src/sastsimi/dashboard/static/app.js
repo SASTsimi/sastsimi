@@ -148,8 +148,10 @@ function analysisHistoryButton(item) {
   button.type = "button"; if (analysisSelected(item)) button.classList.add("selected");
   const heading = el("div", undefined, "analysis-history-heading"), id = el("strong", routeId || "분석 ID 없음", "mono technical-id"); id.title = routeId || ""; heading.append(id, badge(item.status));
   button.append(heading, el("div", analysisKey(item), "analysis-history-key"), el("time", formatTime(analysisTime(item)), "meta"));
+  if (item.percentage_kind === "known_checkpoint_fraction") button.append(el("div", "현재 알려진 checkpoint 비율", "meta"));
   button.addEventListener("click", () => selectAnalysis(routeId)); return button;
 }
+function analysisButton(item) { return analysisHistoryButton(item); }
 function initializeSelectedHistoryExpansion(groups) {
   if (state.initialHistoryExpansionHandled) return;
   const selectedGroup = groups.find((group) => group.items.slice(1).some((entry) => analysisSelected(entry.item)));
@@ -174,7 +176,9 @@ function analysisRepositoryGroup(group, index) {
   const latestColumn = el("div", undefined, "analysis-latest-column"), latestButton = el("button", undefined, "analysis-latest-button"); latestButton.type = "button"; if (latestSelected) latestButton.classList.add("selected"); latestButton.title = latest.repository || `${repositoryLabel} · ${analysisRouteId(latest)}`;
   const repository = el("strong", repositoryLabel, "analysis-repository line-clamp-2"), status = el("div", undefined, "analysis-latest-status"); status.append(el("span", "최신 실행", "meta"), badge(latest.status));
   const footer = el("div", undefined, "analysis-latest-footer"); footer.append(el("time", formatTime(analysisTime(latest)), "meta")); if (hasHistory) footer.append(el("span", `이전 실행 ${historyItems.length}개`, "analysis-history-count"));
-  latestButton.append(repository, status, el("div", analysisKey(latest), "analysis-key"), footer); latestButton.addEventListener("click", () => selectAnalysis(analysisRouteId(latest))); latestColumn.append(latestButton);
+  latestButton.append(repository, status, el("div", analysisKey(latest), "analysis-key"));
+  if (latest.percentage_kind === "known_checkpoint_fraction") latestButton.append(el("div", "현재 알려진 checkpoint 비율", "meta"));
+  latestButton.append(footer); latestButton.addEventListener("click", () => selectAnalysis(analysisRouteId(latest))); latestColumn.append(latestButton);
   if (selectedHistoryItem) {
     const currentId = analysisRouteId(selectedHistoryItem), current = el("div", undefined, `analysis-current-history${expanded ? " is-expanded" : ""}`);
     const currentCopy = el("div", undefined, "analysis-current-history-copy"); currentCopy.id = `${historyId}-current-copy`; currentCopy.append(el("span", "과거 실행 보는 중", "analysis-current-history-label"), el("strong", currentId || "분석 ID 없음", "mono technical-id"));
