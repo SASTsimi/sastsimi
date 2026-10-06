@@ -717,6 +717,7 @@ class SimpleAnalysisApplication:
             self._store.reopen_elapsed_budget_failures(exact, self._max_elapsed_seconds)
         if self._max_tokens == "unlimited":
             self._store.reopen_token_budget_failures(exact)
+        self._reopen_failed_anchor_verification(exact)
         static_checkpoint = self._store.get(identity, SimpleStage.STATIC_DONE)
         if (
             run.workspace_path is None
@@ -811,6 +812,35 @@ class SimpleAnalysisApplication:
             except StaticEvidenceInvalid:
                 return self._invalid_hypothesis_resume(run, identity)
         return await self._run_hypotheses(run, identity, static)
+
+    def _reopen_failed_anchor_verification(self, analysis_id: str) -> None:
+        """Retry fixed anchor validation without replaying prior child work."""
+
+        for checkpoint in self._store.list_checkpoints(analysis_id):
+            if (
+                checkpoint.identity.hypothesis_id is None
+                or checkpoint.stage
+                not in {
+                    SimpleStage.VERIFICATION_INITIAL_DONE,
+                    SimpleStage.VERIFICATION_FINAL_DONE,
+                }
+                or checkpoint.status is not StageStatus.FAILED
+                or checkpoint.error_code != "HYPOTHESIS_ANCHOR_INVALID"
+                or checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+            ):
+                continue
+            self._store.replace_from(
+                checkpoint.model_copy(
+                    update={
+                        "stage_version": STAGE_VERSION[checkpoint.stage],
+                        "status": StageStatus.PENDING,
+                        "output_refs": (),
+                        "attempt_id": None,
+                        "error_code": None,
+                        "retryable": False,
+                    }
+                )
+            )
 
     def _downstream_terminal(self, run: SimpleAnalysisRun) -> bool:
         if not run.hypothesis_ids:
@@ -3688,15 +3718,19 @@ class SimpleAnalysisApplication:
         self, identity: CheckpointIdentity, hypothesis_id: str
     ) -> bool:
         child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        poc = self._store.get(child, SimpleStage.POC_EXECUTION_DONE)
+        terminal_poc = self._store.verified_terminal_poc_outcome(poc) is not None
+        poc_index = HYPOTHESIS_STAGES.index(SimpleStage.POC_EXECUTION_DONE)
         if any(
-            checkpoint is not None and checkpoint.stage_version != STAGE_VERSION[stage]
+            checkpoint is not None
+            and checkpoint.stage_version != STAGE_VERSION[stage]
+            and (not terminal_poc or HYPOTHESIS_STAGES.index(stage) >= poc_index)
             for stage in HYPOTHESIS_STAGES
             if (checkpoint := self._store.get(child, stage)) is not None
         ):
             return False
         initial = self._store.get(child, SimpleStage.VERIFICATION_INITIAL_DONE)
         final = self._store.get(child, SimpleStage.VERIFICATION_FINAL_DONE)
-        poc = self._store.get(child, SimpleStage.POC_EXECUTION_DONE)
         chain = self._store.get(child, SimpleStage.CHAINING_DONE)
         gate = self._store.get(child, SimpleStage.TECH_GATE_DONE)
         report = self._store.get(child, SimpleStage.REPORT_DONE)
@@ -3713,7 +3747,7 @@ class SimpleAnalysisApplication:
             return False
         return bool(
             self._store.verified_terminal_initial_outcome(initial) is not None
-            or self._store.verified_terminal_poc_outcome(poc) is not None
+            or terminal_poc
             or final is not None
             and final.status is StageStatus.SUCCEEDED
             and (

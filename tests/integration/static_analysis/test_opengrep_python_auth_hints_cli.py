@@ -110,7 +110,7 @@ def _candidate_lines(
     return {candidate.line for candidate in selected}
 
 
-def test_password_fast_hash_hint_targets_passwords_not_file_checksums(
+def test_weak_password_hash_hint_targets_passwords_not_file_checksums(
     tmp_path: Path,
 ) -> None:
     results = _scan(
@@ -127,9 +127,9 @@ def password_digests(password, raw_password, passwd, file_bytes):
     return first, second, third, checksum
 """,
     )
-    assert _lines(results, "sastsimi.python.password-fast-hash") == {5, 6, 7}
+    assert _lines(results, "sastsimi.python.weak-password-hash") == {5, 6, 7}
     assert _candidate_lines(
-        tmp_path, results, "sastsimi.python.password-fast-hash"
+        tmp_path, results, "sastsimi.python.weak-password-hash"
     ) == {
         5,
         6,

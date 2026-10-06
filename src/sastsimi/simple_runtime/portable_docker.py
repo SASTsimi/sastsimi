@@ -1497,6 +1497,7 @@ class DirectEnvironmentPreparer:
         auto_dependency_bundle: bool = False,
         bundle_source: str = "OPERATOR_SUPPLIED",
         bundle_resolution_metadata: Mapping[str, object] | None = None,
+        pinned_target_manifest: str | None = None,
         git_executable: str = "git",
         auto_bundle_cache: AutoWheelBundleCache | None = None,
     ) -> None:
@@ -1518,6 +1519,7 @@ class DirectEnvironmentPreparer:
         self._auto_bundle_cache = auto_bundle_cache or AutoWheelBundleCache()
         self._bundle_source = bundle_source
         self._bundle_resolution_metadata = dict(bundle_resolution_metadata or {})
+        self._pinned_target_manifest = pinned_target_manifest
         self._git_executable = git_executable
 
     async def offline_base_ready(self) -> bool:
@@ -2352,6 +2354,7 @@ class DirectEnvironmentPreparer:
                 auto_dependency_bundle=False,
                 bundle_source="AUTO_RESOLVED",
                 bundle_resolution_metadata=metadata,
+                pinned_target_manifest=target_manifest,
                 git_executable=self._git_executable,
             )
             return await delegated.prepare(checkpoint, prior, delegated_requirements)
@@ -2458,20 +2461,40 @@ class DirectEnvironmentPreparer:
                 requirements, commit_id=checkpoint.identity.commit_id
             )
         )
-        target_manifest = self._target_manifest_path(prior)
-        if target_manifest is None:
-            for name in ("requirements.txt", "pyproject.toml"):
-                if (self._workspace / name).is_file():
-                    target_manifest = name
-                    break
+        pinned_paths: frozenset[str] | None = None
+        if self._bundle_source == "AUTO_RESOLVED":
+            # AUTO selected this path (including None) from the pinned tree
+            # before the resolver ran. Do not rediscover it from the checkout.
+            target_manifest = self._pinned_target_manifest
+            pinned_paths = self._pinned_tree_paths(
+                commit_id=checkpoint.identity.commit_id
+            )
+            if target_manifest is not None and target_manifest not in pinned_paths:
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNAVAILABLE")
+        else:
+            target_manifest = self._target_manifest_path(prior)
+            if target_manifest is None:
+                for name in ("requirements.txt", "pyproject.toml"):
+                    if (self._workspace / name).is_file():
+                        target_manifest = name
+                        break
         if target_manifest is None and not extra_python_requirements:
             raise ValueError("POC_OFFLINE_MANIFEST_MISSING")
         if target_manifest is not None:
             manifest_directory = PurePosixPath(target_manifest).parent
-            if all(
-                self._workspace.joinpath(*manifest_directory.parts, name).is_file()
-                for name in ("requirements.txt", "pyproject.toml")
-            ):
+            manifest_siblings = (
+                manifest_directory / "requirements.txt",
+                manifest_directory / "pyproject.toml",
+            )
+            ambiguous = (
+                all(path.as_posix() in pinned_paths for path in manifest_siblings)
+                if pinned_paths is not None
+                else all(
+                    self._workspace.joinpath(*manifest_directory.parts, name).is_file()
+                    for name in ("requirements.txt", "pyproject.toml")
+                )
+            )
+            if ambiguous:
                 raise ValueError("POC_OFFLINE_MANIFEST_AMBIGUOUS")
         base_digest = await self._docker.local_base_image_digest(
             self._offline_base_image
@@ -2504,9 +2527,12 @@ class DirectEnvironmentPreparer:
         dockerfile = self._offline_dockerfile(
             target_manifest, base_reference, extra_python_requirements
         )
+        if pinned_paths is None:
+            pinned_paths = self._pinned_tree_paths(
+                commit_id=checkpoint.identity.commit_id
+            )
         omitted_foreign_runtime_paths = _foreign_runtime_paths(
-            self._pinned_tree_paths(commit_id=checkpoint.identity.commit_id),
-            target_manifest,
+            pinned_paths, target_manifest
         )
         context = build_pinned_context(
             self._workspace,

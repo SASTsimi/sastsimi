@@ -2149,6 +2149,8 @@ class SimpleCheckpointStore:
                     ).fetchall()
                     stages: dict[SimpleStage, StageCheckpoint] = {}
                     stale_stage = False
+                    stale_poc_or_downstream = False
+                    poc_index = STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE)
                     for item in checkpoints:
                         checkpoint = StageCheckpoint.model_validate_json(
                             item["checkpoint_json"]
@@ -2163,6 +2165,8 @@ class SimpleCheckpointStore:
                             != STAGE_VERSION[checkpoint.stage]
                         ):
                             stale_stage = True
+                            if STAGE_ORDER.index(checkpoint.stage) >= poc_index:
+                                stale_poc_or_downstream = True
                         if (
                             checkpoint.status is StageStatus.SUCCEEDED
                             and checkpoint.stage_version
@@ -2171,15 +2175,18 @@ class SimpleCheckpointStore:
                             stages[checkpoint.stage] = checkpoint
                     final = stages.get(SimpleStage.VERIFICATION_FINAL_DONE)
                     chain = stages.get(SimpleStage.CHAINING_DONE)
+                    terminal_poc = (
+                        self.verified_terminal_poc_outcome(
+                            stages.get(SimpleStage.POC_EXECUTION_DONE)
+                        )
+                        is not None
+                    )
                     terminal = (
                         self.verified_terminal_initial_outcome(
                             stages.get(SimpleStage.VERIFICATION_INITIAL_DONE)
                         )
                         is not None
-                        or self.verified_terminal_poc_outcome(
-                            stages.get(SimpleStage.POC_EXECUTION_DONE)
-                        )
-                        is not None
+                        or terminal_poc
                         or final is not None
                         and (
                             final.verdict == "FALSE"
@@ -2190,7 +2197,10 @@ class SimpleCheckpointStore:
                         is not None
                         or SimpleStage.REPORT_DONE in stages
                     )
-                    if stale_stage or not terminal:
+                    if (
+                        stale_stage
+                        and not (terminal_poc and not stale_poc_or_downstream)
+                    ) or not terminal:
                         selected.append(hypothesis_id)
                         if len(selected) >= limit:
                             break

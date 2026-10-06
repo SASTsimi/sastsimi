@@ -869,7 +869,11 @@ def _verification_anchor_refs(
                 ):
                     raise ValueError("pinned source hash mismatch")
                 source_hashes[path] = hashlib.sha256(raw).hexdigest()
-                decoded_lines = raw.decode("utf-8").splitlines()
+                decoded_lines = (
+                    redact_untrusted_text_preserving_lines(raw)
+                    .data.decode("utf-8")
+                    .splitlines()
+                )
                 cited_lines = {line for cited_path, line in cited if cited_path == path}
                 for line in cited_lines:
                     if line > len(decoded_lines):

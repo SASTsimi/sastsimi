@@ -133,20 +133,6 @@ rules:
       - pattern: pathlib.Path(...).open(...)
       - pattern: send_file(...)
 
-  - id: sastsimi.python.password-fast-hash
-    languages: [python]
-    message: Candidate password-like value passed to MD5 or SHA-1; context requires verification.
-    severity: INFO
-    patterns:
-      - pattern-either:
-          - pattern: hashlib.md5($PASSWORD.encode(...))
-          - pattern: hashlib.sha1($PASSWORD.encode(...))
-          - pattern: md5($PASSWORD.encode(...))
-          - pattern: sha1($PASSWORD.encode(...))
-      - metavariable-regex:
-          metavariable: $PASSWORD
-          regex: '(?i)^(?:[a-z][a-z0-9]*_)?(?:password|passwd|pwd|passphrase)$'
-
   - id: sastsimi.python.permission-check
     languages: [python]
     message: Candidate permission check; not a vulnerability verdict.
@@ -168,10 +154,22 @@ rules:
       - pattern: request.form.get(...)
       - pattern: request.values.get(...)
       - pattern: request.json
+      - pattern: request.get_json(...)
+      - pattern: request.cookies.get(...)
+      - pattern: request.cookies[$KEY]
+      - pattern: request.headers.get(...)
+      - pattern: request.headers[$KEY]
       - pattern: $REQUEST.GET.get(...)
       - pattern: $REQUEST.POST.get(...)
       - pattern: $REQUEST.GET[$KEY]
       - pattern: $REQUEST.POST[$KEY]
+      - pattern: await $REQUEST.post()
+      - pattern: await $REQUEST.json()
+      - pattern: "@$APP.post(...)"
+      - pattern: "@$APP.get(...)"
+      - pattern: "@$APP.put(...)"
+      - pattern: "@$APP.patch(...)"
+      - pattern: "@$APP.delete(...)"
 
   - id: sastsimi.python.sanitizer
     languages: [python]
@@ -212,6 +210,20 @@ rules:
       - pattern: $CURSOR.executemany(...)
       - pattern: $MODEL.objects.raw(...)
       - pattern: $CONNECTION.execute(...)
+
+  - id: sastsimi.python.weak-password-hash
+    languages: [python]
+    message: Candidate password-like value passed to MD5 or SHA-1; context requires verification.
+    severity: INFO
+    patterns:
+      - pattern-either:
+          - pattern: md5($PASSWORD.encode(...)).hexdigest()
+          - pattern: hashlib.md5($PASSWORD.encode(...)).hexdigest()
+          - pattern: sha1($PASSWORD.encode(...)).hexdigest()
+          - pattern: hashlib.sha1($PASSWORD.encode(...)).hexdigest()
+      - metavariable-regex:
+          metavariable: $PASSWORD
+          regex: (?i).*(?:password|passwd|passphrase|pwd).*
 
   - id: sastsimi.python.validator
     languages: [python]

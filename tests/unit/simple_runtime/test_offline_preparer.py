@@ -267,6 +267,10 @@ async def test_auto_bundle_resolves_safe_python_requirements_before_offline_buil
     """A normal requirements.txt must not fall back to a source-only image."""
 
     workspace, commit, bundle_path, _ = _fixture(tmp_path)
+    (workspace / "pyproject.toml").write_text(
+        "[project]\nname = 'untracked-package'\nversion = '1.0'\n",
+        encoding="utf-8",
+    )
     artifacts, checkpoint = _checkpoint(tmp_path, commit)
 
     class _AutoBundleDocker(_Docker):
@@ -734,6 +738,10 @@ async def test_auto_bundle_resolves_literal_dockerfile_pip_requirements(
         .decode("ascii")
         .strip()
     )
+    (workspace / "pyproject.toml").write_text(
+        "[project]\nname = 'untracked-package'\nversion = '1.0'\n",
+        encoding="utf-8",
+    )
     artifacts, checkpoint = _checkpoint(tmp_path, commit)
 
     class _AutoBundleDocker(_Docker):
@@ -1079,6 +1087,11 @@ async def test_auto_bundle_installs_explicit_python_requirement_without_manifest
         subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
         .decode("ascii")
         .strip()
+    )
+    # This local file is outside the pinned commit and cannot become the
+    # selected install target after AUTO has already resolved the dependency.
+    (workspace / "requirements.txt").write_text(
+        "untracked-package==1\n", encoding="utf-8"
     )
     bundle_root = tmp_path / "bundle-source"
     bundle_root.mkdir()

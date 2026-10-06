@@ -1339,18 +1339,38 @@ def test_poc_candidate_validator_allows_localhost_url() -> None:
     )
 
 
-def test_poc_candidate_validator_keeps_conservative_literal_dollar_check() -> None:
-    for script in (
-        b"#!/bin/sh\nset -eu\nprintf '%s\\n' '{\"name\":{\"$ne\":null}}'\n",
-        b"#!/bin/sh\npython - <<'PY'\nquery = {'$ne': None}\nprint(query)\nPY\n",
-    ):
-        with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
-            validate_candidate(script, allowed_environment_names=frozenset())
+def test_poc_candidate_validator_rejects_shell_literal_dollar() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\nset -eu\nprintf '%s\\n' '{\"name\":{\"$ne\":null}}'\n",
+            allowed_environment_names=frozenset(),
+        )
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython - <<'PY'\nquery = {'$ne': None}\nprint(query)\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
     assert validate_candidate(
         b"#!/bin/sh\npython - <<'PY'\n"
         b"query = {chr(36) + 'ne': None}\nprint(query)\nPY\n",
         allowed_environment_names=frozenset(),
     )
+
+
+@pytest.mark.parametrize(
+    "opener",
+    (b"<<'PY'", b'<<"PY"', b"<<\\PY", b"<<-'PY'"),
+)
+def test_poc_candidate_validator_rejects_literal_dollar_in_quoted_heredoc(
+    opener: bytes,
+) -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython3 - "
+            + opener
+            + b"\nprint({'$ne': 'fixture_absent'})\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
 
 
 def test_poc_candidate_validator_still_rejects_expanded_undeclared_inputs() -> None:
@@ -1371,6 +1391,174 @@ def test_poc_candidate_validator_still_rejects_expanded_undeclared_inputs() -> N
         validate_candidate(
             b'#!/bin/sh\nprintf "%s\\n" "${X:-$NE}"\n',
             allowed_environment_names=frozenset({"NE"}),
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    (b"cat <<'EOF'", b"python3 - <<'EOF' >result.txt"),
+)
+def test_poc_candidate_validator_keeps_safe_quoted_heredocs_without_dollars(
+    command: bytes,
+) -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\n" + command + b"\nhello\nEOF\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_checks_allowed_variable_in_nested_shell() -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\nsh <<'EOF'\necho \"$PATH\"\nEOF\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_allows_nested_shell_local_assignment() -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\nsh <<'EOF'\nINNER=fixture\nprintf '%s' \"$INNER\"\nEOF\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_allows_exported_parent_input_in_child() -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\nexport SHARED=fixture\nsh <<'EOF'\necho \"$SHARED\"\nEOF\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_allows_separately_exported_input_in_child() -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\nSHARED=fixture\nexport SHARED\n"
+        b"sh <<'EOF'\necho \"$SHARED\"\nEOF\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_handles_multiple_quoted_heredocs() -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\npython3 - <<'FIRST' <<'SECOND'\n"
+        b"print({chr(36) + 'ne': 1})\nFIRST\n"
+        b"print({chr(36) + 'gt': 1})\nSECOND\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_allows_direct_python_flags_and_argument() -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\nworkdir=/tmp\n"
+        b"python3 -B - \"$workdir\" <<'PY'\n"
+        b"print({chr(36) + 'ne': 1})\nPY\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        b"import os\nos.system('echo $MISSING')",
+        b"import subprocess\nsubprocess.run('echo $MISSING', shell=True)",
+        b"import os\ngetattr(os, 'system')('echo $MISSING')",
+    ),
+)
+def test_poc_candidate_validator_rejects_python_spawned_shell_variables(
+    body: bytes,
+) -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython3 - <<'PY'\n" + body + b"\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+def test_poc_candidate_validator_runtime_mongo_key_with_subprocess() -> None:
+    assert validate_candidate(
+        b"#!/bin/sh\npython3 - <<'PY'\n"
+        b"import subprocess\nquery = {chr(36) + 'ne': 'x'}\n"
+        b"subprocess.run(['true'], check=True)\nPY\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
+def test_poc_candidate_validator_rejects_dict_key_sent_to_nested_shell() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython3 - <<'PY'\n"
+            b"import os\nos.system('echo ' + next(iter({'$MISSING': 1})))\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+def test_poc_candidate_validator_rejects_aliased_shell_runner() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython3 - <<'PY'\n"
+            b"import subprocess\nr = subprocess.run\n"
+            b"r(['sh', '-c', 'echo ' + next(iter({'$MISSING': 1}))])\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("command", "body"),
+    (
+        (b"sh <<'PY'", b'printf "%s" "$MISSING"'),
+        (b"bash <<'PY'", b'printf "%s" "$MISSING"'),
+        (b"cat <<'PY' | sh", b'printf "%s" "$MISSING"'),
+        (b"cat <<'PY' | bash", b'printf "%s" "$MISSING"'),
+        (b"python3 - <<'PY' | sh", b"print('echo $MISSING')"),
+    ),
+)
+def test_poc_candidate_validator_rejects_quoted_heredoc_to_shell(
+    command: bytes, body: bytes
+) -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\n" + command + b"\n" + body + b"\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+def test_poc_candidate_validator_checks_unquoted_heredoc_expansion() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\ncat <<PY\n$MISSING\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+def test_poc_candidate_validator_checks_shell_after_quoted_heredoc() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython3 - <<'PY'\n$ne\nPY\nprintf '%s' \"$MISSING\"\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+def test_poc_candidate_validator_does_not_count_heredoc_assignment() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython3 - <<'PY'\nMISSING=fixture\nPY\n"
+            b"printf '%s' \"$MISSING\"\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+def test_poc_candidate_validator_keeps_url_check_inside_quoted_heredoc() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_EXTERNAL_URL_FORBIDDEN"):
+        validate_candidate(
+            b"#!/bin/sh\npython3 - <<'PY'\nhttps://example.invalid\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+def test_poc_candidate_validator_does_not_parse_literal_heredoc_opener() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\nprintf '%s' \"<<'PY'\"\n"
+            b"# <<'OTHER'\nprintf '%s' \"$MISSING\"\nPY\n",
+            allowed_environment_names=frozenset(),
         )
 
 

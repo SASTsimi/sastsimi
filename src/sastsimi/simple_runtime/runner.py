@@ -95,6 +95,15 @@ class SimpleRuntimeRunner:
         # precedes every version-driven invalidate_from call below.
         terminal_poc = self.store.get(identity, SimpleStage.POC_EXECUTION_DONE)
         if terminal_poc is not None:
+            if terminal_poc_outcome(terminal_poc) is not None:
+                if self.cleanup_artifacts is None:
+                    return RunOutcome(
+                        current_stage=SimpleStage.POC_EXECUTION_DONE,
+                        status=StageStatus.BLOCKED,
+                        error_code="POC_TERMINAL_EVIDENCE_INVALID",
+                        attempt_id=terminal_poc.attempt_id,
+                    )
+                return self._verified_poc_terminal(terminal_poc)
             if self._has_prior_poc_recovery_decision(terminal_poc):
                 promoted = self._promote_stopped_inconclusive_poc(terminal_poc)
                 if promoted is not None:
@@ -176,6 +185,22 @@ class SimpleRuntimeRunner:
                     existing is not None
                     and existing.stage_version != STAGE_VERSION[stage]
                 ):
+                    if (
+                        stage
+                        in {
+                            SimpleStage.VERIFICATION_INITIAL_DONE,
+                            SimpleStage.VERIFICATION_FINAL_DONE,
+                        }
+                        and existing.status is StageStatus.FAILED
+                        and existing.error_code == "HYPOTHESIS_ANCHOR_INVALID"
+                        and existing.attempt_number >= MAX_RECOVERY_ATTEMPTS
+                    ):
+                        return RunOutcome(
+                            current_stage=stage,
+                            status=existing.status,
+                            error_code=existing.error_code,
+                            attempt_id=existing.attempt_id,
+                        )
                     if (
                         stage is SimpleStage.VERIFICATION_INITIAL_DONE
                         and existing.status is StageStatus.BLOCKED
