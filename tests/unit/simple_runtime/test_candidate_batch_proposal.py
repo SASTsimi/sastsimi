@@ -530,6 +530,154 @@ async def test_location_retry_v2_explains_exact_cross_file_call_path_evidence(
     assert "routes.py:2" not in message
 
 
+def test_location_retry_prioritizes_route_entry_over_many_downstream_lines() -> None:
+    def step(path: str, line: int, role: str) -> dict[str, object]:
+        return {"path": path, "line": line, "role": role}
+
+    def call_path(steps: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "kind": "call_path_v1",
+            "provenance": "python_syntax",
+            "assurance": "SYNTACTIC_REACHABILITY",
+            "status": "AVAILABLE",
+            "gaps": [],
+            "steps": steps,
+        }
+
+    context: dict[str, object] = {
+        "kind": "simple_candidate_file_context_v2",
+        "path": "views.py",
+        "source_lines": [{"line": 55, "text": "sink(value)"}],
+        "related_source_files": [
+            {
+                "path": "dao.py",
+                "source_status": "AVAILABLE",
+                "source_lines": [
+                    {"line": number, "text": "pass"} for number in range(1, 21)
+                ],
+            },
+            {
+                "path": "routes.py",
+                "source_status": "AVAILABLE",
+                "source_lines": [
+                    {"line": 13, "text": "route(view)"},
+                    {"line": 14, "text": "pass"},
+                ],
+            },
+        ],
+        "candidate_call_paths": [
+            {
+                "candidate_id": "C-000",
+                "status": "AVAILABLE",
+                "gaps": [],
+                "paths": [
+                    call_path([step("routes.py", 13, "ROUTE_ENTRY")]),
+                    call_path(
+                        [
+                            step("dao.py", number, "CALLEE_BODY_LINE")
+                            for number in range(1, 21)
+                        ]
+                    ),
+                ],
+            }
+        ],
+    }
+
+    message = DirectHypothesisBootstrap._location_validation_feedback(
+        context, "views.py", "C-000"
+    )
+
+    assert "routes.py:13" in message
+    assert "routes.py:14" not in message
+    assert "dao.py:1" in message
+    assert "examples are not exhaustive" in message
+    assert "dao.py:20" not in message
+    _primary, allowed = DirectHypothesisBootstrap._candidate_evidence_locations(
+        context, "views.py", "C-000"
+    )
+    assert ("dao.py", 20) in allowed
+
+
+def test_location_retry_keeps_direct_callee_lines_ahead_of_unrelated_body() -> None:
+    def step(path: str, line: int, role: str) -> dict[str, object]:
+        return {"path": path, "line": line, "role": role}
+
+    def call_path(kind: str, steps: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "kind": kind,
+            "provenance": "python_syntax",
+            "assurance": "SYNTACTIC_REACHABILITY",
+            "status": "AVAILABLE",
+            "gaps": [],
+            "steps": steps,
+        }
+
+    # The decisive callee is reached by the nearer call site. Its body has
+    # higher line numbers than a longer, unrelated callee listed first.
+    context: dict[str, object] = {
+        "kind": "simple_candidate_file_context_v2",
+        "path": "handler.py",
+        "source_lines": [
+            {"line": line, "text": "call(value)"} for line in (55, 57, 59)
+        ],
+        "related_source_files": [
+            {
+                "path": "dao.py",
+                "source_status": "AVAILABLE",
+                "source_lines": [
+                    {"line": line, "text": "pass"}
+                    for line in (*range(10, 29), *range(41, 46))
+                ],
+            },
+            {
+                "path": "routes.py",
+                "source_status": "AVAILABLE",
+                "source_lines": [{"line": 13, "text": "route(handler)"}],
+            },
+        ],
+        "candidate_call_paths": [
+            {
+                "candidate_id": "C-000",
+                "status": "AVAILABLE",
+                "gaps": [],
+                "paths": [
+                    call_path("call_path_v1", [step("routes.py", 13, "ROUTE_ENTRY")]),
+                    call_path(
+                        "candidate_downstream_context_v1",
+                        [
+                            step("handler.py", 55, "CANDIDATE"),
+                            step("handler.py", 59, "CALL"),
+                            *(
+                                step("dao.py", line, "CALLEE_BODY_LINE")
+                                for line in range(10, 29)
+                            ),
+                        ],
+                    ),
+                    call_path(
+                        "candidate_downstream_context_v1",
+                        [
+                            step("handler.py", 55, "CANDIDATE"),
+                            step("handler.py", 57, "CALL"),
+                            *(
+                                step("dao.py", line, "CALLEE_BODY_LINE")
+                                for line in range(41, 46)
+                            ),
+                        ],
+                    ),
+                ],
+            }
+        ],
+    }
+
+    message = DirectHypothesisBootstrap._location_validation_feedback(
+        context, "handler.py", "C-000"
+    )
+
+    assert "routes.py:13" in message
+    assert all(f"dao.py:{line}" in message for line in range(41, 46))
+    assert message.count("dao.py:") + message.count("routes.py:") <= 12
+
+
 @pytest.mark.asyncio
 async def test_location_retry_fits_budget_with_multiple_invalid_candidates(
     tmp_path: Path,

@@ -227,6 +227,29 @@ poc_wheel_archive_sha256 = "<소문자 SHA-256 64자리>"
 `pyproject.toml`, 또는 PoC가 명시한 `pip:<PEP 508 requirement>`의 요구사항을 binary
 wheel만으로 수집합니다. resolver는 `bridge` 네트워크가 필요한 유일한 Docker 작업이며,
 읽기 전용 컨테이너·capability 제거·리소스 제한으로 실행되고 대상 저장소를 받지 않습니다.
+
+고정 소스 근거가 다른 Python 버전을 요구하면 초기 Verification은
+`python:X.Y[.Z]`를 기록할 수 있습니다. 기본 `AUTO`의 Python 3.12 동작은
+그대로이며, 비기본 버전은 운영자가 신뢰 가능한 Linux 이미지를 **미리 로컬에
+준비**해 `profile.toml`의 최상위 `poc_offline_base_image_digest = "sha256:..."`로
+지정해야 합니다. 도구는 그 digest로만 `--pull never`·`--network none`인
+격리 컨테이너를 실행해 실제 인터프리터 버전을 확인합니다. 서로 충돌하는
+버전 요구는 `POC_OFFLINE_PYTHON_RUNTIME_CONFLICT`, digest 부재는
+`POC_OFFLINE_PYTHON_RUNTIME_DIGEST_REQUIRED`, 이미지 실행 실패는
+`POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE`, 실제 버전 불일치는
+`POC_OFFLINE_PYTHON_RUNTIME_MISMATCH`로 남깁니다. 수동 오프라인 경로에
+필요한 wheel 묶음이 없으면 `POC_OFFLINE_PYTHON_RUNTIME_BUNDLE_REQUIRED`입니다.
+버전 변경만으로 오래된 고정 의존성의 binary wheel이 생기지는 않습니다.
+형식이 맞지 않는 `python:` 또는 `python ` 런타임 요청은 다른 Python 버전으로
+조용히 실행하지 않고 `POC_OFFLINE_PYTHON_RUNTIME_INVALID`로 거부합니다.
+설치할 패키지가 없는 저장소(패키징 manifest가 없거나 빈 `requirements.txt`)는
+검증된 로컬 이미지와 고정 commit의 파일만으로 네트워크 없는 이미지를 만들며,
+선택한 manifest가 `.dockerignore`로 제외되면 빌드 성공으로 처리하지 않고
+`POC_OFFLINE_MANIFEST_EXCLUDED`로 중단합니다. 이미지의 기본 `ENTRYPOINT`는
+PoC 컨테이너 시작 명령에 영향을 주지 않도록 덮어씁니다.
+일치하는 wheel을 구할 수 없는 경우에는 sdist·OS 패키지 설치나 PoC 컨테이너의
+네트워크 개방으로 우회하지 않고 해당 시도를 미확정 또는 실패 상태로 보존합니다.
+
 수집한 wheel의 해시·base digest·입력 hash는 artifact로 기록되며, resolver 실패 시에는
 해당 시도의 stderr/stdout도 별도 artifact로 보존됩니다. 고정 commit의 제품 manifest와
 PEP 621 build-system 요구사항은 권위 있는 입력이라 제거·대체하지 않습니다. 정확한
@@ -328,7 +351,7 @@ PoC 초안은 validated PoC가 아닙니다. 같은 attempt에서 실제 실행�
 
 `POC_TERMINAL_EVIDENCE_INVALID`는 복구 상한에 이른 PoC의 실행·해석 근거가 삭제·손상됐다는 뜻입니다. 이 경우에도 완료된 미확정 판정으로 세지 않고 `BLOCKED`로 표시합니다.
 
-PoC Agent에는 Pro·Con Agent가 요청한 저장소 상대 경로 중 고정 commit의 Git 추적 파일만 전달합니다. 본문은 현재 작업 폴더가 아니라 고정 commit의 Git blob에서 읽어 재개 중 파일 변경의 영향을 받지 않습니다. 경로 이탈, 심볼릭 링크, 비추적 파일과 크기 한도 초과 파일은 거부하고 `simple_requested_sources` artifact에 제공·거부 내역을 남깁니다. PoC 단계는 원본 소스 총량 128,000바이트, 요청 경로 32개, JSON 변환 후 프롬프트 source artifact 96,000바이트로 제한합니다. 큰 파일은 내용을 읽기 전에 거부하고, 포장 후 한도를 넘는 파일은 `PROMPT_BUDGET_EXHAUSTED`로 남깁니다. 이 근거 제공은 재현 코드의 성공을 보장하지 않습니다.
+PoC Agent에는 고정 commit에서 검증한 Pro/Con 핵심 소스와 Pro·Con Agent가 요청한 저장소 상대 경로 중 Git 추적 파일만 전달합니다. 본문은 현재 작업 폴더가 아니라 고정 commit의 Git blob에서 읽어 재개 중 파일 변경의 영향을 받지 않습니다. 경로 이탈, 심볼릭 링크, 비추적 파일과 크기 한도 초과 파일은 거부하고 `simple_requested_sources` artifact에 제공·거부 내역을 남깁니다. PoC 단계는 원본 소스 총량 128,000바이트, 요청 경로 32개, JSON 변환 후 프롬프트 source artifact 96,000바이트로 제한합니다. 큰 파일은 내용을 읽기 전에 거부하고, 포장 후 한도를 넘는 파일은 `PROMPT_BUDGET_EXHAUSTED`로 남깁니다. 재시도는 최신 후보·실행 기록과, 존재하는 경우 최신 검증 피드백을 필수 근거로 전달하고 이전의 큰 스크립트·stdout·stderr는 한도 내 선택 문맥으로만 추가합니다. 필수 근거가 문맥 한도를 넘거나 고정 소스 anchor가 손상되면 각각 `HYPOTHESIS_CONTEXT_OVERFLOW` 또는 `HYPOTHESIS_ANCHOR_INVALID`로 중단하며 임의로 잘라 성공 처리하지 않습니다. 이 근거 제공은 재현 코드의 성공을 보장하지 않습니다.
 
 동적 실행 오류의 복구 계보가 최대 3회 시도를 소진하면 `RECOVERY_EXHAUSTED`로 남습니다. 일반 `resume`은 이미 소진된 시도를 자동으로 초기화하지 않으므로 같은 오류를 반복 호출해도 해결되지 않습니다. 아래의 명시적 오프라인 base-image 수리 조건에 해당하지 않으면 원인을 수정한 뒤 새 분석을 시작하고 이전 분석·artifact를 보존하세요.
 

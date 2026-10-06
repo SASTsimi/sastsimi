@@ -3483,11 +3483,102 @@ class DirectHypothesisBootstrap:
                 "If they do not support a hypothesis, return "
                 "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS."
             )
+        role_priority = {
+            "ROUTE_ENTRY": 0,
+            "HANDLER_DEFINITION": 1,
+            "REQUEST_CONTEXT": 2,
+            "SINK": 3,
+            "CALL": 4,
+            "FLOW_STEP": 5,
+            "CANDIDATE": 6,
+            "CALLEE_BODY_LINE": 7,
+            "ENCLOSING_BODY_LINE": 8,
+        }
+        # The retry text is only a bounded set of examples; the validator
+        # above remains the authority for every allowed line. Keep route and
+        # sink evidence prominent, then show the body reached by the nearest
+        # candidate call before unrelated callee bodies. A global line sort
+        # can otherwise spend all twelve examples on an earlier file region.
+        ranked: dict[tuple[str, int], tuple[int, int, int, int, int]] = {}
+        for record in context.get("candidate_call_paths", []):
+            if (
+                not isinstance(record, dict)
+                or record.get("candidate_id") != candidate_id
+            ):
+                continue
+            for path_index, call_path in enumerate(record.get("paths", [])):
+                if not isinstance(call_path, dict):
+                    continue
+                steps = call_path.get("steps", [])
+                candidate_lines = [
+                    step["line"]
+                    for step in steps
+                    if isinstance(step, dict)
+                    and step.get("path") == path
+                    and step.get("role") == "CANDIDATE"
+                ]
+                call_lines = [
+                    step["line"]
+                    for step in steps
+                    if isinstance(step, dict)
+                    and step.get("path") == path
+                    and step.get("role") == "CALL"
+                ]
+                call_distance, call_line = min(
+                    (
+                        (abs(call - candidate), call)
+                        for call in call_lines
+                        for candidate in candidate_lines
+                    ),
+                    default=(1_000_000, 1_000_000),
+                )
+                for step_index, step in enumerate(steps):
+                    if not isinstance(step, dict):
+                        continue
+                    step_path, step_line, role = (
+                        step.get("path"),
+                        step.get("line"),
+                        step.get("role"),
+                    )
+                    if (
+                        not isinstance(step_path, str)
+                        or type(step_line) is not int
+                        or not isinstance(role, str)
+                    ):
+                        continue
+                    location = step_path, step_line
+                    if location not in allowed or location[0] == path:
+                        continue
+                    if role == "ROUTE_ENTRY":
+                        priority = (0, 0, 0, path_index, step_index)
+                    elif role == "SINK":
+                        priority = (1, 0, 0, path_index, step_index)
+                    elif (
+                        call_path.get("kind") == "candidate_downstream_context_v1"
+                        and role == "CALLEE_BODY_LINE"
+                    ):
+                        priority = (
+                            2,
+                            call_distance,
+                            call_line,
+                            path_index,
+                            step_index,
+                        )
+                    else:
+                        priority = (
+                            3,
+                            role_priority.get(role, 9),
+                            0,
+                            path_index,
+                            step_index,
+                        )
+                    ranked[location] = min(ranked.get(location, priority), priority)
         cross_file_steps = [
             f"{step_path}:{line}"
-            for step_path, line in sorted(allowed)
-            if step_path != path
-        ][:12]
+            for step_path, line in sorted(
+                ranked, key=lambda location: (ranked[location], *location)
+            )[:12]
+        ]
         if not cross_file_steps:
             return (
                 base + "qualification.evidence_locations must use those same visible "
@@ -3495,8 +3586,9 @@ class DirectHypothesisBootstrap:
                 "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS."
             )
         return (
-            base + "qualification.evidence_locations may additionally cite only these "
-            "exact candidate_call_paths steps: "
+            base + "qualification.evidence_locations may additionally cite any "
+            "exact visible candidate_call_paths step; these examples are not "
+            "exhaustive: "
             + ", ".join(cross_file_steps)
             + ". A syntactic call path is not proof that attacker-controlled data "
             "reaches the sink. If the allowed lines do not support the claim, return "

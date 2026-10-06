@@ -159,6 +159,44 @@ class _Docker:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        "python:3.11-alpine",
+        "python:alpine3.8",
+        "python 3.11",
+        "python\t3.11",
+        "python3.11",
+    ),
+)
+async def test_direct_preparer_rejects_unparsed_python_runtime(
+    tmp_path: Path, requirement: str
+) -> None:
+    workspace, commit, _path, _digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    docker = _Docker()
+    preparer = DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    )
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_PYTHON_RUNTIME_INVALID"):
+        await preparer.prepare(checkpoint, {}, (requirement,))
+
+    assert docker.calls == []
+
+
+def test_python_runtime_parser_does_not_reject_package_names() -> None:
+    assert (
+        DirectEnvironmentPreparer._requested_python_runtime(
+            ("python-dateutil==2.9.0", "pip:python-dotenv==1.0.0")
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_offline_base_preflight_checks_and_pins_local_image(
     tmp_path: Path,
 ) -> None:
@@ -259,6 +297,332 @@ async def test_configured_offline_base_is_pinned_and_changes_recipe_cache(
         json.loads(artifacts.read(default_result.recipe_ref))["base_image_digest"]
         == "sha256:" + "b" * 64
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", ["3.6", "3.6.2"])
+async def test_explicit_python_runtime_matches_only_a_probed_configured_digest(
+    tmp_path: Path, requested: str
+) -> None:
+    workspace, commit, bundle_path, bundle_sha256 = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+
+    class _VersionedDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.events: list[tuple[str, str]] = []
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            self.events.append(("inspect", base_image))
+            assert base_image in {
+                selected_digest,
+                "sastsimi-offline-base:" + "d" * 64,
+            }
+            return selected_digest
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            self.events.append(("version", image_digest))
+            assert image_digest == selected_digest
+            return "3.6.2"
+
+        async def target_wheel_tags(self, base_image: str) -> frozenset[str]:
+            assert base_image == selected_digest
+            return frozenset({"py3-none-any"})
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "sastsimi-offline-base:" + "d" * 64
+
+    docker = _VersionedDocker()
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=bundle_path,
+        wheel_bundle_sha256=bundle_sha256,
+        offline_base_image_digest=selected_digest,
+    ).prepare(checkpoint, {}, (f"python:{requested}",))
+
+    assert docker.events[:2] == [
+        ("inspect", selected_digest),
+        ("version", selected_digest),
+    ]
+    assert docker.calls[0][0].startswith(b"FROM sastsimi-offline-base:" + b"d" * 64)
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["python_runtime_requirement"] == requested
+    assert recipe["python_runtime_observed_version"] == "3.6.2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requirements", "expected_code"),
+    [
+        (("python:3.6",), "POC_OFFLINE_PYTHON_RUNTIME_DIGEST_REQUIRED"),
+        (
+            ("python:3.6", "python:3.7"),
+            "POC_OFFLINE_PYTHON_RUNTIME_CONFLICT",
+        ),
+    ],
+)
+async def test_explicit_python_runtime_blocks_before_unconfigured_base_is_used(
+    tmp_path: Path, requirements: tuple[str, ...], expected_code: str
+) -> None:
+    workspace, commit, bundle_path, bundle_sha256 = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    docker = _Docker()
+
+    with pytest.raises(ValueError, match=expected_code):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=bundle_path,
+            wheel_bundle_sha256=bundle_sha256,
+        ).prepare(checkpoint, {}, requirements)
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested", "observed"),
+    [("3.6.2", "3.6.3"), ("3.6.2", "3.8.20"), ("3.12", "3.11.9")],
+)
+async def test_explicit_python_runtime_mismatch_blocks_before_offline_build(
+    tmp_path: Path, requested: str, observed: str
+) -> None:
+    workspace, commit, bundle_path, bundle_sha256 = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+
+    class _MismatchedDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            assert base_image in {
+                selected_digest,
+                "sastsimi-offline-base:" + "d" * 64,
+            }
+            return selected_digest
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return observed
+
+        async def target_wheel_tags(self, base_image: str) -> frozenset[str]:
+            assert base_image == selected_digest
+            return frozenset({"py3-none-any"})
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "sastsimi-offline-base:" + "d" * 64
+
+    docker = _MismatchedDocker()
+    with pytest.raises(ValueError, match="POC_OFFLINE_PYTHON_RUNTIME_MISMATCH"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            wheel_bundle_path=bundle_path,
+            wheel_bundle_sha256=bundle_sha256,
+            offline_base_image_digest=selected_digest,
+        ).prepare(checkpoint, {}, (f"python:{requested}",))
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_python_version_probe_is_networkless_and_uses_only_the_digest() -> None:
+    selected_digest = "sha256:" + "d" * 64
+
+    class _Runtime(PortableDockerRuntime):
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            assert input_bytes is None
+            assert timeout_seconds <= 60
+            self.command = tuple(args)
+            return DockerCommandOutcome(0, b"3.6.2\n", b"", False)
+
+    runtime = object.__new__(_Runtime)
+    assert await runtime._probe_python_version(selected_digest) == "3.6.2"
+    command = runtime.command
+    assert command[:5] == ("run", "--pull", "never", "--rm", "--network")
+    assert command[5] == "none"
+    assert "--read-only" in command
+    assert ("--cap-drop", "ALL") == command[
+        command.index("--cap-drop") : command.index("--cap-drop") + 2
+    ]
+    assert ("--security-opt", "no-new-privileges") == command[
+        command.index("--security-opt") : command.index("--security-opt") + 2
+    ]
+    assert ("--entrypoint", "python") == command[
+        command.index("--entrypoint") : command.index("--entrypoint") + 2
+    ]
+    assert selected_digest in command
+    assert "-c" == command[command.index(selected_digest) + 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        DockerCommandOutcome(1, b"", b"python unavailable", False),
+        DockerCommandOutcome(0, b"3.6.2\nunexpected\n", b"", False),
+        DockerCommandOutcome(0, b"3.6.2\n", b"", True),
+    ],
+)
+async def test_python_version_probe_rejects_unavailable_or_ambiguous_output(
+    outcome: DockerCommandOutcome,
+) -> None:
+    class _Runtime(PortableDockerRuntime):
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del args, timeout_seconds, input_bytes
+            return outcome
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE"):
+        await object.__new__(_Runtime)._probe_python_version("sha256:" + "d" * 64)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested", "observed"),
+    [("3.6.2", "3.6.2"), ("3.12", "3.12.9")],
+)
+async def test_auto_bundle_verifies_explicit_python_before_networked_resolution(
+    tmp_path: Path, requested: str, observed: str
+) -> None:
+    workspace, commit, bundle_path, _ = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+
+    class _AutoDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.events: list[str] = []
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            self.events.append("inspect")
+            assert base_image in {
+                selected_digest,
+                "sastsimi-offline-base:" + "d" * 64,
+            }
+            return selected_digest
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            self.events.append("version")
+            assert image_digest == selected_digest
+            return observed
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            self.events.append("pin")
+            assert image_digest == selected_digest
+            return "sastsimi-offline-base:" + "d" * 64
+
+        async def target_wheel_tags(self, base_image: str) -> frozenset[str]:
+            assert base_image == selected_digest
+            return frozenset({"py3-none-any"})
+
+        async def download_python_wheels(
+            self,
+            *,
+            base_image: str,
+            requirements: tuple[str, ...],
+            timeout_seconds: int,
+        ) -> bytes:
+            del timeout_seconds
+            self.events.append("download")
+            assert base_image == "sastsimi-offline-base:" + "d" * 64
+            assert requirements == ("sample-pkg==1.0",)
+            return bundle_path.read_bytes()
+
+    docker = _AutoDocker()
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        offline_base_image_digest=selected_digest,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, (f"python:{requested}",))
+
+    assert docker.events[:4] == ["inspect", "version", "pin", "download"]
+    assert docker.events.count("version") == 1
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["python_runtime_requirement"] == requested
+    assert recipe["python_runtime_observed_version"] == observed
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_blocks_mismatched_configured_default_before_resolution(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, _bundle_path, _ = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+
+    class _WrongDefaultDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            assert base_image == selected_digest
+            return selected_digest
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "3.11.9"
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "sastsimi-offline-base:" + "d" * 64
+
+        async def download_python_wheels(self, **_kwargs: object) -> bytes:
+            raise AssertionError("mismatched runtime must block before resolution")
+
+    docker = _WrongDefaultDocker()
+    with pytest.raises(ValueError, match="POC_OFFLINE_PYTHON_RUNTIME_MISMATCH"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            offline_base_image_digest=selected_digest,
+            auto_dependency_bundle=True,
+        ).prepare(checkpoint, {}, ("python:3.12",))
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_auto_bundle_nondefault_python_without_digest_never_resolves_base(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, _bundle_path, _ = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _NoBaseAccess(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            raise AssertionError(f"base access was not permitted: {base_image}")
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_PYTHON_RUNTIME_DIGEST_REQUIRED"):
+        await DirectEnvironmentPreparer(
+            docker=_NoBaseAccess(),  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            auto_dependency_bundle=True,
+        ).prepare(checkpoint, {}, ("python:3.6",))
+
+
+def test_alpine_image_tag_is_not_accepted_as_a_python_version() -> None:
+    with pytest.raises(ValueError, match="POC_OFFLINE_REQUIREMENT_UNSUPPORTED"):
+        DirectEnvironmentPreparer._offline_agent_requirements(
+            ("python:alpine3.8",), commit_id="a" * 40
+        )
 
 
 @pytest.mark.asyncio
@@ -391,6 +755,9 @@ async def test_auto_resolver_has_network_only_without_repository_mount(
     ]
     assert ("--timeout", "45") == command[
         command.index("--timeout") : command.index("--timeout") + 2
+    ]
+    assert ("--entrypoint", "python") == command[
+        command.index("--entrypoint") : command.index("--entrypoint") + 2
     ]
     assert str(_workspace) not in "\n".join(command)
     assert runtime.commands[1][:2] == ("rm", "--force")
@@ -719,15 +1086,359 @@ async def test_auto_bundle_keeps_stdlib_only_project_offline_without_resolver(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_empty_manifest", [False, True])
+@pytest.mark.parametrize(
+    ("requested", "observed"), [("3.6.2", "3.6.2"), ("3.12", "3.12.9")]
+)
+async def test_auto_dependency_free_python_uses_pinned_local_image(
+    tmp_path: Path, has_empty_manifest: bool, requested: str, observed: str
+) -> None:
+    workspace, commit, _bundle_path, _bundle_sha256 = _fixture(tmp_path, manifest="")
+    if not has_empty_manifest:
+        (workspace / "requirements.txt").unlink()
+        subprocess.run(("git", "-C", str(workspace), "add", "-A"), check=True)
+        subprocess.run(
+            (
+                "git",
+                "-C",
+                str(workspace),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "stdlib target",
+            ),
+            check=True,
+        )
+        commit = (
+            subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+            .decode("ascii")
+            .strip()
+        )
+    (workspace / "untracked.py").write_text(
+        "raise RuntimeError('untrusted')\n", encoding="utf-8"
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+    selected_reference = "sastsimi-offline-base:" + "d" * 64
+
+    class _VersionedDocker(_Docker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probes: list[tuple[str, str]] = []
+
+        async def local_base_image_digest(self, base_image: str) -> str:
+            self.probes.append(("inspect", base_image))
+            assert base_image in {selected_digest, selected_reference}
+            return selected_digest
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            self.probes.append(("python", image_digest))
+            assert image_digest == selected_digest
+            return observed
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            self.probes.append(("pin", image_digest))
+            assert image_digest == selected_digest
+            return selected_reference
+
+        async def download_python_wheels(self, **_kwargs: object) -> bytes:
+            raise AssertionError("dependency-free target must not resolve wheels")
+
+    docker = _VersionedDocker()
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        offline_base_image_digest=selected_digest,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, (f"python:{requested}",))
+
+    assert docker.probes[:3] == [
+        ("inspect", selected_digest),
+        ("python", selected_digest),
+        ("pin", selected_digest),
+    ]
+    assert len(docker.calls) == 1
+    dockerfile, _cache_key, context = docker.calls[0]
+    assert dockerfile.startswith(f"FROM {selected_reference}\n".encode("ascii"))
+    assert b"pip install" not in dockerfile
+    assert b"apt-get" not in dockerfile
+    assert context is not None
+    with tarfile.open(fileobj=io.BytesIO(context), mode="r:") as archive:
+        names = {member.name for member in archive}
+        assert archive.extractfile("app.py").read() == b"print('test')\n"  # type: ignore[union-attr]
+    assert "untracked.py" not in names
+    assert ("requirements.txt" in names) is has_empty_manifest
+    assert not any(name.startswith("wheels/") for name in names)
+    recipe = json.loads(artifacts.read(result.recipe_ref))
+    assert recipe["status"] == "BUILT"
+    assert recipe["dockerfile_source"] == "GENERATED"
+    assert recipe["base_image_digest"] == selected_digest
+    assert recipe["python_runtime_requirement"] == requested
+    assert recipe["python_runtime_observed_version"] == observed
+    assert recipe["build_network"] == "none"
+    assert recipe["context_sha256"] == hashlib.sha256(context).hexdigest()
+    assert recipe["commit_id"] == commit
+    assert recipe["image_digest"] == result.image_digest
+
+
+@pytest.mark.asyncio
+async def test_auto_dependency_free_python_rejects_excluded_manifest(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit, _bundle_path, _bundle_sha256 = _fixture(tmp_path, manifest="")
+    (workspace / ".dockerignore").write_text("requirements.txt\n", encoding="utf-8")
+    subprocess.run(("git", "-C", str(workspace), "add", ".dockerignore"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "exclude manifest",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "b" * 64
+
+    class _VersionedDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == selected_digest:
+                return selected_digest
+            return await super().local_base_image_digest(base_image)
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "3.6.15"
+
+    docker = _VersionedDocker()
+    with pytest.raises(ValueError, match="POC_OFFLINE_MANIFEST_EXCLUDED"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            offline_base_image_digest=selected_digest,
+            auto_dependency_bundle=True,
+        ).prepare(checkpoint, {}, ("python:3.6",))
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_auto_dependency_free_python_blocks_mismatched_local_digest_before_build(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, _bundle_path, _bundle_sha256 = _fixture(tmp_path, manifest="")
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+
+    class _WrongVersionDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            assert base_image == selected_digest
+            return selected_digest
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "3.7.1"
+
+        async def download_python_wheels(self, **_kwargs: object) -> bytes:
+            raise AssertionError("mismatched runtime must not resolve wheels")
+
+    docker = _WrongVersionDocker()
+    with pytest.raises(ValueError, match="POC_OFFLINE_PYTHON_RUNTIME_MISMATCH"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            offline_base_image_digest=selected_digest,
+            auto_dependency_bundle=True,
+        ).prepare(checkpoint, {}, ("python:3.6",))
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_auto_dependency_free_python_requires_declared_source_in_pinned_context(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, _bundle_path, _bundle_sha256 = _fixture(tmp_path, manifest="")
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+
+    class _VersionedDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            assert base_image in {
+                selected_digest,
+                "sastsimi-offline-base:" + "d" * 64,
+            }
+            return selected_digest
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "3.6.2"
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "sastsimi-offline-base:" + "d" * 64
+
+    docker = _VersionedDocker()
+    with pytest.raises(ValueError, match="POC_OFFLINE_REQUIREMENT_UNSUPPORTED"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            offline_base_image_digest=selected_digest,
+            auto_dependency_bundle=True,
+        ).prepare(
+            checkpoint,
+            {},
+            ("python:3.6", f"Source checkout at commit {commit} containing missing.py"),
+        )
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_auto_nondefault_python_without_dependencies_rejects_pyproject_install(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit, _bundle_path, _bundle_sha256 = _fixture(tmp_path, manifest="")
+    (workspace / "requirements.txt").unlink()
+    (workspace / "pyproject.toml").write_text(
+        "[project]\nname = 'local-package'\nversion = '1.0'\ndependencies = []\n",
+        encoding="utf-8",
+    )
+    subprocess.run(("git", "-C", str(workspace), "add", "-A"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "local package",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    selected_digest = "sha256:" + "d" * 64
+
+    class _VersionedDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            assert base_image in {
+                selected_digest,
+                "sastsimi-offline-base:" + "d" * 64,
+            }
+            return selected_digest
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "3.6.2"
+
+        async def pin_local_base(self, image_digest: str) -> str:
+            assert image_digest == selected_digest
+            return "sastsimi-offline-base:" + "d" * 64
+
+    docker = _VersionedDocker()
+    with pytest.raises(ValueError, match="POC_OFFLINE_PYTHON_RUNTIME_BUNDLE_REQUIRED"):
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+            offline_base_image_digest=selected_digest,
+            auto_dependency_bundle=True,
+        ).prepare(checkpoint, {}, ("python:3.6",))
+
+    assert docker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_auto_dependency_free_without_explicit_python_keeps_default_build(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit, _bundle_path, _bundle_sha256 = _fixture(tmp_path, manifest="")
+    (workspace / "Dockerfile").unlink()
+    subprocess.run(("git", "-C", str(workspace), "add", "-A"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "no Dockerfile",
+        ),
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+
+    class _ConfiguredDocker(_Docker):
+        async def local_base_image_digest(self, base_image: str) -> str:
+            if base_image == "sha256:" + "b" * 64:
+                return base_image
+            return await super().local_base_image_digest(base_image)
+
+    docker = _ConfiguredDocker()
+
+    result = await DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        offline_base_image_digest="sha256:" + "b" * 64,
+        auto_dependency_bundle=True,
+    ).prepare(checkpoint, {}, ())
+
+    assert len(docker.calls) == 1
+    dockerfile, _cache_key, context = docker.calls[0]
+    assert dockerfile.startswith(b"FROM python:3.12-slim\n")
+    assert context is None
+    assert "base_image_digest" not in json.loads(artifacts.read(result.recipe_ref))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_runtime", [None, "3.6"])
 async def test_auto_bundle_resolves_literal_dockerfile_pip_requirements(
     tmp_path: Path,
+    requested_runtime: str | None,
 ) -> None:
     """A safe Dockerfile declaration can seed an offline Python runtime."""
 
     workspace, _commit, bundle_path, _digest = _fixture(tmp_path)
     (workspace / "requirements.txt").unlink()
     (workspace / "Dockerfile").write_text(
-        "FROM python:3.9-slim\n"
+        "FROM python:3.6-slim\n"
         "RUN apt-get update && apt-get install -y sqlite3\n"
         "RUN pip install Flask==2.3.0\n",
         encoding="utf-8",
@@ -763,6 +1474,12 @@ async def test_auto_bundle_resolves_literal_dockerfile_pip_requirements(
         def __init__(self) -> None:
             super().__init__()
             self.resolution_requests: list[tuple[str, tuple[str, ...], int]] = []
+            self.version_probes: list[str] = []
+
+        async def _probe_python_version(self, image_digest: str) -> str:
+            self.version_probes.append(image_digest)
+            assert image_digest == "sha256:" + "b" * 64
+            return "3.6.15"
 
         async def download_python_wheels(
             self,
@@ -784,8 +1501,15 @@ async def test_auto_bundle_resolves_literal_dockerfile_pip_requirements(
         docker=docker,  # type: ignore[arg-type]
         artifacts=artifacts,
         workspace=workspace,
+        offline_base_image_digest=(
+            "sha256:" + "b" * 64 if requested_runtime is not None else None
+        ),
         auto_dependency_bundle=True,
-    ).prepare(checkpoint, {}, ())
+    ).prepare(
+        checkpoint,
+        {},
+        (f"python:{requested_runtime}",) if requested_runtime is not None else (),
+    )
 
     assert docker.resolution_requests == [
         ("sastsimi-offline-base:" + "b" * 64, ("Flask==2.3.0",), 300)
@@ -803,6 +1527,12 @@ async def test_auto_bundle_resolves_literal_dockerfile_pip_requirements(
     )
     assert recipe["environment_fidelity"] == "DERIVED_PYTHON_RUNTIME"
     assert recipe["target_manifest_path"] is None
+    assert docker.version_probes == (
+        ["sha256:" + "b" * 64] if requested_runtime is not None else []
+    )
+    if requested_runtime is not None:
+        assert recipe["python_runtime_requirement"] == "3.6"
+        assert recipe["python_runtime_observed_version"] == "3.6.15"
 
 
 @pytest.mark.asyncio

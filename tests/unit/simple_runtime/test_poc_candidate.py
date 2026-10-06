@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -17,6 +18,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.runner import StageFailed
 from sastsimi.simple_runtime.stages import PoCCandidateStage
 
 
@@ -103,6 +105,654 @@ class _SourceRecordingClient:
 
 
 @pytest.mark.asyncio
+async def test_poc_candidate_receives_pinned_pro_con_source_without_path_request(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "path": "main.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": "b" * 64,
+            "source_lines": [
+                {"line": 1, "text": "async def get_sql_db():"},
+                {
+                    "line": 2,
+                    "text": "    return await aiosqlite.connect(database='fixture.db')",
+                },
+            ],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["main.py:1"]},
+        }
+    )
+    pro_ref = artifacts.put_json(
+        {"kind": "simple_pro_evidence", "result": {"requested_paths": []}}
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref, source_ref),
+        input_hash=input_reference_hash((proposal_ref, source_ref)),
+        output_refs=(pro_ref,),
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _SourceRecordingClient()
+
+    await PoCCandidateStage(client=client, artifacts=artifacts)(
+        checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}
+    )
+
+    assert b"aiosqlite.connect(database='fixture.db')" in client.prompt
+
+
+@pytest.mark.asyncio
+async def test_poc_candidate_excludes_other_candidate_shared_batch_source(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    current_source = (
+        'def current_route():\n    return "CURRENT_CANDIDATE_ROUTE_MARKER"\n'
+    )
+    other_source = 'def other_route():\n    return "OTHER_CANDIDATE_ROUTE_MARKER"\n'
+    (workspace / "current.py").write_text(current_source, encoding="utf-8")
+    (workspace / "other.py").write_text(other_source, encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+    subprocess.run(
+        ["git", "-C", str(workspace), "add", "current.py", "other.py"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=SASTSIMI Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "pinned fixture",
+        ],
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "-C", str(workspace), "rev-parse", "HEAD"])
+        .decode("ascii")
+        .strip()
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id=commit,
+        hypothesis_id="hypothesis-current",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    shared_ref = artifacts.put_json(
+        {
+            "kind": "simple_candidate_file_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": commit,
+            "path": "current.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": hashlib.sha256(current_source.encode()).hexdigest(),
+            "source_lines": [
+                {"line": line, "text": text}
+                for line, text in enumerate(current_source.splitlines(), start=1)
+            ],
+            "related_source_files": [
+                {
+                    "path": "other.py",
+                    "source_status": "AVAILABLE",
+                    "source_sha256": hashlib.sha256(other_source.encode()).hexdigest(),
+                    "source_lines": [
+                        {"line": line, "text": text}
+                        for line, text in enumerate(other_source.splitlines(), start=1)
+                    ],
+                }
+            ],
+            "candidate_call_paths": [
+                {
+                    "candidate_id": "C-000",
+                    "status": "AVAILABLE",
+                    "gaps": [],
+                    "paths": [
+                        {
+                            "kind": "call_path_v1",
+                            "steps": [
+                                {"role": "ROUTE_ENTRY", "path": "other.py", "line": 1}
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "candidate_id": "C-001",
+                    "status": "AVAILABLE",
+                    "gaps": [],
+                    "paths": [
+                        {
+                            "kind": "call_path_v1",
+                            "steps": [
+                                {"role": "ROUTE_ENTRY", "path": "current.py", "line": 1}
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": commit,
+            "hypothesis_id": identity.hypothesis_id,
+            "candidate_id": "C-001",
+            "shared_context_ref": shared_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["current.py:1"]},
+        }
+    )
+    pro_con_inputs = (proposal_ref, shared_ref)
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=pro_con_inputs,
+        input_hash=input_reference_hash(pro_con_inputs),
+        output_refs=(),
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(shared_ref,),
+        input_hash=input_reference_hash((shared_ref,)),
+        attempt_id="attempt-1",
+    )
+    client = _SourceRecordingClient()
+
+    result = await PoCCandidateStage(
+        client=client, artifacts=artifacts, workspace_path=workspace
+    )(checkpoint, {SimpleStage.PRO_CON_DONE: pro_con})
+
+    assert b"CURRENT_CANDIDATE_ROUTE_MARKER" in client.prompt
+    assert b"OTHER_CANDIDATE_ROUTE_MARKER" not in client.prompt
+    prompt_context = json.loads(
+        client.prompt.split(b"<UNTRUSTED_EXACT_INPUTS>\n", 1)[1].split(
+            b"\n</UNTRUSTED_EXACT_INPUTS>", 1
+        )[0]
+    )
+    prompt_refs = [
+        StoredDataRef.model_validate(item["reference"])
+        for item in prompt_context["exact_inputs"]
+    ]
+    assert proposal_ref in prompt_refs
+    assert shared_ref not in prompt_refs
+    stored = json.loads(artifacts.read(result.output_refs[0]))
+    saved_refs = [StoredDataRef.model_validate(raw) for raw in stored["source_refs"]]
+    assert proposal_ref in saved_refs
+    assert shared_ref not in saved_refs
+    assert all(
+        b"OTHER_CANDIDATE_ROUTE_MARKER" not in artifacts.read(ref) for ref in saved_refs
+    )
+
+
+@pytest.mark.asyncio
+async def test_poc_candidate_rejects_cross_hypothesis_pro_con_source(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "path": "main.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": "b" * 64,
+            "source_lines": [{"line": 1, "text": "cross-hypothesis-marker"}],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": "other-hypothesis",
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["main.py:1"]},
+        }
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref, source_ref),
+        input_hash=input_reference_hash((proposal_ref, source_ref)),
+        output_refs=(),
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _SourceRecordingClient()
+
+    with pytest.raises(StageFailed) as failure:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(
+            checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}
+        )
+
+    assert failure.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
+    assert client.prompt == b""
+
+
+@pytest.mark.asyncio
+async def test_poc_candidate_rejects_partial_pro_con_anchor_before_llm(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    proposal_ref = artifacts.put_json(
+        {"kind": "simple_hypothesis_proposal", "hypothesis_id": identity.hypothesis_id}
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref,),
+        input_hash=input_reference_hash((proposal_ref,)),
+        output_refs=(),
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _SourceRecordingClient()
+
+    with pytest.raises(StageFailed) as failure:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(
+            checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}
+        )
+
+    assert failure.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
+    assert client.prompt == b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("at_capacity", [False, True])
+async def test_poc_candidate_keeps_current_repair_metadata_when_history_is_large(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    at_capacity: bool,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "path": "main.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": "b" * 64,
+            "source_lines": [{"line": 1, "text": "route_marker = True"}],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["main.py:1"]},
+        }
+    )
+    pro_ref = artifacts.put_json(
+        {"kind": "simple_pro_evidence", "result": {"requested_paths": []}}
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref, source_ref),
+        input_hash=input_reference_hash((proposal_ref, source_ref)),
+        output_refs=(pro_ref,),
+    )
+
+    def attempt_refs(attempt_id: str) -> tuple[StoredDataRef, ...]:
+        content = b"#!/bin/sh\n#" + attempt_id.encode("ascii")
+        if attempt_id == "old-attempt":
+            content += b"x " * 3_250
+        content_ref = artifacts.put_bytes(content, "text/x-shellscript")
+        stderr = attempt_id.encode("ascii")
+        if attempt_id == "current-attempt":
+            stderr += b"z " * 2_000
+            stderr += (
+                b"\nRuntimeError: CURRENT_RUNTIME_ERROR_MARKER "
+                b"password=supersecretvalue"
+            )
+        stderr_ref = artifacts.put_bytes(stderr, "text/plain")
+        stdout_ref = artifacts.put_bytes(b"", "text/plain")
+        candidate_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_candidate",
+                "source_refs": [],
+                "content_ref": content_ref.model_dump(mode="json"),
+                "content_digest": hashlib.sha256(content).hexdigest(),
+                "prompt_digest": "a" * 64,
+                "output_digest": "b" * 64,
+                "llm_request_ref": None,
+                "llm_response_ref": None,
+                "attempt_id": attempt_id,
+            }
+        )
+        execution_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_execution",
+                "candidate_ref": candidate_ref.model_dump(mode="json"),
+                "content_ref": content_ref.model_dump(mode="json"),
+                "stdout_ref": stdout_ref.model_dump(mode="json"),
+                "stderr_ref": stderr_ref.model_dump(mode="json"),
+                "exit_code": 2,
+                "timed_out": False,
+                "container_id": "fixture-container",
+                "image_digest": None,
+                "attempt_id": attempt_id,
+            }
+        )
+        return candidate_ref, content_ref, execution_ref, stdout_ref, stderr_ref
+
+    old_refs = attempt_refs("old-attempt")
+    current_refs = attempt_refs("current-attempt")
+    gate_ref = artifacts.put_json(
+        {"kind": "simple_technical_gate", "marker": "GATE_REPAIR_MARKER"}
+    )
+    decision_ref = artifacts.put_json(
+        {"kind": "simple_recovery_decision", "marker": "CURRENT_REPAIR_MARKER"}
+    )
+    inputs = (gate_ref,) + old_refs + current_refs + (decision_ref,)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=inputs,
+        input_hash=input_reference_hash(inputs),
+        attempt_id="attempt-3",
+        recovery_decision_refs=(decision_ref,),
+    ).model_copy(update={"gate_revision_count": 1})
+    original_context = artifacts.prompt_context_prioritized
+
+    def is_diagnostic(ref: StoredDataRef) -> bool:
+        try:
+            record = json.loads(artifacts.read(ref))
+        except ValueError:
+            return False
+        return isinstance(record, dict) and record.get("kind") == (
+            "simple_poc_repair_diagnostic"
+        )
+
+    def bounded_context(
+        required: tuple[StoredDataRef, ...],
+        optional: tuple[StoredDataRef, ...],
+    ) -> bytes:
+        max_bytes = 10_000
+        if at_capacity:
+            diagnostic_refs = tuple(
+                ref for ref in required + optional if is_diagnostic(ref)
+            )
+            assert len(diagnostic_refs) == 1
+            without_diagnostic = tuple(
+                ref for ref in required if ref not in diagnostic_refs
+            )
+            max_bytes = (
+                len(original_context(without_diagnostic, (), max_bytes=1_000_000)) + 100
+            )
+        return original_context(required, optional, max_bytes=max_bytes)
+
+    monkeypatch.setattr(
+        artifacts,
+        "prompt_context_prioritized",
+        bounded_context,
+    )
+    client = _SourceRecordingClient()
+
+    if at_capacity:
+        with pytest.raises(StageFailed) as failure:
+            await PoCCandidateStage(client=client, artifacts=artifacts)(
+                checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}
+            )
+        assert failure.value.failure.code == "HYPOTHESIS_CONTEXT_OVERFLOW"
+        assert client.prompt == b""
+        return
+
+    result = await PoCCandidateStage(client=client, artifacts=artifacts)(
+        checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}
+    )
+
+    assert b"CURRENT_REPAIR_MARKER" in client.prompt
+    assert b"GATE_REPAIR_MARKER" in client.prompt
+    assert b"CURRENT_RUNTIME_ERROR_MARKER" in client.prompt
+    assert b"supersecretvalue" not in client.prompt
+    assert b"z " * 1_500 not in client.prompt
+    assert current_refs[0].content_hash.encode("ascii") in client.prompt
+    assert current_refs[2].content_hash.encode("ascii") in client.prompt
+    stored = json.loads(artifacts.read(result.output_refs[0]))
+    assert old_refs[1].model_dump(mode="json") not in stored["source_refs"]
+    assert old_refs[4].model_dump(mode="json") not in stored["source_refs"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("padding", "evidence_padding", "expected_overflow"),
+    [
+        (150_000, 60_000, False),
+        (200_000, 0, False),
+        (200_000, 60_000, True),
+        (270_000, 0, True),
+    ],
+)
+async def test_poc_candidate_handles_source_context_budget_without_truncating_helper(
+    tmp_path: Path,
+    padding: int,
+    evidence_padding: int,
+    expected_overflow: bool,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source_lines = [
+        "async def route():",
+        "    return 1",
+        *("# small context" for _ in range(16)),
+        "#" + "x" * padding,
+        "async def get_sql_db():",
+        "    return await aiosqlite.connect(database='fixture.db')",
+    ]
+    source = "\n".join(source_lines) + "\n"
+    (workspace / "main.py").write_text(source, encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+    subprocess.run(["git", "-C", str(workspace), "add", "main.py"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=SASTSIMI Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "pinned fixture",
+        ],
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "-C", str(workspace), "rev-parse", "HEAD"])
+        .decode("ascii")
+        .strip()
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id=commit,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": commit,
+            "path": "main.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+            "source_lines": [
+                {"line": number, "text": text}
+                for number, text in enumerate(source_lines, start=1)
+            ],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": commit,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["main.py:1"]},
+        }
+    )
+    pro_ref = artifacts.put_json(
+        {
+            "kind": "simple_pro_evidence",
+            "result": {
+                "evidence": "x" * evidence_padding + "PRO_END_MARKER",
+                "requested_paths": [],
+            },
+        }
+    )
+    initial_ref = artifacts.put_json(
+        {"kind": "simple_initial_verification", "marker": "INITIAL_MARKER"}
+    )
+    feedback_ref = artifacts.put_json(
+        {
+            "kind": "simple_technical_gate",
+            "result": {"revision_requests": ["GATE_MARKER"]},
+        }
+    )
+    repair_ref = artifacts.put_json(
+        {"kind": "simple_current_repair_context", "marker": "REPAIR_MARKER"}
+    )
+    recipe_ref = artifacts.put_json(
+        {"kind": "simple_container_recipe", "marker": "RECIPE_MARKER"}
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref, source_ref),
+        input_hash=input_reference_hash((proposal_ref, source_ref)),
+        output_refs=(pro_ref,),
+    )
+    initial = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(initial_ref,),
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(feedback_ref, repair_ref),
+        input_hash=input_reference_hash((feedback_ref, repair_ref)),
+        attempt_id="attempt-1",
+        recipe_ref=recipe_ref,
+    ).model_copy(update={"gate_revision_count": 1})
+    client = _SourceRecordingClient()
+
+    stage = PoCCandidateStage(
+        client=client, artifacts=artifacts, workspace_path=workspace
+    )
+    prior = {
+        SimpleStage.PRO_CON_DONE: pro_con,
+        SimpleStage.VERIFICATION_INITIAL_DONE: initial,
+    }
+    if expected_overflow:
+        with pytest.raises(StageFailed) as failure:
+            await stage(checkpoint, prior)
+        assert failure.value.failure.code == "HYPOTHESIS_CONTEXT_OVERFLOW"
+        assert client.prompt == b""
+    else:
+        await stage(checkpoint, prior)
+        assert b"aiosqlite.connect(database='fixture.db')" in client.prompt
+        assert b"PRO_END_MARKER" in client.prompt
+        assert b"INITIAL_MARKER" in client.prompt
+        assert b"GATE_MARKER" in client.prompt
+        assert b"REPAIR_MARKER" in client.prompt
+        assert b"RECIPE_MARKER" in client.prompt
+        assert proposal_ref.content_hash.encode("ascii") in client.prompt
+
+
+@pytest.mark.asyncio
 async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     tmp_path: Path,
 ) -> None:
@@ -114,6 +764,11 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
         encoding="utf-8",
     )
     (workspace / "pkg" / "oversize.py").write_text("x" * 140_000, encoding="utf-8")
+    storage_source = (
+        "async def get_sql_db():\n"
+        "    return await aiosqlite.connect(database='fixture.db')\n"
+    )
+    (workspace / "pkg" / "storage.py").write_text(storage_source, encoding="utf-8")
     (workspace / "Dockerfile").write_text("FROM python:3.12-slim\n", encoding="utf-8")
     (workspace / "private.txt").write_text("private-marker", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(workspace)], check=True)
@@ -124,6 +779,7 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
             str(workspace),
             "add",
             "pkg/watch.py",
+            "pkg/storage.py",
             "pkg/oversize.py",
             "Dockerfile",
         ],
@@ -153,6 +809,9 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
         "class Watch:\n    # dirty-workspace-marker\n",
         encoding="utf-8",
     )
+    (workspace / "pkg" / "storage.py").write_text(
+        "# dirty-storage-marker\n", encoding="utf-8"
+    )
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",
@@ -173,7 +832,12 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
             "poc_source_manifest_ref": artifacts.put_json(
                 {
                     "kind": "simple_tracked_sources",
-                    "paths": ["pkg/watch.py", "pkg/oversize.py", "Dockerfile"],
+                    "paths": [
+                        "pkg/watch.py",
+                        "pkg/storage.py",
+                        "pkg/oversize.py",
+                        "Dockerfile",
+                    ],
                 }
             ).model_dump(mode="json"),
         }
@@ -198,6 +862,31 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     con_ref = artifacts.put_json(
         {"kind": "simple_con_evidence", "result": {"requested_paths": []}}
     )
+    source_context_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "path": "pkg/storage.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": hashlib.sha256(storage_source.encode()).hexdigest(),
+            "source_lines": [
+                {"line": number, "text": text}
+                for number, text in enumerate(storage_source.splitlines(), start=1)
+            ],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_context_ref": source_context_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["pkg/storage.py:1"]},
+        }
+    )
     verification_ref = artifacts.put_json(
         {"kind": "simple_initial_verification", "marker": "core-verification-marker"}
     )
@@ -214,8 +903,8 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
             identity=identity,
             stage=SimpleStage.PRO_CON_DONE,
             status=StageStatus.SUCCEEDED,
-            input_refs=(bundle_ref,),
-            input_hash=input_reference_hash((bundle_ref,)),
+            input_refs=(proposal_ref, source_context_ref),
+            input_hash=input_reference_hash((proposal_ref, source_context_ref)),
             output_refs=(pro_ref, con_ref),
         ),
         SimpleStage.VERIFICATION_INITIAL_DONE: StageCheckpoint(
@@ -251,6 +940,20 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     assert b"core-verification-marker" in client.prompt
     assert b"simple_pro_evidence" in client.prompt
     assert b"private-marker" not in client.prompt
+    assert b"aiosqlite.connect(database='fixture.db')" in client.prompt
+    assert b"dirty-storage-marker" not in client.prompt
+    prompt_context = json.loads(
+        client.prompt.split(b"<UNTRUSTED_EXACT_INPUTS>\n", 1)[1].split(
+            b"\n</UNTRUSTED_EXACT_INPUTS>", 1
+        )[0]
+    )
+    context_refs = [
+        StoredDataRef.model_validate(item["reference"])
+        for item in prompt_context["exact_inputs"]
+    ]
+    assert source_context_ref in context_refs
+    assert oversized_prior_ref not in context_refs
+    assert prompt_context["omitted_optional_refs"] >= 1
     assert b"/workspace is read-only" in client.prompt
     assert b"runtime storage" in client.prompt
     assert b"__file__-derived workspace path" in client.prompt
@@ -268,6 +971,7 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     assert b"For a Python AttributeError" in client.prompt
     assert b"module-level setter" in client.prompt
     candidate = json.loads(artifacts.read(result.output_refs[0]))
+    assert oversized_prior_ref.model_dump(mode="json") not in candidate["source_refs"]
     source_records = [
         json.loads(artifacts.read(StoredDataRef.model_validate(raw_ref)))
         for raw_ref in candidate["source_refs"]
@@ -342,6 +1046,53 @@ async def test_gate_feedback_precedes_bulk_context_and_is_forwarded(
 
     assert b"production-route-marker" in client.prompt
     assert feedback_ref in result.output_refs[2:]
+
+
+@pytest.mark.asyncio
+async def test_poc_candidate_rejects_truncated_core_without_pro_con_anchor(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    core_ref = artifacts.put_json(
+        {
+            "kind": "simple_initial_verification",
+            "evidence": "x" * 270_000 + "INITIAL_END_MARKER",
+        }
+    )
+    initial = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(core_ref,),
+    )
+    feedback_ref = artifacts.put_json(
+        {"kind": "simple_technical_gate", "marker": "GATE_MARKER"}
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(feedback_ref,),
+        input_hash=input_reference_hash((feedback_ref,)),
+        attempt_id="attempt-1",
+    ).model_copy(update={"gate_revision_count": 1})
+    client = _SourceRecordingClient()
+
+    with pytest.raises(StageFailed) as failure:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(
+            checkpoint, {SimpleStage.VERIFICATION_INITIAL_DONE: initial}
+        )
+
+    assert failure.value.failure.code == "HYPOTHESIS_CONTEXT_OVERFLOW"
+    assert client.prompt == b""
 
 
 @pytest.mark.asyncio

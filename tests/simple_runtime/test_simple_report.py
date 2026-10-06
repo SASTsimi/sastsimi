@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -424,17 +425,46 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     assert DashboardQuery(tmp_path).report_path(identity.analysis_id, "F-001") == Path(
         refreshed_report.markdown_path
     )
-    verified, _ = artifacts.verified_report_bundle(
-        checkpoints={
-            stage: resumed_store.require(identity, stage) for stage in HYPOTHESIS_STAGES
-        },
-        finding_ref=finding_ref,
-        display_id="F-001",
-        scope_status=json.loads(
-            (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
-        )["scope_status"],
-        public_projection=lambda body: body,
-    )
+    if os.name == "nt":
+        # Simulate Windows installations where regular Win32 paths cannot be
+        # resolved past the legacy limit. Both manifest and archive reads must
+        # use the extended path, just as publication does.
+        original_resolve = Path.resolve
+
+        def require_extended_report_path(path: Path, *args: Any, **kwargs: Any) -> Path:
+            if path.name in {"manifest.json", "bundle.zip"} and not str(
+                path
+            ).startswith("\\\\?\\"):
+                raise OSError(206, "legacy report path limit")
+            return original_resolve(path, *args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(Path, "resolve", require_extended_report_path)
+            verified, _ = artifacts.verified_report_bundle(
+                checkpoints={
+                    stage: resumed_store.require(identity, stage)
+                    for stage in HYPOTHESIS_STAGES
+                },
+                finding_ref=finding_ref,
+                display_id="F-001",
+                scope_status=json.loads(
+                    (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
+                )["scope_status"],
+                public_projection=lambda body: body,
+            )
+    else:
+        verified, _ = artifacts.verified_report_bundle(
+            checkpoints={
+                stage: resumed_store.require(identity, stage)
+                for stage in HYPOTHESIS_STAGES
+            },
+            finding_ref=finding_ref,
+            display_id="F-001",
+            scope_status=json.loads(
+                (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
+            )["scope_status"],
+            public_projection=lambda body: body,
+        )
     assert verified.display_id == "F-001"
     public_config = UserConfig(
         data_dir=tmp_path,

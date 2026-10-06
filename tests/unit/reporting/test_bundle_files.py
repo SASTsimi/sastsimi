@@ -22,6 +22,7 @@ from sastsimi.reporting.bundle_files import (
     read_bundle_archive,
     read_bundle_file,
 )
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 
 _MEDIA = {
     "report_en.md": "text/markdown; charset=utf-8",
@@ -121,6 +122,65 @@ def test_manifest_and_archive_cover_exact_curated_members(tmp_path: Path) -> Non
         for item in manifest.files:
             assert zipped.read(item.path) == artifacts.read(item.artifact_ref)
     assert _publish(tmp_path, artifacts) == published
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 legacy path limit")
+def test_revision_bundle_publishes_beyond_legacy_win32_path_limit(
+    tmp_path: Path,
+) -> None:
+    sample = (
+        Path("reports")
+        / "a1"
+        / f"F-002-{'0' * 64}"
+        / "evidence"
+        / f".report-export-{'0' * 32}.guard"
+    )
+    padding = 270 - len(str(tmp_path / sample)) - 1
+    assert 1 <= padding <= 120
+    root = tmp_path / ("x" * padding)
+    root.mkdir()
+    assert len(str(root / sample)) == 270
+    artifacts = Artifacts()
+    _publish(root, artifacts)
+    revised_files = (
+        BundleFile("report_en.md", b"# Revised\n", _MEDIA["report_en.md"]),
+    ) + _files()[1:]
+
+    revised = publish_bundle(
+        root=root,
+        analysis_id="a1",
+        display_id="F-002",
+        finding_ref=_ref("finding", "b" * 64, record_id="finding-2"),
+        files=revised_files,
+        put_artifact=artifacts.put,
+        allow_revision=True,
+    )
+
+    assert revised.bundle_dir.name.startswith("F-002-")
+    assert windows_extended_path(
+        revised.bundle_dir / "evidence" / "provenance.json"
+    ).is_file()
+    assert windows_extended_path(revised.bundle_dir / "manifest.json").is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 legacy path limit")
+def test_bundle_accepts_root_beyond_legacy_win32_path_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path
+    while len(str(root)) <= 270:
+        root /= "r" * 80
+    windows_extended_path(root).mkdir(parents=True)
+    original_is_dir = Path.is_dir
+
+    def legacy_is_dir(path: Path) -> bool:
+        if path == root:
+            return False
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", legacy_is_dir)
+    published = _publish(root, Artifacts())
+    assert windows_extended_path(published.bundle_dir / "manifest.json").is_file()
 
 
 def test_validated_shell_poc_survives_manifest_read_and_zip_exactly(

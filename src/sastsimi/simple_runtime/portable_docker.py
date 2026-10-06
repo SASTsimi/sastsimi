@@ -63,6 +63,9 @@ _PIP_DOWNLOAD_RETRIES = "3"
 _PIP_DOWNLOAD_TIMEOUT_SECONDS = "45"
 _REPRODUCIBLE_SOURCE_MTIME = 315532800  # 1980-01-01 UTC; wheel ZIP minimum.
 _OFFLINE_BASE_IMAGE = "python:3.12-slim"
+_EXPLICIT_PYTHON_RUNTIME = re.compile(
+    r"python:([0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?)\Z", re.IGNORECASE
+)
 _OFFLINE_BROWSER_SMOKE_MARKER = "SASTSIMI_BROWSER_SMOKE_OK"
 
 
@@ -181,6 +184,14 @@ class OfflineBaseSmoke:
     browser_command: str
     python_version: str
     smoke_output_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AutoRuntimeObservation:
+    base_digest: str
+    requested: str | None
+    observed: str | None
+    operator_configured: bool
 
 
 _DEPENDENCY_INSTALL = re.compile(
@@ -823,8 +834,9 @@ class PortableDockerRuntime:
                 "--read-only",
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,size=16m",
-                image_id,
+                "--entrypoint",
                 "python",
+                image_id,
                 "-c",
                 "import json; from pip._vendor.packaging import tags; "
                 "print(json.dumps([str(tag) for tag in tags.sys_tags()]))",
@@ -845,6 +857,53 @@ class PortableDockerRuntime:
         ):
             return None
         return frozenset(parsed)
+
+    async def _probe_python_version(self, image_digest: str) -> str:
+        """Read the interpreter version from a local digest, without network/mounts."""
+
+        if _IMAGE_DIGEST.fullmatch(image_digest) is None:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+        probed = await self._run(
+            (
+                "run",
+                "--pull",
+                "never",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--user",
+                "10001:10001",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "128",
+                "--cpus",
+                "1",
+                "--memory",
+                "1g",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=16m,mode=1777",
+                "--entrypoint",
+                "python",
+                image_digest,
+                "-c",
+                "import sys; "
+                "print('.'.join(str(part) for part in sys.version_info[:3]))",
+            ),
+            timeout_seconds=30,
+        )
+        if probed.exit_code != 0 or probed.timed_out:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+        try:
+            version = probed.stdout.decode("ascii").strip()
+        except UnicodeError as error:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE") from error
+        if re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version) is None:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+        return version
 
     async def local_base_image_digest(self, base_image: str) -> str:
         """Require an already-local Linux image; never trigger an implicit pull."""
@@ -1001,8 +1060,9 @@ class PortableDockerRuntime:
                 "PIP_NO_INPUT=1",
                 "--env",
                 "PIP_DISABLE_PIP_VERSION_CHECK=1",
-                base_image,
+                "--entrypoint",
                 "python",
+                base_image,
                 "-m",
                 "pip",
                 "download",
@@ -1114,7 +1174,7 @@ class PortableDockerRuntime:
         ]
         for key, value in sorted(labels.items()):
             args.extend(("--label", f"{key}={value}"))
-        args.extend((image_digest, "sleep", "infinity"))
+        args.extend(("--entrypoint", "sleep", image_digest, "infinity"))
         created = await self._run(tuple(args), timeout_seconds=60)
         self._require_success("DOCKER_CREATE_FAILED", created)
         container_id = created.stdout.decode("ascii", errors="strict").strip()
@@ -1599,6 +1659,62 @@ class DirectEnvironmentPreparer:
         digest = await self._docker.local_base_image_digest(self._offline_base_image)
         return digest, "LOCAL"
 
+    @staticmethod
+    def _requested_python_runtime(requirements: tuple[str, ...]) -> str | None:
+        requested: str | None = None
+        for raw in requirements:
+            item = raw.strip()
+            match = _EXPLICIT_PYTHON_RUNTIME.fullmatch(item)
+            version = (
+                match.group(1)
+                if match is not None
+                else "3.12"
+                if item.casefold() == "python 3.12"
+                else None
+            )
+            if version is None:
+                if re.match(r"python(?::|\s|[0-9])", item, re.IGNORECASE):
+                    raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_INVALID")
+                continue
+            if requested is not None:
+                requested_parts = requested.split(".")
+                version_parts = version.split(".")
+                common_length = min(len(requested_parts), len(version_parts))
+                if requested_parts[:common_length] != version_parts[:common_length]:
+                    raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_CONFLICT")
+            if requested is None or version.count(".") > requested.count("."):
+                requested = version
+        return requested
+
+    def _require_configured_python_runtime(self, requested: str | None) -> None:
+        if requested is not None and requested != "3.12":
+            if self._offline_base_image_digest is None:
+                raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_DIGEST_REQUIRED")
+
+    async def _verified_python_runtime_metadata(
+        self, requested: str | None, base_digest: str
+    ) -> dict[str, str]:
+        # AUTO's built-in 3.12 base remains on the existing path.  An
+        # operator-configured digest must prove even an explicit 3.12 claim.
+        if requested is None or self._offline_base_image_digest is None:
+            return {}
+        observed = await self._docker._probe_python_version(base_digest)
+        return self._observed_python_runtime_metadata(requested, observed)
+
+    @staticmethod
+    def _observed_python_runtime_metadata(
+        requested: str, observed: str
+    ) -> dict[str, str]:
+        if re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", observed) is None:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+        expected_parts = requested.split(".")
+        if observed.split(".")[: len(expected_parts)] != expected_parts:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_MISMATCH")
+        return {
+            "python_runtime_requirement": requested,
+            "python_runtime_observed_version": observed,
+        }
+
     async def preflight_offline_repair(self) -> OfflineBaseSmoke:
         """Prove the configured local image can run the offline browser PoC."""
 
@@ -1716,6 +1832,8 @@ class DirectEnvironmentPreparer:
             return await self._prepare_offline(checkpoint, prior, requirements)
         if self._auto_dependency_bundle:
             return await self._prepare_auto_bundle(checkpoint, prior, requirements)
+        if self._requested_python_runtime(requirements) not in {None, "3.12"}:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_BUNDLE_REQUIRED")
         target_manifest = self._target_manifest_path(prior)
         if (
             target_manifest is None
@@ -2148,6 +2266,8 @@ class DirectEnvironmentPreparer:
     ) -> ReproductionEnvironment:
         if self._docker._network != "none":
             raise ValueError("POC_AUTO_BUNDLE_NETWORK_REQUIRED")
+        requested_runtime = self._requested_python_runtime(requirements)
+        self._require_configured_python_runtime(requested_runtime)
         pinned_paths = self._pinned_tree_paths(commit_id=checkpoint.identity.commit_id)
         target_manifest = self._target_manifest_path(prior)
         if target_manifest is not None and target_manifest not in pinned_paths:
@@ -2203,10 +2323,13 @@ class DirectEnvironmentPreparer:
                 )
                 input_kind = "DOCKERFILE_LITERAL_PIP_REQUIREMENTS"
                 provenance_source_path = "Dockerfile"
-                delegated_requirements = self._canonical_offline_requirements(
-                    requested,
-                    source_paths,
-                    commit_id=checkpoint.identity.commit_id,
+                delegated_requirements = (
+                    *((f"python:{requested_runtime}",) if requested_runtime else ()),
+                    *self._canonical_offline_requirements(
+                        requested,
+                        source_paths,
+                        commit_id=checkpoint.identity.commit_id,
+                    ),
                 )
             elif extra_requirements:
                 # A PoC can require a small, explicit runtime library even
@@ -2227,7 +2350,7 @@ class DirectEnvironmentPreparer:
                 # existing offline build path rather than requiring an otherwise
                 # unnecessary packaging manifest.
                 return await self._prepare_without_auto_bundle(
-                    checkpoint, prior, requirements
+                    checkpoint, prior, requirements, target_manifest=target_manifest
                 )
         else:
             manifest = self._pinned_manifest_bytes(
@@ -2253,7 +2376,7 @@ class DirectEnvironmentPreparer:
             # offline and still fails closed if its packaging metadata needs
             # an unavailable build dependency.
             return await self._prepare_without_auto_bundle(
-                checkpoint, prior, requirements
+                checkpoint, prior, requirements, target_manifest=target_manifest
             )
         base_digest, base_source = await self._resolve_auto_base_digest()
         if (
@@ -2261,6 +2384,9 @@ class DirectEnvironmentPreparer:
             and base_digest != self._offline_base_image_digest
         ):
             raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        runtime_metadata = await self._verified_python_runtime_metadata(
+            requested_runtime, base_digest
+        )
         base_reference = await self._docker.pin_local_base(base_digest)
         # Marker evaluation belongs to the resolver container, not this host.
         # Keep even conditional repository pins protected from Agent omission.
@@ -2398,23 +2524,167 @@ class DirectEnvironmentPreparer:
                 pinned_target_manifest=target_manifest,
                 git_executable=self._git_executable,
             )
-            return await delegated.prepare(checkpoint, prior, delegated_requirements)
+            return await delegated._prepare_offline(
+                checkpoint,
+                prior,
+                delegated_requirements,
+                auto_runtime_observation=_AutoRuntimeObservation(
+                    base_digest=base_digest,
+                    requested=requested_runtime,
+                    observed=runtime_metadata.get("python_runtime_observed_version"),
+                    operator_configured=self._offline_base_image_digest is not None,
+                ),
+            )
 
     async def _prepare_without_auto_bundle(
         self,
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
         requirements: tuple[str, ...],
+        *,
+        target_manifest: str | None,
     ) -> ReproductionEnvironment:
-        delegated = DirectEnvironmentPreparer(
-            docker=self._docker,
-            artifacts=self._artifacts,
-            workspace=self._workspace,
-            offline_base_image_digest=self._offline_base_image_digest,
-            auto_dependency_bundle=False,
+        requested_runtime = self._requested_python_runtime(requirements)
+        if requested_runtime is None or (
+            requested_runtime == "3.12" and self._offline_base_image_digest is None
+        ):
+            delegated = DirectEnvironmentPreparer(
+                docker=self._docker,
+                artifacts=self._artifacts,
+                workspace=self._workspace,
+                auto_dependency_bundle=False,
+                git_executable=self._git_executable,
+            )
+            return await delegated.prepare(checkpoint, prior, requirements)
+        if self._offline_base_image_digest is None or (
+            target_manifest is not None
+            and PurePosixPath(target_manifest).name != "requirements.txt"
+        ):
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_BUNDLE_REQUIRED")
+
+        # A stdlib-only target or an empty requirements file needs no wheels.
+        if self._docker._network != "none":
+            raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
+        self._require_repair_base_digest(checkpoint)
+        if self._recovery_patch(checkpoint):
+            raise ValueError("POC_OFFLINE_RECOVERY_PATCH_UNSUPPORTED")
+        base_digest, _base_source = await self._resolve_auto_base_digest()
+        if base_digest != self._offline_base_image_digest:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        runtime_metadata = await self._verified_python_runtime_metadata(
+            requested_runtime, base_digest
+        )
+        base_reference = await self._docker.pin_local_base(base_digest)
+        if await self._docker.local_base_image_digest(base_reference) != base_digest:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        dockerfile = (
+            f"FROM {base_reference}\n"
+            "WORKDIR /workspace\n"
+            "COPY . /workspace\n"
+            "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
+            'CMD ["sleep", "infinity"]\n'
+        ).encode("ascii")
+        context = build_pinned_context(
+            self._workspace,
+            checkpoint.identity.commit_id,
+            dockerfile,
+            {},
+            target_python_manifest=target_manifest,
             git_executable=self._git_executable,
         )
-        return await delegated.prepare(checkpoint, prior, requirements)
+        _extra_requirements, required_source_paths = self._offline_agent_requirements(
+            requirements, commit_id=checkpoint.identity.commit_id
+        )
+        if target_manifest is not None or required_source_paths:
+            with tarfile.open(fileobj=io.BytesIO(context), mode="r:") as archive:
+                context_paths = {member.name for member in archive}
+                if target_manifest is not None:
+                    try:
+                        manifest_stream = archive.extractfile(target_manifest)
+                    except KeyError as error:
+                        raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED") from error
+                    if manifest_stream is None:
+                        raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED")
+                    manifest_stream.read()
+            if any(path not in context_paths for path in required_source_paths):
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+        dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
+        context_sha256 = hashlib.sha256(context).hexdigest()
+        metadata = {
+            "base_image_digest": base_digest,
+            **runtime_metadata,
+            "build_network": "none",
+            "context_sha256": context_sha256,
+        }
+        cache_key = hashlib.sha256(
+            canonical_bytes(
+                {
+                    "kind": "simple_auto_dependency_free_image_v1",
+                    "commit_id": checkpoint.identity.commit_id,
+                    "dockerfile_sha256": dockerfile_ref.content_hash,
+                    "base_image_digest": base_digest,
+                    "context_sha256": context_sha256,
+                }
+            )
+        ).hexdigest()
+        labels = PortableDockerRuntime._owner_labels(
+            checkpoint.identity, checkpoint.attempt_id or "initial"
+        )
+        source = "GENERATED"
+        try:
+            image_digest = await self._docker.build_or_reuse(
+                workspace=self._workspace,
+                dockerfile=dockerfile,
+                cache_key=cache_key,
+                labels=labels,
+                context_archive=context,
+            )
+        except DockerOperationError as error:
+            attempt_refs = [
+                self._build_attempt_ref(
+                    checkpoint, source, dockerfile_ref, "FAILED", error
+                )
+            ]
+            recipe_ref = self._artifacts.put_json(
+                self._recipe(
+                    checkpoint,
+                    source,
+                    dockerfile_ref,
+                    target_manifest,
+                    requirements,
+                    attempt_refs,
+                    False,
+                    status="BLOCKED",
+                    offline=metadata,
+                )
+            )
+            raise DockerBuildAttemptsError(
+                error, tuple(attempt_refs), recipe_ref
+            ) from error
+        if (
+            await self._docker.local_base_image_digest(self._offline_base_image)
+            != base_digest
+            or await self._docker.local_base_image_digest(base_reference) != base_digest
+        ):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        attempt_refs = [
+            self._build_attempt_ref(checkpoint, source, dockerfile_ref, "BUILT", None)
+        ]
+        recipe_ref = self._artifacts.put_json(
+            self._recipe(
+                checkpoint,
+                source,
+                dockerfile_ref,
+                target_manifest,
+                requirements,
+                attempt_refs,
+                False,
+                status="BUILT",
+                image_digest=image_digest,
+                offline=metadata,
+            )
+        )
+        return ReproductionEnvironment(recipe_ref, image_digest)
 
     def _auto_bundle_attempt_ref(
         self,
@@ -2489,11 +2759,15 @@ class DirectEnvironmentPreparer:
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
         requirements: tuple[str, ...],
+        *,
+        auto_runtime_observation: _AutoRuntimeObservation | None = None,
     ) -> ReproductionEnvironment:
         if self._docker._network != "none":
             raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
         if self._wheel_bundle_path is None or self._wheel_bundle_sha256 is None:
             raise ValueError("POC_WHEEL_ARCHIVE_PAIR_REQUIRED")
+        requested_runtime = self._requested_python_runtime(requirements)
+        self._require_configured_python_runtime(requested_runtime)
         self._require_repair_base_digest(checkpoint)
         if self._recovery_patch(checkpoint):
             raise ValueError("POC_OFFLINE_RECOVERY_PATCH_UNSUPPORTED")
@@ -2545,6 +2819,35 @@ class DirectEnvironmentPreparer:
             and base_digest != self._offline_base_image_digest
         ):
             raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        if auto_runtime_observation is None:
+            runtime_metadata = await self._verified_python_runtime_metadata(
+                requested_runtime, base_digest
+            )
+        else:
+            if (
+                self._bundle_source != "AUTO_RESOLVED"
+                or auto_runtime_observation.base_digest != base_digest
+                or auto_runtime_observation.requested != requested_runtime
+            ):
+                raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+            if auto_runtime_observation.operator_configured:
+                if requested_runtime is None:
+                    if auto_runtime_observation.observed is not None:
+                        raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+                    runtime_metadata = {}
+                else:
+                    if auto_runtime_observation.observed is None:
+                        raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+                    runtime_metadata = self._observed_python_runtime_metadata(
+                        requested_runtime, auto_runtime_observation.observed
+                    )
+            else:
+                if (
+                    requested_runtime not in {None, "3.12"}
+                    or auto_runtime_observation.observed is not None
+                ):
+                    raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+                runtime_metadata = {}
         tags = await self._docker.target_wheel_tags(base_digest)
         base_reference = await self._docker.pin_local_base(base_digest)
         bundle = import_wheel_bundle(
@@ -2620,6 +2923,7 @@ class DirectEnvironmentPreparer:
                 else "EXPLICIT_POC_REQUIREMENTS"
             ),
             "base_image_digest": base_digest,
+            **runtime_metadata,
             "build_network": "none",
             "context_sha256": context_sha256,
             "omitted_foreign_runtime_path_count": len(omitted_foreign_runtime_paths),
@@ -2727,7 +3031,10 @@ class DirectEnvironmentPreparer:
         source_paths: list[str] = []
         for raw in requirements:
             item = raw.strip()
-            if item.casefold() in {"python:3.12", "python 3.12"}:
+            if (
+                _EXPLICIT_PYTHON_RUNTIME.fullmatch(item) is not None
+                or item.casefold() == "python 3.12"
+            ):
                 continue
             pinned_source = _OFFLINE_PINNED_SOURCE.fullmatch(item)
             file_first_source = _OFFLINE_PINNED_SOURCE_FILE_FIRST.fullmatch(item)

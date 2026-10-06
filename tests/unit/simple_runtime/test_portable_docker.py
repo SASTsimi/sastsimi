@@ -160,6 +160,34 @@ async def test_target_tags_are_probed_inside_local_networkless_linux_image() -> 
         run.index("--network") : run.index("--network") + 2
     ]
     assert "--mount" not in run
+    assert run[run.index("--entrypoint") : run.index("--entrypoint") + 2] == (
+        "--entrypoint",
+        "python",
+    )
+
+
+@pytest.mark.asyncio
+async def test_python_version_probe_overrides_image_entrypoint() -> None:
+    class _VersionProbeDocker(PortableDockerRuntime):
+        def __init__(self) -> None:
+            self.command: tuple[str, ...] = ()
+
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds, input_bytes
+            self.command = tuple(args)
+            return DockerCommandOutcome(0, b"3.6.15\n", b"", False)
+
+    docker = _VersionProbeDocker()
+    assert await docker._probe_python_version("sha256:" + "a" * 64) == "3.6.15"
+    assert docker.command[
+        docker.command.index("--entrypoint") : docker.command.index("--entrypoint") + 2
+    ] == ("--entrypoint", "python")
 
 
 def _committed_workspace(tmp_path: Path) -> tuple[Path, str]:
@@ -1010,6 +1038,24 @@ async def test_reproduction_container_keeps_baked_workspace_writable() -> None:
     assert create[create.index("--network") + 1] == "none"
     assert "no-new-privileges" in create
     assert create[create.index("--env") + 1] == "HOME=/tmp"
+
+
+@pytest.mark.asyncio
+async def test_reproduction_container_overrides_inherited_entrypoint() -> None:
+    runtime = _RecordingPortableDockerRuntime.__new__(_RecordingPortableDockerRuntime)
+    runtime._executable = Path("docker")
+    runtime._network = "none"
+    runtime._timeout = 60
+    runtime.calls = []
+
+    await runtime.create_container("sha256:" + "a" * 64, {})
+
+    create = runtime.calls[0]
+    assert create[create.index("--entrypoint") : create.index("--entrypoint") + 2] == (
+        "--entrypoint",
+        "sleep",
+    )
+    assert create[-2:] == ("sha256:" + "a" * 64, "infinity")
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,7 @@ from sastsimi.reporting.bundle_files import (
     read_bundle_archive,
     read_bundle_file,
 )
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 from sastsimi.storage.artifact_store import LocalArtifactStore
 
 from .models import (
@@ -853,7 +854,7 @@ class SimpleArtifactRepository:
             report.bundle_archive_ref,
             lambda ref: self.read_bounded(ref, MAX_BUNDLE_ARCHIVE_BYTES),
         )
-        path = bundle_dir / "bundle.zip"
+        path = windows_extended_path(bundle_dir / "bundle.zip")
         if path.resolve(strict=True) != path:
             raise ValueError("BUNDLE_PATH_UNSAFE")
         before = path.lstat()
@@ -957,7 +958,7 @@ class SimpleArtifactRepository:
         if path.parent != expected_parent or path.name not in allowed_names:
             raise ValueError("BUNDLE_PATH_UNSAFE")
         bundle_dir = path.with_suffix("")
-        manifest_path = bundle_dir / "manifest.json"
+        manifest_path = windows_extended_path(bundle_dir / "manifest.json")
         if manifest_path.resolve(strict=True) != manifest_path:
             raise ValueError("BUNDLE_PATH_UNSAFE")
         info = manifest_path.lstat()

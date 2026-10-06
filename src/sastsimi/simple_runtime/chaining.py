@@ -363,7 +363,7 @@ class SimpleChainingStage:
                     frozenset(ref.content_hash for ref in batch.right_primitive_refs),
                 ),
             )
-            if len(considered) >= 2
+            if len(considered) >= 2 and self._has_material_pair(batch)
             else ()
         )
         return StageResult(
@@ -379,6 +379,40 @@ class SimpleChainingStage:
                 ),
             )
         )
+
+    def _has_material_pair(self, batch: ChainingPoolBatch) -> bool:
+        """Skip the LLM only when exact capability data proves no pair exists."""
+
+        capabilities: dict[str, tuple[set[str], set[str]]] = {}
+        for ref in batch.considered_primitive_refs:
+            value = json.loads(self._artifacts.read(ref))
+            if not isinstance(value, dict):
+                return True
+            provided = value.get("provided_capabilities")
+            required = value.get("required_capabilities")
+            if (
+                not isinstance(provided, list)
+                or not isinstance(required, list)
+                or any(not isinstance(item, str) for item in provided + required)
+            ):
+                return True
+            capabilities[ref.content_hash] = (set(provided), set(required))
+        left = {ref.content_hash for ref in batch.left_primitive_refs}
+        right = {ref.content_hash for ref in batch.right_primitive_refs}
+        for upstream_hash, (provided, _) in capabilities.items():
+            for downstream_hash, (_, required) in capabilities.items():
+                if upstream_hash == downstream_hash:
+                    continue
+                if not (
+                    upstream_hash in left
+                    and downstream_hash in right
+                    or upstream_hash in right
+                    and downstream_hash in left
+                ):
+                    continue
+                if provided.intersection(required):
+                    return True
+        return False
 
     def _complete_pool_context(self, refs: tuple[StoredDataRef, ...]) -> bytes:
         """Require every complete redacted Primitive in the bounded prompt."""
@@ -578,7 +612,6 @@ class SimpleChainingStage:
             + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
         )
         call_kwargs: dict[str, Any] = {
-            "prompt": prompt,
             "output_schema": schema,
             "timeout_ms": 180_000,
             "agent_name": "chaining",
@@ -589,52 +622,68 @@ class SimpleChainingStage:
                 stage=SimpleStage.CHAINING_DONE.value,
                 context_id=hashlib.sha256(canonical_bytes(considered)).hexdigest(),
             )
-            call_kwargs["prompt_bytes"] = PromptByteCounts(
-                shared_context_bytes=len(context),
-                fixed_prompt_bytes=len(prompt) - len(context),
-            )
-        called = await self._client.call(**call_kwargs)
-        if isinstance(called, StageFailure):
-            error = StageBlocked if called.retryable else StageFailed
-            raise error(called)
-        raw = cast(list[dict[str, JsonValue]], called.value["children"])
-        if pair_partition is not None and len(raw) == _MAX_CHILDREN:
-            raise StageBlocked(
-                StageFailure(
-                    code="CHAINING_BATCH_SATURATED",
-                    retryable=True,
-                    safe_message="Chaining response reached its per-call child limit",
-                    evidence_refs=(
-                        (called.response_ref,)
-                        if called.response_ref is not None
-                        else ()
-                    ),
+        feedback = (
+            b"Previous chaining response contained an invalid primitive pair. "
+            b"Use only exact allowed hashes with an upstream provided capability "
+            b"matching a downstream required capability; return an empty children "
+            b"array if no such pair exists.\n"
+        )
+        response_refs: list[StoredDataRef] = []
+        for attempt in range(2 if pair_partition is not None else 1):
+            attempt_prompt = prompt if attempt == 0 else prompt + feedback
+            call_kwargs["prompt"] = attempt_prompt
+            if pair_partition is not None:
+                call_kwargs["prompt_bytes"] = PromptByteCounts(
+                    shared_context_bytes=len(context),
+                    fixed_prompt_bytes=len(attempt_prompt) - len(context),
                 )
-            )
-        try:
-            children = self._validated_children(
-                considered,
-                raw,
-                pair_partition=pair_partition,
-            )
-        except ValueError as error:
-            if pair_partition is None or str(error) == "CHAINING_CHILD_LIMIT_EXCEEDED":
-                raise
-            raise StageBlocked(
-                StageFailure(
-                    code="CHAINING_BATCH_RESPONSE_INVALID",
-                    retryable=True,
-                    safe_message=(
-                        "Chaining response contained an invalid primitive pair"
-                    ),
-                    evidence_refs=(
-                        (called.response_ref,)
-                        if called.response_ref is not None
-                        else ()
-                    ),
+            called = await self._client.call(**call_kwargs)
+            if isinstance(called, StageFailure):
+                error = StageBlocked if called.retryable else StageFailed
+                raise error(called)
+            raw = cast(list[dict[str, JsonValue]], called.value["children"])
+            if pair_partition is not None and len(raw) == _MAX_CHILDREN:
+                raise StageBlocked(
+                    StageFailure(
+                        code="CHAINING_BATCH_SATURATED",
+                        retryable=True,
+                        safe_message=(
+                            "Chaining response reached its per-call child limit"
+                        ),
+                        evidence_refs=(
+                            (called.response_ref,)
+                            if called.response_ref is not None
+                            else ()
+                        ),
+                    )
                 )
-            ) from error
-        return children
+            try:
+                return self._validated_children(
+                    considered,
+                    raw,
+                    pair_partition=pair_partition,
+                )
+            except ValueError as error:
+                if (
+                    pair_partition is None
+                    or str(error) == "CHAINING_CHILD_LIMIT_EXCEEDED"
+                ):
+                    raise
+                if called.response_ref is not None:
+                    response_refs.append(called.response_ref)
+                if attempt == 0:
+                    continue
+                raise StageBlocked(
+                    StageFailure(
+                        code="CHAINING_BATCH_RESPONSE_INVALID",
+                        retryable=True,
+                        safe_message=(
+                            "Chaining response contained an invalid primitive pair"
+                        ),
+                        evidence_refs=tuple(response_refs),
+                    )
+                ) from error
+        raise AssertionError("Unreachable chaining response")
 
     def _primitive_refs(self, analysis_id: str) -> tuple[StoredDataRef, ...]:
         refs: dict[str, StoredDataRef] = {}

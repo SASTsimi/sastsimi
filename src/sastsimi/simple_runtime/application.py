@@ -1484,6 +1484,16 @@ class SimpleAnalysisApplication:
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
+        existing = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if (
+            run.candidate_pipeline_version == 2
+            and existing is not None
+            and existing.status is StageStatus.BLOCKED
+            and existing.error_code == "CHAINING_BATCH_RESPONSE_INVALID"
+            and not existing.retryable
+            and existing.attempt_number > 1
+        ):
+            return self._bootstrap_outcome(run, existing)
         try:
             if run.candidate_terminal is not None:
                 run = run.model_copy(update={"candidate_terminal": None})

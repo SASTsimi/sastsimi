@@ -104,23 +104,86 @@ being fixed independently of vulnerability verdicts.
 The `codex/portable-poc-validation` branch includes `main` through the merged
 dashboard change in PR #216. These later runs use new, isolated IDs at the same
 pinned commits; no earlier database was reset. The counts below are terminal
-where a terminal state is shown, but the insecure-web counts are only a live
-snapshot as of 2026-10-07 01:30 KST. They are not controlled before/after
-recall or false-positive rates.
+for these three run IDs. They are not controlled before/after recall or
+false-positive rates.
 
 | Repository and run | State | Candidates | Hypotheses | Saved Findings | What the result establishes |
 | --- | --- | ---: | ---: | ---: | --- |
 | vfapi `vfapi-v8` (`a4c3888a8e5c49b1bea13be090d04164`) | `BLOCKED: RECOVERY_EXHAUSTED` | 20 | 11 | 9 | The repository's documented SQL and NoSQL injection classes both appear in saved Findings. A different PoC exhausted three attempts; its last script failed to recognize a keyword-only `aiosqlite.connect(database=...)` call. This is a generated-PoC failure, not a vulnerability disproof or a completed analysis. |
-| insecure-web `insecure-web-v4` (`3ccba250919d469782fc8a3bb9a1c465`) | `RUNNING` at this checkpoint | 12 | 21 | 15 | Findings are still accumulating. Neither a final report count nor a terminal recall rate can be stated yet. |
+| insecure-web `insecure-web-v4` (`3ccba250919d469782fc8a3bb9a1c465`) | `PARTIAL` | 12 | 39 | 34 | All recorded Python file-rule checks completed, but two security surfaces remained insufficiently reviewed. The result projection shows nine groups: four proven same-flow groups and five undetermined standalone entries. The 34 raw Findings are not 34 independent vulnerabilities. |
 | dvpwa `dvpwa-v5` (`71eb210d781f4eb780d76f68a5aef95e`) | `PARTIAL` | 20 | 8 | 0 | All 252 planned Python file-rule checks completed, but seven non-Python product files remain outside the Python-only scan. Pinned `aiohttp==3.5.3` has no compatible binary distribution for the configured Python 3.12 PoC environment, so the eight hypotheses stopped as inconclusive rather than being called false. |
 
-Human review of the current saved Findings sees approximately five distinct
-vfapi request/weakness surfaces among nine raw reports, and three insecure-web
-surfaces among 15 raw reports. This is **not** the tool's verified automatic
-group count or an oracle score. The conservative projection leaves unresolved
-flows separate: its existing final evidence does not prove a shared
-source-to-sink operation across all of these reports. Grouping solely by route
-or weakness could erase distinct vulnerabilities; the original Findings and
-PoCs remain available for review. The vfapi run cannot be resumed past its
-persisted three-attempt exhaustion without a new, supported run. No result in
-this section is automatically ready for external disclosure.
+Human review previously estimated approximately five distinct vfapi
+request/weakness surfaces among its nine raw reports, but that is **not** a
+verified automatic group count or an oracle score. For insecure-web, the
+verified projection reduced 34 raw reports to nine displayed groups while
+retaining five undetermined flows separately. Grouping solely by route or
+weakness could erase distinct vulnerabilities; all original Findings and PoCs
+remain available. The vfapi run cannot be resumed past its persisted
+three-attempt exhaustion without a new, supported run. No result in this
+section is automatically ready for external disclosure.
+
+A read-only spot audit of insecure-web-v4's four proven groups found 29 members
+with successful PoC exits and technical `ACCEPT` decisions. The groups follow
+four distinct input-to-operation paths: `/dashboard` session cookie to HTML
+(7), `/login` username to SQL execute (11), `/login` password to the same SQL
+execute (2), and `/search` query to HTML (9). In particular, the two `/login`
+inputs remain **separate groups despite sharing a sink**. Five reports remain
+undetermined singletons. No cross-flow merge was found in this frozen-run spot
+audit, but it is not a general proof of zero false merges or a false-positive
+rate.
+
+## PoC/runtime follow-up in progress (2026-10-07)
+
+The PoC-candidate input now includes the pinned Pro/Con source anchor and
+requested tracked files. Retry context prioritizes the current structured
+candidate/execution record and gate feedback; oversized historical scripts
+and logs are optional rather than silently displacing required evidence.
+The initial-verification Agent may request an evidence-backed explicit
+`python:X.Y[.Z]` runtime only when an operator supplies an already-local image
+digest. The actual interpreter version is probed without network access.
+Neither change makes unsupported dependencies installable or guarantees a PoC.
+
+The vfapi and dvpwa rows below are terminal results after resuming the same
+isolated analysis IDs. This is not a controlled before/after comparison. Both
+runs used the same pinned source commits as above and kept earlier databases
+intact.
+
+| Repository and run | State | Candidates | Hypotheses | Saved Findings | Evidence and limitation |
+| --- | --- | ---: | ---: | ---: | --- |
+| vfapi `vfapi-v9` (`6fa2afeeb78b41e8b4a19771c509d7b5`) | `PARTIAL` (terminal) | 20 | 18 | 17 | All 12 planned Python file-rule checks completed; 18 PoC executions, 17 Finding/Scope Gate/report stages, and 17 English/Korean/PoC/evidence bundles were saved. The earlier keyword-only `aiosqlite.connect(database=...)` PoC error did not recur as a terminal failure. Ten non-Python product files are outside the Python-only scope and two security surfaces remained insufficiently reviewed, so this is not COMPLETE. The current conservative projection still displays 17 singleton reports; it has not proven a vfapi duplicate reduction. |
+| dvpwa `dvpwa-v6` (`c415cb4fb2344948a97c458bce10b189`) | `PARTIAL` (terminal) | 20 | 9 | 0 | Seven Initial Verification checkpoints ended in `HOLD`: the pinned Python 3.6 dependency closure cannot be resolved with compatible Linux binary wheels. No validated PoC or Finding resulted; `HOLD` is not a vulnerability disproof. |
+
+After the vfapi run, a read-only manual check against its pinned README's two
+demonstrated attack examples found both: GET `/select` SQL injection (F-003's
+validated PoC distinguishes a zero-row control from a two-row injected ASGI
+response) and POST `/find` NoSQL operator injection (F-002's validated PoC
+gets different HTTP 200 user results for ordinary and `$ne` filters with
+MontyDB). Thus the **two documented examples are represented, 2/2**, not that
+all repository vulnerabilities were found. The 17 raw Findings include
+plausible repeat reports across those and other routes. A read-only human
+inspection suggested several shared root causes, but the automatic projection
+still leaves all 17 separate because their final evidence does not prove the
+same complete flow. We rejected an experimental route-only extension after
+counterexamples showed it could merge distinct SQL operations. No automatic
+false-positive rate or safe duplicate-reduction count is claimed for vfapi;
+its Scope Gate is `UNCERTAIN` and this training fixture is not for disclosure.
+
+The runtime switch addresses the interpreter mismatch, **not** the legacy
+wheel closure. A separate wheel-only/no-dependency-execution check in the
+verified local Linux CPython 3.6 image found wheels for 16 of 18 direct pins;
+`PyYAML==3.13` and `trafaret-config==2.0.2` had none. With those two excluded
+solely for diagnosis, the resolver also could not obtain the conditional
+transitive `idna-ssl>=1.0` wheel. This check did not produce a complete
+installable closure or rerun the analysis, and never omitted the pinned
+requirements in SASTSIMI. A saved dvpwa request-source candidate (`f482…`) exposed a
+separate retry-guidance error: the bounded location examples included the
+route at `sqli/routes.py:13` but omitted the directly called body at
+`sqli/dao/student.py:41–45`. The revised guidance includes those exact lines
+when evaluated against the saved context, while preserving strict allowed-line
+validation. **No fresh Agent run has tested whether this changes the candidate
+or Finding outcome.** Dvpwa's stored-XSS template remains outside this
+Python-only static scope. These observations do not establish improved recall,
+fewer false positives, a universally successful PoC pipeline, or report-ready
+findings. The separate insecure-web projection is a measured within-run
+display reduction, not proof that this PoC/runtime patch improved deduplication.
