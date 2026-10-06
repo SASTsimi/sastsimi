@@ -466,9 +466,7 @@ def _fastapi_query_binding(
     if (
         not (isinstance(annotation, ast.Name) and annotation.id == "str")
         and not optional_string
-        or not _stable_builtin(
-            tree, function, "str", require_flask_request=False
-        )
+        or not _stable_builtin(tree, function, "str", require_flask_request=False)
     ):
         return None
     return _RequestBinding(parameter.arg, frozenset(), False, parameter.lineno)
@@ -934,9 +932,7 @@ def _trace_expression(
             and binding.parameter_line is not None
             and expression.id == binding.name
         ):
-            return _Source(
-                binding.parameter_line, "fastapi.query", binding.name, ()
-            )
+            return _Source(binding.parameter_line, "fastapi.query", binding.name, ())
         if len(matching) != 1 or not set(matching[0].branches).issubset(branches):
             return None
         definition = matching[0]
@@ -969,9 +965,7 @@ def _trace_expression(
         return None
     if isinstance(expression, ast.Call):
         callee = _name(expression.func)
-        if callee in {
-            f"{binding.name}.{access}.get" for access in binding.accesses
-        }:
+        if callee in {f"{binding.name}.{access}.get" for access in binding.accesses}:
             if (
                 expression.args
                 and len(expression.args) <= 2
@@ -1195,9 +1189,7 @@ def _only_supported_request_uses(
             not isinstance(parent, ast.Attribute)
             or parent.value is not node
             or parent.attr
-            not in (
-                binding.accesses | ({"get_json"} if binding.flask else {"json"})
-            )
+            not in (binding.accesses | ({"get_json"} if binding.flask else {"json"}))
         ):
             return False
         if parent.attr == "cookies" and node.lineno != source_line:

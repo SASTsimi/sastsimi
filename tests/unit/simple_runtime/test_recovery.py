@@ -439,8 +439,7 @@ async def test_poc_permission_error_regenerates_input_without_widening_workspace
     "stderr",
     [
         b"OperationalError\nTraceback (most recent call last):\n  in init_db",
-        b"OperationalError: runtime_error\n"
-        b"Traceback: exec_module > frame > init_db",
+        b"OperationalError: runtime_error\nTraceback: exec_module > frame > init_db",
     ],
 )
 @pytest.mark.asyncio

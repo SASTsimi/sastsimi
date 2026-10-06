@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import stat
 import subprocess
@@ -17,7 +18,8 @@ import tempfile
 import tomllib
 import weakref
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -62,6 +64,8 @@ _PIP_DOWNLOAD_TIMEOUT_SECONDS = "45"
 _REPRODUCIBLE_SOURCE_MTIME = 315532800  # 1980-01-01 UTC; wheel ZIP minimum.
 _OFFLINE_BASE_IMAGE = "python:3.12-slim"
 _OFFLINE_BROWSER_SMOKE_MARKER = "SASTSIMI_BROWSER_SMOKE_OK"
+
+
 _OFFLINE_BROWSER_COMMANDS = (
     "chromium",
     "chromium-browser",
@@ -105,6 +109,44 @@ _OFFLINE_MISSING = re.compile(
     rb"no matching distribution|package.*not found|missing build dependency|"
     rb"ModuleNotFoundError: No module named)"
 )
+
+
+@contextmanager
+def _wheel_download_workspace() -> Iterator[Path]:
+    """Make Docker-created wheels host-readable without changing POSIX temp ACLs."""
+
+    if os.name != "nt":
+        with tempfile.TemporaryDirectory(prefix="sastsimi-wheel-") as temporary:
+            yield Path(temporary).resolve()
+        return
+
+    # tempfile.mkdtemp uses an owner-only directory. Docker Desktop can write
+    # into that bind mount, but its downloaded wheels then deny the host read.
+    # A normal mkdir inherits the user's Temp ACL, which supports both sides.
+    parent = Path(tempfile.gettempdir()).resolve()
+    root = parent / f"sastsimi-wheel-{uuid4().hex}"
+    root.mkdir()
+    try:
+        yield root
+    finally:
+        info: os.stat_result | None
+        try:
+            info = root.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None:
+            if (
+                root.parent != parent
+                or not stat.S_ISDIR(info.st_mode)
+                or root.is_symlink()
+                or int(getattr(info, "st_file_attributes", 0)) & 0x400
+                or root.resolve() != root
+            ):
+                raise ValueError("POC_AUTO_BUNDLE_WORKSPACE_UNSAFE")
+            try:
+                shutil.rmtree(root)
+            except OSError as error:
+                raise ValueError("POC_AUTO_BUNDLE_CLEANUP_FAILED") from error
 
 
 def offline_recipe_cache_key(
@@ -917,8 +959,7 @@ class PortableDockerRuntime:
             accepted.append(raw)
         if len(accepted) > 512 or len("\n".join(accepted).encode("utf-8")) > 128 * 1024:
             raise ValueError("POC_AUTO_BUNDLE_REQUIREMENTS_INVALID")
-        with tempfile.TemporaryDirectory(prefix="sastsimi-wheel-") as temporary:
-            root = Path(temporary).resolve()
+        with _wheel_download_workspace() as root:
             if any(char in str(root) for char in ",\x00"):
                 raise ValueError("POC_AUTO_BUNDLE_WORKSPACE_UNSAFE")
             requirements_path = root / "requirements.txt"

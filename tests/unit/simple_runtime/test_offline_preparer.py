@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 import subprocess
 import tarfile
 import zipfile
@@ -319,6 +320,7 @@ async def test_auto_bundle_resolves_safe_python_requirements_before_offline_buil
 @pytest.mark.asyncio
 async def test_auto_resolver_has_network_only_without_repository_mount(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _workspace, _commit, bundle_path, _digest = _fixture(tmp_path)
     with tarfile.open(bundle_path, "r:") as archive:
@@ -326,6 +328,16 @@ async def test_auto_resolver_has_network_only_without_repository_mount(
         stream = archive.extractfile(member)
         assert stream is not None
         wheel = stream.read()
+
+    if os.name == "nt":
+
+        def reject_restrictive_tempdir(**_kwargs: object) -> None:
+            raise AssertionError("Windows wheel workspace must inherit Temp ACL")
+
+        monkeypatch.setattr(
+            "sastsimi.simple_runtime.portable_docker.tempfile.TemporaryDirectory",
+            reject_restrictive_tempdir,
+        )
 
     class _RecordedRuntime(PortableDockerRuntime):
         def __init__(self) -> None:
@@ -384,6 +396,9 @@ async def test_auto_resolver_has_network_only_without_repository_mount(
     assert runtime.commands[1][:2] == ("rm", "--force")
     assert runtime.commands[2][:2] == ("container", "inspect")
     assert bundle
+    mount = command[command.index("--mount") + 1]
+    workspace_root = Path(mount.split("source=", 1)[1].split(",target=", 1)[0])
+    assert not workspace_root.exists()
 
 
 @pytest.mark.asyncio

@@ -13,14 +13,15 @@ from sastsimi.simple_runtime.candidates import CandidateOrigin, StaticCandidate
 def _candidate(path: str, line: int) -> StaticCandidate:
     # The call-path index deliberately needs no artifact contents.  A tiny
     # validated model-shaped placeholder is enough for its location input.
+    from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
     from sastsimi.contracts.refs import StoredDataRef
 
     ref = StoredDataRef(
         data_kind="artifact",
-        stored_data_id="11111111-1111-1111-1111-111111111111",
+        stored_data_id=StoredDataId("11111111-1111-1111-1111-111111111111"),
         content_hash="a" * 64,
-        workspace_id="22222222-2222-2222-2222-222222222222",
-        commit_id="a" * 40,
+        workspace_id=WorkspaceId("22222222-2222-2222-2222-222222222222"),
+        commit_id=CommitId("a" * 40),
         record_id=None,
     )
     return StaticCandidate(
@@ -134,6 +135,7 @@ def test_source_hint_forward_context_is_cross_file_bounded_and_not_taint_proof(
     assert len(downstream) == 1
     assert downstream[0]["assurance"] == "SYNTACTIC_REACHABILITY"
     steps = downstream[0]["steps"]
+    assert isinstance(steps, list)
     assert ("CALL", "app.py", 5) in {
         (step["role"], step["path"], step["line"]) for step in steps
     }
@@ -171,7 +173,9 @@ def test_sink_enclosing_context_shows_preceding_query_construction(
     ]
     assert len(enclosing) == 1
     assert enclosing[0]["assurance"] == "SOURCE_CONTEXT_ONLY"
-    assert {step["line"] for step in enclosing[0]["steps"]} >= {3, 4, 5, 6, 7}
+    enclosing_steps = enclosing[0]["steps"]
+    assert isinstance(enclosing_steps, list)
+    assert {step["line"] for step in enclosing_steps} >= {3, 4, 5, 6, 7}
 
 
 def test_aiohttp_add_route_resolves_third_positional_handler(tmp_path: Path) -> None:
@@ -925,9 +929,9 @@ def test_request_context_is_bounded_and_records_limit_gap(tmp_path: Path) -> Non
 
     assert result.status == "PARTIAL"
     assert "REQUEST_CONTEXT_LINE_LIMIT" in result.gaps
-    request_steps = [
-        step for step in result.paths[0]["steps"] if step["role"] == "REQUEST_CONTEXT"
-    ]
+    all_steps = result.paths[0]["steps"]
+    assert isinstance(all_steps, list)
+    request_steps = [step for step in all_steps if step["role"] == "REQUEST_CONTEXT"]
     assert len(request_steps) == 8
     assert [step["line"] for step in request_steps] == list(range(3, 11))
 
@@ -1072,7 +1076,9 @@ def test_scanner_flow_is_bounded_and_keeps_tool_proven_assurance(
     assert result.status == "AVAILABLE"
     scanner = next(path for path in result.paths if path["provenance"] == "scanner")
     assert scanner["assurance"] == "TOOL_PROVEN"
-    assert [(step["path"], step["line"]) for step in scanner["steps"]] == [
+    scanner_steps = scanner["steps"]
+    assert isinstance(scanner_steps, list)
+    assert [(step["path"], step["line"]) for step in scanner_steps] == [
         ("web.py", 2),
         ("sink.py", 2),
     ]

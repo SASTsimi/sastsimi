@@ -187,7 +187,13 @@ Docker Desktop은 Linux container 모드여야 합니다. 새 실행 프로필�
 수집합니다. resolver에는 대상 저장소를 마운트하거나 실행하지 않고, 완성된 PoC 이미지와
 PoC 컨테이너는 계속 `--network none`입니다. 외부 통신을 전혀 허용하지 않거나 자동
 resolver가 지원하지 않는 프로젝트라면 `OFFLINE_ONLY`를 선택하고 승인된 Python wheel을
-미리 준비할 수 있습니다. 다음 PowerShell 명령은 지정한 폴더의 `.whl` 파일만 평탄한 TAR로 묶고
+미리 준비할 수 있습니다. Windows의 `AUTO`에서 `WHEEL_ARCHIVE_INVALID`가 나면
+실제 wheel 손상뿐 아니라 Docker가 임시 폴더에 만든 파일의 호스트 읽기 권한 문제일 수
+있습니다. 현재 버전은 Windows 임시 폴더 권한을 상속해 받은 파일을 다시 검증합니다.
+이전 버전에서 막힌 동일 분석 ID는 오류가 난 초기 검증 단계를 최초 시도 포함 총 3회까지만 재개할 수
+있으며, 정적 검사와 앞서 완료된 단계는 보존합니다. 같은 오류가 계속되면 손상된 wheel
+또는 권한 문제를 확인해야 하며 PoC 성공이나 취약점 반증으로 취급하지 않습니다.
+다음 PowerShell 명령은 지정한 폴더의 `.whl` 파일만 평탄한 TAR로 묶고
 SHA-256을 출력합니다. `C:\approved-wheels`는 실제 wheel 폴더로 바꾸고, 그 폴더에는
 필요한 직접·전이·빌드 의존성 wheel을 모두 준비하세요. 빈 폴더나 하위 폴더를 포함한
 TAR는 사용할 수 없습니다.

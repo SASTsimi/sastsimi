@@ -1413,9 +1413,7 @@ def test_fastapi_unproven_route_or_request_abstains(
 
 
 @pytest.mark.parametrize("shadowed", ["FastAPI", "Request"])
-def test_fastapi_import_alias_shadowing_abstains(
-    tmp_path: Path, shadowed: str
-) -> None:
+def test_fastapi_import_alias_shadowing_abstains(tmp_path: Path, shadowed: str) -> None:
     source = f"""import os
 from fastapi import FastAPI, Request
 import fake as {shadowed}

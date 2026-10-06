@@ -275,6 +275,66 @@ async def test_unsupported_requirement_at_attempt_cap_stays_blocked(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "attempt_number,in_flight,expected_replay",
+    [(1, False, True), (1, True, False), (3, False, False)],
+)
+@pytest.mark.parametrize(
+    "stage_version", ("5", STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE])
+)
+async def test_wheel_archive_failure_replays_only_bounded_initial_stage(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    attempt_number: int,
+    in_flight: bool,
+    expected_replay: bool,
+    stage_version: str,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "wheel-recovery" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.PRO_CON_DONE)
+    pro_con = store.require(_identity(), SimpleStage.PRO_CON_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        store.input_refs_for(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE),
+        attempt_id="wheel-recovery-attempt",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code="WHEEL_ARCHIVE_INVALID",
+            retryable=False,
+            safe_message="Downloaded wheel could not be read by host",
+        ),
+        StageStatus.BLOCKED,
+    ).model_copy(
+        update={"attempt_number": attempt_number, "stage_version": stage_version}
+    )
+    store.save_checkpoint(failed)
+    if in_flight:
+        monkeypatch.setattr(store, "unresolved_codex_call", lambda _id: object())
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(store, _recording_handlers(calls))
+
+    outcome = await runner.resume_hypothesis(_identity())
+
+    assert store.require(_identity(), SimpleStage.PRO_CON_DONE) == pro_con
+    if expected_replay:
+        assert outcome.status is StageStatus.SUCCEEDED
+        assert calls[0] is SimpleStage.VERIFICATION_INITIAL_DONE
+        assert (
+            store.require(
+                _identity(), SimpleStage.VERIFICATION_INITIAL_DONE
+            ).attempt_number
+            == 2
+        )
+    else:
+        assert outcome.status is StageStatus.BLOCKED
+        assert outcome.error_code == "WHEEL_ARCHIVE_INVALID"
+        assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "stage_version", ("4", STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE])
 )
 async def test_offline_base_failure_retries_initial_stage_after_local_preflight(

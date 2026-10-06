@@ -381,9 +381,7 @@ def test_profile_defaults_to_auto_dependency_bundle_and_can_disable_it(
     profile.write(path)
     assert 'poc_dependency_bundle_mode = "AUTO"' in path.read_text(encoding="utf-8")
 
-    disabled = profile.model_copy(
-        update={"poc_dependency_bundle_mode": "OFFLINE_ONLY"}
-    )
+    disabled = profile.model_copy(update={"poc_dependency_bundle_mode": "OFFLINE_ONLY"})
     assert disabled.poc_dependency_bundle_mode == "OFFLINE_ONLY"
 
 

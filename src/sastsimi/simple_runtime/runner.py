@@ -211,9 +211,19 @@ class SimpleRuntimeRunner:
                     elif (
                         stage is SimpleStage.VERIFICATION_INITIAL_DONE
                         and existing.status is StageStatus.BLOCKED
-                        and existing.error_code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
+                        and existing.error_code
+                        in {
+                            "POC_OFFLINE_REQUIREMENT_UNSUPPORTED",
+                            "WHEEL_ARCHIVE_INVALID",
+                        }
                     ):
-                        if existing.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+                        if (
+                            existing.attempt_number >= MAX_RECOVERY_ATTEMPTS
+                            or self.store.unresolved_codex_call(
+                                existing.identity.analysis_id
+                            )
+                            is not None
+                        ):
                             return RunOutcome(
                                 current_stage=stage,
                                 status=existing.status,
@@ -615,18 +625,23 @@ class SimpleRuntimeRunner:
         if (
             checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
             and checkpoint.status is StageStatus.BLOCKED
-            and checkpoint.error_code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
+            and checkpoint.error_code
+            in {"POC_OFFLINE_REQUIREMENT_UNSUPPORTED", "WHEEL_ARCHIVE_INVALID"}
         ):
-            if checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+            if (
+                checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+                or self.store.unresolved_codex_call(checkpoint.identity.analysis_id)
+                is not None
+            ):
                 return RunOutcome(
                     current_stage=checkpoint.stage,
                     status=checkpoint.status,
                     error_code=checkpoint.error_code,
                     attempt_id=checkpoint.attempt_id,
                 )
-            # Earlier prompts mixed attack preconditions with installable
-            # requirements. Re-evaluate only this failed stage under the
-            # separated schema, preserving the retry count and prior agents.
+            # Re-evaluate only the failed environment stage after a corrected
+            # requirement response or wheel transfer, preserving the retry
+            # count and all completed earlier stages.
             self.store.replace_from(
                 checkpoint.model_copy(
                     update={

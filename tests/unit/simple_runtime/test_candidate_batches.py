@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
@@ -22,6 +24,13 @@ from sastsimi.simple_runtime.file_context import (
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+
+
+class _BatchArguments(TypedDict):
+    artifacts: SimpleArtifactRepository
+    ast_summary: Mapping[str, object]
+    workspace: Path
+    max_prompt_bytes: int
 
 
 def _fixture(
@@ -360,12 +369,12 @@ def test_candidate_context_v3_does_not_change_legacy_v2_batch_hash(
     store, identity, artifacts, workspace, summary, _ = _fixture(
         tmp_path, count=1, source_text=source
     )
-    arguments = dict(
-        artifacts=artifacts,
-        ast_summary=summary,
-        workspace=workspace,
-        max_prompt_bytes=16_384,
-    )
+    arguments: _BatchArguments = {
+        "artifacts": artifacts,
+        "ast_summary": summary,
+        "workspace": workspace,
+        "max_prompt_bytes": 16_384,
+    }
     old = tuple(
         iter_candidate_batches(
             store, identity, "scope-batch", context_version=2, **arguments
@@ -403,12 +412,12 @@ def test_candidate_context_v4_preserves_v3_and_adds_local_sink_context(
     store, identity, artifacts, workspace, summary, _ = _fixture(
         tmp_path, count=1, source_text=source
     )
-    arguments = dict(
-        artifacts=artifacts,
-        ast_summary=summary,
-        workspace=workspace,
-        max_prompt_bytes=16_384,
-    )
+    arguments: _BatchArguments = {
+        "artifacts": artifacts,
+        "ast_summary": summary,
+        "workspace": workspace,
+        "max_prompt_bytes": 16_384,
+    }
     version3 = tuple(
         iter_candidate_batches(
             store, identity, "scope-batch", context_version=3, **arguments
@@ -514,7 +523,9 @@ def test_context_v2_slice_keeps_cross_file_handler_request_context(
     restricted = restrict_file_context_to_candidates(context, (candidate.candidate_id,))
 
     for payload in (context, restricted):
-        related = {item["path"]: item for item in payload["related_source_files"]}
+        related_files = payload["related_source_files"]
+        assert isinstance(related_files, list)
+        related = {item["path"]: item for item in related_files}
         assert {row["line"] for row in related["sqli/views.py"]["source_lines"]} >= {
             3,
             4,
@@ -551,8 +562,7 @@ def test_unavailable_related_source_does_not_block_other_candidate_context(
     )
     route_file = workspace / "routes.py"
     route_source = (
-        "from app import routed\n"
-        "app.add_url_rule('/run', view_func=routed)\n"
+        "from app import routed\napp.add_url_rule('/run', view_func=routed)\n"
     )
     route_file.write_text(route_source, encoding="utf-8")
     summary = collect_python_ast(
@@ -562,11 +572,12 @@ def test_unavailable_related_source_does_not_block_other_candidate_context(
     routed = candidates[0].model_copy(update={"line": 2, "end_line": 2})
     local = candidates[1].model_copy(update={"line": 5, "end_line": 5})
     index = build_python_call_path_index(workspace, ("app.py", "routes.py"))
-    assert any(
-        step["path"] == "routes.py"
-        for path in index.for_candidate(routed).paths
-        for step in path["steps"]
-    )
+    route_found = False
+    for path in index.for_candidate(routed).paths:
+        steps = path["steps"]
+        assert isinstance(steps, list)
+        route_found = route_found or any(step["path"] == "routes.py" for step in steps)
+    assert route_found
     if related_failure == "missing":
         route_file.unlink()
     elif related_failure == "oversized":
@@ -586,9 +597,7 @@ def test_unavailable_related_source_does_not_block_other_candidate_context(
         call_path_index=index,
     )
     context = json.loads(artifacts.read(ref))
-    by_id = {
-        row["candidate_id"]: row for row in context["candidate_call_paths"]
-    }
+    by_id = {row["candidate_id"]: row for row in context["candidate_call_paths"]}
     assert by_id[routed.candidate_id]["status"] == "PARTIAL"
     assert expected_gap in by_id[routed.candidate_id]["gaps"]
     assert all(

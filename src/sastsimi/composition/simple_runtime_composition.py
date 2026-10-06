@@ -441,9 +441,7 @@ def build_analysis_application(
             wheel_bundle_path=profile.poc_wheel_archive_path,
             wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
             offline_base_image_digest=profile.poc_offline_base_image_digest,
-            auto_dependency_bundle=(
-                profile.poc_dependency_bundle_mode == "AUTO"
-            ),
+            auto_dependency_bundle=(profile.poc_dependency_bundle_mode == "AUTO"),
             git_executable=(
                 str(profile.tools["git"].executable_path)
                 if "git" in profile.tools

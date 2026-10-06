@@ -34,7 +34,10 @@ from sastsimi.simple_runtime.models import (
     StageFailure,
     StageStatus,
 )
-from sastsimi.simple_runtime.portable_docker import PortableDockerRuntime
+from sastsimi.simple_runtime.portable_docker import (
+    DirectEnvironmentPreparer,
+    PortableDockerRuntime,
+)
 from sastsimi.simple_runtime.run_lease import analysis_run_lease
 from sastsimi.simple_runtime.stages import (
     InitialVerificationStage,
@@ -207,11 +210,12 @@ def test_composition_reuses_wheel_cache_across_hypothesis_runners(
     second_stage = second.handlers[SimpleStage.VERIFICATION_INITIAL_DONE]
     assert isinstance(first_stage, InitialVerificationStage)
     assert isinstance(second_stage, InitialVerificationStage)
-    assert first_stage._environments is not second_stage._environments
-    assert (
-        first_stage._environments._auto_bundle_cache
-        is second_stage._environments._auto_bundle_cache
-    )
+    first_environment = first_stage._environments
+    second_environment = second_stage._environments
+    assert isinstance(first_environment, DirectEnvironmentPreparer)
+    assert isinstance(second_environment, DirectEnvironmentPreparer)
+    assert first_environment is not second_environment
+    assert first_environment._auto_bundle_cache is second_environment._auto_bundle_cache
 
 
 @pytest.mark.parametrize("configured_digest", [None, "sha256:" + "b" * 64])

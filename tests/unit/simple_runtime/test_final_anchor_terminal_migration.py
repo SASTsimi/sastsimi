@@ -97,9 +97,7 @@ def test_stale_poc_candidate_is_incomplete_even_with_current_terminal_stage(
                 verdict="TRUE"
                 if stage is SimpleStage.VERIFICATION_FINAL_DONE
                 else None,
-                gate_decision="REJECT"
-                if stage is SimpleStage.TECH_GATE_DONE
-                else None,
+                gate_decision="REJECT" if stage is SimpleStage.TECH_GATE_DONE else None,
             )
         )
 
@@ -149,9 +147,7 @@ def test_stale_initial_verification_is_incomplete_even_with_current_downstream_s
                 verdict="TRUE"
                 if stage is SimpleStage.VERIFICATION_FINAL_DONE
                 else None,
-                gate_decision="REJECT"
-                if stage is SimpleStage.TECH_GATE_DONE
-                else None,
+                gate_decision="REJECT" if stage is SimpleStage.TECH_GATE_DONE else None,
             )
         )
 

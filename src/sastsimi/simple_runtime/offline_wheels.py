@@ -170,9 +170,7 @@ def build_wheel_bundle(wheel_directory: Path) -> bytes:
                 raise ValueError("WHEEL_ARCHIVE_INVALID")
             descriptor = os.open(
                 path,
-                os.O_RDONLY
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_BINARY", 0),
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
             )
             with os.fdopen(descriptor, "rb") as stream:
                 opened = os.fstat(stream.fileno())

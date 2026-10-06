@@ -423,8 +423,7 @@ class SimpleExecutionProfile(BaseModel):
                 if self.poc_offline_base_image_digest is not None
                 else []
             ),
-            "poc_dependency_bundle_mode = "
-            f"{_quoted(self.poc_dependency_bundle_mode)}",
+            f"poc_dependency_bundle_mode = {_quoted(self.poc_dependency_bundle_mode)}",
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",

@@ -1379,8 +1379,7 @@ async def test_v2_codex_resume_keeps_outer_timeout_unresolved_without_tree_proof
         root_running,
         StageFailure(
             code=(
-                "CANDIDATE_CHILD_CODEX_STATE_PENDING:"
-                "H-affected:affected-stage-attempt"
+                "CANDIDATE_CHILD_CODEX_STATE_PENDING:H-affected:affected-stage-attempt"
             ),
             retryable=False,
             safe_message="Affected child needs Codex cleanup proof",

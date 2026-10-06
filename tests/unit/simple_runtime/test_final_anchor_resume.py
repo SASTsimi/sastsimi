@@ -194,7 +194,7 @@ async def test_redacted_anchor_failure_retries_initial_stage_without_replaying_p
     calls: list[SimpleStage] = []
 
     async def initial_handler(
-        checkpoint: StageCheckpoint, _prior: object
+        checkpoint: StageCheckpoint, prior: object
     ) -> StageResult:
         calls.append(checkpoint.stage)
         assert checkpoint.attempt_number == 2
@@ -202,7 +202,7 @@ async def test_redacted_anchor_failure_retries_initial_stage_without_replaying_p
         return StageResult(output_refs=(initial_ref,))
 
     async def remaining_handler(
-        checkpoint: StageCheckpoint, _prior: object
+        checkpoint: StageCheckpoint, prior: object
     ) -> StageResult:
         calls.append(checkpoint.stage)
         return StageResult(output_refs=())
@@ -310,9 +310,7 @@ async def test_redacted_anchor_failure_retries_final_stage_without_replaying_poc
     store.save_checkpoint(failed)
     calls: list[SimpleStage] = []
 
-    async def final_handler(
-        checkpoint: StageCheckpoint, _prior: object
-    ) -> StageResult:
+    async def final_handler(checkpoint: StageCheckpoint, prior: object) -> StageResult:
         calls.append(checkpoint.stage)
         assert checkpoint.attempt_number == 2
         assert store.require(identity, SimpleStage.POC_EXECUTION_DONE) == poc
@@ -375,9 +373,7 @@ async def test_redacted_anchor_failure_stays_terminal_after_three_attempts(
     store.save_checkpoint(failed)
     calls: list[SimpleStage] = []
 
-    async def handler(
-        checkpoint: StageCheckpoint, _prior: object
-    ) -> StageResult:
+    async def handler(checkpoint: StageCheckpoint, prior: object) -> StageResult:
         calls.append(checkpoint.stage)
         return StageResult(output_refs=())
 
