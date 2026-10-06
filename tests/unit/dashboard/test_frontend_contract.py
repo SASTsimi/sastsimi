@@ -15,9 +15,10 @@ _STATIC = (
 
 def test_dashboard_has_compact_kpis_grid_progress_and_history() -> None:
     html = (_STATIC / "index.html").read_text(encoding="utf-8")
+    document = html + (_STATIC / "app.js").read_text(encoding="utf-8")
     for label in (
-        "정적 검사 커버리지",
-        "가설 검증 진행",
+        "정적 검사 범위 확인률",
+        "가설 검증 진행률",
         "TRUE Finding",
         "검증된 PoC",
         "검증 완료 가설",
@@ -25,14 +26,13 @@ def test_dashboard_has_compact_kpis_grid_progress_and_history() -> None:
         "LLM 토큰",
         "확인된 LLM 비용",
     ):
-        assert label in html
+        assert label in document
     for element_id in (
         "kpi-grid",
         "status-grid",
         "status-page-prev",
         "status-page-next",
-        "discovery-progress",
-        "verification-progress",
+        "progress-summary",
         "execution-history",
     ):
         assert f'id="{element_id}"' in html
@@ -57,6 +57,9 @@ vm.createContext(context);
 vm.runInContext(isolated, context);
 assert.equal(vm.runInContext('ratioPercent(null, null)', context), null);
 assert.equal(vm.runInContext('ratioPercent(0, 0)', context), null);
+assert.equal(vm.runInContext('ratioPercent(24, 24)', context), 100);
+assert.equal(vm.runInContext('ratioPercent(2, 4)', context), 50);
+assert.equal(vm.runInContext('ratioPercent(0, 4)', context), 0);
 assert.equal(vm.runInContext('ratioPercent(1, 4)', context), 25);
 let calls = 0;
 let release;
@@ -151,7 +154,7 @@ def test_status_grid_is_paged_and_unknown_is_not_rendered_as_zero() -> None:
 
 def test_priority_view_has_narrow_layout_and_visible_keyboard_focus() -> None:
     css = (_STATIC / "app.css").read_text(encoding="utf-8")
-    assert "@media (max-width: 1220px)" in css
+    assert "@media (max-width: 1120px)" in css
     assert "@media (max-width: 620px)" in css
     assert ".status-cell:focus-visible" in css
     assert "prefers-reduced-motion" in css
@@ -202,3 +205,258 @@ def test_tab_navigation_is_sticky_and_mobile_analysis_list_is_a_drawer() -> None
     assert ".header-kpi:hover::after" in css
     assert ".header-kpi:focus-visible::after" in css
     assert ".drawer-open #analysis-sidebar" in css
+
+
+def test_dense_console_uses_tab_summaries_donut_and_master_detail() -> None:
+    html = (_STATIC / "index.html").read_text(encoding="utf-8")
+    source = (_STATIC / "app.js").read_text(encoding="utf-8")
+    css = (_STATIC / "app.css").read_text(encoding="utf-8")
+    for element_id in (
+        "progress-summary",
+        "findings-summary",
+        "coverage-kpi-summary",
+        "artifacts-summary",
+        "llm-summary",
+        "logs-summary",
+        "hypothesis-detail",
+    ):
+        assert f'id="{element_id}"' in html
+    assert "function progressDonut(" in source
+    assert 'aria-valuetext", "미확인"' in source
+    assert "state.selectedHypothesis" in source
+    assert "conic-gradient" in css
+    assert ".finding-workspace" in css
+    assert ".hypothesis-row.selected" in css
+    assert "overflow-x: hidden" not in css
+
+
+def test_progress_phases_use_accessible_donuts_without_horizontal_bars() -> None:
+    html = (_STATIC / "index.html").read_text(encoding="utf-8")
+    source = (_STATIC / "app.js").read_text(encoding="utf-8")
+    css = (_STATIC / "app.css").read_text(encoding="utf-8")
+    assert 'class="tab-summary progress-command-summary"' in html
+    assert "overall-progress-panel" not in html
+    assert "<progress" not in html
+    assert "function phaseProgressMetric(" in source
+    assert 'phaseProgressMetric("정적 검사 범위 확인률"' in source
+    assert 'phaseProgressMetric("가설 검증 진행률"' in source
+    assert 'donut.setAttribute?.("aria-label", valueText)' in source
+    assert "progress-warning:not(.progress-unknown)" in css
+    assert "--color-coverage: #5b8def" in css
+    assert "progress-coverage:not(.progress-unknown)" in css
+    assert "primary.append(stage, overall)" in source
+    assert "@media (max-width: 340px)" in css
+
+
+def test_demo_preview_shows_three_repositories_with_two_runs_each() -> None:
+    source = (_STATIC / "app.js").read_text(encoding="utf-8")
+    assert "function demoAnalysisVariants(items)" in source
+    assert 'repository: "https://example.invalid/sastsimi-api"' in source
+    assert 'repository: "https://example.invalid/partner-portal"' in source
+    assert 'repository: "https://example.invalid/legacy-auth-service"' in source
+    assert source.count('display_analysis_id: "DEMO-') == 6
+    assert "demo_source_id: demoSourceId" in source
+
+
+def test_analysis_sidebar_groups_repository_runs_and_removes_comparison() -> None:
+    html = (_STATIC / "index.html").read_text(encoding="utf-8")
+    source = (_STATIC / "app.js").read_text(encoding="utf-8")
+    css = (_STATIC / "app.css").read_text(encoding="utf-8")
+    for removed in (
+        "compare-controls",
+        "compare-analysis",
+        "compare-button",
+        "comparison-panel",
+        "compare-close",
+        "comparison-grid",
+    ):
+        assert removed not in html
+    for removed in (
+        "renderComparisonOptions",
+        "compareSelectedAnalysis",
+        'getElementById("compare-button")',
+        'getElementById("compare-close")',
+    ):
+        assert removed not in source
+    for removed in (".compare-controls", ".comparison-grid", ".comparison-card"):
+        assert removed not in css
+    assert "expandedRepositories: new Set()" in source
+    assert "collapsedRepositories: new Set()" in source
+    assert "initialHistoryExpansionHandled: false" in source
+    assert "function groupAnalyses(items = [])" in source
+    assert "function initializeSelectedHistoryExpansion(groups)" in source
+    assert (
+        "if (selectedHistory) state.expandedRepositories.add(group.key)" not in source
+    )
+    assert 'toggle.setAttribute("aria-expanded"' in source
+    assert 'toggle.setAttribute("aria-controls", historyId)' in source
+    assert 'el("button", "최신 실행 보기", "analysis-latest-action")' in source
+    assert "analysis-history-row" in source
+    assert "analysis-group-shell" in css
+    assert ".analysis-current-history" in css
+
+
+def test_repository_grouping_uses_full_identity_and_stable_latest_sort() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    source = _STATIC / "app.js"
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const context = {
+  window: { location: { pathname: '/' } },
+  document: {},
+  Intl, Date, Number, URLSearchParams, console,
+};
+vm.createContext(context);
+const source = fs.readFileSync(process.argv[1], 'utf8').split(
+  'document.getElementById("log-search").addEventListener'
+)[0];
+vm.runInContext(source, context);
+const groups = vm.runInContext(`groupAnalyses([
+  {
+    analysis_id: 'same-time-first',
+    repository: 'https://one.example/shared',
+    started_at: '2026-10-01T09:00:00Z',
+  },
+  {
+    analysis_id: 'older-one',
+    repository: 'https://one.example/shared',
+    started_at: '2026-09-30T09:00:00Z',
+  },
+  {
+    analysis_id: 'same-time-second',
+    repository: 'https://two.example/shared',
+    started_at: '2026-10-01T09:00:00Z',
+  },
+  {
+    analysis_id: 'fallback-time',
+    repository: 'https://two.example/shared',
+    last_updated_at: '2026-09-29T09:00:00Z',
+  },
+  { analysis_id: 'missing-a', repository: null },
+  { analysis_id: 'missing-b', repository: null }
+]).map((group) => ({
+  key: group.key,
+  ids: group.items.map((entry) => entry.item.analysis_id),
+}))`, context);
+assert.deepEqual(JSON.parse(JSON.stringify(groups)), [
+  { key: 'https://one.example/shared', ids: ['same-time-first', 'older-one'] },
+  { key: 'https://two.example/shared', ids: ['same-time-second', 'fallback-time'] },
+  { key: 'analysis:missing-a', ids: ['missing-a'] },
+  { key: 'analysis:missing-b', ids: ['missing-b'] },
+]);
+const expansion = vm.runInContext(`(() => {
+  state.selected = 'older-one';
+  const grouped = groupAnalyses([
+    {
+      analysis_id: 'latest-one',
+      repository: 'https://one.example/shared',
+      started_at: '2026-10-01T09:00:00Z',
+    },
+    {
+      analysis_id: 'older-one',
+      repository: 'https://one.example/shared',
+      started_at: '2026-09-30T09:00:00Z',
+    }
+  ]);
+  initializeSelectedHistoryExpansion(grouped);
+  const initiallyExpanded = state.expandedRepositories.has(
+    'https://one.example/shared'
+  );
+  state.expandedRepositories.delete('https://one.example/shared');
+  state.collapsedRepositories.add('https://one.example/shared');
+  state.initialHistoryExpansionHandled = false;
+  initializeSelectedHistoryExpansion(grouped);
+  return {
+    initiallyExpanded,
+    remainsCollapsed: !state.expandedRepositories.has(
+      'https://one.example/shared'
+    ),
+    manuallyCollapsed: state.collapsedRepositories.has(
+      'https://one.example/shared'
+    ),
+    handled: state.initialHistoryExpansionHandled,
+  };
+})()`, context);
+assert.deepEqual(JSON.parse(JSON.stringify(expansion)), {
+  initiallyExpanded: true,
+  remainsCollapsed: true,
+  manuallyCollapsed: true,
+  handled: true,
+});
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(source)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_progress_renders_zero_and_unknown_truthfully() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    source = _STATIC / "app.js"
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const nodes = new Map();
+class Element {
+  constructor(tag = 'div') {
+    this.tag = tag; this.children = []; this.textContent = ''; this.attrs = {};
+    this.style = {
+      values: {},
+      setProperty: (key, value) => { this.style.values[key] = value; },
+    };
+  }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = children; }
+  setAttribute(key, value) { this.attrs[key] = String(value); }
+}
+const document = {
+  createElement(tag) { return new Element(tag); },
+  getElementById(id) {
+    if (!nodes.has(id)) nodes.set(id, new Element());
+    return nodes.get(id);
+  },
+};
+const context = {
+  window: { location: { pathname: '/' } },
+  document, Intl, Date, Number, console,
+};
+vm.createContext(context);
+const source = fs.readFileSync(process.argv[1], 'utf8').split(
+  'document.getElementById("log-search").addEventListener'
+)[0];
+vm.runInContext(source, context);
+const text = (node) => [node.textContent, ...node.children.map(text)].join(' ');
+const zero = vm.runInContext(`phaseProgressMetric(
+  '정적 검사 범위 확인률', ratioPercent(0, 4), 0, 4, 'coverage'
+)`, context);
+const zeroDonut = zero.children[1];
+assert.match(text(zero), /0%/); assert.match(text(zero), /0 \/ 4/);
+assert.equal(zeroDonut.attrs['aria-valuenow'], '0');
+assert.equal(zeroDonut.attrs['aria-label'], '정적 검사 범위 확인률 0%, 4개 중 0개');
+const unknown = vm.runInContext(`phaseProgressMetric(
+  '가설 검증 진행률', ratioPercent(null, null), null, null, 'warning'
+)`, context);
+const unknownDonut = unknown.children[1];
+assert.match(text(unknown), /—/); assert.doesNotMatch(text(unknown), /0%/);
+assert.equal(unknownDonut.attrs['aria-valuetext'], '미확인');
+assert.equal(unknownDonut.style.values['--progress'], '0');
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(source)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
