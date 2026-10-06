@@ -372,9 +372,7 @@ async def test_pinned_anchor_includes_direct_same_file_http_caller_context(
             "path": "web.py",
             "source_status": "AVAILABLE",
             "source_sha256": hashlib.sha256(pinned.encode("utf-8")).hexdigest(),
-            "source_lines": [
-                {"line": 5, "text": "    return database.execute(value)"}
-            ],
+            "source_lines": [{"line": 5, "text": "    return database.execute(value)"}],
         }
     )
     proposal_ref = artifacts.put_prompt_proposal(
@@ -1170,7 +1168,15 @@ async def test_commit_pinned_page_anchor_uses_page_redaction_policy(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source_hash_case",
-    ["valid", "mismatch", "missing", "v2", "v2_unindexed", "v3_unindexed"],
+    [
+        "valid",
+        "mismatch",
+        "missing",
+        "v2",
+        "v2_unindexed",
+        "v3_unindexed",
+        "secret_route",
+    ],
 )
 async def test_legacy_static_bundle_uses_commit_pinned_cited_source(
     tmp_path: Path,
@@ -1179,11 +1185,22 @@ async def test_legacy_static_bundle_uses_commit_pinned_cited_source(
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     source_path = checkout / "web.py"
-    pinned = (
-        "def broken(:\nsave_comment(name)  # pinned-legacy-marker\n"
-        if source_hash_case.endswith("_unindexed")
-        else "name = request.form['name']\nsave_comment(name)  # pinned-legacy-marker\n"
-    )
+    if source_hash_case == "secret_route":
+        pinned = (
+            "def run_query():\n"
+            "    api_key = 'not-a-real-secret'\n"
+            "    return database.execute(request.form['query'])\n"
+            "\n"
+            "@app.post('/search')\n"
+            "def search():\n"
+            "    return run_query()\n"
+        )
+    elif source_hash_case.endswith("_unindexed"):
+        pinned = "def broken(:\nsave_comment(name)  # pinned-legacy-marker\n"
+    else:
+        pinned = (
+            "name = request.form['name']\nsave_comment(name)  # pinned-legacy-marker\n"
+        )
     source_path.write_text(pinned, encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
     subprocess.run(
@@ -1280,7 +1297,9 @@ async def test_legacy_static_bundle_uses_commit_pinned_cited_source(
             "static_bundle_ref": bundle_ref.model_dump(mode="json"),
             "proposal": {
                 "title": "Legacy stored XSS",
-                "code_locations": ["web.py:2"],
+                "code_locations": [
+                    "web.py:3" if source_hash_case == "secret_route" else "web.py:2"
+                ],
                 "source": "request.form['name']",
                 "sink": "save_comment",
             },
@@ -1295,7 +1314,7 @@ async def test_legacy_static_bundle_uses_commit_pinned_cited_source(
     client = _ContextClient()
     final = FinalVerificationStage(client, artifacts, workspace_path=checkout)
     checkpoint = _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity)
-    if source_hash_case not in {"valid", "v2", "v2_unindexed"}:
+    if source_hash_case not in {"valid", "v2", "v2_unindexed", "secret_route"}:
         with pytest.raises(StageFailed) as caught:
             await final(checkpoint, {SimpleStage.PRO_CON_DONE: pro})
         assert caught.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
@@ -1304,5 +1323,10 @@ async def test_legacy_static_bundle_uses_commit_pinned_cited_source(
     await final(checkpoint, {SimpleStage.PRO_CON_DONE: pro})
     assert len(client.prompts) == 1
     assert b"Legacy stored XSS" in client.prompts[0]
-    assert b"pinned-legacy-marker" in client.prompts[0]
+    if source_hash_case == "secret_route":
+        assert b"def search" in client.prompts[0]
+        assert b"return run_query()" in client.prompts[0]
+        assert b"not-a-real-secret" not in client.prompts[0]
+    else:
+        assert b"pinned-legacy-marker" in client.prompts[0]
     assert b"changed current checkout" not in client.prompts[0]

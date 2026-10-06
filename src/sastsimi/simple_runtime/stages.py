@@ -583,9 +583,7 @@ def _redacted_pinned_source_line(value: str) -> str:
     Git blob rather than comparing its raw value with the stored projection.
     """
 
-    projected = json.loads(
-        redact_projected_json(canonical_bytes({"text": value})).data
-    )
+    projected = json.loads(redact_projected_json(canonical_bytes({"text": value})).data)
     text = projected.get("text") if isinstance(projected, dict) else None
     if not isinstance(text, str):
         raise ValueError("pinned source projection invalid")
@@ -714,6 +712,7 @@ def _verification_anchor_refs(
             "simple_surface_context_v1",
             "simple_surface_context_v2",
         }:
+
             def add_context_source(view: object) -> str:
                 if not isinstance(view, dict):
                     raise ValueError("pinned source unavailable")
@@ -869,19 +868,23 @@ def _verification_anchor_refs(
                 ):
                     raise ValueError("pinned source hash mismatch")
                 source_hashes[path] = hashlib.sha256(raw).hexdigest()
-                decoded_lines = (
+                decoded_lines = raw.decode("utf-8").splitlines()
+                redacted_lines = (
                     redact_untrusted_text_preserving_lines(raw)
                     .data.decode("utf-8")
                     .splitlines()
                 )
+                if len(decoded_lines) != len(redacted_lines):
+                    raise ValueError("pinned source line count mismatch")
                 cited_lines = {line for cited_path, line in cited if cited_path == path}
                 for line in cited_lines:
                     if line > len(decoded_lines):
                         raise ValueError("cited source line missing")
                     available[(path, line)] = _redacted_pinned_source_line(
-                        decoded_lines[line - 1]
+                        redacted_lines[line - 1]
                     )
                 pinned_source_lines[path] = decoded_lines
+                pinned_safe_source_lines[path] = redacted_lines
         else:
             raise ValueError("pinned source format unavailable")
         if not cited.issubset(available):
@@ -923,16 +926,14 @@ def _verification_anchor_refs(
                     if available_path == path and (
                         (available_path, line) in supporting
                         or any(
-                            available_path == cited_path
-                            and abs(line - cited_line) <= 2
+                            available_path == cited_path and abs(line - cited_line) <= 2
                             for cited_path, cited_line in cited
                         )
                     ):
                         if (
                             line < 1
                             or line > len(decoded_lines)
-                            or text
-                            != safe_decoded_lines[line - 1]
+                            or text != safe_decoded_lines[line - 1]
                         ):
                             raise ValueError("pinned source line mismatch")
 
@@ -941,11 +942,13 @@ def _verification_anchor_refs(
             cited_lines = {line for cited_path, line in cited if cited_path == path}
             safe_lines = pinned_safe_source_lines.get(path)
             for line in _same_file_caller_context_lines(decoded_lines, cited_lines):
-                available[(path, line)] = (
-                    safe_lines[line - 1]
-                    if safe_lines is not None
-                    else _redacted_pinned_source_line(decoded_lines[line - 1])
-                )
+                if safe_lines is None:
+                    safe_text = _redacted_pinned_source_line(decoded_lines[line - 1])
+                elif kind == "simple_static_fact_bundle":
+                    safe_text = _redacted_pinned_source_line(safe_lines[line - 1])
+                else:
+                    safe_text = safe_lines[line - 1]
+                available[(path, line)] = safe_text
                 focused_lines.add((path, line))
         for path, line in cited:
             if (path, line) in available:
