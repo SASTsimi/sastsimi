@@ -48,6 +48,7 @@ from .models import (
     terminal_initial_outcome,
     terminal_poc_outcome,
 )
+from .poc_currentness import poc_source_current
 
 _MAX_CONTEXT_BYTES = 256 * 1024
 _INITIAL_ENVIRONMENT_BLOCK_KIND = "simple_initial_environment_block_v1"
@@ -83,7 +84,13 @@ LEGACY_RECOVERY_FALLBACK_STOPS = frozenset(
 class SimpleArtifactRepository:
     """Exact record reader plus content-addressed output writer."""
 
-    def __init__(self, data_dir: str | Path, identity: CheckpointIdentity) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        identity: CheckpointIdentity,
+        *,
+        create_dirs: bool = True,
+    ) -> None:
         self.data_dir = Path(data_dir)
         self.identity = identity
         self.paths = RuntimePaths(self.data_dir)
@@ -91,6 +98,7 @@ class SimpleArtifactRepository:
             self.paths.artifacts,
             WorkspaceId(identity.workspace_id),
             CommitId(identity.commit_id),
+            create_dirs=create_dirs,
         )
 
     def put_bytes(self, value: bytes, media_type: str) -> StoredDataRef:
@@ -732,6 +740,8 @@ class SimpleArtifactRepository:
         finding = required(SimpleStage.FINDING_DONE)
         report = required(SimpleStage.REPORT_DONE)
         candidate = required(SimpleStage.POC_CANDIDATE_DONE)
+        if not poc_source_current(candidate, read_content=self.read_bounded):
+            raise ValueError("BUNDLE_POC_SOURCE_UNVERIFIED")
         dynamic = required(SimpleStage.POC_EXECUTION_DONE)
         technical = required(SimpleStage.TECH_GATE_DONE)
         scope = required(SimpleStage.SCOPE_GATE_DONE)
@@ -1220,7 +1230,9 @@ def verified_terminal_projection(
         try:
             if data_dir is None:
                 raise ValueError(error_code)
-            artifacts = SimpleArtifactRepository(data_dir, checkpoint.identity)
+            artifacts = SimpleArtifactRepository(
+                data_dir, checkpoint.identity, create_dirs=False
+            )
             if initial:
                 artifacts.verified_terminal_initial_outcome(checkpoint)
             else:

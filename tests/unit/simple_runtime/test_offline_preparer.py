@@ -41,6 +41,7 @@ from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
 from sastsimi.simple_runtime.stages import (
     InitialVerificationStage,
     ReproductionEnvironment,
+    _verification_required_refs,
 )
 
 
@@ -3023,6 +3024,166 @@ async def test_initial_verification_reasks_once_for_invalid_offline_requirement(
         "GNU coreutils (provides ls with -R support)",
     ]
     assert "GNU coreutils" not in rejected_event.summary_ko
+
+
+@pytest.mark.asyncio
+async def test_import_replan_uses_explicit_distribution_requirement_in_wheel_path(
+    tmp_path: Path,
+) -> None:
+    workspace, commit, path, digest = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    large_stdout = b"stdout padding\n" * 21_000
+    large_stderr = (
+        b"stderr padding\n" * 21_000
+        + b"SASTSIMI_TEST_SECRET=should-not-show\n"
+        + b"ModuleNotFoundError: jwt\nTraceback: frame -> exec_module"
+    )
+    stdout_ref = artifacts.put_bytes(large_stdout, "text/plain")
+    stderr_ref = artifacts.put_bytes(large_stderr, "text/plain")
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "attempt_id": "prior-import-attempt",
+            "stdout_ref": stdout_ref.model_dump(mode="json"),
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    decision_ref = artifacts.put_json(
+        {
+            "kind": "simple_recovery_decision",
+            "identity": checkpoint.identity.model_dump(mode="json"),
+            "stage": SimpleStage.POC_EXECUTION_DONE.value,
+            "decision_origin": "RULE",
+            "original_error": {
+                "code": "POC_RUNTIME_IMPORT_FAILED",
+                "retryable": True,
+                "safe_message": "isolated import failed",
+                "evidence_refs": [
+                    execution_ref.model_dump(mode="json"),
+                    stdout_ref.model_dump(mode="json"),
+                    stderr_ref.model_dump(mode="json"),
+                ],
+            },
+            "diagnostic_excerpt": (
+                "ModuleNotFoundError: jwt\nTraceback: frame -> exec_module"
+            ),
+            "decision": {
+                "category": "ENVIRONMENT",
+                "action": "REPLAN_ENVIRONMENT",
+                "diagnosis": "isolated import failed",
+                "guidance": "Review pinned distribution evidence before retrying",
+                "environment_patch": "",
+            },
+        }
+    )
+    refs = (execution_ref, stdout_ref, stderr_ref, decision_ref)
+    checkpoint = checkpoint.model_copy(
+        update={
+            "attempt_number": 2,
+            "input_refs": refs,
+            "input_hash": input_reference_hash(refs),
+            "recovery_decision_refs": (decision_ref,),
+        }
+    )
+    prompts: list[bytes] = []
+
+    class _Client:
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            prompt = kwargs["prompt"]
+            assert isinstance(prompt, bytes)
+            prompts.append(prompt)
+            return SimpleLLMCallResult(
+                value={
+                    "initial_assessment": "HOLD",
+                    "rationale": "Need to rerun with a separately named distribution.",
+                    "reproduction_goal": "Run the local handler with a test client.",
+                    "environment_requirements": ["pip:PyJWT"],
+                    "unmet_external_prerequisites": [],
+                    "supporting_refs": [],
+                    "limitations": [],
+                },
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    class _Environment(DirectEnvironmentPreparer):
+        async def prepare(
+            self,
+            current: StageCheckpoint,
+            _prior: object,
+            requirements: tuple[str, ...],
+        ) -> ReproductionEnvironment:
+            self.validate_requirements(
+                requirements, commit_id=current.identity.commit_id
+            )
+            assert requirements == ("pip:PyJWT",)
+            assert self._offline_agent_requirements(
+                requirements, commit_id=current.identity.commit_id
+            )[0] == ("PyJWT",)
+            return ReproductionEnvironment(
+                recipe_ref=artifacts.put_json({"kind": "test_offline_recipe"}),
+                image_digest="sha256:" + "c" * 64,
+            )
+
+    environment = _Environment(
+        docker=_Docker(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+        wheel_bundle_path=path,
+        wheel_bundle_sha256=digest,
+    )
+    result = await InitialVerificationStage(_Client(), artifacts, environment)(
+        checkpoint, {}
+    )
+
+    assert result.recipe_ref is not None
+    assert len(prompts) == 1
+    assert b"ModuleNotFoundError" in prompts[0]
+    assert b"should-not-show" not in prompts[0]
+    assert b"distribution name" in prompts[0]
+    assert b"pip:<PEP 508 requirement>" in prompts[0]
+    recorded = json.loads(artifacts.read(result.output_refs[0]))
+    assert decision_ref.model_dump(mode="json") in recorded["source_refs"]
+    assert stderr_ref.model_dump(mode="json") not in recorded["source_refs"]
+    assert stdout_ref.model_dump(mode="json") not in recorded["source_refs"]
+    assert artifacts.read(stderr_ref) == large_stderr
+    assert artifacts.read(stdout_ref) == large_stdout
+
+
+@pytest.mark.parametrize(
+    ("malformed_decision", "malformed_error"),
+    (
+        (None, None),
+        ("not-a-dict", None),
+        ({"action": "REPLAN_ENVIRONMENT"}, None),
+    ),
+)
+def test_import_replan_malformed_decision_fails_closed(
+    tmp_path: Path, malformed_decision: object, malformed_error: object
+) -> None:
+    _, commit, _, _ = _fixture(tmp_path)
+    artifacts, checkpoint = _checkpoint(tmp_path, commit)
+    decision_ref = artifacts.put_json(
+        {
+            "kind": "simple_recovery_decision",
+            "identity": checkpoint.identity.model_dump(mode="json"),
+            "stage": SimpleStage.POC_EXECUTION_DONE.value,
+            "decision_origin": "RULE",
+            "decision": malformed_decision,
+            "original_error": malformed_error,
+        }
+    )
+    checkpoint = checkpoint.model_copy(
+        update={
+            "input_refs": (decision_ref,),
+            "recovery_decision_refs": (decision_ref,),
+        }
+    )
+
+    with pytest.raises(StageFailed) as caught:
+        _verification_required_refs(checkpoint, {}, artifacts, include_dynamic=False)
+
+    assert caught.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
 
 
 @pytest.mark.asyncio

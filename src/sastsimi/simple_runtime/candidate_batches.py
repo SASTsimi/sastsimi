@@ -105,6 +105,8 @@ def _assemble_batch(
     call_path_index: PythonCallPathIndex | None = None,
     include_downstream: bool = False,
     include_enclosing: bool = False,
+    include_error_response: bool = False,
+    escape_prompt_bytes: bool = False,
 ) -> CandidateBatch:
     path = prepared.path
     context_ref = build_file_context(
@@ -117,18 +119,20 @@ def _assemble_batch(
         call_path_index=call_path_index,
         include_downstream=include_downstream,
         include_enclosing=include_enclosing,
+        include_error_response=include_error_response,
     )
     context_payload = json.loads(artifacts.read(context_ref))
-    prompt_bytes = PROMPT_HEADROOM_BYTES + len(
-        canonical_bytes(
-            {
-                "shared_context": context_payload,
-                "candidates": [
-                    candidate_prompt_projection(item) for item in candidates
-                ],
-            }
-        )
+    rendered = canonical_bytes(
+        {
+            "shared_context": context_payload,
+            "candidates": [candidate_prompt_projection(item) for item in candidates],
+        }
     )
+    # v1-v4 must retain their historical batch boundaries for same-ID resume.
+    # New v5 batches count the angle-bracket escaping in the actual prompt.
+    if escape_prompt_bytes:
+        rendered = rendered.replace(b"<", b"\\u003c").replace(b">", b"\\u003e")
+    prompt_bytes = PROMPT_HEADROOM_BYTES + len(rendered)
     candidate_ids = tuple(item.candidate_id for item in candidates)
     if prompt_bytes > max_prompt_bytes:
         raise CandidateContextOverflow(candidate_ids)
@@ -163,13 +167,13 @@ def iter_candidate_batches(
     if (
         max_prompt_bytes < 1024
         or db_page_size < 1
-        or context_version not in {1, 2, 3, 4}
+        or context_version not in {1, 2, 3, 4, 5}
     ):
         raise ValueError("CANDIDATE_BATCH_BUDGET_INVALID")
     manifest_index = index_ast_manifest(artifacts, ast_summary)
     call_path_index = (
         build_python_call_path_index(workspace, tuple(manifest_index))
-        if context_version in {2, 3, 4}
+        if context_version in {2, 3, 4, 5}
         else None
     )
     after: tuple[str, str] | None = None
@@ -212,8 +216,10 @@ def iter_candidate_batches(
                     scope_fingerprint=scope_fingerprint,
                     max_prompt_bytes=max_prompt_bytes,
                     call_path_index=call_path_index,
-                    include_downstream=context_version in {3, 4},
-                    include_enclosing=context_version == 4,
+                    include_downstream=context_version in {3, 4, 5},
+                    include_enclosing=context_version in {4, 5},
+                    include_error_response=context_version == 5,
+                    escape_prompt_bytes=context_version == 5,
                 )
             except CandidateContextOverflow:
                 if current_batch is None:
@@ -229,8 +235,10 @@ def iter_candidate_batches(
                     scope_fingerprint=scope_fingerprint,
                     max_prompt_bytes=max_prompt_bytes,
                     call_path_index=call_path_index,
-                    include_downstream=context_version in {3, 4},
-                    include_enclosing=context_version == 4,
+                    include_downstream=context_version in {3, 4, 5},
+                    include_enclosing=context_version in {4, 5},
+                    include_error_response=context_version == 5,
+                    escape_prompt_bytes=context_version == 5,
                 )
             else:
                 pending = proposed

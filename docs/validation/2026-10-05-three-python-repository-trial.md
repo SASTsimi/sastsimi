@@ -110,13 +110,13 @@ false-positive rates.
 | Repository and run | State | Candidates | Hypotheses | Saved Findings | What the result establishes |
 | --- | --- | ---: | ---: | ---: | --- |
 | vfapi `vfapi-v8` (`a4c3888a8e5c49b1bea13be090d04164`) | `BLOCKED: RECOVERY_EXHAUSTED` | 20 | 11 | 9 | The repository's documented SQL and NoSQL injection classes both appear in saved Findings. A different PoC exhausted three attempts; its last script failed to recognize a keyword-only `aiosqlite.connect(database=...)` call. This is a generated-PoC failure, not a vulnerability disproof or a completed analysis. |
-| insecure-web `insecure-web-v4` (`3ccba250919d469782fc8a3bb9a1c465`) | `PARTIAL` | 12 | 39 | 34 | All recorded Python file-rule checks completed, but two security surfaces remained insufficiently reviewed. The result projection shows nine groups: four proven same-flow groups and five undetermined standalone entries. The 34 raw Findings are not 34 independent vulnerabilities. |
+| insecure-web `insecure-web-v4` (`3ccba250919d469782fc8a3bb9a1c465`) | `PARTIAL` | 12 | 39 | 34 | All recorded Python file-rule checks completed, but two security surfaces remained insufficiently reviewed. The projection at this checkpoint showed nine groups; the later stricter re-projection is recorded below. The 34 raw Findings are not 34 independent vulnerabilities. |
 | dvpwa `dvpwa-v5` (`71eb210d781f4eb780d76f68a5aef95e`) | `PARTIAL` | 20 | 8 | 0 | All 252 planned Python file-rule checks completed, but seven non-Python product files remain outside the Python-only scan. Pinned `aiohttp==3.5.3` has no compatible binary distribution for the configured Python 3.12 PoC environment, so the eight hypotheses stopped as inconclusive rather than being called false. |
 
 Human review previously estimated approximately five distinct vfapi
 request/weakness surfaces among its nine raw reports, but that is **not** a
 verified automatic group count or an oracle score. For insecure-web, the
-verified projection reduced 34 raw reports to nine displayed groups while
+projection at that checkpoint reduced 34 raw reports to nine displayed groups while
 retaining five undetermined flows separately. Grouping solely by route or
 weakness could erase distinct vulnerabilities; all original Findings and PoCs
 remain available. The vfapi run cannot be resumed past its persisted
@@ -151,8 +151,8 @@ intact.
 
 | Repository and run | State | Candidates | Hypotheses | Saved Findings | Evidence and limitation |
 | --- | --- | ---: | ---: | ---: | --- |
-| vfapi `vfapi-v9` (`6fa2afeeb78b41e8b4a19771c509d7b5`) | `PARTIAL` (terminal) | 20 | 18 | 17 | All 12 planned Python file-rule checks completed; 18 PoC executions, 17 Finding/Scope Gate/report stages, and 17 English/Korean/PoC/evidence bundles were saved. The earlier keyword-only `aiosqlite.connect(database=...)` PoC error did not recur as a terminal failure. Ten non-Python product files are outside the Python-only scope and two security surfaces remained insufficiently reviewed, so this is not COMPLETE. The current conservative projection still displays 17 singleton reports; it has not proven a vfapi duplicate reduction. |
-| dvpwa `dvpwa-v6` (`c415cb4fb2344948a97c458bce10b189`) | `PARTIAL` (terminal) | 20 | 9 | 0 | Seven Initial Verification checkpoints ended in `HOLD`: the pinned Python 3.6 dependency closure cannot be resolved with compatible Linux binary wheels. No validated PoC or Finding resulted; `HOLD` is not a vulnerability disproof. |
+| vfapi `vfapi-v9` (`6fa2afeeb78b41e8b4a19771c509d7b5`) | `PARTIAL` (terminal) | 20 | 18 | 17 | All 12 planned Python file-rule checks completed; 18 PoC executions, 17 Finding/Scope Gate/report stages, and 17 English/Korean/PoC/evidence bundles were saved. The earlier keyword-only `aiosqlite.connect(database=...)` PoC error did not recur as a terminal failure. Ten non-Python product files are outside the Python-only scope and two security surfaces remained insufficiently reviewed, so this is not COMPLETE. The projection at this checkpoint displayed 17 singleton reports; the later re-projection is recorded below. |
+| dvpwa `dvpwa-v6` (`c415cb4fb2344948a97c458bce10b189`) | `PARTIAL` (terminal) | 20 | 9 | 0 | Nine Initial Verification checkpoints ended in `HOLD`: the pinned Python 3.6 dependency closure cannot be resolved with compatible Linux binary wheels. No validated PoC or Finding resulted; `HOLD` is not a vulnerability disproof. |
 
 After the vfapi run, a read-only manual check against its pinned README's two
 demonstrated attack examples found both: GET `/select` SQL injection (F-003's
@@ -162,8 +162,8 @@ gets different HTTP 200 user results for ordinary and `$ne` filters with
 MontyDB). Thus the **two documented examples are represented, 2/2**, not that
 all repository vulnerabilities were found. The 17 raw Findings include
 plausible repeat reports across those and other routes. A read-only human
-inspection suggested several shared root causes, but the automatic projection
-still leaves all 17 separate because their final evidence does not prove the
+inspection suggested several shared root causes, but the projection at that
+checkpoint left all 17 separate because its evidence did not prove the
 same complete flow. We rejected an experimental route-only extension after
 counterexamples showed it could merge distinct SQL operations. No automatic
 false-positive rate or safe duplicate-reduction count is claimed for vfapi;
@@ -187,3 +187,55 @@ Python-only static scope. These observations do not establish improved recall,
 fewer false positives, a universally successful PoC pipeline, or report-ready
 findings. The separate insecure-web projection is a measured within-run
 display reduction, not proof that this PoC/runtime patch improved deduplication.
+
+## Conservative frozen-result re-projection (2026-10-07)
+
+The current display projection was applied read-only to the same saved
+Findings, without re-running analysis or changing their verdicts. It requires
+identical full flow anchors: a report with a CodeQL interior trace is **not**
+automatically grouped with an otherwise matching report that has no trace.
+This avoids treating absent trace evidence as proof of the same path.
+
+| Saved run | Original Findings | Displayed groups | Evidence |
+| --- | ---: | ---: | --- |
+| vfapi-v9 | 17 | 12 | Two proven groups of 3 and 4; ten singletons |
+| insecure-web-v4 | 34 | 11 | Traced/untraced reports separated; every original ID retained once |
+| dvpwa-v6 | 0 | 0 | No Finding reached the reporting stage |
+
+The vfapi and insecure-web figures were reproduced with the current
+`project_current_finding_groups` code against the saved run, checkpoint, and
+Finding-display rows in each isolated database, plus its existing artifact CAS.
+The audit's primary SQLite connection used `mode=ro&immutable=1`, and the
+projection's display-ID/candidate lookups use `mode=ro`; this did not resume an
+analysis or change a verdict. The local inputs are
+`runtime-data/benchmark-20261005/targets/{vfapi-v9,insecure-web-v4}/data/`
+relative to the repository root. Their `db/sastsimi.sqlite3` SHA-256 hashes at
+this audit were respectively
+`4c0ff8a7f1545ec5e2f4537d69aeda0ae725ead38d0a16a48a13c5c330da3e47`
+and
+`f3d9502ca95cbacf99f3040223e7b14a0ba31f0c6a96947830e3a65108c2d63d`.
+These local fixtures are not distributed with the repository; the complete
+original-ID-to-display-group mapping below records the audit result. In a
+`singleton (self)` row, every listed ID is its own representative.
+
+| Saved run | Representative | Original Finding IDs in group | Status |
+| --- | --- | --- | --- |
+| vfapi-v9 | F-001 | F-001, F-008, F-016 | Proven same flow |
+| vfapi-v9 | F-003 | F-003, F-005, F-010, F-011 | Proven same flow |
+| vfapi-v9 | singleton (self) | F-002, F-004, F-006, F-007, F-009, F-012, F-013, F-014, F-015, F-017 | Grouping undetermined |
+| insecure-web-v4 | F-001 | F-001, F-010, F-017, F-018, F-029, F-030, F-031 | Proven same flow |
+| insecure-web-v4 | F-002 | F-002, F-008, F-012, F-013, F-016, F-020, F-022, F-024, F-026, F-028 | Proven same flow |
+| insecure-web-v4 | F-003 | F-003 | Proven same flow |
+| insecure-web-v4 | F-004 | F-004 | Proven same flow |
+| insecure-web-v4 | F-006 | F-006, F-007, F-011, F-014, F-015, F-019, F-032, F-033, F-034 | Proven same flow |
+| insecure-web-v4 | F-009 | F-009 | Proven same flow |
+| insecure-web-v4 | singleton (self) | F-005, F-021, F-023, F-025, F-027 | Grouping undetermined |
+
+Both vfapi README-demonstrated examples, SQL injection at `/select` and NoSQL
+operator injection at `/find`, have a saved successful PoC, final `TRUE`, and
+Technical Gate `ACCEPT` in vfapi-v9 (2/2 examples). Scope Gate remains
+`UNCERTAIN` and the whole run remains `PARTIAL`. This is not repository-wide
+recall or proof of zero false positives. Insecure-web has no enumerated
+route-by-route answer key; dvpwa remains PoC-inconclusive with non-Python code
+outside scope. The display reduction alone does not establish improved
+detection, and no raw Finding or PoC was discarded.

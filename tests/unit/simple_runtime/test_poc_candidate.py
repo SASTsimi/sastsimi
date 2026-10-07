@@ -17,9 +17,13 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
     input_reference_hash,
 )
+from sastsimi.simple_runtime.poc import PoCCandidateRejected
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import StageFailed
-from sastsimi.simple_runtime.stages import PoCCandidateStage
+from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
+from sastsimi.simple_runtime.stages import (
+    PoCCandidateStage,
+    _require_independent_poc_fixture,
+)
 
 
 class _RepairClient:
@@ -29,7 +33,7 @@ class _RepairClient:
     async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
         self.prompts.append(kwargs["prompt"])
         content = (
-            "#!/bin/sh\ncookie=fixture_value\nprintf x\n"
+            "#!/bin/sh\ncookie=never-print-this-cookie\nprintf x\n"
             if len(self.prompts) == 1
             else "#!/bin/sh\nfixture_value=x\nprintf '%s' \"$fixture_value\"\n"
         )
@@ -86,6 +90,69 @@ class _DollarLiteralRepairClient(_RepairClient):
         )
         return SimpleLLMCallResult(
             value={"content": content},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+class _PlaceholderRepairClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        content = (
+            "#!/bin/sh\nprintf 'SASTSIMI_POC_INCONCLUSIVE\\n'\nexit 2\n"
+            if len(self.prompts) == 1
+            else "#!/bin/sh\nprintf 'SASTSIMI_POC_INCONCLUSIVE\\n'\nexit 0\n"
+        )
+        return SimpleLLMCallResult(
+            value={"content": content},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+class _ProcessLocalFixtureRepairClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        fixture = (
+            "class Fixture:\n    pass\npayload = pickle.dumps(Fixture())\n"
+            if len(self.prompts) == 1
+            else "payload = pickle.dumps('fixture_value')\n"
+        )
+        content = (
+            "#!/bin/sh\npython3 - <<'PY'\nimport pickle\n"
+            + fixture
+            + "client = app.test_client()\n"
+            "client.set_cookie('value', payload.hex())\n"
+            "client.get('/cookie')\nPY\n"
+        )
+        return SimpleLLMCallResult(
+            value={"content": content},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+class _AlwaysPlaceholderClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        return SimpleLLMCallResult(
+            value={
+                "content": (
+                    "#!/bin/sh\nif true; then\n"
+                    "  printf 'SASTSIMI_POC_INCONCLUSIVE-HIDDEN_SENTINEL\\n'\n"
+                    "  exit 2\nfi\n"
+                )
+            },
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+class _AlwaysSensitiveClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        return SimpleLLMCallResult(
+            value={"content": "#!/bin/sh\ncookie=never-print-this-cookie\nprintf x\n"},
             prompt_digest="a" * 64,
             output_digest="b" * 64,
         )
@@ -169,6 +236,36 @@ async def test_poc_candidate_receives_pinned_pro_con_source_without_path_request
     )
 
     assert b"aiosqlite.connect(database='fixture.db')" in client.prompt
+
+
+@pytest.mark.asyncio
+async def test_poc_candidate_prompt_separates_target_http_failure_from_harness_failure(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _SourceRecordingClient()
+
+    await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert b"normal application error handling" in client.prompt
+    assert b"target HTTP 5xx response" in client.prompt
+    assert b"do not report it as reproduced" in client.prompt
+    assert b"exit 0 for a completed observation" in client.prompt
+    assert b"SASTSIMI_POC_INCONCLUSIVE" in client.prompt
 
 
 @pytest.mark.asyncio
@@ -954,10 +1051,14 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     assert source_context_ref in context_refs
     assert oversized_prior_ref not in context_refs
     assert prompt_context["omitted_optional_refs"] >= 1
-    assert b"/workspace is read-only" in client.prompt
+    assert b"Treat /workspace as\nimmutable product source" in client.prompt
     assert b"runtime storage" in client.prompt
     assert b"__file__-derived workspace path" in client.prompt
     assert b"temporary runtime wrapper" in client.prompt
+    assert b"entire PoC execution" in client.prompt
+    assert b"copy the existing database" in client.prompt
+    assert b"multiple or dynamic" in client.prompt
+    assert b"restore the original operation after startup" not in client.prompt
     assert b"ModuleNotFoundError" in client.prompt
     assert b"exc.name" in client.prompt
     assert b"safe dotted module identifier" in b" ".join(client.prompt.split())
@@ -1126,6 +1227,44 @@ async def test_sensitive_candidate_repair_explains_secret_shaped_names(
     assert b"concise error type and traceback to stderr" in client.prompts[0]
     assert b"secret-shaped identifiers" in client.prompts[1]
     assert b"cookie, session, token" in client.prompts[1]
+    assert b"COOKIE" in client.prompts[1]
+    assert b"line 2" in client.prompts[1]
+    assert b"never-print-this-cookie" not in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_second_sensitive_rejection_persists_only_category_and_line(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    client = _AlwaysSensitiveClient()
+
+    with pytest.raises(StageBlocked) as blocked:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert blocked.value.failure.code == "POC_SENSITIVE_CONTENT"
+    assert len(client.prompts) == 2
+    assert all(b"never-print-this-cookie" not in prompt for prompt in client.prompts)
+    assert len(blocked.value.failure.evidence_refs) == 1
+    diagnostic = json.loads(artifacts.read(blocked.value.failure.evidence_refs[0]))
+    assert diagnostic["reason"] == "SENSITIVE_CONTENT"
+    assert diagnostic["sensitive_category"] == "COOKIE"
+    assert diagnostic["sensitive_line"] == 2
+    assert "never-print-this-cookie" not in json.dumps(diagnostic)
 
 
 @pytest.mark.asyncio
@@ -1227,3 +1366,125 @@ async def test_literal_dollar_data_key_guidance_preserves_candidate_guard(
     assert b"chr(36)" in client.prompts[0]
     assert b"POC_UNDECLARED_INPUT" in client.prompts[1]
     assert b"chr(36)" in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_placeholder_repair_guidance_distinguishes_observation_from_runtime_error(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _PlaceholderRepairClient()
+    stage = PoCCandidateStage(
+        client=client,
+        artifacts=SimpleArtifactRepository(tmp_path, identity),
+    )
+
+    result = await stage(checkpoint, {})
+
+    assert result.output_refs
+    assert len(client.prompts) == 2
+    assert b"POC_PLACEHOLDER_FORBIDDEN" in client.prompts[1]
+    assert b"exit 0 for a completed inconclusive observation" in client.prompts[1]
+    assert b"exit 2 only for a real harness/runtime error" in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_poc_candidate_repairs_process_local_pickle_fixture(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _ProcessLocalFixtureRepairClient()
+    stage = PoCCandidateStage(
+        client=client,
+        artifacts=SimpleArtifactRepository(tmp_path, identity),
+    )
+
+    result = await stage(checkpoint, {})
+
+    assert result.output_refs
+    assert len(client.prompts) == 2
+    assert b"POC_PROCESS_LOCAL_FIXTURE_UNVERIFIED" in client.prompts[1]
+    assert b"PoC-only class" in client.prompts[1]
+
+
+def test_unresolved_local_pickle_sent_to_test_client_is_rejected() -> None:
+    content = (
+        b"#!/bin/sh\npython3 - <<'PY'\n"
+        b"import pickle\n"
+        b"class LocalOnly: pass\n"
+        b"body = pickle.dumps(LocalOnly()).hex()\n"
+        b"client = app.test_client()\n"
+        b"client.post('/ingest', json={'payload': body})\n"
+        b"PY\n"
+    )
+
+    with pytest.raises(
+        PoCCandidateRejected, match="POC_PROCESS_LOCAL_FIXTURE_UNVERIFIED"
+    ):
+        _require_independent_poc_fixture(content)
+
+
+@pytest.mark.asyncio
+async def test_second_candidate_rejection_persists_only_safe_diagnostic(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+
+    with pytest.raises(StageBlocked) as blocked:
+        await PoCCandidateStage(client=_AlwaysPlaceholderClient(), artifacts=artifacts)(
+            checkpoint, {}
+        )
+
+    assert blocked.value.failure.code == "POC_PLACEHOLDER_FORBIDDEN"
+    assert len(blocked.value.failure.evidence_refs) == 1
+    diagnostic = json.loads(artifacts.read(blocked.value.failure.evidence_refs[0]))
+    assert diagnostic == {
+        "kind": "simple_poc_candidate_rejection_diagnostic",
+        "reason": "INCONCLUSIVE_EXIT2_UNPROVEN",
+        "line_count": 5,
+        "branch_count": 1,
+        "inconclusive_line_count": 1,
+        "exit_two_line_count": 1,
+        "exit_zero_line_count": 0,
+    }
+    assert "HIDDEN_SENTINEL" not in json.dumps(diagnostic)

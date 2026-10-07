@@ -97,7 +97,7 @@ def test_same_verified_flow_groups_cross_engine_and_keeps_original_evidence() ->
     assert group.members[2].candidate_ids == ()
 
 
-def test_one_codeql_trace_and_an_untraced_proven_flow_share_a_group() -> None:
+def test_one_codeql_trace_and_an_untraced_flow_remain_separate() -> None:
     traced = replace(_anchor(), trace_nodes=("app.py:7:5", "app.py:8:5"))
     result = group_verified_findings(
         (
@@ -107,8 +107,11 @@ def test_one_codeql_trace_and_an_untraced_proven_flow_share_a_group() -> None:
     )
 
     assert result.raw_count == 2
-    assert result.visible_group_count == 1
-    assert result.groups[0].member_ids == ("F-001", "F-002")
+    assert result.visible_group_count == 2
+    assert tuple(group.member_ids for group in result.groups) == (
+        ("F-001",),
+        ("F-002",),
+    )
 
 
 def test_untraced_flow_does_not_bridge_distinct_codeql_trace_paths() -> None:

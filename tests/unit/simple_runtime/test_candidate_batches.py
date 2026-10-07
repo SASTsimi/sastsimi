@@ -9,12 +9,15 @@ from typing import TypedDict
 
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.call_path_facts import build_python_call_path_index
 from sastsimi.simple_runtime.candidate_batches import (
+    PROMPT_HEADROOM_BYTES,
     CandidateBatch,
     CandidateContextOverflow,
+    candidate_prompt_projection,
     iter_candidate_batches,
 )
 from sastsimi.simple_runtime.candidates import CandidateOrigin, StaticCandidate
@@ -38,6 +41,7 @@ def _fixture(
     *,
     count: int,
     excerpt_size: int = 24,
+    excerpt_text: str | None = None,
     source_text: str | None = None,
 ) -> tuple[
     SimpleCheckpointStore,
@@ -83,7 +87,9 @@ def _fixture(
             ),
             evidence_key=f"evidence-{index}",
             summary="sink",
-            evidence_excerpt="x" * excerpt_size,
+            evidence_excerpt=(
+                excerpt_text if excerpt_text is not None else "x" * excerpt_size
+            ),
         )
         for index in range(count)
     )
@@ -161,6 +167,53 @@ def test_context_overflow_splits_without_loss(tmp_path: Path) -> None:
     assert [(batch.batch_id, batch.shared_context_ref) for batch in first] == [
         (batch.batch_id, batch.shared_context_ref) for batch in second
     ]
+
+
+def test_html_delimiters_use_rendered_prompt_budget_before_batching(
+    tmp_path: Path,
+) -> None:
+    store, identity, artifacts, workspace, summary, expected_ids = _fixture(
+        tmp_path, count=2, excerpt_text="<" * 800
+    )
+    batches = tuple(
+        iter_candidate_batches(
+            store,
+            identity,
+            "scope-batch",
+            artifacts=artifacts,
+            ast_summary=summary,
+            workspace=workspace,
+            max_prompt_bytes=12_000,
+            context_version=5,
+        )
+    )
+
+    assert len(batches) == 2
+    assert (
+        tuple(item for batch in batches for item in batch.candidate_ids) == expected_ids
+    )
+    assert all(batch.prompt_bytes <= batch.max_prompt_bytes for batch in batches)
+
+
+def test_single_html_heavy_candidate_is_an_explicit_overflow(tmp_path: Path) -> None:
+    store, identity, artifacts, workspace, summary, expected_ids = _fixture(
+        tmp_path, count=1, excerpt_text="<" * 2_000
+    )
+
+    with pytest.raises(CandidateContextOverflow) as error:
+        tuple(
+            iter_candidate_batches(
+                store,
+                identity,
+                "scope-batch",
+                artifacts=artifacts,
+                ast_summary=summary,
+                workspace=workspace,
+                max_prompt_bytes=12_000,
+                context_version=5,
+            )
+        )
+    assert error.value.candidate_ids == expected_ids
 
 
 def test_single_oversized_candidate_is_explicit_error(tmp_path: Path) -> None:
@@ -440,6 +493,109 @@ def test_candidate_context_v4_preserves_v3_and_adds_local_sink_context(
     )
     assert {row["line"] for row in new_context["source_lines"]} >= {4, 6}
     assert version3[0].batch_id != version4[0].batch_id
+
+
+def test_error_response_hint_starts_at_context_v5_without_changing_v4_hash(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "@app.get('/config')\n"
+        "def config():\n"
+        "    value = request.args.get('key')\n"
+        "    try:\n"
+        "        decoded = decrypt(value)\n"
+        "    except ValueError as exc:\n"
+        "        return str(exc)\n"
+        "    return {'value': decoded}\n"
+    )
+    store, identity, artifacts, workspace, summary, _ = _fixture(
+        tmp_path, count=1, source_text=source
+    )
+    raw_ref = artifacts.put_json({"kind": "entry-point-source"})
+    candidate = StaticCandidate(
+        candidate_id="ENTRY-001",
+        kind="ENTRY_POINT",
+        path="app.py",
+        line=3,
+        end_line=3,
+        evidence_ref=raw_ref,
+        origins=(
+            CandidateOrigin(
+                engine="opengrep",
+                rule_id="python.request.args",
+                artifact_ref=raw_ref,
+                result_index=0,
+            ),
+        ),
+        evidence_key="entry-point-input",
+        summary="request-controlled input",
+        evidence_excerpt="value = request.args.get('key')",
+    )
+    store.upsert_candidate_page(identity, "scope-entry", raw_ref, 0, 1, (candidate,))
+    store.save_candidate_decision(
+        identity, "scope-entry", candidate.candidate_id, "INCLUDE", "fixture review"
+    )
+    arguments: _BatchArguments = {
+        "artifacts": artifacts,
+        "ast_summary": summary,
+        "workspace": workspace,
+        "max_prompt_bytes": 16_384,
+    }
+    old = tuple(
+        iter_candidate_batches(
+            store, identity, "scope-entry", context_version=4, **arguments
+        )
+    )
+    new = tuple(
+        iter_candidate_batches(
+            store, identity, "scope-entry", context_version=5, **arguments
+        )
+    )
+    old_context = json.loads(artifacts.read(old[0].shared_context_ref))
+    new_context = json.loads(artifacts.read(new[0].shared_context_ref))
+    assert not any(
+        path["kind"] == "candidate_error_response_context_v1"
+        for path in old_context["candidate_call_paths"][0]["paths"]
+    )
+    assert any(
+        path["kind"] == "candidate_error_response_context_v1"
+        for path in new_context["candidate_call_paths"][0]["paths"]
+    )
+    assert old[0].batch_id != new[0].batch_id
+
+
+def test_context_v4_keeps_legacy_byte_estimate_while_v5_counts_escapes(
+    tmp_path: Path,
+) -> None:
+    store, identity, artifacts, workspace, summary, _ = _fixture(
+        tmp_path, count=1, excerpt_text="<" * 100
+    )
+    arguments: _BatchArguments = {
+        "artifacts": artifacts,
+        "ast_summary": summary,
+        "workspace": workspace,
+        "max_prompt_bytes": 16_384,
+    }
+    old = next(
+        iter_candidate_batches(
+            store, identity, "scope-batch", context_version=4, **arguments
+        )
+    )
+    new = next(
+        iter_candidate_batches(
+            store, identity, "scope-batch", context_version=5, **arguments
+        )
+    )
+    rendered = canonical_bytes(
+        {
+            "shared_context": json.loads(artifacts.read(old.shared_context_ref)),
+            "candidates": [
+                candidate_prompt_projection(item) for item in old.candidates
+            ],
+        }
+    )
+    assert old.prompt_bytes == PROMPT_HEADROOM_BYTES + len(rendered)
+    assert new.prompt_bytes > old.prompt_bytes
 
 
 def test_context_v2_slice_keeps_cross_file_handler_request_context(

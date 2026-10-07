@@ -33,6 +33,14 @@ _MAX_DOWNSTREAM_PATHS = 4
 _MAX_DOWNSTREAM_HOPS = 2
 _MAX_DOWNSTREAM_BODY_LINES = 16
 _MAX_ENCLOSING_BODY_LINES = 24
+_ERROR_RESPONSE_REVIEW_CALLS = {
+    "decode",
+    "decrypt",
+    "deserialize",
+    "parse",
+    "validate",
+    "verify",
+}
 _ROUTE_DECORATORS = {
     "route",
     "get",
@@ -1476,12 +1484,237 @@ class PythonCallPathIndex:
             "gaps": [],
         }
 
+    def _error_response_context_path(
+        self, candidate: StaticCandidate
+    ) -> dict[str, object] | None:
+        """Show a narrow request/error-response shape without claiming a flaw.
+
+        Only a direct route-local request assignment and a straight-line name
+        chain inside one try body qualify. Arbitrary control flow is omitted,
+        not inferred. The Agent must still test whether responses differ and
+        whether that difference matters to an attacker.
+        """
+
+        if candidate.kind != "ENTRY_POINT":
+            return None
+        owner = self._definition_at(candidate.path, candidate.line)
+        if (
+            owner is None
+            or not self._route_entries.get(owner.key)
+            or candidate.line not in owner.request_context_lines
+        ):
+            return None
+        tree = self._trees.get(candidate.path)
+        if tree is None:
+            return None
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.lineno == owner.line
+            and node.name == owner.symbol.rsplit(".", 1)[-1]
+        ]
+        if len(functions) != 1:
+            return None
+        function = functions[0]
+        source_statement = next(
+            (
+                statement
+                for statement in function.body
+                if isinstance(statement, ast.Assign)
+                and statement.lineno == candidate.line
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+            ),
+            None,
+        )
+        if source_statement is None:
+            return None
+        request_names = {
+            argument.arg
+            for argument in (
+                *function.args.posonlyargs,
+                *function.args.args,
+                *function.args.kwonlyargs,
+            )
+            if argument.arg.casefold() in _REQUEST_PARAMETER_NAMES
+        } | {"request"}
+        if not any(
+            isinstance(node, ast.Attribute)
+            and node.attr in _REQUEST_INPUT_ATTRIBUTES
+            and isinstance(node.value, ast.Name)
+            and node.value.id in request_names
+            for node in ast.walk(source_statement.value)
+        ):
+            return None
+        source_target = source_statement.targets[0]
+        if not isinstance(source_target, ast.Name):
+            return None
+        source_name = source_target.id
+        source_index = function.body.index(source_statement)
+
+        def interrupts_source_path(nodes: Iterable[ast.AST]) -> bool:
+            return any(
+                isinstance(node, (ast.Return, ast.Raise, ast.Break, ast.Continue))
+                or (
+                    isinstance(node, ast.Name)
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                    and node.id == source_name
+                )
+                for root in nodes
+                for node in ast.walk(root)
+            )
+
+        candidate_tries: list[tuple[int, ast.Try, tuple[ast.AST, ...]]] = []
+        for index, outer in enumerate(function.body):
+            if isinstance(outer, ast.Try):
+                candidate_tries.append((index, outer, ()))
+            elif isinstance(outer, ast.If) and any(
+                isinstance(node, ast.Name) and node.id == source_name
+                for node in ast.walk(outer.test)
+            ):
+                candidate_tries.extend(
+                    (index, item, (outer.test, *outer.body[:inner_index]))
+                    for inner_index, item in enumerate(outer.body)
+                    if isinstance(item, ast.Try)
+                )
+        for index, statement, branch_prefix in candidate_tries:
+            if statement.lineno <= candidate.line:
+                continue
+            if interrupts_source_path(
+                (*function.body[source_index + 1 : index], *branch_prefix)
+            ):
+                continue
+            # Only a straight-line assignment chain is represented here. A
+            # rebind or early exit that this tiny syntax pass cannot model
+            # must not become a misleading source-to-response path hint.
+            if (
+                statement.orelse
+                or statement.finalbody
+                or any(
+                    isinstance(
+                        node,
+                        (
+                            ast.AnnAssign,
+                            ast.AugAssign,
+                            ast.NamedExpr,
+                            ast.Return,
+                            ast.Raise,
+                            ast.Break,
+                            ast.Continue,
+                            ast.If,
+                            ast.For,
+                            ast.AsyncFor,
+                            ast.While,
+                            ast.With,
+                            ast.AsyncWith,
+                            ast.Try,
+                            ast.Match,
+                        ),
+                    )
+                    for item in statement.body
+                    for node in ast.walk(item)
+                )
+            ):
+                continue
+            tainted = {source_name}
+            validation_line: int | None = None
+            for item in statement.body:
+                if not (
+                    isinstance(item, ast.Assign)
+                    and len(item.targets) == 1
+                    and isinstance(item.targets[0], ast.Name)
+                ):
+                    continue
+                source_names = {
+                    node.id
+                    for node in ast.walk(item.value)
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                }
+                if source_names & tainted:
+                    for call in ast.walk(item.value):
+                        if not isinstance(call, ast.Call) or (
+                            _terminal_name(call.func)
+                            not in _ERROR_RESPONSE_REVIEW_CALLS
+                        ):
+                            continue
+                        arguments = (*call.args, *(kw.value for kw in call.keywords))
+                        if any(
+                            isinstance(name, ast.Name) and name.id in tainted
+                            for argument in arguments
+                            for name in ast.walk(argument)
+                        ):
+                            if validation_line is None:
+                                validation_line = call.lineno
+                            break
+                    tainted.add(item.targets[0].id)
+                else:
+                    tainted.discard(item.targets[0].id)
+            if validation_line is None:
+                continue
+            error_response: tuple[int, int] | None = None
+            for handler in statement.handlers:
+                if not handler.name:
+                    continue
+                for item in handler.body:
+                    if not isinstance(item, ast.Return) or item.value is None:
+                        continue
+                    if any(
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Name)
+                        and call.func.id == "str"
+                        and len(call.args) == 1
+                        and isinstance(call.args[0], ast.Name)
+                        and call.args[0].id == handler.name
+                        for call in ast.walk(item.value)
+                    ):
+                        error_response = (handler.lineno, item.lineno)
+                        break
+                if error_response is not None:
+                    break
+            normal_response = next(
+                (
+                    item
+                    for item in function.body[index + 1 :]
+                    if isinstance(item, ast.Return) and item.value is not None
+                ),
+                None,
+            )
+            if error_response is None or normal_response is None:
+                continue
+            roles = (
+                ("REQUEST_CONTEXT", candidate.line),
+                ("VALIDATION_CALL", validation_line),
+                ("EXCEPTION_HANDLER", error_response[0]),
+                ("CLIENT_ERROR_RESPONSE", error_response[1]),
+                ("NORMAL_RESPONSE", normal_response.lineno),
+            )
+            return {
+                "kind": "candidate_error_response_context_v1",
+                "provenance": "python_syntax",
+                "assurance": "SOURCE_CONTEXT_ONLY",
+                "status": "AVAILABLE",
+                "steps": [
+                    {
+                        "role": role,
+                        "path": candidate.path,
+                        "line": line,
+                        "end_line": line,
+                        "symbol": owner.symbol,
+                    }
+                    for role, line in roles
+                ],
+                "gaps": [],
+            }
+        return None
+
     def for_candidate(
         self,
         candidate: StaticCandidate,
         *,
         include_downstream: bool = False,
         include_enclosing: bool = False,
+        include_error_response: bool = False,
     ) -> CandidateCallPaths:
         """Return only verifiable, bounded path facts for one candidate."""
 
@@ -1500,6 +1733,10 @@ class PythonCallPathIndex:
             enclosing = self._enclosing_context_path(candidate, gaps)
             if enclosing is not None:
                 paths.append(enclosing)
+            if include_error_response:
+                error_response = self._error_response_context_path(candidate)
+                if error_response is not None:
+                    paths.append(error_response)
         if scanner is None:
             gaps.update(self._reachable_syntax_gaps(candidate))
             gaps.update(syntax_gaps)

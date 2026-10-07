@@ -376,6 +376,7 @@ def build_file_context(
     call_path_index: PythonCallPathIndex | None = None,
     include_downstream: bool = False,
     include_enclosing: bool = False,
+    include_error_response: bool = False,
 ) -> StoredDataRef:
     """Persist one deterministic shared context artifact for a candidate batch."""
 
@@ -389,6 +390,7 @@ def build_file_context(
             candidate,
             include_downstream=include_downstream,
             include_enclosing=include_enclosing,
+            include_error_response=include_error_response,
         )
         for candidate in candidates
     }

@@ -22,7 +22,11 @@ from sastsimi.simple_runtime.candidate_batches import (
     candidate_batch_id,
     iter_candidate_batches,
 )
-from sastsimi.simple_runtime.candidates import CandidateOrigin, StaticCandidate
+from sastsimi.simple_runtime.candidates import (
+    CandidateKind,
+    CandidateOrigin,
+    StaticCandidate,
+)
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -117,6 +121,9 @@ def _fixture(
     candidate_count: int,
     responses: list[list[JsonValue]],
     source_text: str = "def route(value):\n    evaluate(value)\n",
+    candidate_line: int = 2,
+    candidate_kind: CandidateKind = "HINT",
+    context_version: int = 1,
 ) -> tuple[
     DirectHypothesisBootstrap,
     _Client,
@@ -143,10 +150,10 @@ def _fixture(
     candidates = tuple(
         StaticCandidate(
             candidate_id=f"C-{index:03d}",
-            kind="HINT",
+            kind=candidate_kind,
             path="app.py",
-            line=2,
-            end_line=2,
+            line=candidate_line,
+            end_line=candidate_line,
             evidence_ref=source_ref,
             origins=(
                 CandidateOrigin(
@@ -178,6 +185,7 @@ def _fixture(
             ast_summary=ast_summary,
             workspace=workspace,
             max_prompt_bytes=16_384,
+            context_version=context_version,
         )
     )
     client = _Client(responses)
@@ -191,6 +199,81 @@ def _fixture(
         workspace_path=workspace,
     )
     return bootstrap, client, identity, static, batch, artifacts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reflected_error", [True, False])
+async def test_batch_guidance_is_scoped_to_structurally_visible_error_response(
+    tmp_path: Path, reflected_error: bool
+) -> None:
+    """A candidate hint must guide a separate hypothesis, not assert leakage."""
+
+    error_response = "str(exc)" if reflected_error else "'invalid input'"
+    source = (
+        "@app.get('/config')\n"
+        "def config():\n"
+        "    value = request.args.get('key')\n"
+        "    try:\n"
+        "        decoded = bytes.fromhex(value)\n"
+        "        selected = decrypt(decoded)\n"
+        "    except ValueError as exc:\n"
+        f"        return {error_response}\n"
+        "    return render_template('config.html', selected=selected)\n"
+    )
+    bootstrap, client, identity, static, batch, artifacts = _fixture(
+        tmp_path,
+        candidate_count=1,
+        responses=[[_row("C-000", "NO_HYPOTHESIS")]],
+        source_text=source,
+        candidate_line=3,
+        candidate_kind="ENTRY_POINT",
+        context_version=5,
+    )
+
+    result = await bootstrap.propose_batch(identity, static, batch)
+
+    assert not isinstance(result, StageFailure)
+    assert len(client.requests) == 1
+    context = json.loads(artifacts.read(batch.shared_context_ref))
+    rows = context["candidate_call_paths"]
+    assert isinstance(rows, list)
+    hint_present = any(
+        path["kind"] == "candidate_error_response_context_v1"
+        for row in rows
+        for path in row["paths"]
+    )
+    assert hint_present is reflected_error
+    prompt = client.requests[0]["prompt"].decode("utf-8")
+    assert ("client-visible normal/error response difference" in prompt) is (
+        reflected_error
+    )
+    assert ("not proof of leakage or exploitability" in prompt) is (reflected_error)
+    if reflected_error:
+        guidance_at = prompt.index(" For candidate IDs with")
+        untrusted_at = prompt.index("<UNTRUSTED_EXACT_INPUTS>")
+        assert guidance_at < untrusted_at
+        assert prompt[untrusted_at - 1] == "\n"
+        assert prompt[untrusted_at:].startswith(
+            "<UNTRUSTED_EXACT_INPUTS>\n<SHARED_FILE_CONTEXT>\n"
+        )
+    assert (
+        client.requests[0]["schema"]["properties"]["candidate_results"]["items"][
+            "properties"
+        ]["hypotheses"]["maxItems"]
+        == 4
+    )
+    if reflected_error:
+        # The fixed guidance is part of the exact prompt budget, not free headroom.
+        request = client.requests[0]
+        exact_bytes = len(request["prompt"]) + len(canonical_bytes(request["schema"]))
+        overflow = await bootstrap.propose_batch(
+            identity,
+            static,
+            replace(batch, max_prompt_bytes=exact_bytes - 1),
+        )
+        assert isinstance(overflow, StageFailure)
+        assert overflow.code == "HYPOTHESIS_BATCH_CONTEXT_OVERFLOW"
+        assert len(client.requests) == 1
 
 
 def _with_cross_file_call_path(

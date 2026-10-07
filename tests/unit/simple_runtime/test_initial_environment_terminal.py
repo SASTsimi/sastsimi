@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from shutil import rmtree
 
 import pytest
 
+from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
-from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.artifacts import (
+    SimpleArtifactRepository,
+    verified_terminal_projection,
+)
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
@@ -120,6 +125,22 @@ def test_terminal_initial_accepts_only_runtime_generated_pinned_binary_block(
 
     assert terminal_initial_outcome(checkpoint) == "INCONCLUSIVE"
     assert artifacts.verified_terminal_initial_outcome(checkpoint) == "INCONCLUSIVE"
+
+
+def test_terminal_projection_does_not_recreate_missing_artifact_directories(
+    tmp_path: Path,
+) -> None:
+    _artifacts, checkpoint = _checkpoint_with_environment_block(tmp_path)
+    paths = RuntimePaths(tmp_path)
+    absent = (paths.staging, paths.artifacts / "sha256", paths.quarantine)
+    for path in absent:
+        rmtree(path)
+
+    projected = verified_terminal_projection((checkpoint,), tmp_path)
+
+    assert projected[0].status is StageStatus.BLOCKED
+    assert projected[0].error_code == "INITIAL_VERIFICATION_EVIDENCE_INVALID"
+    assert all(not path.exists() for path in absent)
 
 
 def test_terminal_initial_rejects_agent_only_requirement_with_no_pinned_origin(

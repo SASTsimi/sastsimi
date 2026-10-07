@@ -33,7 +33,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, StageBlocked
 from sastsimi.simple_runtime.scope_policy import validate_scope_decision
 from sastsimi.simple_runtime.stages import ReporterStage
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -75,6 +75,54 @@ class _ReporterClient:
             prompt_digest=hashlib.sha256(b"prompt").hexdigest(),
             output_digest=hashlib.sha256(b"output").hexdigest(),
         )
+
+
+@pytest.mark.asyncio
+async def test_invalid_report_prose_has_specific_retryable_failure(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    finding_ref = artifacts.put_json({"kind": "simple_finding"})
+    poc_ref = artifacts.put_json({"kind": "simple_poc_execution"})
+
+    class _InvalidReporterClient(_ReporterClient):
+        async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+            result = await super().call(**kwargs)
+            value = dict(result.value)
+            en = dict(value["en"])
+            en["limitations"] = ["Affected version 1.2.3 was not verified."]
+            value["en"] = en
+            return result.model_copy(update={"value": value})
+
+    prior = {
+        SimpleStage.FINDING_DONE: _checkpoint(
+            identity, SimpleStage.FINDING_DONE, outputs=(finding_ref,), verdict="TRUE"
+        ),
+        SimpleStage.POC_EXECUTION_DONE: _checkpoint(
+            identity, SimpleStage.POC_EXECUTION_DONE, outputs=(poc_ref,)
+        ),
+    }
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.REPORT_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(finding_ref,),
+        input_hash=input_reference_hash((finding_ref,)),
+        attempt_id="report-attempt",
+    )
+
+    with pytest.raises(StageBlocked) as caught:
+        await ReporterStage(_InvalidReporterClient(), artifacts)._draft(
+            current, prior, finding_ref
+        )
+    assert caught.value.failure.code == "REPORT_CONTENT_INVALID"
+    assert caught.value.failure.retryable is True
 
 
 def test_policy_lookup_is_empty_for_a_simple_runtime_database(tmp_path: Path) -> None:

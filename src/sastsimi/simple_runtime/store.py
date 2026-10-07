@@ -14,7 +14,14 @@ from uuid import uuid4
 
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.poc_candidate import POC_CANDIDATE_VALIDATOR_REVISION
+from sastsimi.contracts.prompt_redaction import redact_untrusted_text
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.reporting import (
+    BilingualReportContent,
+    has_legacy_report_ipv4_false_positive,
+    validate_report_content,
+)
 from sastsimi.observability.agent_activity import (
     ActivityKind,
     AgentActivityEvent,
@@ -44,8 +51,11 @@ from .recovery import (
     ALLOWED_ACTIONS,
     MAX_RECOVERY_ATTEMPTS,
     RecoveryAction,
+    RecoveryCategory,
     RecoveryDecision,
     RecoveryResolution,
+    _python_import_traceback_spans,
+    has_python_import_failure,
 )
 from .run_lease import AnalysisRunBusy, analysis_run_lease
 
@@ -3150,6 +3160,224 @@ class SimpleCheckpointStore:
                 ):
                     raise ValueError("REPORT_DRAFT_CONFLICT")
 
+    def prepare_report_validator_replay(
+        self,
+        stopped: StageCheckpoint,
+        draft_ref: StoredDataRef,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reuse one newly valid draft; reopen only its exact blocked report.
+
+        Caller holds the analysis lease. The immutable draft is checked before
+        the transaction, then every mutable binding is compared under CAS.
+        """
+
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.REPORT_DONE
+            or stopped.stage_version != STAGE_VERSION[SimpleStage.REPORT_DONE]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.error_code
+            not in {"STAGE_UNEXPECTED_ERROR", "REPORT_UNSUPPORTED_METADATA_CLAIM"}
+            or stopped.retryable
+            or stopped.attempt_id is None
+            or not 1 <= stopped.attempt_number < MAX_RECOVERY_ATTEMPTS
+            or stopped.output_refs
+            or stopped.report_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("REPORT_VALIDATOR_REPLAY_INVALID")
+        try:
+            envelope = json.loads(artifacts.read_bounded(draft_ref, 4 * 1024 * 1024))
+            if (
+                not isinstance(envelope, dict)
+                or envelope.get("kind") != "simple_report_draft"
+                or envelope.get("attempt_id") != stopped.attempt_id
+                or not isinstance(envelope.get("result"), dict)
+                or not isinstance(envelope.get("source_refs"), list)
+                or not isinstance(envelope.get("prompt_digest"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", envelope["prompt_digest"]) is None
+                or envelope.get("output_digest")
+                != hashlib.sha256(canonical_bytes(envelope["result"])).hexdigest()
+            ):
+                raise ValueError("invalid draft envelope")
+            content = BilingualReportContent.model_validate_json(
+                canonical_bytes(envelope["result"])
+            )
+            validate_report_content(
+                content.model_dump(mode="json"), allowed_locations=()
+            )
+        except (OSError, TypeError, ValueError) as error:
+            raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_INVALID") from error
+        if (
+            stopped.error_code == "STAGE_UNEXPECTED_ERROR"
+            and not has_legacy_report_ipv4_false_positive(content)
+        ):
+            raise ValueError("REPORT_VALIDATOR_REPLAY_LEGACY_CAUSE_UNPROVEN")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(
+                child: CheckpointIdentity, stage: SimpleStage
+            ) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (child.analysis_id, self._hypothesis_key(child), stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            if checkpoint_at(identity, SimpleStage.REPORT_DONE) != stopped:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_STALE")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            root = checkpoint_at(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            expected_root_error = (
+                "CANDIDATE_CHILD_ERROR_BOUND:"
+                f"{stopped.error_code}:{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if (
+                root is None
+                or root.status is not StageStatus.BLOCKED
+                or root.error_code != expected_root_error
+            ):
+                raise ValueError("REPORT_VALIDATOR_REPLAY_ROOT_UNBOUND")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ? LIMIT 1",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or not registered
+                or run.candidate_pipeline_version != 2
+            ):
+                raise ValueError("REPORT_VALIDATOR_REPLAY_RUN_INVALID")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM simple_codex_calls "
+                    "WHERE analysis_id = ? AND status = 'IN_FLIGHT' LIMIT 1",
+                    (identity.analysis_id,),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError("REPORT_VALIDATOR_REPLAY_CODEX_IN_FLIGHT")
+            prior: dict[SimpleStage, StageCheckpoint] = {}
+            for stage in HYPOTHESIS_STAGES[:-1]:
+                checkpoint = checkpoint_at(identity, stage)
+                if (
+                    checkpoint is None
+                    or checkpoint.status is not StageStatus.SUCCEEDED
+                    or checkpoint.stage_version != STAGE_VERSION[stage]
+                ):
+                    raise ValueError("REPORT_VALIDATOR_REPLAY_PRIOR_INVALID")
+                prior[stage] = checkpoint
+            finding = prior[SimpleStage.FINDING_DONE]
+            execution = prior[SimpleStage.POC_EXECUTION_DONE]
+            if (
+                finding.verdict != "TRUE"
+                or len(finding.output_refs) != 1
+                or execution.validated_poc_ref is None
+            ):
+                raise ValueError("REPORT_VALIDATOR_REPLAY_PRIOR_INVALID")
+            refs = tuple(
+                dict.fromkeys(
+                    ref
+                    for checkpoint in prior.values()
+                    for ref in checkpoint.output_refs
+                )
+            )
+            if envelope["source_refs"] != [ref.model_dump(mode="json") for ref in refs]:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_SOURCE_MISMATCH")
+            source_hash = hashlib.sha256(
+                canonical_bytes(
+                    {
+                        "refs": refs,
+                        "finding_attempt_id": finding.attempt_id,
+                        "poc_attempt_id": execution.attempt_id,
+                    }
+                )
+            ).hexdigest()
+            cache_key = (
+                identity.model_dump_json(),
+                source_hash,
+                STAGE_VERSION[SimpleStage.REPORT_DONE],
+            )
+            existing = connection.execute(
+                "SELECT 1 FROM simple_report_drafts "
+                "WHERE identity_json = ? AND input_hash = ? AND stage_version = ?",
+                cache_key,
+            ).fetchone()
+            if existing is not None:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_ALREADY_CACHED")
+            pending = stopped.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "attempt_id": None,
+                    "output_refs": (),
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                "INSERT INTO simple_report_drafts "
+                "(identity_json, input_hash, stage_version, finding_ref_json, "
+                "draft_ref_json) VALUES (?, ?, ?, ?, ?)",
+                (
+                    *cache_key,
+                    finding.output_refs[0].model_dump_json(),
+                    draft_ref.model_dump_json(),
+                ),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 70),
+                    status=StageStatus.BLOCKED,
+                    summary_ko="검증기 수정 근거로 동일 보고서 초안을 재검증합니다.",
+                    error_code="REPORT_VALIDATOR_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
         with self._connect() as connection:
@@ -4576,7 +4804,10 @@ class SimpleCheckpointStore:
                 )
             ).hexdigest()
         )
-        rebuild = resolution.decision.action is RecoveryAction.REBUILD_ENVIRONMENT
+        rebuild = resolution.decision.action in {
+            RecoveryAction.REBUILD_ENVIRONMENT,
+            RecoveryAction.REPLAN_ENVIRONMENT,
+        }
         pending = StageCheckpoint(
             identity=failed.identity,
             stage=restart_stage,
@@ -4814,6 +5045,1683 @@ class SimpleCheckpointStore:
                 for stage in STAGE_ORDER[
                     STAGE_ORDER.index(SimpleStage.VERIFICATION_INITIAL_DONE) :
                 ]
+            )
+            placeholders = ",".join("?" for _ in stages)
+            connection.execute(
+                f"DELETE FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                f"AND hypothesis_key = ? AND stage IN ({placeholders})",  # noqa: S608
+                (identity.analysis_id, self._hypothesis_key(identity), *stages),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def prepare_legacy_import_stop_replan(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Supersede one evidence-bound import STOP under the caller's run lease."""
+
+        return self._prepare_fallback_poc_stop_replan(
+            stopped, artifacts, mode="import", fail_before_commit=fail_before_commit
+        )
+
+    def prepare_fallback_poc_stop_replan(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Explicitly retry a policy-invalid fallback STOP for a non-import PoC.
+
+        The import path remains separate because it can alter the environment;
+        this path preserves the pinned recipe and regenerates only the PoC.
+        """
+
+        try:
+            return self._prepare_fallback_poc_stop_replan(
+                stopped,
+                artifacts,
+                mode="generated_input",
+                fail_before_commit=fail_before_commit,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace("LEGACY_IMPORT_STOP_", "FALLBACK_POC_STOP_", 1)
+                ) from error
+            raise
+
+    def prepare_pre_execution_docker_replay(
+        self,
+        exhausted: StageCheckpoint,
+        absence_ref: StoredDataRef,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay one exhausted attempt only when no PoC container was created.
+
+        The caller must confirm exact owner-label absence with Docker under the
+        analysis lease. The prior exhaustion and its events remain append-only.
+        A marker prevents another attempt-3 replay for this child.
+        """
+
+        identity = exhausted.identity
+        if (
+            identity.hypothesis_id is None
+            or exhausted.stage is not SimpleStage.POC_EXECUTION_DONE
+            or exhausted.stage_version != STAGE_VERSION[exhausted.stage]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.retryable
+            or exhausted.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or not exhausted.attempt_id
+            or exhausted.output_refs
+            or exhausted.container_id is not None
+            or exhausted.recipe_ref is None
+            or exhausted.image_digest is None
+            or exhausted.validated_poc_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("DOCKER_LIST_EXHAUSTION_INVALID")
+        try:
+            absence = json.loads(artifacts.read_bounded(absence_ref, 8 * 1024))
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            raise ValueError("DOCKER_LIST_EXHAUSTION_ABSENCE_INVALID") from error
+        if (
+            not isinstance(absence, dict)
+            or absence.get("kind") != "simple_owned_attempt_container_absence"
+            or absence.get("identity") != identity.model_dump(mode="json")
+            or absence.get("attempt_id") != exhausted.attempt_id
+            or absence.get("present") is not False
+            or absence.get("exhausted_checkpoint_hash")
+            != hashlib.sha256(
+                canonical_bytes(exhausted.model_dump(mode="json"))
+            ).hexdigest()
+        ):
+            raise ValueError("DOCKER_LIST_EXHAUSTION_ABSENCE_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, self._hypothesis_key(identity), stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            if checkpoint_at(SimpleStage.POC_EXECUTION_DONE) != exhausted:
+                raise ValueError("DOCKER_LIST_EXHAUSTION_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("DOCKER_LIST_EXHAUSTION_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_RUN_INVALID")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            static = self.get(root_identity, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+                or any(
+                    str(ref.workspace_id) != identity.workspace_id
+                    or str(ref.commit_id) != identity.commit_id
+                    for ref in (
+                        run.repository_profile_ref,
+                        run.static_bundle_ref,
+                        run.static_coverage_ref,
+                    )
+                )
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_STATIC_INVALID")
+            all_rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in all_rows
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_RUN_ACTIVE")
+            root = self.get(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{exhausted.attempt_id}"
+            )
+            if (
+                root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.status is not StageStatus.BLOCKED
+                or root.retryable
+                or not root.attempt_id
+                or root.error_code != root_code
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_ROOT_BOUND_INVALID")
+            activity_rows = connection.execute(
+                "SELECT event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? ORDER BY rowid",
+                (identity.analysis_id,),
+            ).fetchall()
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in activity_rows
+            )
+            if not any(
+                event.kind is ActivityKind.STAGE_BLOCKED
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.error_code == root_code
+                for event in events
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_ROOT_BOUND_INVALID")
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "DOCKER_OWNED_LIST_EXHAUSTION_REPLAYED"
+                for event in events
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_ALREADY_REPLAYED")
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                and event.attempt_id == exhausted.attempt_id
+            )
+            if (
+                len(stage_events) != 3
+                or tuple((event.kind, event.error_code) for event in stage_events)
+                != (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED, "DOCKER_OWNED_LIST_FAILED"),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.output_refs
+                    for event in stage_events
+                )
+                or any(
+                    event.hypothesis_id == identity.hypothesis_id
+                    and event.stage
+                    in {
+                        stage.value
+                        for stage in STAGE_ORDER[
+                            STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                        ]
+                    }
+                    and event.started_at >= stage_events[0].started_at
+                    for event in events
+                )
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_EVENT_INVALID")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("DOCKER_LIST_EXHAUSTION_CODEX_UNRESOLVED")
+            pro_con = checkpoint_at(SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(SimpleStage.VERIFICATION_INITIAL_DONE)
+            candidate = checkpoint_at(SimpleStage.POC_CANDIDATE_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version
+                != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                or initial.recipe_ref != exhausted.recipe_ref
+                or initial.image_digest != exhausted.image_digest
+                or candidate is None
+                or candidate.status is not StageStatus.SUCCEEDED
+                or candidate.stage_version != STAGE_VERSION[candidate.stage]
+                or candidate.attempt_id != exhausted.attempt_id
+                or candidate.attempt_number != exhausted.attempt_number
+                or candidate.gate_revision_count != exhausted.gate_revision_count
+                or candidate.recipe_ref != exhausted.recipe_ref
+                or candidate.image_digest != exhausted.image_digest
+                or candidate.container_id is not None
+                or len(candidate.output_refs) < 2
+                or any(
+                    ref not in exhausted.input_refs for ref in candidate.output_refs[:2]
+                )
+                or any(
+                    checkpoint_at(stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_LINEAGE_INVALID")
+            try:
+                record = json.loads(
+                    artifacts.read_bounded(candidate.output_refs[0], 64 * 1024)
+                )
+                content = artifacts.read_bounded(candidate.output_refs[1], 1024 * 1024)
+            except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+                raise ValueError("DOCKER_LIST_EXHAUSTION_CANDIDATE_INVALID") from error
+            if (
+                not isinstance(record, dict)
+                or record.get("kind") != "simple_poc_candidate"
+                or record.get("attempt_id") != exhausted.attempt_id
+                or record.get("content_ref")
+                != candidate.output_refs[1].model_dump(mode="json")
+                or record.get("content_digest") != hashlib.sha256(content).hexdigest()
+            ):
+                raise ValueError("DOCKER_LIST_EXHAUSTION_CANDIDATE_INVALID")
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": "simple_docker_list_exhaustion_replay",
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": exhausted.attempt_id,
+                    "old_attempt_number": exhausted.attempt_number,
+                    "exhausted_checkpoint_hash": absence["exhausted_checkpoint_hash"],
+                    "absence_ref": absence_ref.model_dump(mode="json"),
+                    "candidate_ref": candidate.output_refs[0].model_dump(mode="json"),
+                    "reason": "DOCKER_OWNED_LIST_FAILED_BEFORE_CONTAINER_CREATE",
+                }
+            )
+            inputs = tuple(
+                dict.fromkeys(
+                    (
+                        *candidate.input_refs,
+                        *candidate.output_refs,
+                        *exhausted.input_refs,
+                        absence_ref,
+                        marker_ref,
+                    )
+                )
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                attempt_number=MAX_RECOVERY_ATTEMPTS - 1,
+                gate_revision_count=candidate.gate_revision_count,
+                recovery_lineage_id=(
+                    exhausted.recovery_lineage_id
+                    or hashlib.sha256(
+                        canonical_bytes(
+                            {"identity": identity, "attempt_id": exhausted.attempt_id}
+                        )
+                    ).hexdigest()
+                ),
+                recovery_origin_stage=SimpleStage.POC_EXECUTION_DONE,
+                recovery_decision_refs=exhausted.recovery_decision_refs,
+                recipe_ref=exhausted.recipe_ref,
+                image_digest=exhausted.image_digest,
+                container_id=None,
+            )
+            connection.execute(
+                "DELETE FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                "AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.POC_EXECUTION_DONE.value,
+                ),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    exhausted,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(exhausted.stage, 102),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "컨테이너 생성 전 Docker 목록 실패를 확인하고 "
+                        "명시적 재시드를 기록했습니다."
+                    ),
+                    output_refs=(marker_ref,),
+                    error_code="DOCKER_OWNED_LIST_EXHAUSTION_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def prepare_poc_placeholder_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Explicitly replay one exact validator-blocked candidate after a code fix.
+
+        No candidate or execution result exists for this attempt. The original
+        validator failure, exhaustion, and LLM call history stay append-only.
+        """
+
+        identity = exhausted.identity
+        if (
+            identity.hypothesis_id is None
+            or exhausted.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or exhausted.stage_version != STAGE_VERSION[exhausted.stage]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.retryable
+            or exhausted.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or not exhausted.attempt_id
+            or len(exhausted.output_refs) > 1
+            or exhausted.input_hash != input_reference_hash(exhausted.input_refs)
+            or exhausted.container_id is not None
+            or exhausted.recipe_ref is None
+            or exhausted.image_digest is None
+            or exhausted.validated_poc_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("POC_PLACEHOLDER_EXHAUSTION_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, self._hypothesis_key(identity), stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            if checkpoint_at(SimpleStage.POC_CANDIDATE_DONE) != exhausted:
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_RUN_INVALID")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            static = self.get(root_identity, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+            ):
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_STATIC_INVALID")
+            all_rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in all_rows
+            ):
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_RUN_ACTIVE")
+            root = self.get(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{exhausted.attempt_id}"
+            )
+            if (
+                root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.status is not StageStatus.BLOCKED
+                or root.retryable
+                or not root.attempt_id
+                or root.error_code != root_code
+            ):
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_ROOT_BOUND_INVALID")
+            activity_rows = connection.execute(
+                "SELECT event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? ORDER BY rowid",
+                (identity.analysis_id,),
+            ).fetchall()
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in activity_rows
+            )
+            if not any(
+                event.kind is ActivityKind.STAGE_BLOCKED
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.error_code == root_code
+                for event in events
+            ):
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_ROOT_BOUND_INVALID")
+            replay_events = tuple(
+                (index, event)
+                for index, event in enumerate(events)
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "POC_PLACEHOLDER_EXHAUSTION_REPLAYED"
+            )
+            seen_revisions: set[str] = set()
+            seen_legacy = False
+            prior_attempts: set[str] = set()
+            last_replay_index = -1
+            for event_index, replay_event in replay_events:
+                if (
+                    replay_event.analysis_id != identity.analysis_id
+                    or replay_event.workspace_id != identity.workspace_id
+                    or replay_event.commit_id != identity.commit_id
+                    or replay_event.stage != SimpleStage.POC_CANDIDATE_DONE.value
+                    or len(replay_event.output_refs) != 1
+                    or replay_event.attempt_id in prior_attempts
+                    or event_index <= last_replay_index
+                ):
+                    raise ValueError("POC_PLACEHOLDER_EXHAUSTION_MARKER_INVALID")
+                try:
+                    marker = json.loads(artifacts.read(replay_event.output_refs[0]))
+                except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+                    raise ValueError(
+                        "POC_PLACEHOLDER_EXHAUSTION_MARKER_INVALID"
+                    ) from error
+                if not isinstance(marker, dict):
+                    raise ValueError("POC_PLACEHOLDER_EXHAUSTION_MARKER_INVALID")
+                revision = marker.get("validator_revision")
+                legacy_fields = {
+                    "kind",
+                    "identity",
+                    "old_attempt_id",
+                    "old_attempt_number",
+                    "exhausted_checkpoint_hash",
+                    "validator_error_event_id",
+                    "reason",
+                }
+                if (
+                    set(marker)
+                    != (
+                        legacy_fields
+                        if revision is None
+                        else legacy_fields | {"validator_revision"}
+                    )
+                    or marker.get("kind") != "simple_poc_placeholder_exhaustion_replay"
+                    or marker.get("identity") != identity.model_dump(mode="json")
+                    or marker.get("old_attempt_id") != replay_event.attempt_id
+                    or marker.get("old_attempt_number") != MAX_RECOVERY_ATTEMPTS
+                    or marker.get("reason")
+                    != "POC_PLACEHOLDER_FORBIDDEN_AFTER_VALIDATOR_FIX"
+                    or not isinstance(marker.get("exhausted_checkpoint_hash"), str)
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}", marker["exhausted_checkpoint_hash"]
+                    )
+                    is None
+                    or not isinstance(marker.get("validator_error_event_id"), str)
+                    or replay_event.output_refs[0] not in exhausted.input_refs
+                    or replay_event.attempt_id == exhausted.attempt_id
+                    or revision is not None
+                    and (not isinstance(revision, str) or not revision)
+                ):
+                    raise ValueError("POC_PLACEHOLDER_EXHAUSTION_MARKER_INVALID")
+                if revision is None:
+                    if seen_legacy:
+                        raise ValueError("POC_PLACEHOLDER_EXHAUSTION_MARKER_INVALID")
+                    seen_legacy = True
+                elif revision in seen_revisions:
+                    raise ValueError("POC_PLACEHOLDER_EXHAUSTION_MARKER_INVALID")
+                else:
+                    seen_revisions.add(revision)
+                old_events = tuple(
+                    event
+                    for event in events[:event_index]
+                    if event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_CANDIDATE_DONE.value
+                    and event.attempt_id == replay_event.attempt_id
+                )
+                if (
+                    len(old_events) != 3
+                    or tuple((event.kind, event.error_code) for event in old_events)
+                    != (
+                        (ActivityKind.STAGE_STARTED, None),
+                        (ActivityKind.STAGE_BLOCKED, "POC_PLACEHOLDER_FORBIDDEN"),
+                        (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                    )
+                    or old_events[1].event_id != marker["validator_error_event_id"]
+                    or any(
+                        event.workspace_id != identity.workspace_id
+                        or event.commit_id != identity.commit_id
+                        or event.analysis_id != identity.analysis_id
+                        for event in old_events
+                    )
+                ):
+                    raise ValueError("POC_PLACEHOLDER_EXHAUSTION_MARKER_INVALID")
+                prior_attempts.add(replay_event.attempt_id)
+                last_replay_index = event_index
+            if POC_CANDIDATE_VALIDATOR_REVISION in seen_revisions:
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_REVISION_ALREADY_REPLAYED")
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == SimpleStage.POC_CANDIDATE_DONE.value
+                and event.attempt_id == exhausted.attempt_id
+            )
+            if (
+                len(stage_events) != 3
+                or tuple((event.kind, event.error_code) for event in stage_events)
+                != (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED, "POC_PLACEHOLDER_FORBIDDEN"),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.output_refs != exhausted.output_refs
+                    and event.kind is not ActivityKind.STAGE_STARTED
+                    or event.output_refs
+                    and event.kind is ActivityKind.STAGE_STARTED
+                    for event in stage_events
+                )
+                or next(
+                    index
+                    for index, event in enumerate(events)
+                    if event is stage_events[0]
+                )
+                <= last_replay_index
+            ):
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_EVENT_INVALID")
+            if exhausted.output_refs:
+                try:
+                    diagnostic = json.loads(artifacts.read(exhausted.output_refs[0]))
+                except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+                    raise ValueError(
+                        "POC_PLACEHOLDER_EXHAUSTION_DIAGNOSTIC_INVALID"
+                    ) from error
+                numeric = (
+                    "line_count",
+                    "branch_count",
+                    "inconclusive_line_count",
+                    "exit_two_line_count",
+                    "exit_zero_line_count",
+                )
+                if (
+                    not isinstance(diagnostic, dict)
+                    or set(diagnostic) != {"kind", "reason", *numeric}
+                    or diagnostic.get("kind")
+                    != "simple_poc_candidate_rejection_diagnostic"
+                    or diagnostic.get("reason") != "INCONCLUSIVE_EXIT2_UNPROVEN"
+                    or any(
+                        type(diagnostic.get(field)) is not int or diagnostic[field] < 0
+                        for field in numeric
+                    )
+                ):
+                    raise ValueError("POC_PLACEHOLDER_EXHAUSTION_DIAGNOSTIC_INVALID")
+            elif replay_events and not (len(replay_events) == 1 and seen_legacy):
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_DIAGNOSTIC_MISSING")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_CODEX_UNRESOLVED")
+            pro_con = checkpoint_at(SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(SimpleStage.VERIFICATION_INITIAL_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version
+                != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                or initial.recipe_ref != exhausted.recipe_ref
+                or initial.image_digest != exhausted.image_digest
+                or checkpoint_at(SimpleStage.POC_EXECUTION_DONE) is not None
+                or any(
+                    checkpoint_at(stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("POC_PLACEHOLDER_EXHAUSTION_LINEAGE_INVALID")
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": "simple_poc_placeholder_exhaustion_replay",
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": exhausted.attempt_id,
+                    "old_attempt_number": exhausted.attempt_number,
+                    "exhausted_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(exhausted.model_dump(mode="json"))
+                    ).hexdigest(),
+                    "validator_error_event_id": stage_events[1].event_id,
+                    "reason": "POC_PLACEHOLDER_FORBIDDEN_AFTER_VALIDATOR_FIX",
+                    "validator_revision": POC_CANDIDATE_VALIDATOR_REVISION,
+                }
+            )
+            inputs = tuple(dict.fromkeys((*exhausted.input_refs, marker_ref)))
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                attempt_number=MAX_RECOVERY_ATTEMPTS - 1,
+                gate_revision_count=exhausted.gate_revision_count,
+                recovery_lineage_id=(
+                    exhausted.recovery_lineage_id
+                    or hashlib.sha256(
+                        canonical_bytes(
+                            {"identity": identity, "attempt_id": exhausted.attempt_id}
+                        )
+                    ).hexdigest()
+                ),
+                recovery_origin_stage=SimpleStage.POC_CANDIDATE_DONE,
+                recovery_decision_refs=exhausted.recovery_decision_refs,
+                recipe_ref=exhausted.recipe_ref,
+                image_digest=exhausted.image_digest,
+                container_id=None,
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    exhausted,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(exhausted.stage, 102),
+                    status=StageStatus.BLOCKED,
+                    summary_ko="검증기 오류 PoC 후보만 명시적으로 재실행합니다.",
+                    output_refs=(marker_ref,),
+                    error_code="POC_PLACEHOLDER_EXHAUSTION_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def prepare_poc_sensitive_content_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one old sensitive-content STOP after diagnostic revision.
+
+        This never reads or stores the rejected PoC. The two old, numeric-only
+        diagnostics and recovery decisions must match the bound child exactly.
+        """
+
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or stopped.stage_version != STAGE_VERSION[stopped.stage]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.error_code != "POC_SENSITIVE_CONTENT"
+            or stopped.retryable
+            or stopped.attempt_number != 2
+            or not stopped.attempt_id
+            or len(stopped.output_refs) != 1
+            or stopped.input_hash != input_reference_hash(stopped.input_refs)
+            or stopped.container_id is not None
+            or stopped.recipe_ref is None
+            or stopped.image_digest is None
+            or stopped.validated_poc_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_INVALID")
+
+        def old_diagnostic(ref: StoredDataRef) -> bool:
+            try:
+                value = json.loads(artifacts.read_bounded(ref, 4 * 1024))
+            except (OSError, ValueError, TypeError) as error:
+                raise ValueError(
+                    "POC_SENSITIVE_CONTENT_REPLAY_DIAGNOSTIC_INVALID"
+                ) from error
+            fields = {
+                "kind",
+                "reason",
+                "line_count",
+                "branch_count",
+                "inconclusive_line_count",
+                "exit_two_line_count",
+                "exit_zero_line_count",
+            }
+            return (
+                isinstance(value, dict)
+                and set(value) == fields
+                and value.get("kind") == "simple_poc_candidate_rejection_diagnostic"
+                and value.get("reason") == "SENSITIVE_CONTENT"
+                and all(
+                    type(value[field]) is int and value[field] >= 0
+                    for field in fields - {"kind", "reason"}
+                )
+            )
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(
+                hypothesis_key: str, stage: SimpleStage
+            ) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, hypothesis_key, stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            child_key = self._hypothesis_key(identity)
+            if checkpoint_at(child_key, stopped.stage) != stopped:
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_RUN_INVALID")
+            root_key = self._hypothesis_key(
+                identity.model_copy(update={"hypothesis_id": None})
+            )
+            static = checkpoint_at(root_key, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+            ):
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_STATIC_INVALID")
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in rows
+            ):
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_RUN_ACTIVE")
+            root = checkpoint_at(root_key, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:POC_SENSITIVE_CONTENT:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if (
+                root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.status is not StageStatus.BLOCKED
+                or root.retryable
+                or not root.attempt_id
+                or root.error_code != root_code
+            ):
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_ROOT_BOUND_INVALID")
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                )
+            )
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.error_code == "POC_SENSITIVE_CONTENT_REPLAYED"
+                for event in events
+            ):
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_ALREADY_REPLAYED")
+            if not any(
+                event.kind is ActivityKind.STAGE_BLOCKED
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.error_code == root_code
+                for event in events
+            ):
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_ROOT_BOUND_INVALID")
+            attempts = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == SimpleStage.POC_CANDIDATE_DONE.value
+                and event.kind
+                in {
+                    ActivityKind.STAGE_STARTED,
+                    ActivityKind.STAGE_BLOCKED,
+                    ActivityKind.DECISION_RECORDED,
+                }
+            )
+            if len(attempts) != 6:
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_EVENT_INVALID")
+            first_attempt_evidence: tuple[StoredDataRef, ...] = ()
+            for index, action in enumerate(("REGENERATE_INPUT", "STOP")):
+                started, blocked, decision = attempts[index * 3 : index * 3 + 3]
+                attempt_id = started.attempt_id
+                if (
+                    not attempt_id
+                    or (index == 1 and attempt_id != stopped.attempt_id)
+                    or (index == 0 and attempt_id == stopped.attempt_id)
+                    or tuple(event.kind for event in (started, blocked, decision))
+                    != (
+                        ActivityKind.STAGE_STARTED,
+                        ActivityKind.STAGE_BLOCKED,
+                        ActivityKind.DECISION_RECORDED,
+                    )
+                    or started.output_refs
+                    or (index == 1 and blocked.output_refs != stopped.output_refs)
+                    or (
+                        index == 1
+                        and any(
+                            ref not in stopped.input_refs
+                            for ref in first_attempt_evidence
+                        )
+                    )
+                    or len(blocked.output_refs) != 1
+                    or len(decision.output_refs) != 1
+                    or any(
+                        event.analysis_id != identity.analysis_id
+                        or event.workspace_id != identity.workspace_id
+                        or event.commit_id != identity.commit_id
+                        or event.attempt_id != attempt_id
+                        for event in (started, blocked, decision)
+                    )
+                    or blocked.error_code != "POC_SENSITIVE_CONTENT"
+                    or decision.error_code != "POC_SENSITIVE_CONTENT"
+                    or not old_diagnostic(blocked.output_refs[0])
+                ):
+                    raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_EVENT_INVALID")
+                try:
+                    recovery = json.loads(
+                        artifacts.read_bounded(decision.output_refs[0], 64 * 1024)
+                    )
+                except (OSError, ValueError, TypeError) as error:
+                    raise ValueError(
+                        "POC_SENSITIVE_CONTENT_REPLAY_DECISION_INVALID"
+                    ) from error
+                decision_body = (
+                    recovery.get("decision") if isinstance(recovery, dict) else None
+                )
+                original = (
+                    recovery.get("original_error")
+                    if isinstance(recovery, dict)
+                    else None
+                )
+                if (
+                    not isinstance(recovery, dict)
+                    or recovery.get("kind") != "simple_recovery_decision"
+                    or recovery.get("identity") != identity.model_dump(mode="json")
+                    or recovery.get("stage") != stopped.stage.value
+                    or recovery.get("attempt") != index + 1
+                    or recovery.get("attempt_id") != attempt_id
+                    or not isinstance(decision_body, dict)
+                    or decision_body.get("action") != action
+                    or decision_body.get("category") != "GENERATED_INPUT"
+                    or not isinstance(original, dict)
+                    or original.get("code") != "POC_SENSITIVE_CONTENT"
+                    or original.get("evidence_refs")
+                    != [blocked.output_refs[0].model_dump(mode="json")]
+                ):
+                    raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_DECISION_INVALID")
+                if index == 0:
+                    first_attempt_evidence = (
+                        blocked.output_refs[0],
+                        decision.output_refs[0],
+                    )
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_CODEX_UNRESOLVED")
+            pro_con = checkpoint_at(child_key, SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(child_key, SimpleStage.VERIFICATION_INITIAL_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version
+                != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                or initial.recipe_ref != stopped.recipe_ref
+                or initial.image_digest != stopped.image_digest
+                or any(
+                    checkpoint_at(child_key, stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_LINEAGE_INVALID")
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": "simple_poc_sensitive_content_replay",
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": stopped.attempt_id,
+                    "old_attempt_number": stopped.attempt_number,
+                    "old_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(stopped.model_dump(mode="json"))
+                    ).hexdigest(),
+                    "validator_revision": POC_CANDIDATE_VALIDATOR_REVISION,
+                }
+            )
+            inputs = tuple(dict.fromkeys((*stopped.input_refs, marker_ref)))
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                attempt_number=2,
+                gate_revision_count=stopped.gate_revision_count,
+                recovery_lineage_id=(
+                    stopped.recovery_lineage_id
+                    or hashlib.sha256(
+                        canonical_bytes(
+                            {"identity": identity, "attempt_id": stopped.attempt_id}
+                        )
+                    ).hexdigest()
+                ),
+                recovery_origin_stage=SimpleStage.POC_CANDIDATE_DONE,
+                recovery_decision_refs=stopped.recovery_decision_refs,
+                recipe_ref=stopped.recipe_ref,
+                image_digest=stopped.image_digest,
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 102),
+                    status=StageStatus.BLOCKED,
+                    summary_ko="기존 민감도 검사로 차단된 PoC 후보만 재검증합니다.",
+                    output_refs=(marker_ref,),
+                    error_code="POC_SENSITIVE_CONTENT_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _prepare_fallback_poc_stop_replan(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        mode: Literal["import", "generated_input"],
+        fail_before_commit: bool,
+    ) -> StageCheckpoint:
+        """Supersede one evidence-bound PoC STOP under the caller's lease.
+
+        The old checkpoint, STOP event, and LLM/usage records remain in their
+        append-only ledgers. Only this child's mutable stage checkpoints are
+        reseeded; the exact old checkpoint is compared under BEGIN IMMEDIATE.
+        """
+
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.POC_EXECUTION_DONE
+            or stopped.stage_version != STAGE_VERSION[stopped.stage]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.error_code
+            not in (
+                {"POC_EXECUTION_FAILED", "POC_RUNTIME_IMPORT_FAILED"}
+                if mode == "import"
+                else {"POC_EXECUTION_FAILED"}
+            )
+            or stopped.retryable
+            or stopped.attempt_id is None
+            or not 1 <= stopped.attempt_number < MAX_RECOVERY_ATTEMPTS
+            or len(stopped.output_refs) != 4
+            or stopped.recipe_ref is None
+            or stopped.validated_poc_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("LEGACY_IMPORT_STOP_INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, self._hypothesis_key(identity), stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            if checkpoint_at(stopped.stage) != stopped:
+                raise ValueError("LEGACY_IMPORT_STOP_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("LEGACY_IMPORT_STOP_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("LEGACY_IMPORT_STOP_RUN_INVALID")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            static_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = '' AND stage = ?",
+                (identity.analysis_id, SimpleStage.STATIC_DONE.value),
+            ).fetchone()
+            static_checkpoint = (
+                StageCheckpoint.model_validate_json(static_row["checkpoint_json"])
+                if static_row is not None
+                else None
+            )
+            if (
+                static_checkpoint is None
+                or static_checkpoint.identity != root_identity
+                or static_checkpoint.status is not StageStatus.SUCCEEDED
+                or static_checkpoint.stage_version
+                != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static_checkpoint.output_refs
+                or run.static_bundle_ref not in static_checkpoint.output_refs
+                or any(
+                    str(ref.workspace_id) != identity.workspace_id
+                    or str(ref.commit_id) != identity.commit_id
+                    for ref in (
+                        run.repository_profile_ref,
+                        run.static_bundle_ref,
+                        run.static_coverage_ref,
+                    )
+                )
+            ):
+                raise ValueError("LEGACY_IMPORT_STOP_RUN_INVALID")
+            analysis_rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in analysis_rows
+            ):
+                raise ValueError("LEGACY_IMPORT_STOP_RUN_ACTIVE")
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = '' AND stage = ?",
+                (identity.analysis_id, SimpleStage.HYPOTHESIS_DONE.value),
+            ).fetchone()
+            root = (
+                StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+                if root_row is not None
+                else None
+            )
+            expected_root_code = (
+                f"CANDIDATE_CHILD_ERROR_BOUND:{stopped.error_code}:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if (
+                root is None
+                or root.identity != root_identity
+                or root.stage is not SimpleStage.HYPOTHESIS_DONE
+                or root.status is not StageStatus.BLOCKED
+                or root.retryable
+                or root.attempt_id is None
+                or root.error_code != expected_root_code
+            ):
+                raise ValueError("LEGACY_IMPORT_STOP_ROOT_BOUND_INVALID")
+            root_events = connection.execute(
+                "SELECT event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? AND hypothesis_key = '' AND attempt_id = ?",
+                (identity.analysis_id, root.attempt_id),
+            ).fetchall()
+            if not any(
+                (
+                    event := AgentActivityEvent.model_validate_json(row["event_json"])
+                ).kind
+                is ActivityKind.STAGE_BLOCKED
+                and event.stage == root.stage.value
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id is None
+                and event.error_code == expected_root_code
+                for row in root_events
+            ):
+                raise ValueError("LEGACY_IMPORT_STOP_ROOT_BOUND_INVALID")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None:
+                raise ValueError("LEGACY_IMPORT_STOP_CODEX_UNRESOLVED")
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unexited is not None:
+                raise ValueError("LEGACY_IMPORT_STOP_CODEX_CLEANUP_UNCONFIRMED")
+
+            pro_con = checkpoint_at(SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(SimpleStage.VERIFICATION_INITIAL_DONE)
+            candidate = checkpoint_at(SimpleStage.POC_CANDIDATE_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[pro_con.stage]
+                or initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version != STAGE_VERSION[initial.stage]
+                or initial.recipe_ref != stopped.recipe_ref
+                or candidate is None
+                or candidate.status is not StageStatus.SUCCEEDED
+                or candidate.stage_version != STAGE_VERSION[candidate.stage]
+                or candidate.attempt_id != stopped.attempt_id
+                or candidate.attempt_number != stopped.attempt_number
+                or candidate.recipe_ref != stopped.recipe_ref
+                or len(candidate.output_refs) < 2
+                or not candidate.image_digest
+                or initial.image_digest != candidate.image_digest
+                or stopped.image_digest != candidate.image_digest
+                or any(
+                    ref not in stopped.input_refs for ref in candidate.output_refs[:2]
+                )
+                or (
+                    mode == "generated_input"
+                    and (
+                        candidate.image_digest != stopped.image_digest
+                        or candidate.gate_revision_count != stopped.gate_revision_count
+                        or candidate.output_refs[0] not in stopped.input_refs
+                        or stopped.gate_revision_count > 0
+                        and not candidate.input_refs
+                    )
+                )
+                or any(
+                    checkpoint_at(stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("LEGACY_IMPORT_STOP_LINEAGE_INVALID")
+
+            execution_ref, stdout_ref, stderr_ref, cleanup_ref = stopped.output_refs
+            try:
+                candidate_record = json.loads(
+                    artifacts.read_bounded(candidate.output_refs[0], 64 * 1024)
+                )
+                candidate_content = artifacts.read_bounded(
+                    candidate.output_refs[1], 1024 * 1024
+                )
+                execution = json.loads(artifacts.read_bounded(execution_ref, 64 * 1024))
+                cleanup = json.loads(artifacts.read_bounded(cleanup_ref, 64 * 1024))
+                stderr = artifacts.read_bounded(stderr_ref, 1024 * 1024)
+                stdout = artifacts.read_bounded(stdout_ref, 1024 * 1024)
+            except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+                raise ValueError("LEGACY_IMPORT_STOP_EVIDENCE_INVALID") from error
+            if (
+                not isinstance(candidate_record, dict)
+                or candidate_record.get("kind") != "simple_poc_candidate"
+                or candidate_record.get("attempt_id") != stopped.attempt_id
+                or candidate_record.get("content_ref")
+                != candidate.output_refs[1].model_dump(mode="json")
+                or candidate_record.get("content_digest")
+                != hashlib.sha256(candidate_content).hexdigest()
+                or not isinstance(execution, dict)
+                or execution.get("kind") != "simple_poc_execution"
+                or execution.get("attempt_id") != stopped.attempt_id
+                or not isinstance(execution.get("container_id"), str)
+                or not execution["container_id"]
+                or execution.get("candidate_ref")
+                != candidate.output_refs[0].model_dump(mode="json")
+                or execution.get("content_ref")
+                != candidate.output_refs[1].model_dump(mode="json")
+                or execution.get("image_digest") != candidate.image_digest
+                or execution.get("stdout_ref") != stdout_ref.model_dump(mode="json")
+                or execution.get("stderr_ref") != stderr_ref.model_dump(mode="json")
+                or execution.get("timed_out") is not False
+                or type(execution.get("exit_code")) is not int
+                or execution.get("exit_code") != 2
+                or not isinstance(cleanup, dict)
+                or cleanup.get("kind") != "simple_container_cleanup"
+                or cleanup.get("attempt_id") != stopped.attempt_id
+                or cleanup.get("container_id") != execution["container_id"]
+                or cleanup.get("status") != "REMOVED"
+            ):
+                raise ValueError("LEGACY_IMPORT_STOP_EVIDENCE_INVALID")
+            import_matches: dict[bytes, bytes] = {}
+            if mode == "import":
+                nonterminal_import = False
+                for stream in (stderr, stdout):
+                    matches, terminal = _python_import_traceback_spans(stream)
+                    if stream.strip() and not matches:
+                        raise ValueError("LEGACY_IMPORT_STOP_IMPORT_UNVERIFIED")
+                    nonterminal_import |= bool(matches) and not terminal
+                    for name, span in matches.items():
+                        import_matches.setdefault(name, span)
+                if len(import_matches) != 1 or nonterminal_import:
+                    raise ValueError("LEGACY_IMPORT_STOP_IMPORT_UNVERIFIED")
+            elif (
+                not stderr.strip()
+                or has_python_import_failure(stderr)
+                or has_python_import_failure(stdout)
+            ):
+                raise ValueError("LEGACY_IMPORT_STOP_DIAGNOSTIC_INVALID")
+
+            stop_ref: StoredDataRef | None = None
+            rows = connection.execute(
+                "SELECT event_json FROM agent_activity_events WHERE analysis_id = ? "
+                "AND hypothesis_key = ? AND attempt_id = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    stopped.attempt_id,
+                ),
+            ).fetchall()
+            for row in rows:
+                event = AgentActivityEvent.model_validate_json(row["event_json"])
+                if (
+                    event.kind is not ActivityKind.DECISION_RECORDED
+                    or event.stage != stopped.stage.value
+                    or event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.hypothesis_id != identity.hypothesis_id
+                    or event.attempt_id != stopped.attempt_id
+                    or event.error_code != stopped.error_code
+                    or len(event.output_refs) != 1
+                ):
+                    continue
+                ref = event.output_refs[0]
+                try:
+                    value = json.loads(artifacts.read_bounded(ref, 64 * 1024))
+                    original = StageFailure.model_validate_json(
+                        canonical_bytes(value["original_error"])
+                    )
+                    decision = RecoveryDecision.model_validate_json(
+                        canonical_bytes(value["decision"])
+                    )
+                except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                    continue
+                if (
+                    value.get("kind") == "simple_recovery_decision"
+                    and value.get("identity") == identity.model_dump(mode="json")
+                    and value.get("stage") == stopped.stage.value
+                    and value.get("attempt") == stopped.attempt_number
+                    and value.get("attempt_id") == stopped.attempt_id
+                    and value.get("decision_origin")
+                    == (
+                        "RULE"
+                        if stopped.error_code == "POC_RUNTIME_IMPORT_FAILED"
+                        else "FALLBACK"
+                    )
+                    and original.code == stopped.error_code
+                    and original.retryable
+                    and original.evidence_refs == stopped.output_refs
+                    and decision.category is RecoveryCategory.TERMINAL
+                    and decision.action is RecoveryAction.STOP
+                    and decision.environment_patch == ""
+                    and (decision.diagnosis, decision.guidance)
+                    == (
+                        (
+                            "Python import failure lacks isolated terminal evidence",
+                            "Review both exact PoC output streams; automatic "
+                            "dependency selection and Dockerfile patching are "
+                            "not justified",
+                        )
+                        if stopped.error_code == "POC_RUNTIME_IMPORT_FAILED"
+                        else (
+                            "recovery output failed policy validation",
+                            "preserve the failure for manual review",
+                        )
+                    )
+                ):
+                    if stop_ref is not None:
+                        raise ValueError("LEGACY_IMPORT_STOP_DECISION_AMBIGUOUS")
+                    stop_ref = ref
+            if stop_ref is None:
+                raise ValueError("LEGACY_IMPORT_STOP_FALLBACK_UNVERIFIED")
+
+            try:
+                diagnostic = (
+                    next(iter(import_matches.values())) if mode == "import" else stderr
+                )
+                excerpt = (
+                    diagnostic[:4_096] if mode == "import" else diagnostic[-4_096:]
+                )
+                safe_bytes = redact_untrusted_text(excerpt).data
+                if (
+                    not safe_bytes
+                    or len(safe_bytes) > 4 * 1024
+                    or redact_untrusted_text(safe_bytes).data != safe_bytes
+                ):
+                    raise ValueError("unusable diagnostic")
+                safe_diagnostic = safe_bytes.decode("utf-8", errors="replace")
+            except ValueError as error:
+                raise ValueError("LEGACY_IMPORT_STOP_DIAGNOSTIC_INVALID") from error
+            if not safe_diagnostic.strip():
+                raise ValueError("LEGACY_IMPORT_STOP_DIAGNOSTIC_INVALID")
+            if mode == "import":
+                rule_decision = RecoveryDecision(
+                    category=RecoveryCategory.ENVIRONMENT,
+                    action=RecoveryAction.REPLAN_ENVIRONMENT,
+                    diagnosis="Isolated Python runtime could not import a module",
+                    guidance=(
+                        "Revisit pinned source imports and dependency evidence; "
+                        "include only a supported explicit pip requirement."
+                    ),
+                )
+                original_error = StageFailure(
+                    code="POC_RUNTIME_IMPORT_FAILED",
+                    retryable=True,
+                    safe_message="Verified import failure needs environment replanning",
+                    evidence_refs=stopped.output_refs,
+                )
+            else:
+                rule_decision = RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis="PoC script exited with a non-import runtime error",
+                    guidance=(
+                        "Correct only the PoC harness or fixtures using the "
+                        "pinned execution evidence. Preserve source behavior, "
+                        "the prepared recipe, and declared dependencies; do not "
+                        "monkeypatch the vulnerable path or claim reproduction "
+                        "from a runtime error."
+                    ),
+                )
+                original_error = StageFailure(
+                    code="POC_EXECUTION_FAILED",
+                    retryable=True,
+                    safe_message="PoC script exited with a runtime error",
+                    evidence_refs=stopped.output_refs,
+                )
+            rule_ref = artifacts.put_json(
+                {
+                    "kind": "simple_recovery_decision",
+                    "identity": identity.model_dump(mode="json"),
+                    "stage": stopped.stage.value,
+                    "attempt": stopped.attempt_number,
+                    "attempt_id": stopped.attempt_id,
+                    "original_error": original_error.model_dump(mode="json"),
+                    "decision": rule_decision.model_dump(mode="json"),
+                    "decision_origin": "RULE",
+                    "diagnostic_excerpt": safe_diagnostic,
+                    "supersedes_stop_ref": stop_ref.model_dump(mode="json"),
+                    "supersedes_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(stopped.model_dump(mode="json"))
+                    ).hexdigest(),
+                }
+            )
+            decision_refs = tuple(
+                dict.fromkeys((*stopped.recovery_decision_refs, stop_ref, rule_ref))
+            )
+            gate_feedback = (
+                (candidate.input_refs[0],)
+                if mode == "generated_input" and stopped.gate_revision_count > 0
+                else ()
+            )
+            inputs = tuple(
+                dict.fromkeys(
+                    (
+                        *gate_feedback,
+                        *initial.input_refs,
+                        *initial.output_refs,
+                        *candidate.input_refs,
+                        *candidate.output_refs,
+                        *stopped.input_refs,
+                        *stopped.output_refs,
+                        *decision_refs,
+                    )
+                )
+            )
+            lineage_id = (
+                stopped.recovery_lineage_id
+                or hashlib.sha256(
+                    canonical_bytes(
+                        {
+                            "identity": identity,
+                            "attempt_id": stopped.attempt_id,
+                            "error_code": stopped.error_code,
+                        }
+                    )
+                ).hexdigest()
+            )
+            restart_stage = (
+                SimpleStage.VERIFICATION_INITIAL_DONE
+                if mode == "import"
+                else SimpleStage.POC_CANDIDATE_DONE
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=restart_stage,
+                stage_version=STAGE_VERSION[restart_stage],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                attempt_number=stopped.attempt_number,
+                gate_revision_count=stopped.gate_revision_count,
+                recovery_lineage_id=lineage_id,
+                recovery_origin_stage=SimpleStage.POC_EXECUTION_DONE,
+                recovery_decision_refs=decision_refs,
+                recipe_ref=(stopped.recipe_ref if mode == "generated_input" else None),
+                image_digest=(
+                    stopped.image_digest if mode == "generated_input" else None
+                ),
+            )
+            AgentActivityStore.append_connection(
+                connection,
+                self._recovery_event(
+                    connection,
+                    stopped,
+                    RecoveryResolution(decision=rule_decision, decision_ref=rule_ref),
+                ),
+            )
+            stages = tuple(
+                stage.value for stage in STAGE_ORDER[STAGE_ORDER.index(restart_stage) :]
             )
             placeholders = ",".join("?" for _ in stages)
             connection.execute(

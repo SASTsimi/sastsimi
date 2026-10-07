@@ -26,14 +26,24 @@ def sync_directory(path: Path) -> None:
 
 class LocalArtifactStore:
     def __init__(
-        self, root: Path, workspace_id: WorkspaceId | None, commit_id: CommitId | None
+        self,
+        root: Path,
+        workspace_id: WorkspaceId | None,
+        commit_id: CommitId | None,
+        *,
+        create_dirs: bool = True,
     ) -> None:
         self.root = root.resolve()
         self.paths = RuntimePaths(self.root.parent)
         self.workspace_id = workspace_id
         self.commit_id = commit_id
-        for path in (self.paths.staging, self.root / "sha256", self.paths.quarantine):
-            path.mkdir(parents=True, exist_ok=True)
+        if create_dirs:
+            for path in (
+                self.paths.staging,
+                self.root / "sha256",
+                self.paths.quarantine,
+            ):
+                path.mkdir(parents=True, exist_ok=True)
 
     def path_for(self, digest: str) -> Path:
         if re.fullmatch(r"[0-9a-f]{64}", digest) is None:

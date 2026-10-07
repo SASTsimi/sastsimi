@@ -36,7 +36,12 @@ _URL_TOKEN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _DOTTED_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){1,3}\b(?!\.\d)", re.IGNORECASE)
 _NETWORK_ENDPOINT_PREFIX = re.compile(
     r"\b(?:ip(?:v4)?(?:\s+address)?|address|host|binds?|bound|listens?|"
-    r"connects?|endpoint|loopback)\b(?:\s+(?:to|at|on|is))?\s*[:=]?\s*$",
+    r"connects?|endpoint|loopback|server\s+defaults?\s+to)\b"
+    r"(?:\s+(?:to|at|on|is))?\s*[:=]?\s*$",
+    re.IGNORECASE,
+)
+_LEGACY_REPORT_ENDPOINT_FIX = re.compile(
+    r"\bserver\s+defaults?\s+to\b(?:\s+(?:to|at|on|is))?\s*[:=]?\s*$",
     re.IGNORECASE,
 )
 _UNSUPPORTED_ADVISORY_CLAIMS = (
@@ -173,6 +178,44 @@ def _is_bare_endpoint(path: str, port: int) -> bool:
         return isinstance(ipaddress.ip_address(path), ipaddress.IPv4Address)
     except ValueError:
         return False
+
+
+def has_legacy_report_ipv4_false_positive(content: BilingualReportContent) -> bool:
+    """Identify the exact server-default IPv4 claim fixed in the validator.
+
+    The caller first validates with the current contract. Older validation
+    treated this wording as an unsupported dotted version; other valid drafts
+    must not qualify for repair of a generic legacy stage error.
+    """
+
+    for prose in (content.en, content.ko):
+        for value in (
+            prose.title,
+            prose.summary,
+            prose.details,
+            prose.impact,
+            prose.recommendation,
+            *prose.limitations,
+            *prose.review_items,
+        ):
+            claim_text = _URL_TOKEN.sub(" ", value)
+            claim_text = _LOCATION.sub(
+                lambda match: (
+                    " "
+                    if _is_bare_endpoint(match.group("path"), int(match.group("line")))
+                    else match.group(0)
+                ),
+                claim_text,
+            )
+            for match in _DOTTED_VERSION_TOKEN.finditer(claim_text):
+                try:
+                    ipaddress.IPv4Address(match.group())
+                except ValueError:
+                    continue
+                prefix = claim_text[max(0, match.start() - 48) : match.start()]
+                if _LEGACY_REPORT_ENDPOINT_FIX.search(prefix):
+                    return True
+    return False
 
 
 def validate_report_content(

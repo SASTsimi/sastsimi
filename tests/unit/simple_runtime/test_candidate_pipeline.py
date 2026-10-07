@@ -3274,6 +3274,83 @@ async def test_v2_resume_rejects_changed_candidate_source_hash(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_v4_same_id_resume_rechecks_scope_block_without_replaying_done_batches(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        result_count=1,
+        decision="INCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+        source_padding=20,
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    static = cast(_Static, app._static)
+    bundle = json.loads(artifacts.read(static.result.static_bundle_ref))
+    bundle["candidate_context_version"] = 4
+    static.result = static.result.model_copy(
+        update={"static_bundle_ref": artifacts.put_json(bundle)}
+    )
+
+    class CountingSecondLook(_SecondLookHypotheses):
+        batch_calls = 0
+
+        async def propose_batch(
+            self,
+            candidate_identity: CheckpointIdentity,
+            candidate_static: StaticBootstrapResult,
+            batch: CandidateBatch,
+            *,
+            requested_ids: tuple[str, ...] | None = None,
+        ) -> BatchProposalResult:
+            self.batch_calls += 1
+            return await super().propose_batch(
+                candidate_identity,
+                candidate_static,
+                batch,
+                requested_ids=requested_ids,
+            )
+
+    hypotheses = CountingSecondLook(tmp_path / "data", fail_second_once=True)
+    app._candidate_hypotheses = cast(HypothesisBootstrap, hypotheses)
+    _enable_chaining_pool(app, store, tmp_path / "data")
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    assert first.status == "PAUSED", (first.error_code, hypotheses.batch_calls)
+    assert hypotheses.batch_calls == 1
+    before = store.list_candidate_batch_outcomes(identity, "scope-1")
+    assert before
+    root = store.require(identity, SimpleStage.HYPOTHESIS_DONE)
+    store.save_checkpoint(
+        root.model_copy(
+            update={
+                "status": StageStatus.BLOCKED,
+                "error_code": "CANDIDATE_BATCH_SCOPE_CHANGED",
+                "retryable": False,
+            }
+        )
+    )
+
+    resumed = await app.resume("analysis-1")
+
+    assert resumed.error_code != "CANDIDATE_BATCH_SCOPE_CHANGED"
+    assert hypotheses.batch_calls == 1
+    assert store.list_candidate_batch_outcomes(identity, "scope-1") == before
+
+
+@pytest.mark.asyncio
 async def test_budget_pause_and_unchanged_resume_submit_no_llm_call(
     tmp_path: Path,
 ) -> None:

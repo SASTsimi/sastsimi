@@ -292,7 +292,7 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
         status="BLOCKED",
         current_stage=SimpleStage.POC_EXECUTION_DONE,
     )
-    calls: list[tuple[str, str | None]] = []
+    calls: list[tuple[str, str | None, str | None]] = []
 
     class _Application:
         async def resume(
@@ -300,8 +300,27 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
             analysis_id: str,
             *,
             repair_exhausted_hypothesis: str | None = None,
+            repair_legacy_import_stop_hypothesis: str | None = None,
+            repair_fallback_poc_stop_hypothesis: str | None = None,
+            repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
+            repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
+            repair_poc_sensitive_content_hypothesis: str | None = None,
+            repair_report_validator_hypothesis: str | None = None,
         ) -> SimpleAnalysisOutcome:
-            calls.append((analysis_id, repair_exhausted_hypothesis))
+            del (
+                repair_fallback_poc_stop_hypothesis,
+                repair_docker_owned_list_exhaustion_hypothesis,
+                repair_poc_placeholder_exhaustion_hypothesis,
+                repair_poc_sensitive_content_hypothesis,
+                repair_report_validator_hypothesis,
+            )
+            calls.append(
+                (
+                    analysis_id,
+                    repair_exhausted_hypothesis,
+                    repair_legacy_import_stop_hypothesis,
+                )
+            )
             return outcome
 
     async def track(
@@ -336,7 +355,7 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
     else:
         public.resume("A-001", repair_exhausted_hypothesis="hypothesis-1")
 
-    assert calls == [("analysis-1" if with_progress else "A-001", "hypothesis-1")]
+    assert calls == [("analysis-1" if with_progress else "A-001", "hypothesis-1", None)]
 
 
 def test_public_candidate_status_marks_unleased_running_stage_interrupted(

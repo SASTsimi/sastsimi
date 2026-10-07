@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from shutil import rmtree
 
 import pytest
 
 from sastsimi.composition.simple_runtime_composition import (
     PublicSimpleRuntimeApplication,
 )
+from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.config.user_config import SimpleExecutionProfile, UserConfig
 from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -71,6 +74,8 @@ def _readers(
 
 def _complete_poc_analysis(
     data_dir: Path,
+    *,
+    include_report: bool = True,
 ) -> tuple[PublicSimpleRuntimeApplication, DashboardQuery, SimpleCheckpointStore]:
     application, dashboard, store = _readers(data_dir)
     analysis_id = "analysis-poc-revalidation"
@@ -123,6 +128,8 @@ def _complete_poc_analysis(
             )
         )
     for stage in HYPOTHESIS_STAGES:
+        if stage is SimpleStage.REPORT_DONE and not include_report:
+            continue
         input_refs = (finding_ref,) if stage is SimpleStage.REPORT_DONE else ()
         output_refs = (
             (candidate_ref, content_ref)
@@ -165,6 +172,155 @@ def _complete_poc_analysis(
 def _downgrade_poc(store: SimpleCheckpointStore, version: str = "2") -> None:
     poc = store.require(_hypothesis_identity(), SimpleStage.POC_EXECUTION_DONE)
     store.save_checkpoint(poc.model_copy(update={"stage_version": version}))
+
+
+def _replace_saved_poc_source(
+    data_dir: Path, store: SimpleCheckpointStore, content: bytes
+) -> None:
+    identity = _hypothesis_identity()
+    candidate = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+    source_ref = SimpleArtifactRepository(data_dir, identity).put_bytes(
+        content, "text/x-shellscript"
+    )
+    store.save_checkpoint(
+        candidate.model_copy(
+            update={"output_refs": (candidate.output_refs[0], source_ref)}
+        )
+    )
+
+
+def test_process_local_poc_source_is_not_counted_or_served(
+    tmp_path: Path,
+) -> None:
+    application, dashboard, store = _complete_poc_analysis(tmp_path)
+    report_path = tmp_path / "reports" / "analysis-poc-revalidation" / "F-001.md"
+    original_report = report_path.read_bytes()
+    _replace_saved_poc_source(
+        tmp_path,
+        store,
+        b"""#!/bin/sh
+python3 - <<'PY'
+import pickle
+class LocalFixture:
+    pass
+client = app.test_client()
+payload = pickle.dumps(LocalFixture())
+client.set_cookie('value', payload)
+client.get('/cookie')
+PY
+""",
+    )
+
+    status = application.status("A-001")
+    assert status["finding_count"] == 0
+    assert status["raw_finding_count"] == 1
+    result = application.result("A-001")
+    assert result["finding_count"] == 0
+    assert result["raw_finding_count"] == 1
+    assert result["findings"] == []
+    reads: tuple[Callable[[], object], ...] = (
+        lambda: application.poc("F-001"),
+        lambda: application.report("F-001"),
+        lambda: application.export_report("F-001"),
+        lambda: application.export_report_bundle("F-001"),
+    )
+    for read in reads:
+        with pytest.raises(LookupError):
+            read()
+
+    detail = dashboard.get_analysis("A-001")
+    assert detail.finding_count == 0
+    assert detail.confirmed_finding_count == 0
+    assert detail.reports == ()
+    assert detail.hypotheses[0].verdict is None
+    assert detail.hypotheses[0].validated_poc is False
+    shell = dashboard.get_analysis_shell("A-001")
+    assert shell.kpis.confirmed_findings == 0
+    assert shell.validated_poc_count == 0
+    dashboard_reads: tuple[Callable[[], object], ...] = (
+        lambda: dashboard.report_path("analysis-poc-revalidation", "F-001"),
+        lambda: dashboard.report_content("analysis-poc-revalidation", "F-001"),
+        lambda: dashboard.report_attachment(
+            "analysis-poc-revalidation", "F-001", "bundle.zip"
+        ),
+    )
+    for read in dashboard_reads:
+        with pytest.raises(DashboardNotFound):
+            read()
+    assert report_path.read_bytes() == original_report
+    assert (
+        store.require(_hypothesis_identity(), SimpleStage.REPORT_DONE).status
+        is StageStatus.SUCCEEDED
+    )
+
+
+def test_process_local_poc_hides_finding_artifact_before_report(
+    tmp_path: Path,
+) -> None:
+    _application, dashboard, store = _complete_poc_analysis(
+        tmp_path, include_report=False
+    )
+    finding_ref = store.require(
+        _hypothesis_identity(), SimpleStage.FINDING_DONE
+    ).output_refs[0]
+    _replace_saved_poc_source(
+        tmp_path,
+        store,
+        b"""import pickle
+class LocalFixture:
+    pass
+payload = pickle.dumps(LocalFixture())
+client = app.test_client()
+client.set_cookie('value', payload)
+client.get('/cookie')
+""",
+    )
+
+    with pytest.raises(DashboardNotFound):
+        dashboard.artifact_bytes("A-001", finding_ref.content_hash)
+    assert not any(
+        artifact.artifact_id == finding_ref.content_hash
+        for artifact in dashboard.get_analysis("A-001").artifacts
+    )
+
+
+def test_dashboard_reads_do_not_recreate_missing_artifact_store(
+    tmp_path: Path,
+) -> None:
+    _application, dashboard, _store = _complete_poc_analysis(tmp_path)
+    paths = RuntimePaths(tmp_path)
+    absent = (paths.staging, paths.artifacts / "sha256", paths.quarantine)
+    for path in absent:
+        rmtree(path)
+
+    assert dashboard.get_analysis_shell("A-001").validated_poc_count == 0
+    assert dashboard.get_analysis("A-001").confirmed_finding_count == 0
+    for path in absent:
+        assert not path.exists()
+
+
+def test_unreadable_saved_poc_source_fails_closed_without_deleting_report(
+    tmp_path: Path,
+) -> None:
+    application, dashboard, store = _complete_poc_analysis(tmp_path)
+    identity = _hypothesis_identity()
+    candidate = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+    lost_source_ref = candidate.output_refs[1].model_copy(
+        update={"content_hash": "f" * 64}
+    )
+    store.save_checkpoint(
+        candidate.model_copy(
+            update={"output_refs": (candidate.output_refs[0], lost_source_ref)}
+        )
+    )
+
+    assert application.result("A-001")["finding_count"] == 0
+    assert dashboard.get_analysis("A-001").confirmed_finding_count == 0
+    with pytest.raises(LookupError):
+        application.report("F-001")
+    with pytest.raises(DashboardNotFound):
+        dashboard.report_content("analysis-poc-revalidation", "F-001")
+    assert (tmp_path / "reports" / "analysis-poc-revalidation" / "F-001.md").is_file()
 
 
 def test_status_and_result_require_revalidation_for_old_successful_poc(

@@ -103,7 +103,11 @@ _DIRECT_SINKS: dict[str, frozenset[str]] = {
     "CWE-95": frozenset({"eval"}),
     "CWE-918": frozenset({"requests.get", "requests.post"}),
     "CWE-22": frozenset({"open"}),
+    "CWE-1336": frozenset({"render_template_string"}),
 }
+_ONE_HOP_SQL_METHODS = frozenset(
+    {"execute", "executemany", "executescript", "execute_fetchall", "execute_insert"}
+)
 
 
 def _safe_source(workspace: Path, relative: str, expected_sha256: str) -> bytes | None:
@@ -230,6 +234,8 @@ def _direct_app_binding(
     constructor_name: str,
     import_module: str,
     route_methods: frozenset[str],
+    *,
+    allow_unrelated_getattr: bool = False,
 ) -> bool:
     if any(
         isinstance(node, ast.Call)
@@ -245,6 +251,14 @@ def _direct_app_binding(
             "exec",
             "__import__",
         }
+        and not (
+            allow_unrelated_getattr
+            and node.func.id == "getattr"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id
+            not in {receiver, constructor_name, "request", "render_template_string"}
+        )
         for node in ast.walk(tree)
     ):
         # Dynamic namespace access can register another path to this handler.
@@ -479,6 +493,7 @@ def _stable_imports(
     sink_binding: tuple[str, str] | None = None,
     *,
     require_flask_request: bool = True,
+    allow_unrelated_nested_imports: bool = False,
 ) -> bool:
     bindings: dict[str, list[tuple[str, str]]] = {sink_root: []}
     if require_flask_request:
@@ -524,7 +539,23 @@ def _stable_imports(
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
             if isinstance(node, (ast.Import, ast.ImportFrom)):
-                return False
+                if not allow_unrelated_nested_imports:
+                    return False
+                if isinstance(node, ast.ImportFrom) and any(
+                    alias.name == "*" for alias in node.names
+                ):
+                    return False
+                if any(
+                    (
+                        (alias.asname or alias.name.partition(".")[0])
+                        if isinstance(node, ast.Import)
+                        else (alias.asname or alias.name)
+                    )
+                    in protected
+                    for alias in node.names
+                ):
+                    return False
+                continue
             if (
                 isinstance(node, ast.Name)
                 and node.id in protected
@@ -1388,6 +1419,713 @@ def _direct_html_return_anchor(
     return anchor if _trace_agrees(flow_trace, anchor, tree) else None
 
 
+def _one_hop_fastapi_route(
+    tree: ast.Module, function: ast.AsyncFunctionDef
+) -> tuple[str, str] | None:
+    """Identify one cited FastAPI route without assuming its constructor metadata."""
+
+    if len(function.decorator_list) != 1:
+        return None
+    decorator = function.decorator_list[0]
+    if (
+        not isinstance(decorator, ast.Call)
+        or not isinstance(decorator.func, ast.Attribute)
+        or not isinstance(decorator.func.value, ast.Name)
+        or decorator.func.attr not in _FASTAPI_ROUTE_METHODS
+        or len(decorator.args) != 1
+        or not isinstance(decorator.args[0], ast.Constant)
+        or not isinstance(decorator.args[0].value, str)
+        or not decorator.args[0].value
+        or any(
+            keyword.arg is None or not _literal(keyword.value)
+            for keyword in decorator.keywords
+        )
+        or not _stable_imports(
+            tree,
+            function,
+            "FastAPI",
+            ("fastapi", "FastAPI"),
+            require_flask_request=False,
+        )
+    ):
+        return None
+    app_name = decorator.func.value.id
+    constructors = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == app_name
+        and isinstance(statement.value, ast.Call)
+        and _name(statement.value.func) == "FastAPI"
+    ]
+    if len(constructors) != 1 or constructors[0].lineno >= decorator.lineno:
+        return None
+    if _one_hop_import_binds(tree, app_name):
+        return None
+    if any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.name in {app_name, "FastAPI"}
+        for node in ast.walk(tree)
+    ):
+        return None
+    if any(
+        isinstance(node, ast.Name)
+        and node.id == app_name
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        and node is not constructors[0].targets[0]
+        or isinstance(node, ast.Attribute)
+        and _root_name(node) == app_name
+        and node.attr in _FASTAPI_ROUTE_METHODS
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        or isinstance(node, ast.Name)
+        and node.id == function.name
+        and isinstance(node.ctx, ast.Load)
+        for node in ast.walk(tree)
+    ):
+        return None
+    return decorator.func.attr.upper(), decorator.args[0].value
+
+
+def _one_hop_import_binds(tree: ast.Module, name: str) -> bool:
+    return any(
+        isinstance(item, ast.Import)
+        and any(
+            (alias.asname or alias.name.partition(".")[0]) == name
+            for alias in item.names
+        )
+        or isinstance(item, ast.ImportFrom)
+        and any((alias.asname or alias.name) == name for alias in item.names)
+        for item in tree.body
+    )
+
+
+def _one_hop_unmodelled_control(function: ast.AST, before_line: int) -> bool:
+    if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+        isinstance(statement, (ast.Return, ast.Raise))
+        and statement.lineno < before_line
+        for statement in function.body
+    ):
+        # A direct exit ends this path; a later AST call is not reachable.
+        # An exit inside a conditional branch still leaves other paths open.
+        return True
+    return any(
+        node.lineno <= before_line
+        and (
+            isinstance(
+                node,
+                (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Match),
+            )
+            or isinstance(node, ast.Call)
+            and _name(node.func)
+            in {"exec", "eval", "globals", "locals", "vars", "setattr", "delattr"}
+        )
+        for node in ast.walk(function)
+        if hasattr(node, "lineno")
+    )
+
+
+def _one_hop_module_dynamic_binding(tree: ast.Module) -> bool:
+    return any(
+        (
+            isinstance(node, ast.Call)
+            and _name(node.func)
+            in {
+                "globals",
+                "locals",
+                "vars",
+                "getattr",
+                "setattr",
+                "delattr",
+                "exec",
+                "eval",
+            }
+        )
+        or (
+            isinstance(node, ast.Attribute)
+            and node.attr in {"__code__", "__defaults__", "__kwdefaults__"}
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+        )
+        for node in ast.walk(tree)
+    )
+
+
+def _one_hop_mutated_object(tree: ast.Module, name: str) -> bool:
+    return any(
+        isinstance(node, (ast.Attribute, ast.Subscript))
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        and _root_name(node) == name
+        for node in ast.walk(tree)
+    )
+
+
+def _one_hop_direct_sql_connector(
+    tree: ast.Module,
+    function: ast.AsyncFunctionDef,
+    expression: ast.expr,
+) -> bool:
+    if (
+        not isinstance(expression, ast.Await)
+        or not isinstance(expression.value, ast.Call)
+        or _name(expression.value.func) != "aiosqlite.connect"
+        or any(keyword.arg is None for keyword in expression.value.keywords)
+        or any(isinstance(argument, ast.Starred) for argument in expression.value.args)
+        or not _stable_imports(tree, function, "aiosqlite", require_flask_request=False)
+    ):
+        return False
+    return not any(
+        isinstance(node, ast.Attribute)
+        and _root_name(node) == "aiosqlite"
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        for node in ast.walk(tree)
+    )
+
+
+def _one_hop_verified_sql_connector(
+    tree: ast.Module,
+    helper: ast.AsyncFunctionDef,
+    expression: ast.expr,
+) -> bool:
+    if _one_hop_direct_sql_connector(tree, helper, expression):
+        return True
+    if (
+        not isinstance(expression, ast.Await)
+        or not isinstance(expression.value, ast.Call)
+        or not isinstance(expression.value.func, ast.Name)
+        or expression.value.args
+        or expression.value.keywords
+    ):
+        return False
+    provider_name = expression.value.func.id
+    providers = [
+        item
+        for item in tree.body
+        if isinstance(item, ast.AsyncFunctionDef) and item.name == provider_name
+    ]
+    if (
+        len(providers) != 1
+        or len(
+            [
+                item
+                for item in ast.walk(tree)
+                if isinstance(
+                    item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
+                and item.name == provider_name
+            ]
+        )
+        != 1
+        or _one_hop_import_binds(tree, provider_name)
+        or _one_hop_mutated_object(tree, provider_name)
+        or any(
+            isinstance(node, ast.Name)
+            and node.id == provider_name
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            for node in ast.walk(tree)
+        )
+    ):
+        return False
+    provider = providers[0]
+    if (
+        provider.decorator_list
+        or provider.args.posonlyargs
+        or provider.args.args
+        or provider.args.kwonlyargs
+        or provider.args.vararg
+        or provider.args.kwarg
+        or _one_hop_unmodelled_control(
+            provider, max(item.lineno for item in provider.body)
+        )
+    ):
+        return False
+    if len(provider.body) == 1 and isinstance(provider.body[0], ast.Return):
+        value = provider.body[0].value
+    elif (
+        len(provider.body) == 2
+        and isinstance(provider.body[0], ast.Assign)
+        and len(provider.body[0].targets) == 1
+        and isinstance(provider.body[0].targets[0], ast.Name)
+        and isinstance(provider.body[1], ast.Return)
+        and isinstance(provider.body[1].value, ast.Name)
+        and provider.body[0].targets[0].id == provider.body[1].value.id
+    ):
+        value = provider.body[0].value
+    else:
+        return False
+    return value is not None and _one_hop_direct_sql_connector(tree, provider, value)
+
+
+def _one_hop_sql_anchor(
+    tree: ast.Module,
+    path: str,
+    cited: set[int],
+    flow_trace: Mapping[str, object] | None,
+) -> FlowAnchor | None:
+    """Prove only a direct route argument -> one local helper -> execute flow."""
+
+    # An external trace needs its own multi-function step verifier. Do not
+    # silently discard a trace that could distinguish two flows.
+    if flow_trace is not None or _one_hop_module_dynamic_binding(tree):
+        return None
+    matched: list[
+        tuple[
+            ast.AsyncFunctionDef,
+            _Callsite,
+            ast.AsyncFunctionDef,
+            ast.Call,
+            tuple[str, ...],
+            str,
+            str,
+        ]
+    ] = []
+    for route in tree.body:
+        if not isinstance(route, ast.AsyncFunctionDef) or route.lineno not in cited:
+            continue
+        route_identity = _one_hop_fastapi_route(tree, route)
+        if route_identity is None:
+            continue
+        definitions: list[_Definition] = []
+        calls: list[_Callsite] = []
+        _scan_statements(route.body, (), definitions, calls)
+        for callsite in calls:
+            call = callsite.call
+            if (
+                call.lineno not in cited
+                or not isinstance(call.func, ast.Name)
+                or not call.args
+                or len(call.args) != 1
+                or any(
+                    keyword.arg is None or not _literal(keyword.value)
+                    for keyword in call.keywords
+                )
+                or _unsupported_writes(route, call.lineno)
+                or _one_hop_unmodelled_control(route, call.lineno)
+            ):
+                continue
+            helpers = [
+                statement
+                for statement in tree.body
+                if isinstance(statement, ast.AsyncFunctionDef)
+                and statement.name == call.func.id
+                and not statement.decorator_list
+            ]
+            if (
+                len(helpers) != 1
+                or _one_hop_import_binds(tree, call.func.id)
+                or sum(
+                    isinstance(
+                        statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    )
+                    and statement.name == call.func.id
+                    for statement in ast.walk(tree)
+                )
+                != 1
+            ):
+                continue
+            helper = helpers[0]
+            parameters = helper.args
+            if (
+                parameters.posonlyargs
+                or not parameters.args
+                or parameters.kwonlyargs
+                or parameters.vararg
+                or parameters.kwarg
+                or any(not _literal(default) for default in parameters.defaults)
+                or any(
+                    keyword.arg not in {arg.arg for arg in parameters.args[1:]}
+                    for keyword in call.keywords
+                )
+                or any(
+                    isinstance(node, ast.Name)
+                    and node.id == helper.name
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                    for node in ast.walk(tree)
+                )
+                or _one_hop_mutated_object(tree, helper.name)
+            ):
+                continue
+            helper_calls: list[_Callsite] = []
+            helper_definitions: list[_Definition] = []
+            _scan_statements(helper.body, (), helper_definitions, helper_calls)
+            sinks = [
+                item
+                for item in helper_calls
+                if isinstance(item.call.func, ast.Attribute)
+                and item.call.func.attr == "execute"
+            ]
+            sql_calls = [
+                node
+                for node in ast.walk(helper)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _ONE_HOP_SQL_METHODS
+            ]
+            if (
+                len(sinks) != 1
+                or len(sql_calls) != 1
+                or sql_calls[0] is not sinks[0].call
+            ):
+                continue
+            sink = sinks[0].call
+            if (
+                any(
+                    helper.lineno <= line <= (helper.end_lineno or helper.lineno)
+                    for line in cited
+                )
+                and sink.lineno not in cited
+            ):
+                continue
+            if (
+                not isinstance(sink.func, ast.Attribute)
+                or not isinstance(sink.func.value, ast.Name)
+                or len(sink.args) != 1
+                or not isinstance(sink.args[0], ast.Name)
+                or sink.args[0].id != parameters.args[0].arg
+                or sink.keywords
+                or _unsupported_writes(helper, sink.lineno)
+                or _one_hop_unmodelled_control(helper, sink.lineno)
+                or any(
+                    isinstance(node, ast.Name)
+                    and node.id == parameters.args[0].arg
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                    and node.lineno <= sink.lineno
+                    for node in ast.walk(helper)
+                )
+            ):
+                continue
+            receiver = sink.func.value.id
+            receiver_defs = [
+                item
+                for item in helper_definitions
+                if item.name == receiver and item.line < sink.lineno
+            ]
+            if (
+                len(receiver_defs) != 1
+                or not _one_hop_verified_sql_connector(
+                    tree, helper, receiver_defs[0].value
+                )
+                or not set(receiver_defs[0].branches).issubset(sinks[0].branches)
+            ):
+                continue
+            matched.append(
+                (route, callsite, helper, sink, sinks[0].branches, *route_identity)
+            )
+    if len(matched) != 1:
+        return None
+    route, callsite, helper, sink, helper_branches, method, route_path = matched[0]
+    binding = _fastapi_query_binding(tree, route, route_path, callsite.call.lineno)
+    if binding is None or not _only_supported_request_uses(
+        route, callsite.call.lineno, source_line=binding.parameter_line, binding=binding
+    ):
+        return None
+    definitions = []
+    _scan_statements(route.body, (), definitions, [])
+    source = _trace_expression(
+        callsite.call.args[0],
+        definitions,
+        callsite.call.lineno,
+        callsite.branches,
+        frozenset(),
+        cited_source_lines=frozenset(cited),
+        binding=binding,
+    )
+    if source is None or source.line != route.lineno or not source.key:
+        return None
+    return FlowAnchor(
+        route=f"{method} {route_path}",
+        function=route.name,
+        source_file=path,
+        source_line=source.line,
+        source_access=source.access,
+        source_key=source.key,
+        def_use_nodes=(
+            *source.nodes,
+            f"{helper.name}@{callsite.call.lineno}",
+            f"{helper.args.args[0].arg}@{helper.lineno}",
+        ),
+        sink_file=path,
+        sink_line=sink.lineno,
+        sink_callee=_name(sink.func) or "",
+        sink_argument=0,
+        branch_nodes=tuple(f"{route.name}:{branch}" for branch in callsite.branches)
+        + tuple(f"{helper.name}:{branch}" for branch in helper_branches),
+        cwe="CWE-89",
+    )
+
+
+def _single_percent_string(value: ast.expr) -> ast.expr | None:
+    """Return the one inserted value of a literal ``%s`` string."""
+
+    if (
+        not isinstance(value, ast.BinOp)
+        or not isinstance(value.op, ast.Mod)
+        or not isinstance(value.left, ast.Constant)
+        or not isinstance(value.left.value, str)
+    ):
+        return None
+    template = value.left.value.replace("%%", "")
+    if template.count("%s") != 1 or template.count("%") != 1:
+        return None
+    return value.right
+
+
+def _flask_module_attributes_stable(tree: ast.Module) -> bool:
+    """Do not prove a Flask flow if its imported source or sink is replaced."""
+
+    module_names = {
+        alias.asname or "flask"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "flask"
+    }
+    protected = {"request", "render_template_string"}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and isinstance(node.value, ast.Name)
+            and node.value.id in module_names
+            and node.attr in protected
+        ):
+            return False
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"setattr", "delattr"}
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in module_names
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in protected
+        ):
+            return False
+    return True
+
+
+def _flask_post_ssti_route(tree: ast.Module, function: ast.FunctionDef) -> str | None:
+    """Prove one stable Flask POST route without relaxing other flow families."""
+
+    if len(function.decorator_list) != 1:
+        return None
+    decorator = function.decorator_list[0]
+    if (
+        not isinstance(decorator, ast.Call)
+        or not isinstance(decorator.func, ast.Attribute)
+        or decorator.func.attr != "route"
+        or not isinstance(decorator.func.value, ast.Name)
+        or len(decorator.args) != 1
+        or not isinstance(decorator.args[0], ast.Constant)
+        or not isinstance(decorator.args[0].value, str)
+        or not decorator.args[0].value
+        or len(decorator.keywords) != 1
+        or decorator.keywords[0].arg != "methods"
+    ):
+        return None
+    methods = decorator.keywords[0].value
+    if (
+        not isinstance(methods, (ast.List, ast.Tuple))
+        or not 1 <= len(methods.elts) <= 2
+        or any(
+            not isinstance(item, ast.Constant) or not isinstance(item.value, str)
+            for item in methods.elts
+        )
+        or {item.value for item in methods.elts if isinstance(item, ast.Constant)}
+        not in ({"POST"}, {"POST", "GET"})
+    ):
+        return None
+    app_name = decorator.func.value.id
+    if (
+        not _flask_module_attributes_stable(tree)
+        or not _direct_app_binding(
+            tree,
+            app_name,
+            "Flask",
+            "flask",
+            _FLASK_ROUTE_METHODS,
+            allow_unrelated_getattr=True,
+        )
+        or not _stable_imports(
+            tree,
+            function,
+            "render_template_string",
+            ("flask", "render_template_string"),
+            allow_unrelated_nested_imports=True,
+        )
+    ):
+        return None
+    if (
+        sum(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == function.name
+            for node in ast.walk(tree)
+        )
+        != 1
+        or _one_hop_import_binds(tree, function.name)
+        or any(
+            isinstance(node, ast.Name)
+            and node.id == function.name
+            and isinstance(node.ctx, (ast.Store, ast.Del, ast.Load))
+            for node in ast.walk(tree)
+        )
+    ):
+        return None
+    return decorator.args[0].value
+
+
+def _ssti_trace_agrees(
+    flow_trace: Mapping[str, object] | None,
+    anchor: FlowAnchor,
+    tree: ast.Module,
+    source_expr: ast.Subscript,
+    sink_call: ast.Call,
+    source_lines: list[str],
+) -> bool:
+    """Require every supplied trace identity to match the exact AST flow."""
+
+    if flow_trace is None:
+        return True
+    if (
+        "source_key" in flow_trace
+        and flow_trace["source_key"] != anchor.source_key
+        or "sink_argument" in flow_trace
+        and (
+            type(flow_trace["sink_argument"]) is not int
+            or flow_trace["sink_argument"] != anchor.sink_argument
+        )
+    ):
+        return False
+    for endpoint, node in (("source", source_expr), ("sink", sink_call)):
+        location = flow_trace.get(endpoint)
+        if (
+            isinstance(location, Mapping)
+            and "column" in location
+            and not _ssti_column_agrees(location["column"], node, source_lines)
+        ):
+            return False
+    steps = flow_trace.get("sarif_steps")
+    if isinstance(steps, list) and len(steps) >= 2:
+        for position, node in ((steps[0], source_expr), (steps[-1], sink_call)):
+            if (
+                isinstance(position, Mapping)
+                and "column" in position
+                and not _ssti_column_agrees(position["column"], node, source_lines)
+            ):
+                return False
+    return _trace_agrees(flow_trace, anchor, tree)
+
+
+def _ssti_column_agrees(column: object, node: ast.AST, lines: list[str]) -> bool:
+    """Compare columns only where Python byte offsets cannot be ambiguous."""
+
+    line = getattr(node, "lineno", None)
+    start = getattr(node, "col_offset", None)
+    end_line = getattr(node, "end_lineno", None)
+    end = getattr(node, "end_col_offset", None)
+    if (
+        type(column) is not int
+        or type(line) is not int
+        or type(start) is not int
+        or type(end) is not int
+        or line != end_line
+        or not 1 <= line <= len(lines)
+    ):
+        return False
+    if not lines[line - 1].isascii():
+        return False
+    return start + 1 <= column < end + 1
+
+
+def _flask_post_percent_ssti_anchor(
+    tree: ast.Module,
+    path: str,
+    cited: set[int],
+    flow_trace: Mapping[str, object] | None,
+    source_lines: list[str],
+) -> FlowAnchor | None:
+    """Prove the exact POST form -> two literal %s strings -> Jinja sink path."""
+
+    matches: list[FlowAnchor] = []
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef) or len(function.body) != 4:
+            continue
+        route = _flask_post_ssti_route(tree, function)
+        if route is None:
+            continue
+        initial, guard, template_assignment, returned = function.body
+        if (
+            not isinstance(initial, ast.Assign)
+            or len(initial.targets) != 1
+            or not isinstance(initial.targets[0], ast.Name)
+            or not isinstance(initial.value, ast.Constant)
+            or initial.value.value != ""
+            or not isinstance(guard, ast.If)
+            or guard.orelse
+            or len(guard.body) != 1
+            or not isinstance(guard.test, ast.Compare)
+            or not isinstance(guard.test.left, ast.Attribute)
+            or _name(guard.test.left) != "request.method"
+            or len(guard.test.ops) != 1
+            or not isinstance(guard.test.ops[0], ast.Eq)
+            or len(guard.test.comparators) != 1
+            or not isinstance(guard.test.comparators[0], ast.Constant)
+            or guard.test.comparators[0].value != "POST"
+            or not isinstance(guard.body[0], ast.Assign)
+            or len(guard.body[0].targets) != 1
+            or not isinstance(guard.body[0].targets[0], ast.Name)
+            or guard.body[0].targets[0].id != initial.targets[0].id
+            or not isinstance(template_assignment, ast.Assign)
+            or len(template_assignment.targets) != 1
+            or not isinstance(template_assignment.targets[0], ast.Name)
+            or template_assignment.targets[0].id == initial.targets[0].id
+            or not isinstance(returned, ast.Return)
+            or not isinstance(returned.value, ast.Call)
+            or _name(returned.value.func) != "render_template_string"
+            or len(returned.value.args) != 1
+            or returned.value.keywords
+            or not isinstance(returned.value.args[0], ast.Name)
+            or returned.value.args[0].id != template_assignment.targets[0].id
+            or returned.value.lineno not in cited
+        ):
+            continue
+        source_expr = _single_percent_string(guard.body[0].value)
+        template_expr = _single_percent_string(template_assignment.value)
+        if (
+            not isinstance(source_expr, ast.Subscript)
+            or _name(source_expr.value) != "request.form"
+            or not isinstance(source_expr.slice, ast.Constant)
+            or not isinstance(source_expr.slice.value, str)
+            or not source_expr.slice.value
+            or not isinstance(template_expr, ast.Name)
+            or template_expr.id != initial.targets[0].id
+        ):
+            continue
+        anchor = FlowAnchor(
+            route=f"POST {route}",
+            function=function.name,
+            source_file=path,
+            source_line=source_expr.lineno,
+            source_access="request.form",
+            source_key=source_expr.slice.value,
+            def_use_nodes=(
+                f"{initial.targets[0].id}@{guard.body[0].lineno}",
+                f"{template_assignment.targets[0].id}@{template_assignment.lineno}",
+            ),
+            sink_file=path,
+            sink_line=returned.value.lineno,
+            sink_callee="render_template_string",
+            sink_argument=0,
+            branch_nodes=(f"if:{guard.lineno}:yes",),
+            cwe="CWE-1336",
+        )
+        if _ssti_trace_agrees(
+            flow_trace, anchor, tree, source_expr, returned.value, source_lines
+        ):
+            matches.append(anchor)
+    return matches[0] if len(matches) == 1 else None
+
+
 def resolve_flow_anchor(
     workspace: Path,
     path: str,
@@ -1402,7 +2140,8 @@ def resolve_flow_anchor(
     if raw is None:
         return None
     try:
-        tree = ast.parse(raw.decode("utf-8"), filename=path)
+        source_text = raw.decode("utf-8")
+        tree = ast.parse(source_text, filename=path)
     except (UnicodeError, SyntaxError, RecursionError):
         return None
     cited = _locations(proposal, path)
@@ -1410,6 +2149,17 @@ def resolve_flow_anchor(
     allowed_sinks = _DIRECT_SINKS.get(normalized_cwe)
     if not cited or allowed_sinks is None:
         return None
+    if normalized_cwe == "CWE-1336":
+        return _flask_post_percent_ssti_anchor(
+            tree, path, cited, flow_trace, source_text.splitlines()
+        )
+    if normalized_cwe == "CWE-89":
+        try:
+            one_hop = _one_hop_sql_anchor(tree, path, cited, flow_trace)
+        except RecursionError:
+            return None
+        if one_hop is not None:
+            return one_hop
     if normalized_cwe == "CWE-79":
         direct_return = _direct_html_return_anchor(
             tree, path, cited, normalized_cwe, flow_trace

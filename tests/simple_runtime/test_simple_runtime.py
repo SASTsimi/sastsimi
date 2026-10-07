@@ -1173,6 +1173,56 @@ async def test_legacy_inconclusive_stop_is_not_replayed_by_version_bump(
 
 
 @pytest.mark.asyncio
+async def test_legacy_poc_import_stop_is_not_replayed_by_new_replan_rule(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "legacy-import-stop" / "sastsimi.sqlite3")
+    artifacts = SimpleArtifactRepository(tmp_path, _identity())
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="legacy-import-stop-attempt",
+    )
+    stderr_ref = artifacts.put_bytes(
+        b"ModuleNotFoundError: jwt\nTraceback: frame -> exec_module",
+        "text/plain",
+    )
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "attempt_id": running.attempt_id,
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    failure = StageFailure(
+        code="POC_EXECUTION_FAILED",
+        retryable=True,
+        safe_message="legacy PoC failed",
+        evidence_refs=(execution_ref, stderr_ref),
+    )
+    failed = store.mark_failure(running, failure, StageStatus.BLOCKED)
+    resolution = await _Recovery(tmp_path, RecoveryAction.STOP).decide(failed, failure)
+    stopped = store.record_recovery_stop(failed, resolution)
+    calls: list[SimpleStage] = []
+    attempted_recovery = _Recovery(tmp_path, RecoveryAction.RETRY_STAGE)
+
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        recovery=attempted_recovery,
+        cleanup_artifacts=artifacts,
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == "POC_EXECUTION_FAILED"
+    assert calls == []
+    assert attempted_recovery.calls == []
+    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == stopped
+
+
+@pytest.mark.asyncio
 async def test_confirmed_running_child_cleanup_replays_without_generic_recovery(
     tmp_path,
 ) -> None:

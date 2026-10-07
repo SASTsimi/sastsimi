@@ -31,6 +31,7 @@ from .models import (
     StageCheckpoint,
     StageStatus,
 )
+from .poc_currentness import poc_source_current
 from .scope_policy import project_scope_review
 
 _MAX_EVIDENCE_BYTES = 4 * 1024 * 1024
@@ -170,6 +171,8 @@ def _verified_closure(
         or validated_poc.get("attempt_id") != dynamic.attempt_id
     ):
         raise ValueError("FINDING_GROUP_REQUIRED_EVIDENCE_INVALID")
+    if not poc_source_current(candidate, read_content=artifacts.read_bounded):
+        return None
     verification_proven = False
     if len(final.output_refs) == 1:
         verification = _json(artifacts, final.output_refs[0])

@@ -1762,6 +1762,65 @@ def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
             query.report_attachment("analysis-a", "F-001", invalid)
 
 
+def test_historical_process_local_poc_bundle_is_not_verified_or_downloadable(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    attach_current_bundle(
+        tmp_path,
+        identity,
+        ref("finding"),
+        "F-001",
+        poc=b"""#!/bin/sh
+python3 - <<'PY'
+import pickle
+class LocalFixture:
+    pass
+client = app.test_client()
+payload = pickle.dumps(LocalFixture())
+client.set_cookie('value', payload)
+client.get('/cookie')
+PY
+""",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    checkpoints = {
+        stage: store.require(identity, stage)
+        for stage in (
+            SimpleStage.POC_CANDIDATE_DONE,
+            SimpleStage.POC_EXECUTION_DONE,
+            SimpleStage.TECH_GATE_DONE,
+            SimpleStage.SCOPE_GATE_DONE,
+            SimpleStage.FINDING_DONE,
+            SimpleStage.REPORT_DONE,
+        )
+    }
+    with pytest.raises(ValueError, match="BUNDLE_POC_SOURCE_UNVERIFIED"):
+        artifacts.verified_report_bundle(
+            checkpoints=checkpoints,
+            finding_ref=ref("finding"),
+            display_id="F-001",
+            scope_status="UNCERTAIN",
+            public_projection=lambda body: body,
+        )
+
+    query = DashboardQuery(tmp_path)
+    assert query.get_analysis(identity.analysis_id).reports == ()
+    report_ref = checkpoints[SimpleStage.REPORT_DONE].output_refs[1]
+    with pytest.raises(DashboardNotFound):
+        query.artifact_bytes(identity.analysis_id, report_ref.content_hash)
+    for path in ("poc.sh", "bundle.zip"):
+        with pytest.raises(DashboardNotFound):
+            query.report_attachment(identity.analysis_id, "F-001", path)
+
+
 def test_legacy_bundle_with_local_file_url_is_not_downloadable(tmp_path: Path) -> None:
     test_current_accepted_report_remains_accessible(tmp_path)
     identity = CheckpointIdentity(

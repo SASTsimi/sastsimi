@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import stat
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ from pydantic import Field
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.prompt_redaction import redact_projected_json
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -204,6 +206,9 @@ class SimpleAnalysisApplication:
         offline_repair_preflight: (
             Callable[[CheckpointIdentity], Awaitable[OfflineRepairPreflight]] | None
         ) = None,
+        owned_attempt_container: (
+            Callable[[CheckpointIdentity, str], Awaitable[bool]] | None
+        ) = None,
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
@@ -240,6 +245,7 @@ class SimpleAnalysisApplication:
             candidate_hypothesis_bootstrap or hypothesis_bootstrap
         )
         self._offline_repair_preflight = offline_repair_preflight
+        self._owned_attempt_container = owned_attempt_container
 
     async def analyze(
         self,
@@ -402,13 +408,59 @@ class SimpleAnalysisApplication:
         analysis_id_or_display: str,
         *,
         repair_exhausted_hypothesis: str | None = None,
+        repair_legacy_import_stop_hypothesis: str | None = None,
+        repair_fallback_poc_stop_hypothesis: str | None = None,
+        repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
+        repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_report_validator_hypothesis: str | None = None,
     ) -> SimpleAnalysisOutcome:
+        if (
+            sum(
+                value is not None
+                for value in (
+                    repair_exhausted_hypothesis,
+                    repair_legacy_import_stop_hypothesis,
+                    repair_fallback_poc_stop_hypothesis,
+                    repair_docker_owned_list_exhaustion_hypothesis,
+                    repair_poc_placeholder_exhaustion_hypothesis,
+                    repair_poc_sensitive_content_hypothesis,
+                    repair_report_validator_hypothesis,
+                )
+            )
+            > 1
+        ):
+            raise ValueError("LEGACY_IMPORT_STOP_REPAIR_CONFLICT")
         exact = self._display.resolve(analysis_id_or_display)
         try:
             with analysis_run_lease(self._data_dir, exact):
                 if repair_exhausted_hypothesis is not None:
                     await self._prepare_offline_repair_locked(
                         exact, repair_exhausted_hypothesis
+                    )
+                if repair_legacy_import_stop_hypothesis is not None:
+                    await self._prepare_legacy_import_stop_locked(
+                        exact, repair_legacy_import_stop_hypothesis
+                    )
+                if repair_fallback_poc_stop_hypothesis is not None:
+                    await self._prepare_fallback_poc_stop_locked(
+                        exact, repair_fallback_poc_stop_hypothesis
+                    )
+                if repair_docker_owned_list_exhaustion_hypothesis is not None:
+                    await self._prepare_docker_owned_list_exhaustion_locked(
+                        exact, repair_docker_owned_list_exhaustion_hypothesis
+                    )
+                if repair_poc_placeholder_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_placeholder_exhaustion_locked(
+                        exact, repair_poc_placeholder_exhaustion_hypothesis
+                    )
+                if repair_poc_sensitive_content_hypothesis is not None:
+                    await self._prepare_poc_sensitive_content_locked(
+                        exact, repair_poc_sensitive_content_hypothesis
+                    )
+                if repair_report_validator_hypothesis is not None:
+                    self._prepare_report_validator_locked(
+                        exact, repair_report_validator_hypothesis
                     )
                 return await self._resume_locked(exact)
         except AnalysisRunBusy:
@@ -510,6 +562,309 @@ class SimpleAnalysisApplication:
             }
         )
         self._store.prepare_offline_environment_repair(exhausted, proof_ref, artifacts)
+
+    async def _prepare_legacy_import_stop_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Validate the explicit target before normal resume can audit siblings."""
+
+        await self._prepare_bound_fallback_stop_locked(
+            analysis_id, hypothesis_id, mode="import"
+        )
+
+    async def _prepare_fallback_poc_stop_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Validate one non-import policy fallback before resetting its PoC."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="generated_input"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace("LEGACY_IMPORT_STOP_", "FALLBACK_POC_STOP_", 1)
+                ) from error
+            raise
+
+    async def _prepare_docker_owned_list_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Require an exact Docker owner-label absence before replaying PoC."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="docker_list"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace("LEGACY_IMPORT_STOP_", "DOCKER_LIST_EXHAUSTION_", 1)
+                ) from error
+            raise
+
+    async def _prepare_poc_placeholder_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay only an exact candidate rejected by the corrected validator."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="placeholder"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_", "POC_PLACEHOLDER_EXHAUSTION_", 1
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_sensitive_content_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay one exact old sensitive-content PoC stop after validator fix."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="sensitive"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_", "POC_SENSITIVE_CONTENT_REPLAY_", 1
+                    )
+                ) from error
+            raise
+
+    async def _prepare_bound_fallback_stop_locked(
+        self,
+        analysis_id: str,
+        hypothesis_id: str,
+        *,
+        mode: Literal[
+            "import", "generated_input", "docker_list", "placeholder", "sensitive"
+        ],
+    ) -> None:
+        """Share checkout, static CAS, and proposal guards between repairs."""
+
+        run = self._store.require_analysis_run(analysis_id)
+        root = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        if not hypothesis_id or not (
+            hypothesis_id in run.hypothesis_ids
+            or self._store.has_hypothesis(root, hypothesis_id)
+        ):
+            raise ValueError("LEGACY_IMPORT_STOP_HYPOTHESIS_INVALID")
+        child = root.model_copy(update={"hypothesis_id": hypothesis_id})
+        stopped = self._store.get(
+            child,
+            SimpleStage.POC_CANDIDATE_DONE
+            if mode in {"placeholder", "sensitive"}
+            else SimpleStage.POC_EXECUTION_DONE,
+        )
+        if stopped is None:
+            raise ValueError("LEGACY_IMPORT_STOP_HYPOTHESIS_INVALID")
+        if (
+            run.static_bundle_ref is None
+            or run.static_coverage_ref is None
+            or run.repository_profile_ref is None
+            or run.workspace_path is None
+            or not callable(getattr(self._static, "coverage_fingerprint", None))
+        ):
+            raise ValueError("LEGACY_IMPORT_STOP_STATIC_SCOPE_INVALID")
+        workspace_root = getattr(
+            getattr(self._static, "_profile", None), "workspace_root", None
+        )
+        verify_checkout = getattr(self._static, "_verify_opengrep_workspace", None)
+        if not isinstance(workspace_root, Path) or not callable(verify_checkout):
+            raise ValueError("LEGACY_IMPORT_STOP_WORKSPACE_INVALID")
+        expected_workspace = workspace_root / run.workspace_id
+        try:
+            resolved_root = workspace_root.resolve(strict=True)
+            resolved_workspace = run.workspace_path.resolve(strict=True)
+            file_attributes = getattr(
+                run.workspace_path.lstat(), "st_file_attributes", 0
+            )
+            if (
+                run.workspace_path != expected_workspace
+                or run.workspace_path.is_symlink()
+                or run.workspace_path.is_junction()
+                or bool(
+                    file_attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                )
+                or not run.workspace_path.is_dir()
+                or resolved_workspace == resolved_root
+                or not resolved_workspace.is_relative_to(resolved_root)
+            ):
+                raise ValueError("Saved checkout does not match configured workspace")
+            await verify_checkout(
+                run.workspace_path,
+                SimpleAnalysisRequest(
+                    data_dir=self._data_dir,
+                    repository=run.repository,
+                    commit=run.commit_id,
+                ),
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            raise ValueError("LEGACY_IMPORT_STOP_WORKSPACE_INVALID") from error
+        try:
+            await self._assert_completed_static_scope(run, root)
+            self._validate_static_evidence(
+                StaticBootstrapResult(
+                    repository_profile_ref=run.repository_profile_ref,
+                    static_bundle_ref=run.static_bundle_ref,
+                    workspace_path=run.workspace_path,
+                    static_coverage_ref=run.static_coverage_ref,
+                    static_disposition=run.static_disposition,
+                    security_policy_ref=run.security_policy_ref,
+                    policy_snapshot_ref=run.policy_snapshot_ref,
+                ),
+                root,
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise ValueError("LEGACY_IMPORT_STOP_STATIC_SCOPE_INVALID") from error
+        try:
+            self._verify_registered_candidate_proposals(root)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise ValueError("LEGACY_IMPORT_STOP_PROPOSAL_INVALID") from error
+        artifacts = SimpleArtifactRepository(self._data_dir, child)
+        if mode == "import":
+            self._store.prepare_legacy_import_stop_replan(stopped, artifacts)
+        elif mode == "generated_input":
+            self._store.prepare_fallback_poc_stop_replan(stopped, artifacts)
+        elif mode == "placeholder":
+            self._store.prepare_poc_placeholder_exhaustion_replay(stopped, artifacts)
+        elif mode == "sensitive":
+            self._store.prepare_poc_sensitive_content_replay(stopped, artifacts)
+        else:
+            check = self._owned_attempt_container
+            if check is None or not stopped.attempt_id:
+                raise ValueError("DOCKER_LIST_EXHAUSTION_PRESENCE_UNVERIFIED")
+            try:
+                present = await check(child, stopped.attempt_id)
+            except (OSError, RuntimeError, ValueError) as error:
+                raise ValueError(
+                    "DOCKER_LIST_EXHAUSTION_PRESENCE_UNVERIFIED"
+                ) from error
+            if present is not False:
+                raise ValueError("DOCKER_LIST_EXHAUSTION_CONTAINER_PRESENT")
+            absence_ref = artifacts.put_json(
+                {
+                    "kind": "simple_owned_attempt_container_absence",
+                    "identity": child.model_dump(mode="json"),
+                    "attempt_id": stopped.attempt_id,
+                    "present": False,
+                    "checked_at": datetime.now(UTC).isoformat(),
+                    "exhausted_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(stopped.model_dump(mode="json"))
+                    ).hexdigest(),
+                }
+            )
+            self._store.prepare_pre_execution_docker_replay(
+                stopped, absence_ref, artifacts
+            )
+
+    def _prepare_report_validator_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Reopen an exact bound report only after finding its unique saved draft."""
+
+        run = self._store.require_analysis_run(analysis_id)
+        root = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        if not hypothesis_id or not (
+            hypothesis_id in run.hypothesis_ids
+            or self._store.has_hypothesis(root, hypothesis_id)
+        ):
+            raise ValueError("REPORT_VALIDATOR_REPLAY_HYPOTHESIS_INVALID")
+        identity = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=hypothesis_id,
+        )
+        stopped = self._store.get(identity, SimpleStage.REPORT_DONE)
+        if stopped is None or stopped.attempt_id is None:
+            raise ValueError("REPORT_VALIDATOR_REPLAY_HYPOTHESIS_INVALID")
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        draft_ref = self._unique_bound_report_draft(artifacts, stopped.attempt_id)
+        self._store.prepare_report_validator_replay(stopped, draft_ref, artifacts)
+
+    @staticmethod
+    def _unique_bound_report_draft(
+        artifacts: SimpleArtifactRepository, attempt_id: str
+    ) -> StoredDataRef:
+        """Search only small immutable CAS objects; ambiguity fails closed."""
+
+        root = artifacts.paths.artifacts / "sha256"
+        selected: StoredDataRef | None = None
+        attempt_token = canonical_bytes({"attempt_id": attempt_id})[1:-1]
+        try:
+            for prefix in root.iterdir():
+                if (
+                    re.fullmatch(r"[0-9a-f]{2}", prefix.name) is None
+                    or prefix.is_symlink()
+                    or prefix.is_junction()
+                    or not prefix.is_dir()
+                ):
+                    continue
+                for path in prefix.iterdir():
+                    if re.fullmatch(r"[0-9a-f]{62}", path.name) is None:
+                        continue
+                    metadata = path.lstat()
+                    if (
+                        not stat.S_ISREG(metadata.st_mode)
+                        or bool(
+                            getattr(metadata, "st_file_attributes", 0)
+                            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                        )
+                        or metadata.st_size > 4 * 1024 * 1024
+                    ):
+                        continue
+                    raw = path.read_bytes()
+                    if attempt_token not in raw or b'"simple_report_draft"' not in raw:
+                        continue
+                    value = json.loads(raw)
+                    if (
+                        not isinstance(value, dict)
+                        or value.get("kind") != "simple_report_draft"
+                        or value.get("attempt_id") != attempt_id
+                    ):
+                        continue
+                    digest = prefix.name + path.name
+                    ref = StoredDataRef(
+                        stored_data_id=StoredDataId(digest),
+                        data_kind="artifact",
+                        content_hash=digest,
+                        workspace_id=WorkspaceId(artifacts.identity.workspace_id),
+                        commit_id=CommitId(artifacts.identity.commit_id),
+                        record_id=None,
+                    )
+                    artifacts.read_bounded(ref, 4 * 1024 * 1024)
+                    if selected is not None:
+                        raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_AMBIGUOUS")
+                    selected = ref
+        except (OSError, TypeError, json.JSONDecodeError) as error:
+            raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_SEARCH_FAILED") from error
+        if selected is None:
+            raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_MISSING")
+        return selected
 
     async def _resume_locked(self, exact: str) -> SimpleAnalysisOutcome:
         run = self._store.require_analysis_run(exact)
@@ -2179,7 +2534,7 @@ class SimpleAnalysisApplication:
                 if isinstance(bundle, dict)
                 else None
             )
-            context_version = value if value in {2, 3, 4} else 1
+            context_version = value if value in {2, 3, 4, 5} else 1
         except (OSError, TypeError, ValueError):
             return self._candidate_bootstrap_failure(
                 run,

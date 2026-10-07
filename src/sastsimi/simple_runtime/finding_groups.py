@@ -148,12 +148,6 @@ def group_verified_findings(
                 traced.setdefault(member.anchor.trace_nodes, []).append(member)
             else:
                 untraced.append(member)
-        if len(traced) == 1:
-            trace_members = next(iter(traced.values()))
-            buckets.setdefault(_group_key(trace_members[0]), []).extend(
-                (*trace_members, *untraced)
-            )
-            continue
         for trace_members in traced.values():
             buckets.setdefault(_group_key(trace_members[0]), []).extend(trace_members)
         if untraced:

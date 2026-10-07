@@ -47,12 +47,14 @@ from .models import CheckpointIdentity, SimpleStage, StageCheckpoint
 from .offline_wheels import build_wheel_bundle, import_wheel_bundle
 from .recovery import (
     RecoveryAction,
+    RecoveryCategory,
     RecoveryDecision,
     validate_environment_patch,
 )
 from .stages import ReproductionEnvironment
 
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_FULL_CONTAINER_ID = re.compile(r"[0-9a-f]{64}\Z")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _MAX_OUTPUT = 1024 * 1024
@@ -1289,6 +1291,53 @@ class PortableDockerRuntime:
             container_id, self._owner_labels(identity, attempt_id)
         )
 
+    async def has_owned_attempt_container(
+        self, identity: CheckpointIdentity, attempt_id: str
+    ) -> bool:
+        """Prove absence, or report presence, without modifying any container."""
+        if _RESOURCE_ID.fullmatch(attempt_id) is None:
+            raise ValueError("DOCKER_ATTEMPT_ID_INVALID")
+        expected = self._owner_labels(identity, attempt_id)
+        if any(_RESOURCE_ID.fullmatch(value) is None for value in expected.values()):
+            raise ValueError("DOCKER_OWNER_LABELS_INVALID")
+        args = (
+            "ps",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            *(
+                part
+                for key, value in expected.items()
+                for part in ("--filter", f"label={key}={value}")
+            ),
+        )
+        for attempt in range(3):
+            listed = await self._run(args, timeout_seconds=30)
+            if listed.exit_code == 0 and not listed.timed_out:
+                break
+            if attempt < 2:
+                await asyncio.sleep(0.25 * (2**attempt))
+        self._require_success("DOCKER_OWNED_ATTEMPT_LIST_FAILED", listed)
+        if len(listed.stdout) >= _MAX_OUTPUT:
+            raise DockerOperationError("DOCKER_OWNED_ATTEMPT_LIST_TRUNCATED", listed)
+        found = False
+        for raw in listed.stdout.splitlines():
+            try:
+                container_id = raw.decode("ascii", errors="strict")
+            except UnicodeDecodeError as error:
+                raise DockerOperationError(
+                    "DOCKER_OWNED_ATTEMPT_LIST_INVALID", listed
+                ) from error
+            if _FULL_CONTAINER_ID.fullmatch(container_id) is None:
+                raise DockerOperationError("DOCKER_OWNED_ATTEMPT_LIST_INVALID", listed)
+            state = await self.inspect(container_id)
+            if state.container_id != container_id or any(
+                state.labels.get(key) != value for key, value in expected.items()
+            ):
+                raise DockerOperationError("DOCKER_OWNED_ATTEMPT_MISMATCH", listed)
+            found = True
+        return found
+
     async def _remove_with_expected_labels(
         self, container_id: str, expected: Mapping[str, str]
     ) -> bool:
@@ -1302,16 +1351,23 @@ class PortableDockerRuntime:
         return True
 
     async def sweep_orphans(self) -> tuple[str, ...]:
-        listed = await self._run(
-            (
-                "ps",
-                "--all",
-                "--quiet",
-                "--filter",
-                "label=sastsimi.owner=simple-runtime",
-            ),
-            timeout_seconds=30,
-        )
+        for attempt in range(3):
+            listed = await self._run(
+                (
+                    "ps",
+                    "--all",
+                    "--quiet",
+                    "--filter",
+                    "label=sastsimi.owner=simple-runtime",
+                ),
+                timeout_seconds=30,
+            )
+            if listed.exit_code == 0 and not listed.timed_out:
+                break
+            if attempt < 2:
+                # Only this read-only query is safe to repeat before ownership
+                # inspection; create/remove operations retain their own checks.
+                await asyncio.sleep(0.25 * (2**attempt))
         self._require_success("DOCKER_OWNED_LIST_FAILED", listed)
         if len(listed.stdout) >= _MAX_OUTPUT:
             raise DockerOperationError("DOCKER_OWNED_LIST_TRUNCATED")
@@ -3289,8 +3345,47 @@ class DirectEnvironmentPreparer:
             **({"image_digest": image_digest} if image_digest is not None else {}),
         }
 
+    def _built_recovery_dockerfile(
+        self, checkpoint: StageCheckpoint, recipe: dict[str, object]
+    ) -> bytes | None:
+        """Accept only a same-attempt BUILT recipe with a matching build record."""
+
+        identity = checkpoint.identity.model_dump(mode="json")
+        attempt_refs = recipe.get("build_attempt_refs")
+        if (
+            recipe.get("status") != "BUILT"
+            or any(recipe.get(key) != identity[key] for key in identity)
+            or not isinstance(recipe.get("image_digest"), str)
+            or _IMAGE_DIGEST.fullmatch(str(recipe["image_digest"])) is None
+            or not isinstance(attempt_refs, list)
+        ):
+            return None
+        try:
+            dockerfile_ref = StoredDataRef.model_validate(recipe.get("dockerfile_ref"))
+            for raw_ref in attempt_refs:
+                attempt_ref = StoredDataRef.model_validate(raw_ref)
+                attempt = json.loads(self._artifacts.read(attempt_ref))
+                if (
+                    isinstance(attempt, dict)
+                    and attempt.get("kind") == "simple_docker_build_attempt"
+                    and attempt.get("identity") == identity
+                    and attempt.get("attempt_id") == recipe.get("attempt_id")
+                    and attempt.get("dockerfile_ref")
+                    == dockerfile_ref.model_dump(mode="json")
+                    and attempt.get("status") == "BUILT"
+                    and attempt.get("error_code") is None
+                ):
+                    return self._artifacts.read(dockerfile_ref)
+        except (OSError, TypeError, ValueError):
+            return None
+        return None
+
     def _recovery_patch(self, checkpoint: StageCheckpoint) -> bytes:
-        for ref in reversed(checkpoint.input_refs):
+        decisions: list[tuple[int, StoredDataRef, str]] = []
+        seen_decisions: set[StoredDataRef] = set()
+        built_patches: set[str] = set()
+        bound_recovery_positions: list[int] = []
+        for position, ref in enumerate(checkpoint.input_refs):
             try:
                 value = json.loads(self._artifacts.read(ref))
             except (OSError, UnicodeError, json.JSONDecodeError):
@@ -3306,7 +3401,27 @@ class DirectEnvironmentPreparer:
                     != self._offline_base_image_digest
                 ):
                     raise ValueError("POC_OFFLINE_REPAIR_BASE_MISMATCH")
-                return b""
+                # A newly pinned base invalidates only patches preceding it.
+                decisions.clear()
+                seen_decisions.clear()
+                built_patches.clear()
+                bound_recovery_positions.clear()
+                continue
+            if isinstance(value, dict) and value.get("kind") == (
+                "simple_environment_recipe"
+            ):
+                dockerfile = self._built_recovery_dockerfile(checkpoint, value)
+                if dockerfile is not None:
+                    marker = b"\n# SASTSIMI validated recovery patch\n"
+                    applied = (
+                        dockerfile.split(marker, 1)[1] if marker in dockerfile else b""
+                    )
+                    built_patches.update(
+                        patch
+                        for _, _, patch in decisions
+                        if b"\n" + patch.encode("utf-8") + b"\n" in b"\n" + applied
+                    )
+                continue
             if not isinstance(value, dict) or value.get("kind") != (
                 "simple_recovery_decision"
             ):
@@ -3320,15 +3435,64 @@ class DirectEnvironmentPreparer:
             decision = RecoveryDecision.model_validate_json(
                 canonical_bytes(decision_value)
             )
+            if decision.action is RecoveryAction.REPLAN_ENVIRONMENT:
+                original_error = value.get("original_error")
+                if (
+                    ref not in checkpoint.recovery_decision_refs
+                    or value.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+                    or value.get("decision_origin") != "RULE"
+                    or not isinstance(original_error, dict)
+                    or original_error.get("code") != "POC_RUNTIME_IMPORT_FAILED"
+                    or decision.category is not RecoveryCategory.ENVIRONMENT
+                    or decision.environment_patch
+                ):
+                    raise ValueError("RECOVERY_REPLAN_EVIDENCE_INVALID")
+                # The initial-verification Agent supplies the new requirement;
+                # earlier independent Dockerfile repairs remain in effect.
+                bound_recovery_positions.append(position)
+                continue
             if decision.action is not RecoveryAction.REBUILD_ENVIRONMENT:
                 continue
             patch = validate_environment_patch(decision.environment_patch)
-            return (
-                b"\n# SASTSIMI validated recovery patch\n"
-                + patch.encode("utf-8")
-                + b"\n"
+            if ref not in seen_decisions:
+                decisions.append((position, ref, patch))
+                seen_decisions.add(ref)
+                if ref in checkpoint.recovery_decision_refs:
+                    bound_recovery_positions.append(position)
+        if not decisions:
+            return b""
+        for position, ref, patch in decisions:
+            if ref in checkpoint.recovery_decision_refs:
+                continue
+            if patch not in built_patches or not any(
+                later > position for later in bound_recovery_positions
+            ):
+                raise ValueError("RECOVERY_DECISION_REF_UNBOUND")
+        current_ref = next(
+            (
+                ref
+                for _, ref, _ in reversed(decisions)
+                if ref in checkpoint.recovery_decision_refs
+            ),
+            None,
+        )
+        patches = list(
+            dict.fromkeys(
+                patch
+                for _, ref, patch in decisions
+                if ref == current_ref or patch in built_patches
             )
-        return b""
+        )
+        if not patches:
+            return b""
+        combined = (
+            b"\n# SASTSIMI validated recovery patch\n"
+            + "\n".join(patches).encode("utf-8")
+            + b"\n"
+        )
+        if len(combined) > 32 * 1024:
+            raise ValueError("RECOVERY_ENVIRONMENT_PATCH_FORBIDDEN")
+        return combined
 
     @staticmethod
     def _portable_repository_dockerfile(dockerfile: bytes) -> bytes:

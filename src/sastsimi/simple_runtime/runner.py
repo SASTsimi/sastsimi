@@ -895,7 +895,10 @@ class SimpleRuntimeRunner:
             # execution stage avoids an unnecessary LLM call and preserves the
             # exact candidate that was already validated.
             return failed_stage
-        if action is RecoveryAction.REBUILD_ENVIRONMENT:
+        if action in {
+            RecoveryAction.REBUILD_ENVIRONMENT,
+            RecoveryAction.REPLAN_ENVIRONMENT,
+        }:
             if STAGE_ORDER.index(failed_stage) < STAGE_ORDER.index(
                 SimpleStage.VERIFICATION_INITIAL_DONE
             ):

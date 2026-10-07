@@ -1082,3 +1082,210 @@ def test_scanner_flow_is_bounded_and_keeps_tool_proven_assurance(
         ("web.py", 2),
         ("sink.py", 2),
     ]
+
+
+@pytest.mark.parametrize(
+    ("source", "candidate_line", "expected_lines"),
+    [
+        (
+            "@app.get('/config')\n"
+            "def config():\n"
+            "    value = request.args.get('key')\n"
+            "    try:\n"
+            "        decoded = bytes.fromhex(value)\n"
+            "        selected = decrypt(decoded)\n"
+            "    except ValueError as exc:\n"
+            "        return str(exc)\n"
+            "    return render_template('config.html', selected=selected)\n",
+            3,
+            [3, 6, 7, 8, 9],
+        ),
+        (
+            "@app.get('/decode')\n"
+            "async def decode_route(request):\n"
+            "    value = request.query_params.get('value')\n"
+            "    try:\n"
+            "        decoded = decode(value)\n"
+            "        selected = verify(decoded)\n"
+            "    except ValueError as exc:\n"
+            "        return JSONResponse({'error': str(exc)})\n"
+            "    return {'result': selected}\n",
+            3,
+            [3, 5, 7, 8, 9],
+        ),
+        (
+            "@app.get('/config')\n"
+            "def config():\n"
+            "    value = request.args.get('key')\n"
+            "    if value:\n"
+            "        try:\n"
+            "            decoded = bytes.fromhex(value)\n"
+            "            selected = decrypt(decoded)\n"
+            "        except ValueError as exc:\n"
+            "            return str(exc)\n"
+            "    return render_template('config.html', selected=selected)\n",
+            3,
+            [3, 7, 8, 9, 10],
+        ),
+    ],
+)
+def test_request_validation_error_response_keeps_separate_structural_context(
+    tmp_path: Path,
+    source: str,
+    candidate_line: int,
+    expected_lines: list[int],
+) -> None:
+    """A real request-to-validator-to-response shape is review context, not proof."""
+
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text(source, encoding="utf-8")
+    candidate = _candidate("app.py", candidate_line).model_copy(
+        update={"kind": "ENTRY_POINT"}
+    )
+
+    result = build_python_call_path_index(workspace, ("app.py",)).for_candidate(
+        candidate, include_enclosing=True, include_error_response=True
+    )
+
+    hints = [
+        path
+        for path in result.paths
+        if path["kind"] == "candidate_error_response_context_v1"
+    ]
+    assert len(hints) == 1
+    assert hints[0]["assurance"] == "SOURCE_CONTEXT_ONLY"
+    assert hints[0]["provenance"] == "python_syntax"
+    steps = hints[0]["steps"]
+    assert isinstance(steps, list)
+    assert [step["line"] for step in steps] == expected_lines
+    assert [step["role"] for step in steps] == [
+        "REQUEST_CONTEXT",
+        "VALIDATION_CALL",
+        "EXCEPTION_HANDLER",
+        "CLIENT_ERROR_RESPONSE",
+        "NORMAL_RESPONSE",
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "@app.get('/config')\n"
+        "def config():\n"
+        "    value = request.args.get('key')\n"
+        "    try:\n"
+        "        selected = decrypt(value)\n"
+        "    except ValueError as exc:\n"
+        "        return 'invalid input'\n"
+        "    return selected\n",
+        "@app.get('/config')\n"
+        "def config():\n"
+        "    value = request.args.get('key')\n"
+        "    try:\n"
+        "        selected = decrypt('constant')\n"
+        "    except ValueError as exc:\n"
+        "        return str(exc)\n"
+        "    return selected\n",
+        "def config():\n"
+        "    value = request.args.get('key')\n"
+        "    try:\n"
+        "        selected = decrypt(value)\n"
+        "    except ValueError as exc:\n"
+        "        return str(exc)\n"
+        "    return selected\n",
+    ],
+)
+def test_error_response_hint_requires_request_flow_reflected_error_and_route(
+    tmp_path: Path, source: str
+) -> None:
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text(source, encoding="utf-8")
+    candidate_line = 2 if source.startswith("def ") else 3
+    candidate = _candidate("app.py", candidate_line).model_copy(
+        update={"kind": "ENTRY_POINT"}
+    )
+
+    result = build_python_call_path_index(workspace, ("app.py",)).for_candidate(
+        candidate, include_enclosing=True, include_error_response=True
+    )
+
+    assert not any(
+        path["kind"] == "candidate_error_response_context_v1" for path in result.paths
+    )
+
+
+@pytest.mark.parametrize(
+    "interlude",
+    [
+        "    value: str = 'constant'\n",
+        "    value += 'constant'\n",
+        "    (value := 'constant')\n",
+        "    return 'early'\n",
+        "    raise ValueError('early')\n",
+        "    if value:\n        return 'early'\n",
+    ],
+)
+def test_error_response_hint_rejects_rebinding_or_exit_before_try(
+    tmp_path: Path, interlude: str
+) -> None:
+    source = (
+        "@app.get('/config')\n"
+        "def config():\n"
+        "    value = request.args.get('key')\n" + interlude + "    try:\n"
+        "        selected = decrypt(value)\n"
+        "    except ValueError as exc:\n"
+        "        return str(exc)\n"
+        "    return selected\n"
+    )
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text(source, encoding="utf-8")
+    candidate = _candidate("app.py", 3).model_copy(update={"kind": "ENTRY_POINT"})
+
+    result = build_python_call_path_index(workspace, ("app.py",)).for_candidate(
+        candidate, include_enclosing=True, include_error_response=True
+    )
+
+    assert not any(
+        path["kind"] == "candidate_error_response_context_v1" for path in result.paths
+    )
+
+
+@pytest.mark.parametrize(
+    "try_body",
+    [
+        "        value: str = 'constant'\n        selected = decrypt(value)\n",
+        "        value += 'constant'\n        selected = decrypt(value)\n",
+        "        (value := 'constant')\n        selected = decrypt(value)\n",
+        "        return 'early'\n        selected = decrypt(value)\n",
+        "        raise ValueError('early')\n        selected = decrypt(value)\n",
+        "        if value:\n            return 'early'\n"
+        "        selected = decrypt(value)\n",
+        "        selected = decrypt(value)\n        return selected\n",
+    ],
+)
+def test_error_response_hint_rejects_unsupported_try_control_flow(
+    tmp_path: Path, try_body: str
+) -> None:
+    source = (
+        "@app.get('/config')\n"
+        "def config():\n"
+        "    value = request.args.get('key')\n"
+        "    try:\n" + try_body + "    except ValueError as exc:\n"
+        "        return str(exc)\n"
+        "    return selected\n"
+    )
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    (workspace / "app.py").write_text(source, encoding="utf-8")
+    candidate = _candidate("app.py", 3).model_copy(update={"kind": "ENTRY_POINT"})
+
+    result = build_python_call_path_index(workspace, ("app.py",)).for_candidate(
+        candidate, include_enclosing=True, include_error_response=True
+    )
+
+    assert not any(
+        path["kind"] == "candidate_error_response_context_v1" for path in result.paths
+    )

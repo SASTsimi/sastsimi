@@ -531,6 +531,7 @@ def test_unverified_metadata_cannot_be_filled_by_reporter_prose() -> None:
         ("en", "details", "1.2.3 is affected."),
         ("en", "details", "1.2.3.4 is affected."),
         ("en", "details", "Affected build 1.2.3.4 on the server."),
+        ("en", "details", "The server version 1.2.3.4 was affected."),
         ("en", "details", "1.2.3.4"),
         ("en", "details", "1.2.3 versions are affected."),
         (
@@ -567,6 +568,11 @@ def test_unsupported_metadata_claims_in_prose_are_rejected(
         ("127.0.0.1", "The PoC connects to: 127.0.0.1 only."),
         ("192.168.1.20", "The local PoC connects to 192.168.1.20 only."),
         ("8.8.8.8", "The local PoC connects to 8.8.8.8 only."),
+        (
+            "127.0.0.1",
+            "The standalone server defaults to 127.0.0.1, while the deployed "
+            "bind address is unverified.",
+        ),
     ],
 )
 def test_report_prose_accepts_bare_ipv4_poc_endpoint(
