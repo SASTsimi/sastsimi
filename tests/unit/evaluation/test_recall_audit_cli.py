@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -60,7 +61,10 @@ def _oracle(tmp_path: Path, **changes: object) -> Path:
 
 
 def _run(
-    data_dir: Path, oracle_path: Path, analysis_id: str = "analysis-1"
+    data_dir: Path,
+    oracle_path: Path,
+    analysis_id: str = "analysis-1",
+    *extra: str,
 ) -> subprocess.CompletedProcess[str]:
     environment = dict(os.environ)
     environment.pop("PYTHONPATH", None)
@@ -74,6 +78,7 @@ def _run(
             analysis_id,
             "--oracle",
             str(oracle_path),
+            *extra,
         ],
         capture_output=True,
         text=True,
@@ -253,6 +258,68 @@ def test_v2_oracle_rejects_unsafe_source_path(tmp_path: Path, unsafe_path: str) 
 
     with pytest.raises(_AuditInputError, match="RECALL_ORACLE_INVALID"):
         _load_oracle(oracle_path)
+
+
+def test_score_mode_requires_review_and_v2_oracle(tmp_path: Path) -> None:
+    data_dir, _ = _analysis(tmp_path)
+    oracle_path = _oracle(tmp_path)
+
+    completed = _run(data_dir, oracle_path, "analysis-1", "--score")
+
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+
+
+def test_v2_oracle_cannot_embed_post_run_links(tmp_path: Path) -> None:
+    oracle_path = _oracle(
+        tmp_path,
+        version=2,
+        completeness="DOCUMENTED_CASES",
+        cases=[
+            {
+                "case_id": "case-1",
+                "cwe": "CWE-89",
+                "path": "app.py",
+                "source_line": 10,
+                "sink_line": 20,
+                "rationale": "frozen case",
+                "vetted_hypothesis_ids": ["hyp-after-run"],
+            }
+        ],
+    )
+
+    with pytest.raises(_AuditInputError, match="RECALL_ORACLE_INVALID"):
+        _load_oracle(oracle_path)
+
+
+def test_score_mode_uses_separate_review_and_rejects_wrong_hash(tmp_path: Path) -> None:
+    data_dir, _ = _analysis(tmp_path)
+    oracle_path = _oracle(tmp_path, version=2, completeness="DOCUMENTED_CASES")
+    review_path = tmp_path / "review.json"
+    review = {
+        "version": 2,
+        "analysis_id": "analysis-1",
+        "oracle_sha256": hashlib.sha256(oracle_path.read_bytes()).hexdigest(),
+        "inventory_reviewed": True,
+        "cases": [{"case_id": "case-1", "rationale": "checked saved analysis"}],
+        "findings": [],
+    }
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+
+    valid = _run(
+        data_dir, oracle_path, "analysis-1", "--score", "--review", str(review_path)
+    )
+    assert valid.returncode == 0, valid.stderr
+    assert json.loads(valid.stdout)["case_counts"]["REVIEW_REQUIRED"] == 1
+
+    review["oracle_sha256"] = "b" * 64
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    invalid = _run(
+        data_dir, oracle_path, "analysis-1", "--score", "--review", str(review_path)
+    )
+    assert invalid.returncode != 0
+    assert invalid.stdout == ""
+    assert "RECALL_REVIEW_ORACLE_HASH_MISMATCH" in invalid.stderr
 
 
 def test_help_explains_when_missed_status_is_allowed() -> None:

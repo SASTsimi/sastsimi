@@ -20,6 +20,8 @@ from sastsimi.simple_runtime.recall_audit import (  # noqa: E402
     OracleCase,
     audit_analysis,
 )
+from sastsimi.simple_runtime.recall_review import load_review  # noqa: E402
+from sastsimi.simple_runtime.recall_scoring import score_analysis  # noqa: E402
 
 
 class _CaseInput(BaseModel):
@@ -46,9 +48,9 @@ class _OracleInput(BaseModel):
     commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     cases: tuple[_CaseInput, ...] = Field(min_length=1)
     version: Literal[1, 2] = 1
-    completeness: Literal[
-        "UNDECLARED", "DOCUMENTED_CASES", "EXHAUSTIVE_PYTHON"
-    ] = "UNDECLARED"
+    completeness: Literal["UNDECLARED", "DOCUMENTED_CASES", "EXHAUSTIVE_PYTHON"] = (
+        "UNDECLARED"
+    )
 
     @model_validator(mode="after")
     def unique_case_ids(self) -> _OracleInput:
@@ -57,6 +59,12 @@ class _OracleInput(BaseModel):
             raise ValueError("duplicate oracle case ID")
         if self.version == 2:
             for case in self.cases:
+                if (
+                    case.vetted_candidate_ids
+                    or case.vetted_hypothesis_ids
+                    or case.finding_inventory_reviewed
+                ):
+                    raise ValueError("v2 oracle must be frozen before review")
                 for path in (case.path, case.sink_path):
                     if path is None:
                         continue
@@ -75,15 +83,18 @@ class _AuditInputError(Exception):
         super().__init__(code)
 
 
-def _load_oracle(path: Path) -> Oracle:
+def _oracle_bytes(path: Path) -> bytes:
     try:
         if path.stat().st_size > 1024 * 1024:
             raise _AuditInputError("RECALL_ORACLE_TOO_LARGE")
-        payload = path.read_bytes()
+        return path.read_bytes()
     except FileNotFoundError as error:
         raise _AuditInputError("RECALL_ORACLE_NOT_FOUND") from error
     except OSError as error:
         raise _AuditInputError("RECALL_ORACLE_READ_FAILED") from error
+
+
+def _parse_oracle(payload: bytes) -> Oracle:
     try:
         parsed = _OracleInput.model_validate_json(payload)
     except ValidationError as error:
@@ -113,6 +124,21 @@ def _load_oracle(path: Path) -> Oracle:
     )
 
 
+def _load_oracle(path: Path) -> Oracle:
+    return _parse_oracle(_oracle_bytes(path))
+
+
+def _review_bytes(path: Path) -> bytes:
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            raise _AuditInputError("RECALL_REVIEW_TOO_LARGE")
+        return path.read_bytes()
+    except FileNotFoundError as error:
+        raise _AuditInputError("RECALL_REVIEW_NOT_FOUND") from error
+    except OSError as error:
+        raise _AuditInputError("RECALL_REVIEW_READ_FAILED") from error
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -126,10 +152,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--data-dir", required=True, type=Path)
     parser.add_argument("--analysis-id", required=True)
     parser.add_argument("--oracle", required=True, type=Path)
+    parser.add_argument("--score", action="store_true", help="score a frozen v2 oracle")
+    parser.add_argument("--review", type=Path, help="post-run human review JSON")
     arguments = parser.parse_args(argv)
     try:
-        oracle = _load_oracle(arguments.oracle)
-        result = audit_analysis(arguments.data_dir, arguments.analysis_id, oracle)
+        if bool(arguments.score) != (arguments.review is not None):
+            raise _AuditInputError("RECALL_REVIEW_REQUIRED_FOR_SCORE")
+        raw_oracle = _oracle_bytes(arguments.oracle)
+        oracle = _parse_oracle(raw_oracle)
+        if arguments.score:
+            if oracle.version != 2:
+                raise _AuditInputError("RECALL_SCORE_REQUIRES_V2_ORACLE")
+            try:
+                review = load_review(_review_bytes(arguments.review))
+            except (ValidationError, ValueError) as error:
+                raise _AuditInputError("RECALL_REVIEW_INVALID") from error
+            score_result = score_analysis(
+                arguments.data_dir,
+                arguments.analysis_id,
+                oracle,
+                raw_oracle,
+                review,
+            )
+            output = json.dumps(score_result, ensure_ascii=False, sort_keys=True)
+        else:
+            audit_result = audit_analysis(
+                arguments.data_dir, arguments.analysis_id, oracle
+            )
+            output = json.dumps(audit_result, ensure_ascii=False, sort_keys=True)
     except _AuditInputError as error:
         print(str(error), file=sys.stderr)
         return 2
@@ -146,13 +196,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "RECALL_ORACLE_TARGET_MISMATCH",
             "RECALL_CANDIDATE_ID_MISMATCH",
         }:
-            code = "RECALL_ANALYSIS_DATA_CORRUPT"
+            if not code.startswith("RECALL_REVIEW_"):
+                code = "RECALL_ANALYSIS_DATA_CORRUPT"
         print(code, file=sys.stderr)
         return 2
     except OSError:
         print("RECALL_ANALYSIS_READ_FAILED", file=sys.stderr)
         return 2
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    print(output)
     return 0
 
 

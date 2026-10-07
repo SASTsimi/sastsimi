@@ -57,6 +57,12 @@ class ReviewLedger(BaseModel):
         linked = [finding for case in self.cases for finding in case.finding_ids]
         if not unique(linked):
             raise ValueError("Finding linked to multiple cases")
+        if set(linked) != {
+            finding.finding_id
+            for finding in self.findings
+            if finding.status == "MATCHED"
+        }:
+            raise ValueError("case Finding requires matching adjudication")
         for case in self.cases:
             if not all(
                 unique(list(values))

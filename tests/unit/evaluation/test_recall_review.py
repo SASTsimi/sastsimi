@@ -129,3 +129,10 @@ def test_review_rejects_unknown_case_mapping() -> None:
 
     with pytest.raises(ValueError, match="RECALL_REVIEW_CASE_MISMATCH"):
         reviewed_oracle(oracle, review, complete_inventory=False)
+
+
+def test_review_rejects_case_finding_without_matching_adjudication() -> None:
+    from sastsimi.simple_runtime.recall_review import load_review
+
+    with pytest.raises(ValueError):
+        load_review(_review(findings=[]))
