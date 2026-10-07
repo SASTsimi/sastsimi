@@ -706,17 +706,17 @@ def test_saved_v2_rejects_changed_record_scope_version_or_reference(
 ) -> None:
     saved = _saved_v2(tmp_path)
     key, original = next(iter(saved.progress.items()))
-    mismatches = {
-        "static_bundle_hash": "c" * 64,
-        "index_hash": "d" * 64,
-        "source_sha256": "e" * 64,
-        "proposal_version": 3,
-        "context_hash": "f" * 64,
-    }
-    for field, value in mismatches.items():
+    mismatches = (
+        replace(original, static_bundle_hash="c" * 64),
+        replace(original, index_hash="d" * 64),
+        replace(original, source_sha256="e" * 64),
+        replace(original, proposal_version=3),
+        replace(original, context_hash="f" * 64),
+    )
+    for mismatch in mismatches:
         progress = dict(saved.progress)
-        progress[key] = replace(original, **{field: value})
-        assert _reuse_saved_v2(saved, progress=progress) is None, field
+        progress[key] = mismatch
+        assert _reuse_saved_v2(saved, progress=progress) is None, mismatch
 
     forged_id = "f" * 64
     progress = dict(saved.progress)
