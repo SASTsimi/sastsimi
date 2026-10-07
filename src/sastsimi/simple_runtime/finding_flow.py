@@ -2126,7 +2126,7 @@ def _flask_post_percent_ssti_anchor(
     return matches[0] if len(matches) == 1 else None
 
 
-def _flask_cookie_route(tree: ast.Module, function: ast.FunctionDef) -> str | None:
+def _flask_literal_route(tree: ast.Module, function: ast.FunctionDef) -> str | None:
     """Resolve one literal Flask route without changing other flow families."""
 
     if len(function.decorator_list) != 1:
@@ -2246,7 +2246,7 @@ def _direct_flask_cookie_pickle_anchor(
     for function in tree.body:
         if not isinstance(function, ast.FunctionDef):
             continue
-        route = _flask_cookie_route(tree, function)
+        route = _flask_literal_route(tree, function)
         if (
             route is None
             or not _stable_imports(
@@ -2348,6 +2348,217 @@ def _cookie_pickle_trace_agrees(
     return _ssti_trace_agrees(flow_trace, anchor, tree, source, sink, source_lines)
 
 
+def _guarded_eval_module_bindings_stable(tree: ast.Module) -> bool:
+    """Abstain when module imports could indirectly replace request or eval."""
+
+    sys_aliases = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "sys"
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            return False
+        if isinstance(node, ast.Name) and node.id == "__builtins__":
+            return False
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module.split(".", 1)[0] == "importlib" or (
+                module in {"flask", "builtins"}
+                and any(alias.name == "__dict__" for alias in node.names)
+                or module == "sys"
+                and any(alias.name == "modules" for alias in node.names)
+            ):
+                return False
+        if isinstance(node, ast.Import) and any(
+            alias.name.split(".", 1)[0] in {"flask", "builtins", "importlib"}
+            for alias in node.names
+        ):
+            return False
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.attr == "modules"
+            and node.value.id in sys_aliases
+        ):
+            return False
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and (
+                node.attr == "request_class"
+                or isinstance(node.value, ast.Name)
+                and node.value.id == "Flask"
+            )
+        ):
+            return False
+    return True
+
+
+def _guarded_flask_post_eval_anchor(
+    tree: ast.Module,
+    path: str,
+    cited: set[int],
+    flow_trace: Mapping[str, object] | None,
+) -> FlowAnchor | None:
+    """Prove one POST form key reaches one built-in eval in a guarded return."""
+
+    # A SARIF trace can distinguish a different path through the same call.
+    # This narrow shape does not verify those steps, so leave traced proposals
+    # separate until a trace-aware proof exists.
+    if flow_trace is not None or not _guarded_eval_module_bindings_stable(tree):
+        return None
+    matches: list[FlowAnchor] = []
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef) or len(function.body) != 3:
+            continue
+        route = _flask_literal_route(tree, function)
+        if (
+            route is None
+            or not _stable_imports(
+                tree,
+                function,
+                "request",
+                ("flask", "request"),
+                allow_unrelated_nested_imports=True,
+            )
+            or not _stable_builtin(tree, function, "eval", require_flask_request=False)
+        ):
+            continue
+        decorator = function.decorator_list[0]
+        assert isinstance(decorator, ast.Call)
+        assert isinstance(decorator.func, ast.Attribute)
+        if decorator.func.attr == "route":
+            if len(decorator.keywords) != 1:
+                continue
+            methods = decorator.keywords[0].value
+            if not isinstance(methods, (ast.List, ast.Tuple)) or not any(
+                isinstance(method, ast.Constant) and method.value == "POST"
+                for method in methods.elts
+            ):
+                continue
+        elif decorator.func.attr != "post":
+            continue
+        initial, guard, returned = function.body
+        if (
+            not isinstance(initial, ast.Assign)
+            or len(initial.targets) != 1
+            or not isinstance(initial.targets[0], ast.Name)
+            or not isinstance(initial.value, ast.Constant)
+            or initial.value.value is not None
+            or not isinstance(guard, ast.If)
+            or guard.orelse
+            or len(guard.body) != 1
+            or not isinstance(guard.body[0], ast.Assign)
+            or len(guard.body[0].targets) != 1
+            or not isinstance(guard.body[0].targets[0], ast.Name)
+            or guard.body[0].targets[0].id != initial.targets[0].id
+            or not isinstance(returned, ast.Return)
+            or returned.value is None
+        ):
+            continue
+        variable = initial.targets[0].id
+        test = guard.test
+        if (
+            not isinstance(test, ast.Compare)
+            or _name(test.left) != "request.method"
+            or len(test.ops) != 1
+            or not isinstance(test.ops[0], ast.Eq)
+            or len(test.comparators) != 1
+            or not isinstance(test.comparators[0], ast.Constant)
+            or test.comparators[0].value != "POST"
+        ):
+            continue
+        source = guard.body[0].value
+        if (
+            not isinstance(source, ast.Subscript)
+            or _name(source.value) != "request.form"
+            or not isinstance(source.slice, ast.Constant)
+            or not isinstance(source.slice.value, str)
+            or not source.slice.value
+            or _request_input_lines(function) != [source.lineno]
+        ):
+            continue
+        calls = [
+            node for node in ast.walk(returned.value) if isinstance(node, ast.Call)
+        ]
+        eval_calls = [node for node in calls if _name(node.func) == "eval"]
+        if len(eval_calls) != 1:
+            continue
+        sink = eval_calls[0]
+        if (
+            sink.lineno not in cited
+            or len(sink.args) != 1
+            or not isinstance(sink.args[0], ast.Name)
+            or sink.args[0].id != variable
+            or sink.keywords
+            or _unsupported_writes(function, sink.lineno)
+        ):
+            continue
+        guarded = [
+            node
+            for node in ast.walk(returned.value)
+            if isinstance(node, ast.IfExp)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == variable
+            and isinstance(node.orelse, ast.Constant)
+            and node.orelse.value == ""
+            and any(child is sink for child in ast.walk(node.body))
+        ]
+        if len(guarded) != 1:
+            continue
+        string_calls = [
+            node
+            for node in calls
+            if _name(node.func) == "str"
+            and len(node.args) == 1
+            and node.args[0] is sink
+            and not node.keywords
+        ]
+        if len(string_calls) != 1 or not _stable_builtin(
+            tree, function, "str", require_flask_request=False
+        ):
+            continue
+        wrapped = string_calls[0]
+        if any(
+            node is not sink
+            and node is not wrapped
+            and not (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "replace"
+                and node.func.value is wrapped
+                and len(node.args) == 2
+                and all(_literal(argument) for argument in node.args)
+                and not node.keywords
+            )
+            for node in calls
+        ):
+            continue
+        matches.append(
+            FlowAnchor(
+                route=f"POST {route}",
+                function=function.name,
+                source_file=path,
+                source_line=source.lineno,
+                source_access="request.form",
+                source_key=source.slice.value,
+                def_use_nodes=(f"{variable}@{guard.body[0].lineno}",),
+                sink_file=path,
+                sink_line=sink.lineno,
+                sink_callee="eval",
+                sink_argument=0,
+                branch_nodes=(
+                    f"if:{guard.lineno}:yes",
+                    f"ifexp:{guarded[0].lineno}:yes",
+                ),
+                cwe="CWE-95",
+            )
+        )
+    return matches[0] if len(matches) == 1 else None
+
+
 def resolve_flow_anchor(
     workspace: Path,
     path: str,
@@ -2374,6 +2585,10 @@ def resolve_flow_anchor(
         return _direct_flask_cookie_pickle_anchor(
             tree, path, cited, flow_trace, source_text.splitlines()
         )
+    if normalized_cwe == "CWE-95":
+        guarded_eval = _guarded_flask_post_eval_anchor(tree, path, cited, flow_trace)
+        if guarded_eval is not None:
+            return guarded_eval
     allowed_sinks = _DIRECT_SINKS.get(normalized_cwe)
     if allowed_sinks is None:
         return None

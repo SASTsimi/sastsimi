@@ -3186,6 +3186,15 @@ class SimpleCheckpointStore:
             and stopped.recovery_lineage_id is not None
             and len(stopped.recovery_decision_refs) == MAX_RECOVERY_ATTEMPTS - 1
         )
+        stopped_second_report = (
+            stopped.error_code == "REPORT_CONTENT_INVALID"
+            and stopped.attempt_number == 2
+            and stopped.output_refs == (draft_ref,)
+            and stopped.recovery_origin_stage is SimpleStage.REPORT_DONE
+            and stopped.recovery_lineage_id is not None
+            and len(stopped.recovery_decision_refs) == 1
+            and stopped.recovery_decision_refs[0] in stopped.input_refs
+        )
         legacy_report = (
             stopped.error_code
             in {"STAGE_UNEXPECTED_ERROR", "REPORT_UNSUPPORTED_METADATA_CLAIM"}
@@ -3197,7 +3206,7 @@ class SimpleCheckpointStore:
             or stopped.stage is not SimpleStage.REPORT_DONE
             or stopped.stage_version != STAGE_VERSION[SimpleStage.REPORT_DONE]
             or stopped.status is not StageStatus.BLOCKED
-            or not (legacy_report or exhausted_report)
+            or not (legacy_report or exhausted_report or stopped_second_report)
             or stopped.retryable
             or stopped.attempt_id is None
             or stopped.report_ref is not None
@@ -3205,32 +3214,90 @@ class SimpleCheckpointStore:
             or artifacts.paths.database.resolve() != self._database_path.resolve()
         ):
             raise ValueError("REPORT_VALIDATOR_REPLAY_INVALID")
-        try:
-            envelope = json.loads(artifacts.read_bounded(draft_ref, 4 * 1024 * 1024))
-            if (
-                not isinstance(envelope, dict)
-                or envelope.get("kind") != "simple_report_draft"
-                or envelope.get("attempt_id") != stopped.attempt_id
-                or not isinstance(envelope.get("result"), dict)
-                or not isinstance(envelope.get("source_refs"), list)
-                or not isinstance(envelope.get("prompt_digest"), str)
-                or re.fullmatch(r"[0-9a-f]{64}", envelope["prompt_digest"]) is None
-                or envelope.get("output_digest")
-                != hashlib.sha256(canonical_bytes(envelope["result"])).hexdigest()
-            ):
-                raise ValueError("invalid draft envelope")
-            content = BilingualReportContent.model_validate_json(
-                canonical_bytes(envelope["result"])
-            )
-            validate_report_content(
-                content.model_dump(mode="json"), allowed_locations=()
-            )
-        except (OSError, TypeError, ValueError) as error:
-            raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_INVALID") from error
+
+        def validated_draft(
+            ref: StoredDataRef, attempt_id: str
+        ) -> tuple[dict[str, object], BilingualReportContent]:
+            try:
+                envelope = json.loads(artifacts.read_bounded(ref, 4 * 1024 * 1024))
+                if (
+                    not isinstance(envelope, dict)
+                    or envelope.get("kind") != "simple_report_draft"
+                    or envelope.get("attempt_id") != attempt_id
+                    or not isinstance(envelope.get("result"), dict)
+                    or not isinstance(envelope.get("source_refs"), list)
+                    or not isinstance(envelope.get("prompt_digest"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", envelope["prompt_digest"]) is None
+                    or envelope.get("output_digest")
+                    != hashlib.sha256(canonical_bytes(envelope["result"])).hexdigest()
+                ):
+                    raise ValueError("invalid draft envelope")
+                content = BilingualReportContent.model_validate_json(
+                    canonical_bytes(envelope["result"])
+                )
+                validate_report_content(
+                    content.model_dump(mode="json"), allowed_locations=()
+                )
+            except (OSError, TypeError, ValueError) as error:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_INVALID") from error
+            return envelope, content
+
+        assert stopped.attempt_id is not None
+        envelope, content = validated_draft(draft_ref, stopped.attempt_id)
         if (
-            stopped.error_code == "STAGE_UNEXPECTED_ERROR" or exhausted_report
+            stopped.error_code == "STAGE_UNEXPECTED_ERROR"
+            or exhausted_report
+            or stopped_second_report
         ) and not has_legacy_report_ipv4_false_positive(content):
             raise ValueError("REPORT_VALIDATOR_REPLAY_LEGACY_CAUSE_UNPROVEN")
+        first_draft_ref: StoredDataRef | None = None
+        first_attempt_id: str | None = None
+        retry_ref: StoredDataRef | None = None
+        first_envelope: dict[str, object] | None = None
+        if stopped_second_report:
+            retry_ref = stopped.recovery_decision_refs[0]
+            try:
+                retry_record = json.loads(artifacts.read_bounded(retry_ref, 64 * 1024))
+                if not isinstance(retry_record, dict):
+                    raise ValueError("invalid retry decision")
+                retry_failure = StageFailure.model_validate_json(
+                    canonical_bytes(retry_record.get("original_error"))
+                )
+                retry_decision = RecoveryDecision.model_validate_json(
+                    canonical_bytes(retry_record.get("decision"))
+                )
+                first_attempt_id = retry_record.get("attempt_id")
+                if (
+                    retry_record.get("kind") != "simple_recovery_decision"
+                    or retry_record.get("identity") != identity.model_dump(mode="json")
+                    or retry_record.get("stage") != SimpleStage.REPORT_DONE.value
+                    or retry_record.get("attempt") != 1
+                    or not isinstance(first_attempt_id, str)
+                    or not first_attempt_id
+                    or first_attempt_id == stopped.attempt_id
+                    or retry_record.get("decision_origin") != "AGENT"
+                    or retry_failure.code != "REPORT_CONTENT_INVALID"
+                    or not retry_failure.retryable
+                    or len(retry_failure.evidence_refs) != 1
+                    or retry_decision.category is not RecoveryCategory.GENERATED_INPUT
+                    or retry_decision.action is not RecoveryAction.REGENERATE_INPUT
+                    or retry_decision.environment_patch != ""
+                ):
+                    raise ValueError("retry is not the saved validator failure")
+                first_draft_ref = retry_failure.evidence_refs[0]
+                if (
+                    first_draft_ref not in stopped.input_refs
+                    or first_draft_ref == draft_ref
+                    or retry_ref == draft_ref
+                ):
+                    raise ValueError("retry references are not carried forward")
+            except (OSError, TypeError, ValueError) as error:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN") from error
+            first_envelope, first_content = validated_draft(
+                first_draft_ref, first_attempt_id
+            )
+            if not has_legacy_report_ipv4_false_positive(first_content):
+                raise ValueError("REPORT_VALIDATOR_REPLAY_LEGACY_CAUSE_UNPROVEN")
         if exhausted_report:
             try:
                 for attempt, ref in enumerate(stopped.recovery_decision_refs, 1):
@@ -3271,6 +3338,149 @@ class SimpleCheckpointStore:
 
             if checkpoint_at(identity, SimpleStage.REPORT_DONE) != stopped:
                 raise ValueError("REPORT_VALIDATOR_REPLAY_STALE")
+            if stopped_second_report:
+                assert first_attempt_id is not None
+                assert first_draft_ref is not None
+                assert retry_ref is not None
+
+                def attempt_events(attempt_id: str) -> tuple[AgentActivityEvent, ...]:
+                    rows = connection.execute(
+                        "SELECT event_json FROM agent_activity_events "
+                        "WHERE analysis_id = ? AND hypothesis_key = ? "
+                        "AND attempt_id = ?",
+                        (identity.analysis_id, identity.hypothesis_id, attempt_id),
+                    ).fetchall()
+                    try:
+                        return tuple(
+                            AgentActivityEvent.model_validate_json(row["event_json"])
+                            for row in rows
+                        )
+                    except ValueError as error:
+                        raise ValueError(
+                            "REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"
+                        ) from error
+
+                def sole_report_event(
+                    events: tuple[AgentActivityEvent, ...],
+                    attempt_id: str,
+                    kind: ActivityKind,
+                    refs: tuple[StoredDataRef, ...] | None,
+                ) -> AgentActivityEvent:
+                    matches = tuple(
+                        event
+                        for event in events
+                        if event.stage == SimpleStage.REPORT_DONE.value
+                        and event.kind is kind
+                    )
+                    if len(matches) != 1:
+                        raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
+                    event = matches[0]
+                    if (
+                        event.analysis_id != identity.analysis_id
+                        or event.workspace_id != identity.workspace_id
+                        or event.commit_id != identity.commit_id
+                        or event.hypothesis_id != identity.hypothesis_id
+                        or event.attempt_id != attempt_id
+                        or event.status != StageStatus.BLOCKED.value
+                        or event.error_code != "REPORT_CONTENT_INVALID"
+                        or refs is not None
+                        and event.output_refs != refs
+                    ):
+                        raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
+                    return event
+
+                first_events = attempt_events(first_attempt_id)
+                second_events = attempt_events(stopped.attempt_id)
+                first_failure_event = sole_report_event(
+                    first_events,
+                    first_attempt_id,
+                    ActivityKind.STAGE_BLOCKED,
+                    (first_draft_ref,),
+                )
+                first_retry_event = sole_report_event(
+                    first_events,
+                    first_attempt_id,
+                    ActivityKind.DECISION_RECORDED,
+                    (retry_ref,),
+                )
+                second_failure_event = sole_report_event(
+                    second_events,
+                    stopped.attempt_id,
+                    ActivityKind.STAGE_BLOCKED,
+                    (draft_ref,),
+                )
+                second_stop_event = sole_report_event(
+                    second_events,
+                    stopped.attempt_id,
+                    ActivityKind.DECISION_RECORDED,
+                    None,
+                )
+                first_inputs = first_failure_event.input_refs
+                expected_lineage = hashlib.sha256(
+                    canonical_bytes(
+                        {
+                            "identity": identity,
+                            "stage": SimpleStage.REPORT_DONE.value,
+                            "stage_version": stopped.stage_version,
+                            "input_hash": input_reference_hash(first_inputs),
+                            "error_code": "REPORT_CONTENT_INVALID",
+                        }
+                    )
+                ).hexdigest()
+                if (
+                    first_retry_event.input_refs != first_inputs
+                    or first_draft_ref in first_inputs
+                    or retry_ref in first_inputs
+                    or stopped.recovery_lineage_id != expected_lineage
+                    or stopped.input_refs
+                    != tuple(dict.fromkeys(first_inputs + (first_draft_ref, retry_ref)))
+                    or second_failure_event.input_refs != stopped.input_refs
+                    or second_stop_event.input_refs != stopped.input_refs
+                    or any(
+                        event.kind
+                        in {ActivityKind.STAGE_COMPLETED, ActivityKind.STAGE_FAILED}
+                        and event.stage == SimpleStage.REPORT_DONE.value
+                        for event in (*first_events, *second_events)
+                    )
+                    or len(second_stop_event.output_refs) != 1
+                ):
+                    raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
+                stop_ref = second_stop_event.output_refs[0]
+                try:
+                    stop_record = json.loads(
+                        artifacts.read_bounded(stop_ref, 64 * 1024)
+                    )
+                    if not isinstance(stop_record, dict):
+                        raise ValueError("invalid STOP decision")
+                    stop_failure = StageFailure.model_validate_json(
+                        canonical_bytes(stop_record.get("original_error"))
+                    )
+                    stop_decision = RecoveryDecision.model_validate_json(
+                        canonical_bytes(stop_record.get("decision"))
+                    )
+                    if (
+                        stop_ref in stopped.input_refs
+                        or stop_ref in stopped.output_refs
+                        or stop_record.get("kind") != "simple_recovery_decision"
+                        or stop_record.get("identity")
+                        != identity.model_dump(mode="json")
+                        or stop_record.get("stage") != SimpleStage.REPORT_DONE.value
+                        or stop_record.get("attempt") != 2
+                        or stop_record.get("attempt_id") != stopped.attempt_id
+                        or stop_record.get("decision_origin") != "AGENT"
+                        or stop_failure.code != "REPORT_CONTENT_INVALID"
+                        or not stop_failure.retryable
+                        or stop_failure.evidence_refs != (draft_ref,)
+                        or stop_decision.category
+                        is not RecoveryCategory.GENERATED_INPUT
+                        or stop_decision.action is not RecoveryAction.STOP
+                        or stop_decision.environment_patch != ""
+                    ):
+                        raise ValueError("STOP does not bind the failed report")
+                except (OSError, TypeError, ValueError) as error:
+                    raise ValueError(
+                        "REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"
+                    ) from error
             if exhausted_report:
                 event_rows = connection.execute(
                     "SELECT event_json FROM agent_activity_events "
@@ -3372,6 +3582,12 @@ class SimpleCheckpointStore:
                 )
             )
             if envelope["source_refs"] != [ref.model_dump(mode="json") for ref in refs]:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_SOURCE_MISMATCH")
+            if stopped_second_report and (
+                first_envelope is None
+                or first_envelope["source_refs"]
+                != [ref.model_dump(mode="json") for ref in refs]
+            ):
                 raise ValueError("REPORT_VALIDATOR_REPLAY_SOURCE_MISMATCH")
             source_hash = hashlib.sha256(
                 canonical_bytes(

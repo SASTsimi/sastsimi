@@ -25,7 +25,14 @@ from sastsimi.simple_runtime.models import (
     SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageStatus,
+)
+from sastsimi.simple_runtime.recovery import (
+    RecoveryAction,
+    RecoveryCategory,
+    RecoveryDecision,
+    RecoveryResolution,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
@@ -276,6 +283,351 @@ def _exhausted_ipv4_report(
             )
         )
     return store, artifacts, exhausted, draft_ref
+
+
+def _stopped_second_report(
+    tmp_path: Path,
+    *,
+    invalid_draft: str | None = None,
+    invalid_decision: str | None = None,
+    record_stop: bool = True,
+) -> tuple[
+    SimpleCheckpointStore,
+    SimpleArtifactRepository,
+    StageCheckpoint,
+    StoredDataRef,
+    StoredDataRef,
+    StoredDataRef,
+]:
+    store, artifacts, original, _legacy_ref, _other = _blocked_report(tmp_path)
+    identity = original.identity
+    refs = tuple(
+        item.output_refs[0]
+        for item in store.prior(identity, SimpleStage.REPORT_DONE).values()
+    )
+
+    def draft(attempt_id: str, *, invalid: bool) -> StoredDataRef:
+        content = _report_content(legacy_ipv4=False)
+        english = content["en"]
+        korean = content["ko"]
+        assert isinstance(english, dict) and isinstance(korean, dict)
+        content["en"] = {
+            **english,
+            "limitations": [
+                "The default listener is 127.0.0.1; remote access is unverified."
+            ],
+            **({"summary": "Affected versions 1.2.3"} if invalid else {}),
+        }
+        content["ko"] = {
+            **korean,
+            "limitations": [
+                "기본 수신 주소는 127.0.0.1이므로 외부 접근 여부는 확인되지 않았습니다."
+            ],
+        }
+        return artifacts.put_json(
+            {
+                "kind": "simple_report_draft",
+                "source_refs": [
+                    ref.model_dump(mode="json")
+                    for ref in (
+                        refs[:-1]
+                        if invalid_draft == "first_refs" and attempt_id.endswith("-1")
+                        else refs
+                    )
+                ],
+                "result": content,
+                "prompt_digest": "b" * 64,
+                "output_digest": hashlib.sha256(canonical_bytes(content)).hexdigest(),
+                "attempt_id": attempt_id,
+            }
+        )
+
+    first_id = "report-invalid-attempt-1"
+    second_id = "report-invalid-attempt-2"
+    first_ref = draft(first_id, invalid=invalid_draft == "first")
+    second_ref = draft(second_id, invalid=invalid_draft == "second")
+
+    def decision_ref(
+        attempt_id: str,
+        attempt_number: int,
+        draft_ref: StoredDataRef,
+        decision: RecoveryDecision,
+        *,
+        evidence_ref: StoredDataRef | None = None,
+        origin: str = "AGENT",
+    ) -> StoredDataRef:
+        return artifacts.put_json(
+            {
+                "kind": "simple_recovery_decision",
+                "identity": identity.model_dump(mode="json"),
+                "stage": SimpleStage.REPORT_DONE.value,
+                "attempt": attempt_number,
+                "attempt_id": attempt_id,
+                "original_error": StageFailure(
+                    code="REPORT_CONTENT_INVALID",
+                    retryable=True,
+                    safe_message="Reporter output failed validation",
+                    evidence_refs=(evidence_ref or draft_ref,),
+                ).model_dump(mode="json"),
+                "decision": decision.model_dump(mode="json"),
+                "decision_origin": origin,
+            }
+        )
+
+    first_running = original.model_copy(
+        update={
+            "status": StageStatus.RUNNING,
+            "attempt_id": first_id,
+            "attempt_number": 1,
+            "error_code": None,
+        }
+    )
+    store.save_checkpoint(first_running)
+    first_failed = store.mark_failure(
+        first_running,
+        StageFailure(
+            code="REPORT_CONTENT_INVALID",
+            retryable=True,
+            safe_message="Reporter output failed validation",
+            evidence_refs=(first_ref,),
+        ),
+        StageStatus.BLOCKED,
+    )
+    retry = RecoveryDecision(
+        category=RecoveryCategory.GENERATED_INPUT,
+        action=RecoveryAction.REGENERATE_INPUT,
+        diagnosis="Retry the saved Reporter stage",
+        guidance="Use only supported report content",
+    )
+    retry_ref = decision_ref(
+        first_id,
+        1,
+        first_ref,
+        (
+            retry.model_copy(update={"action": RecoveryAction.STOP})
+            if invalid_decision == "first_action"
+            else retry
+        ),
+        evidence_ref=second_ref if invalid_decision == "first_evidence" else None,
+        origin="RULE" if invalid_decision == "first_origin" else "AGENT",
+    )
+    pending = store.prepare_recovery(
+        first_failed,
+        RecoveryResolution(decision=retry, decision_ref=retry_ref),
+        SimpleStage.REPORT_DONE,
+    )
+    second_running = store.mark_running(
+        identity, SimpleStage.REPORT_DONE, pending.input_refs, attempt_id=second_id
+    )
+    second_failed = store.mark_failure(
+        second_running,
+        StageFailure(
+            code="REPORT_CONTENT_INVALID",
+            retryable=True,
+            safe_message="Reporter output failed validation",
+            evidence_refs=(second_ref,),
+        ),
+        StageStatus.BLOCKED,
+    )
+    stop = RecoveryDecision(
+        category=RecoveryCategory.GENERATED_INPUT,
+        action=RecoveryAction.STOP,
+        diagnosis="Stop after the second report validation failure",
+        guidance="Inspect the saved Reporter drafts",
+    )
+    stop_ref = decision_ref(
+        second_id,
+        2,
+        second_ref,
+        (
+            stop.model_copy(update={"action": RecoveryAction.REGENERATE_INPUT})
+            if invalid_decision == "stop_action"
+            else stop
+        ),
+        evidence_ref=first_ref if invalid_decision == "stop_evidence" else None,
+        origin="RULE" if invalid_decision == "stop_origin" else "AGENT",
+    )
+    if record_stop:
+        stopped = store.record_recovery_stop(
+            second_failed, RecoveryResolution(decision=stop, decision_ref=stop_ref)
+        )
+    else:
+        stopped = second_failed.model_copy(update={"retryable": False})
+        store.save_checkpoint(stopped)
+    root_identity = identity.model_copy(update={"hypothesis_id": None})
+    root = store.require(root_identity, SimpleStage.HYPOTHESIS_DONE)
+    store.save_checkpoint(
+        root.model_copy(
+            update={
+                "error_code": (
+                    "CANDIDATE_CHILD_ERROR_BOUND:REPORT_CONTENT_INVALID:"
+                    f"{identity.hypothesis_id}:{second_id}"
+                )
+            }
+        )
+    )
+    return store, artifacts, stopped, first_ref, second_ref, stop_ref
+
+
+def test_second_report_stop_replays_only_when_both_saved_drafts_are_now_valid(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, stopped, first_ref, second_ref, stop_ref = _stopped_second_report(
+        tmp_path
+    )
+    prior = store.prior(stopped.identity, SimpleStage.REPORT_DONE)
+    root_identity = stopped.identity.model_copy(update={"hypothesis_id": None})
+    root = store.require(root_identity, SimpleStage.HYPOTHESIS_DONE)
+
+    pending = store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+
+    assert first_ref in stopped.input_refs
+    assert stop_ref not in stopped.input_refs
+    assert pending.status is StageStatus.PENDING
+    assert pending.attempt_number == 2
+    assert pending.attempt_id is None
+    assert pending.output_refs == ()
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == pending
+    assert store.prior(stopped.identity, SimpleStage.REPORT_DONE) == prior
+    assert store.require(root_identity, SimpleStage.HYPOTHESIS_DONE) == root
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_STALE"):
+        store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+
+
+@pytest.mark.parametrize("invalid_draft", ["first", "second"])
+def test_second_report_stop_rejects_either_still_invalid_draft(
+    tmp_path: Path, invalid_draft: str
+) -> None:
+    store, artifacts, stopped, _first_ref, second_ref, _stop_ref = (
+        _stopped_second_report(tmp_path, invalid_draft=invalid_draft)
+    )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_DRAFT_INVALID"):
+        store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+def test_second_report_stop_requires_persisted_stop_decision(tmp_path: Path) -> None:
+    store, artifacts, stopped, _first_ref, second_ref, _stop_ref = (
+        _stopped_second_report(tmp_path, record_stop=False)
+    )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"):
+        store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+@pytest.mark.parametrize(
+    "invalid_decision",
+    [
+        "first_action",
+        "first_evidence",
+        "first_origin",
+        "stop_action",
+        "stop_evidence",
+        "stop_origin",
+    ],
+)
+def test_second_report_stop_rejects_mismatched_recovery_proof(
+    tmp_path: Path, invalid_decision: str
+) -> None:
+    store, artifacts, stopped, _first_ref, second_ref, _stop_ref = (
+        _stopped_second_report(tmp_path, invalid_decision=invalid_decision)
+    )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"):
+        store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+def test_second_report_stop_rejects_ambiguous_decision_event(tmp_path: Path) -> None:
+    store, artifacts, stopped, _first_ref, second_ref, stop_ref = (
+        _stopped_second_report(tmp_path)
+    )
+    ledger = AgentActivityStore(store.database_path)
+    stop_event = next(
+        event
+        for event in ledger.list_analysis(
+            stopped.identity.analysis_id,
+            hypothesis_id=stopped.identity.hypothesis_id,
+        )
+        if event.attempt_id == stopped.attempt_id
+        and event.kind is ActivityKind.DECISION_RECORDED
+        and event.output_refs == (stop_ref,)
+    )
+    ledger.append(
+        stop_event.model_copy(
+            update={
+                "event_id": "duplicate-stop-event",
+                "sequence": stop_event.sequence + 1,
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"):
+        store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+def test_second_report_stop_rejects_first_draft_source_mismatch(tmp_path: Path) -> None:
+    store, artifacts, stopped, _first_ref, second_ref, _stop_ref = (
+        _stopped_second_report(tmp_path, invalid_draft="first_refs")
+    )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_SOURCE_MISMATCH"):
+        store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+def test_second_report_stop_rejects_wrong_recovery_lineage(tmp_path: Path) -> None:
+    store, artifacts, stopped, _first_ref, second_ref, _stop_ref = (
+        _stopped_second_report(tmp_path)
+    )
+    wrong_lineage = stopped.model_copy(update={"recovery_lineage_id": "f" * 64})
+    store.save_checkpoint(wrong_lineage)
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"):
+        store.prepare_report_validator_replay(wrong_lineage, second_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == wrong_lineage
+
+
+@pytest.mark.parametrize("invalid", ["root", "stale", "success"])
+def test_second_report_stop_rejects_changed_checkpoint_or_root(
+    tmp_path: Path, invalid: str
+) -> None:
+    store, artifacts, stopped, _first_ref, second_ref, _stop_ref = (
+        _stopped_second_report(tmp_path)
+    )
+    current = stopped
+    if invalid == "root":
+        root_identity = stopped.identity.model_copy(update={"hypothesis_id": None})
+        root = store.require(root_identity, SimpleStage.HYPOTHESIS_DONE)
+        store.save_checkpoint(root.model_copy(update={"error_code": "OTHER_CHILD"}))
+        expected_error = "REPORT_VALIDATOR_REPLAY_ROOT_UNBOUND"
+    else:
+        current = stopped.model_copy(
+            update={
+                "status": (
+                    StageStatus.SUCCEEDED
+                    if invalid == "success"
+                    else StageStatus.BLOCKED
+                ),
+                "attempt_id": (
+                    "later-report-attempt" if invalid == "stale" else stopped.attempt_id
+                ),
+                "error_code": None if invalid == "success" else stopped.error_code,
+                "report_ref": second_ref if invalid == "success" else None,
+            }
+        )
+        store.save_checkpoint(current)
+        expected_error = "REPORT_VALIDATOR_REPLAY_STALE"
+    with pytest.raises(ValueError, match=expected_error):
+        store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == current
+    if invalid == "success":
+        with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_INVALID"):
+            store.prepare_report_validator_replay(current, second_ref, artifacts)
+        assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == current
 
 
 def test_exhausted_ipv4_validator_replay_is_one_shot_and_preserves_prior(

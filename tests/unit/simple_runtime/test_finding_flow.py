@@ -811,6 +811,248 @@ def test_common_python_families_group_only_the_same_cited_flow(
     assert first.cwe == cwe
 
 
+def test_guarded_flask_post_eval_has_one_pinned_form_key_to_callsite(
+    tmp_path: Path,
+) -> None:
+    source = r"""from flask import Flask, request
+app = Flask(__name__)
+@app.route('/calculate', methods=['POST', 'GET'])
+def calculate():
+    expression = None
+    if request.method == 'POST':
+        expression = request.form['formula']
+    return '<p>' + (str(eval(expression)).replace('\n', '<br>') if expression else '')
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+
+    sink_only = resolve_flow_anchor(
+        tmp_path, "app.py", sha, {"code_locations": ["app.py:8"]}, "CWE-95"
+    )
+    source_and_sink = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        sha,
+        {"code_locations": ["app.py:7", "app.py:8"]},
+        "CWE-95",
+    )
+
+    assert sink_only is not None
+    assert sink_only == source_and_sink
+    assert sink_only.route == "POST /calculate"
+    assert sink_only.source_access == "request.form"
+    assert sink_only.source_key == "formula"
+    assert sink_only.source_line == 7
+    assert sink_only.sink_callee == "eval"
+    assert sink_only.sink_line == 8
+
+
+def test_guarded_flask_post_eval_ignores_unrelated_nested_import(
+    tmp_path: Path,
+) -> None:
+    source = r"""from flask import Flask, request
+app = Flask(__name__)
+@app.route('/calculate', methods=['POST', 'GET'])
+def calculate():
+    expression = None
+    if request.method == 'POST':
+        expression = request.form['formula']
+    return '<p>' + (str(eval(expression)).replace('\n', '<br>') if expression else '')
+def setup_database():
+    import sqlite3
+    return sqlite3.connect(':memory:')
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    anchor = resolve_flow_anchor(
+        tmp_path,
+        "app.py",
+        hashlib.sha256(raw).hexdigest(),
+        {"code_locations": ["app.py:8"]},
+        "CWE-95",
+    )
+
+    assert anchor is not None
+    assert anchor.source_key == "formula"
+    assert anchor.sink_callee == "eval"
+
+
+def test_guarded_flask_post_eval_keeps_distinct_keys_and_callsites(
+    tmp_path: Path,
+) -> None:
+    source = r"""from flask import Flask, request
+app = Flask(__name__)
+@app.route('/first', methods=['POST', 'GET'])
+def first():
+    value = None
+    if request.method == 'POST':
+        value = request.form['left']
+    return str(eval(value)) if value else ''
+@app.route('/second', methods=['POST', 'GET'])
+def second():
+    value = None
+    if request.method == 'POST':
+        value = request.form['right']
+    return str(eval(value)) if value else ''
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+
+    first = resolve_flow_anchor(
+        tmp_path, "app.py", sha, {"code_locations": ["app.py:8"]}, "CWE-95"
+    )
+    second = resolve_flow_anchor(
+        tmp_path, "app.py", sha, {"code_locations": ["app.py:14"]}, "CWE-95"
+    )
+
+    assert first is not None and second is not None
+    assert first.route == "POST /first" and first.source_key == "left"
+    assert second.route == "POST /second" and second.source_key == "right"
+    assert first.sink_line == 8 and second.sink_line == 14
+    assert first != second
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("request.method == 'POST'", "request.method == 'GET'"),
+        ("request.form['formula']", "request.form[key]"),
+        ("request.form['formula']", "request.args['formula']"),
+        ("expression = None", "expression = request.form['other']"),
+        ("str(eval(expression))", "str(eval(expression + suffix))"),
+        ("str(eval(expression))", "str(eval(expression)) + str(eval(expression))"),
+        ("if expression else ''", "if other else ''"),
+        ("str(eval(expression))", "str(getattr(__builtins__, 'eval')(expression))"),
+    ],
+)
+def test_guarded_flask_post_eval_abstains_on_unproven_paths(
+    tmp_path: Path, before: str, after: str
+) -> None:
+    source = r"""from flask import Flask, request
+app = Flask(__name__)
+@app.route('/calculate', methods=['POST', 'GET'])
+def calculate():
+    expression = None
+    if request.method == 'POST':
+        expression = request.form['formula']
+    return '<p>' + (str(eval(expression)).replace('\n', '<br>') if expression else '')
+""".replace(before, after)
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:8"]},
+            "CWE-95",
+        )
+        is None
+    )
+
+
+def test_guarded_flask_post_eval_does_not_guess_a_supplied_trace(
+    tmp_path: Path,
+) -> None:
+    source = r"""from flask import Flask, request
+app = Flask(__name__)
+@app.route('/calculate', methods=['POST', 'GET'])
+def calculate():
+    expression = None
+    if request.method == 'POST':
+        expression = request.form['formula']
+    return str(eval(expression)) if expression else ''
+"""
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:7", "app.py:8"]},
+            "CWE-95",
+            {"source_key": "formula", "sink_argument": 0},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "import flask\nflask.__dict__['request'] = replacement",
+        "import flask as web\nweb.__dict__['request'] = replacement",
+        "import builtins\nbuiltins.__dict__['eval'] = replacement",
+        "import builtins as runtime\nruntime.__dict__['eval'] = replacement",
+        "import flask\nflask.request = replacement",
+        "import builtins\nbuiltins.eval = replacement",
+        "import flask\nalias = flask\nalias.request = replacement",
+        "import flask as web\nalias = web\nalias.__dict__['request'] = replacement",
+        "import builtins\nruntime = builtins\nruntime.eval = replacement",
+        (
+            "import builtins as native\nruntime = native\n"
+            "runtime.__dict__['eval'] = replacement"
+        ),
+        "import flask.views\nflask.request = replacement",
+        "import flask",
+        "import builtins",
+        (
+            "from importlib import import_module\n"
+            "module = import_module('flask')\n"
+            "module.__dict__['request'] = replacement"
+        ),
+        "from importlib.util import find_spec",
+        (
+            "from flask import Request\n"
+            "class HeaderRequest(Request):\n"
+            "    @property\n"
+            "    def form(self):\n"
+            "        return self.headers\n"
+            "Flask.request_class = HeaderRequest"
+        ),
+        "class PossibleRequestOverride: pass",
+        "Flask.request_class = replacement",
+        "Flask.wsgi_app = replacement",
+        "app.request_class = replacement",
+        "setattr(Flask, 'request_class', replacement)",
+    ],
+)
+def test_guarded_flask_post_eval_abstains_on_source_or_sink_rebinding(
+    tmp_path: Path, mutation: str
+) -> None:
+    source = (
+        r"""from flask import Flask, request
+app = Flask(__name__)
+@app.route('/calculate', methods=['POST', 'GET'])
+def calculate():
+    expression = None
+    if request.method == 'POST':
+        expression = request.form['formula']
+    return str(eval(expression)) if expression else ''
+"""
+        + mutation
+    )
+    raw = source.encode("utf-8")
+    (tmp_path / "app.py").write_bytes(raw)
+
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:8"]},
+            "CWE-95",
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "source,cwe,sink_line",
     [
