@@ -8,10 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.simple_runtime.models import SimpleAnalysisRun
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
-from tools.recall_audit import _load_oracle
+from tools.recall_audit import _AuditInputError, _load_oracle
 
 _REPO = Path(__file__).resolve().parents[3]
 _COMMAND = _REPO / "tools" / "recall_audit.py"
@@ -191,6 +193,66 @@ def test_reviewed_finding_inventory_flag_reaches_evaluator_input(
     parsed = _load_oracle(oracle_path)
 
     assert parsed.cases[0].finding_inventory_reviewed is True
+
+
+def test_v2_oracle_keeps_distinct_operation_path_and_guard_kind(tmp_path: Path) -> None:
+    path = _oracle(
+        tmp_path,
+        version=2,
+        completeness="DOCUMENTED_CASES",
+        cases=[
+            {
+                "case_id": "flow-1",
+                "cwe": "CWE-89",
+                "kind": "FLOW",
+                "path": "routes/api.py",
+                "source_line": 10,
+                "sink_path": "data/query.py",
+                "sink_line": 25,
+                "rationale": "request reaches the query",
+            },
+            {
+                "case_id": "guard-1",
+                "cwe": "CWE-862",
+                "kind": "MISSING_GUARD",
+                "path": "routes/admin.py",
+                "source_line": 7,
+                "sink_line": 12,
+                "rationale": "role is not checked before state mutation",
+            },
+        ],
+    )
+
+    parsed = _load_oracle(path)
+
+    assert parsed.version == 2
+    assert parsed.completeness == "DOCUMENTED_CASES"
+    assert parsed.cases[0].sink_path == "data/query.py"
+    assert parsed.cases[1].kind == "MISSING_GUARD"
+
+
+@pytest.mark.parametrize(
+    "unsafe_path", ["../hidden.py", "/tmp/app.py", "C:\\app.py", "a\\b.py"]
+)
+def test_v2_oracle_rejects_unsafe_source_path(tmp_path: Path, unsafe_path: str) -> None:
+    oracle_path = _oracle(
+        tmp_path,
+        version=2,
+        completeness="DOCUMENTED_CASES",
+        cases=[
+            {
+                "case_id": "case-1",
+                "cwe": "CWE-89",
+                "path": unsafe_path,
+                "source_line": 10,
+                "sink_line": 20,
+                "rationale": "unsafe path must not be accepted",
+            }
+        ],
+    )
+
+    with pytest.raises(_AuditInputError, match="RECALL_ORACLE_INVALID"):
+        _load_oracle(oracle_path)
 
 
 def test_help_explains_when_missed_status_is_allowed() -> None:

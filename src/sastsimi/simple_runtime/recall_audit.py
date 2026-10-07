@@ -7,7 +7,7 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.refs import StoredDataRef
@@ -37,6 +37,9 @@ class OracleCase:
     vetted_candidate_ids: tuple[str, ...] = ()
     vetted_hypothesis_ids: tuple[str, ...] = ()
     finding_inventory_reviewed: bool = False
+    kind: Literal["FLOW", "MISSING_GUARD", "CONFIGURATION"] = "FLOW"
+    sink_path: str | None = None
+    scope: Literal["PYTHON", "OUT_OF_SCOPE"] = "PYTHON"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +47,10 @@ class Oracle:
     repository: str
     commit: str
     cases: tuple[OracleCase, ...]
+    version: Literal[1, 2] = 1
+    completeness: Literal[
+        "UNDECLARED", "DOCUMENTED_CASES", "EXHAUSTIVE_PYTHON"
+    ] = "UNDECLARED"
 
 
 class AuditCaseResult(TypedDict):
@@ -277,7 +284,12 @@ def _root_hypothesis_current(
 
 
 def _matches(case: OracleCase, candidate: StaticCandidate) -> bool:
-    if candidate.path != case.path:
+    target_path = (
+        case.path
+        if candidate.kind == "ENTRY_POINT"
+        else case.sink_path or case.path
+    )
+    if candidate.path != target_path:
         return False
     target = case.source_line if candidate.kind == "ENTRY_POINT" else case.sink_line
     if target is None or not candidate.line <= target <= candidate.end_line:

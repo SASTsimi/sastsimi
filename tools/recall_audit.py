@@ -8,6 +8,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -33,6 +34,9 @@ class _CaseInput(BaseModel):
     vetted_candidate_ids: tuple[str, ...] = ()
     vetted_hypothesis_ids: tuple[str, ...] = ()
     finding_inventory_reviewed: bool = False
+    kind: Literal["FLOW", "MISSING_GUARD", "CONFIGURATION"] = "FLOW"
+    sink_path: str | None = None
+    scope: Literal["PYTHON", "OUT_OF_SCOPE"] = "PYTHON"
 
 
 class _OracleInput(BaseModel):
@@ -41,12 +45,28 @@ class _OracleInput(BaseModel):
     repository: str = Field(min_length=1)
     commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     cases: tuple[_CaseInput, ...] = Field(min_length=1)
+    version: Literal[1, 2] = 1
+    completeness: Literal[
+        "UNDECLARED", "DOCUMENTED_CASES", "EXHAUSTIVE_PYTHON"
+    ] = "UNDECLARED"
 
     @model_validator(mode="after")
     def unique_case_ids(self) -> _OracleInput:
         case_ids = [case.case_id for case in self.cases]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("duplicate oracle case ID")
+        if self.version == 2:
+            for case in self.cases:
+                for path in (case.path, case.sink_path):
+                    if path is None:
+                        continue
+                    if (
+                        path.startswith("/")
+                        or "\\" in path
+                        or ":" in path
+                        or any(part in {"", ".", ".."} for part in path.split("/"))
+                    ):
+                        raise ValueError("unsafe oracle source path")
         return self
 
 
@@ -82,9 +102,14 @@ def _load_oracle(path: Path) -> Oracle:
                 vetted_candidate_ids=case.vetted_candidate_ids,
                 vetted_hypothesis_ids=case.vetted_hypothesis_ids,
                 finding_inventory_reviewed=case.finding_inventory_reviewed,
+                kind=case.kind,
+                sink_path=case.sink_path,
+                scope=case.scope,
             )
             for case in parsed.cases
         ),
+        version=parsed.version,
+        completeness=parsed.completeness,
     )
 
 
