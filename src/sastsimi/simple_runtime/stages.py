@@ -1384,7 +1384,13 @@ sys.path while importing the child's dotted module name: a module file in that
 child directory can shadow its namespace package. Choose exactly one compatible
 strategy: use /workspace with the dotted repository module name, or use the
 module's own directory with its bare module name. Preserve relative-import
-semantics when choosing between them.
+semantics when choosing between them. Inspect transitive absolute imports in
+the imported repository files before choosing: when a package under /workspace
+imports its own top-level name, keep /workspace on sys.path for the entire PoC
+and import the dotted package name; a child-only root breaks that import.
+If a package directory and a same-named .py file both exist, check
+importlib.util.find_spec for the intended package from the selected root before
+running the exploit and preserve the package's submodule imports.
 For a Python AttributeError, include only exc.name when it is a safe simple
 identifier and is not secret-shaped; otherwise print
 `AttributeError: unresolved_member` without the exception message. If import-
@@ -2019,6 +2025,7 @@ reinterpret an execution error as DISPROVED.
                             stdout_ref,
                             stderr_ref,
                             interpretation_ref,
+                            cleanup_ref,
                         ),
                     )
                 )
@@ -2431,6 +2438,10 @@ hypothesis. Trace source, propagation, sink, authorization and sanitizer facts.
 Cite supplied exact artifact content hashes. State missing code paths instead of
 inventing them. `requested_paths` lists only repository-relative files needed
 for a later bounded retrieval.
+If HTTP reachability depends on route registration, handler dispatch, or
+configuration, use `requested_paths` for bounded retrieval of tracked
+handler/router files and referenced configuration/data files.
+Never infer an HTTP route from a class name alone.
 """,
             schema=schema,
             kind="simple_pro_evidence",
@@ -2444,6 +2455,10 @@ counterevidence: validation, sanitization, authorization, unreachable flows and
 false tool matches. Cite supplied exact artifact content hashes. Never weaken a
 claim merely because information is missing; record the gap in limitations and
 use `requested_paths` for repository-relative files needed later.
+If HTTP reachability depends on route registration, handler dispatch, or
+configuration, use `requested_paths` for bounded retrieval of tracked
+handler/router files and referenced configuration/data files.
+Never infer an HTTP route from a class name alone.
 """,
             schema=schema,
             kind="simple_con_evidence",

@@ -8,74 +8,19 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import ValidationError
 
 # A script launched from tools/ does not otherwise see this checkout's src/.
 # Prefer the adjacent source over a stale editable install from another worktree.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sastsimi.simple_runtime.recall_audit import (  # noqa: E402
     Oracle,
-    OracleCase,
     audit_analysis,
 )
+from sastsimi.simple_runtime.recall_oracle import parse_oracle_bytes  # noqa: E402
 from sastsimi.simple_runtime.recall_review import load_review  # noqa: E402
 from sastsimi.simple_runtime.recall_scoring import score_analysis  # noqa: E402
-
-
-class _CaseInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    case_id: str = Field(min_length=1)
-    cwe: str = Field(pattern=r"^CWE-[0-9]+$")
-    path: str = Field(min_length=1)
-    source_line: int | None = Field(ge=1)
-    sink_line: int = Field(ge=1)
-    rationale: str = Field(min_length=1)
-    vetted_candidate_ids: tuple[str, ...] = ()
-    vetted_hypothesis_ids: tuple[str, ...] = ()
-    finding_inventory_reviewed: bool = False
-    kind: Literal["FLOW", "MISSING_GUARD", "CONFIGURATION"] = "FLOW"
-    sink_path: str | None = None
-    scope: Literal["PYTHON", "OUT_OF_SCOPE"] = "PYTHON"
-
-
-class _OracleInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    repository: str = Field(min_length=1)
-    commit: str = Field(pattern=r"^[0-9a-f]{40}$")
-    cases: tuple[_CaseInput, ...] = Field(min_length=1)
-    version: Literal[1, 2] = 1
-    completeness: Literal["UNDECLARED", "DOCUMENTED_CASES", "EXHAUSTIVE_PYTHON"] = (
-        "UNDECLARED"
-    )
-
-    @model_validator(mode="after")
-    def unique_case_ids(self) -> _OracleInput:
-        case_ids = [case.case_id for case in self.cases]
-        if len(case_ids) != len(set(case_ids)):
-            raise ValueError("duplicate oracle case ID")
-        if self.version == 2:
-            for case in self.cases:
-                if (
-                    case.vetted_candidate_ids
-                    or case.vetted_hypothesis_ids
-                    or case.finding_inventory_reviewed
-                ):
-                    raise ValueError("v2 oracle must be frozen before review")
-                for path in (case.path, case.sink_path):
-                    if path is None:
-                        continue
-                    if (
-                        path.startswith("/")
-                        or "\\" in path
-                        or ":" in path
-                        or any(part in {"", ".", ".."} for part in path.split("/"))
-                    ):
-                        raise ValueError("unsafe oracle source path")
-        return self
 
 
 class _AuditInputError(Exception):
@@ -96,32 +41,9 @@ def _oracle_bytes(path: Path) -> bytes:
 
 def _parse_oracle(payload: bytes) -> Oracle:
     try:
-        parsed = _OracleInput.model_validate_json(payload)
+        return parse_oracle_bytes(payload)
     except ValidationError as error:
         raise _AuditInputError("RECALL_ORACLE_INVALID") from error
-    return Oracle(
-        repository=parsed.repository,
-        commit=parsed.commit,
-        cases=tuple(
-            OracleCase(
-                case_id=case.case_id,
-                cwe=case.cwe,
-                path=case.path,
-                source_line=case.source_line,
-                sink_line=case.sink_line,
-                rationale=case.rationale,
-                vetted_candidate_ids=case.vetted_candidate_ids,
-                vetted_hypothesis_ids=case.vetted_hypothesis_ids,
-                finding_inventory_reviewed=case.finding_inventory_reviewed,
-                kind=case.kind,
-                sink_path=case.sink_path,
-                scope=case.scope,
-            )
-            for case in parsed.cases
-        ),
-        version=parsed.version,
-        completeness=parsed.completeness,
-    )
 
 
 def _load_oracle(path: Path) -> Oracle:
@@ -143,10 +65,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog=(
-            "Set finding_inventory_reviewed=true for a case only after manually "
-            "checking its complete Finding inventory. A MISSED result requires "
-            "that review; otherwise it reports POSSIBLE with "
-            "FINDING_INVENTORY_UNREVIEWED."
+            "For legacy stage audit, set finding_inventory_reviewed=true in "
+            "a case only after checking its complete Finding inventory; "
+            "otherwise MISSED remains POSSIBLE with "
+            "FINDING_INVENTORY_UNREVIEWED. For v2 --score, set "
+            "inventory_reviewed=true in the separate review JSON, never in "
+            "the frozen oracle."
         ),
     )
     parser.add_argument("--data-dir", required=True, type=Path)

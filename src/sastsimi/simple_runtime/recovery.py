@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shlex
+import sqlite3
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Literal, Protocol
@@ -21,7 +22,13 @@ from sastsimi.contracts.prompt_redaction import (
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
-from .models import MAX_RECOVERY_ATTEMPTS, SimpleStage, StageCheckpoint, StageFailure
+from .models import (
+    MAX_RECOVERY_ATTEMPTS,
+    SimpleAnalysisRun,
+    SimpleStage,
+    StageCheckpoint,
+    StageFailure,
+)
 from .provider import SimpleLLMClient
 
 _MAX_ENVIRONMENT_PATCH_BYTES = 8 * 1024
@@ -564,7 +571,31 @@ class SimpleRecoveryCoordinator:
                 ),
             )
         if import_matches and isolated_terminal_import:
-            import_output = next(iter(import_matches.values()))
+            import_name, import_output = next(iter(import_matches.items()))
+            if self._pinned_local_python_module(checkpoint, import_name):
+                return self._store(
+                    checkpoint,
+                    failure,
+                    RecoveryDecision(
+                        category=RecoveryCategory.GENERATED_INPUT,
+                        action=RecoveryAction.REGENERATE_INPUT,
+                        diagnosis=(
+                            "Terminal import failure names a module present "
+                            "in the pinned repository source"
+                        ),
+                        guidance=(
+                            "Regenerate the PoC import setup using the parent "
+                            "import root shown by the pinned source layout. "
+                            "Keep that root on sys.path throughout direct and "
+                            "transitive absolute imports; for a root package "
+                            "this is /workspace, not its child package directory. "
+                            "Check importlib.util.find_spec for the intended "
+                            "package when a same-named module file exists. "
+                            "Do not install a package or change pinned source."
+                        ),
+                    ),
+                    diagnostic_excerpt=import_output,
+                )
             return self._store(
                 checkpoint,
                 failure,
@@ -1024,6 +1055,83 @@ class SimpleRecoveryCoordinator:
                 "GENERATED_OFFLINE_WHEELS",
             }
         )
+
+    def _pinned_local_python_module(
+        self, checkpoint: StageCheckpoint, import_name: bytes
+    ) -> bool:
+        """Classify only a CAS-backed tracked Python module in the built run."""
+
+        prefix = b"ModuleNotFoundError:"
+        if not import_name.startswith(prefix) or not self._verified_pinned_recipe(
+            checkpoint
+        ):
+            return False
+        name = import_name.removeprefix(prefix)
+        if len(name) > 128 or _SAFE_PYTHON_MODULE.fullmatch(name) is None:
+            return False
+        try:
+            connection = sqlite3.connect(
+                f"file:{self._artifacts.paths.database.resolve().as_posix()}?mode=ro",
+                uri=True,
+            )
+            try:
+                row = connection.execute(
+                    "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                    (checkpoint.identity.analysis_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+            if row is None:
+                return False
+            run = SimpleAnalysisRun.model_validate_json(row[0])
+            identity = checkpoint.identity
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.static_bundle_ref is None
+            ):
+                return False
+            bundle = json.loads(
+                self._artifacts.read_bounded(run.static_bundle_ref, 64 * 1024)
+            )
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("analysis_id") != identity.analysis_id
+                or bundle.get("workspace_id") != identity.workspace_id
+                or bundle.get("commit_id") != identity.commit_id
+            ):
+                return False
+            manifest_ref = StoredDataRef.model_validate(
+                bundle.get("poc_source_manifest_ref", bundle.get("source_manifest_ref"))
+            )
+            manifest = json.loads(self._artifacts.read(manifest_ref))
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(manifest.get("paths"), list)
+            ):
+                return False
+            module_path = name.decode("ascii").replace(".", "/")
+            targets = {f"{module_path}.py", f"{module_path}/__init__.py"}
+            matched = False
+            for path in manifest["paths"]:
+                if (
+                    not isinstance(path, str)
+                    or not path
+                    or path.startswith("/")
+                    or "\\" in path
+                    or ":" in path
+                    or any(part in {"", ".", ".."} for part in path.split("/"))
+                ):
+                    return False
+                matched |= any(
+                    path == target or path.endswith("/" + target) for target in targets
+                )
+            return matched
+        except (OSError, sqlite3.Error, ValueError, UnicodeError, TypeError):
+            return False
+        return False
 
     def _poc_execution_stream(
         self,

@@ -2,25 +2,46 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections import Counter
-from dataclasses import dataclass
-from pathlib import Path
+from contextlib import AbstractContextManager, closing, nullcontext
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePosixPath
 from typing import Literal, TypedDict
+from urllib.parse import urlsplit
 
 from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.ast_facts import (
+    index_ast_manifest,
+    validate_ast_manifest,
+)
+from sastsimi.simple_runtime.attack_surfaces import (
+    StaticGap,
+    SurfaceCoverage,
+    candidate_inventory_hash,
+    surface_index_from_json,
+)
 from sastsimi.simple_runtime.candidates import StaticCandidate
+from sastsimi.simple_runtime.chaining import (
+    SimpleChainingStage,
+    validated_chaining_children,
+)
 from sastsimi.simple_runtime.finding_group_projection import _verified_closure
 from sastsimi.simple_runtime.models import (
+    HYPOTHESIS_STAGES,
+    STAGE_ORDER,
     STAGE_VERSION,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageStatus,
+    terminal_gate_outcome,
 )
 
 
@@ -74,6 +95,36 @@ class AuditResult(TypedDict):
     counts: dict[str, int]
 
 
+def repository_targets_match(oracle_repository: str, run_repository: str) -> bool:
+    """Treat only a trailing GitHub HTTPS ``.git`` suffix as equivalent."""
+
+    if oracle_repository == run_repository:
+        return True
+
+    def github_target(value: str) -> str | None:
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return None
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "github.com"
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        parts = parsed.path.split("/")
+        if len(parts) != 3 or parts[0] or not parts[1] or not parts[2]:
+            return None
+        repository = parts[2].removesuffix(".git")
+        if not repository:
+            return None
+        return f"{parts[1]}/{repository}"
+
+    left = github_target(oracle_repository)
+    return left is not None and left == github_target(run_repository)
+
+
 def _analysis_run(
     connection: sqlite3.Connection, analysis_id: str
 ) -> SimpleAnalysisRun:
@@ -88,7 +139,7 @@ def _analysis_run(
 
 def _static_product_paths(
     connection: sqlite3.Connection, data_dir: Path, run: SimpleAnalysisRun
-) -> tuple[frozenset[str], bool] | None:
+) -> tuple[frozenset[str], frozenset[StaticGap]] | None:
     """Require exact, hash-verified full static evidence before measuring a miss."""
 
     bundle_ref = run.static_bundle_ref
@@ -124,7 +175,9 @@ def _static_product_paths(
         for value in (paths.staging, paths.artifacts / "sha256", paths.quarantine)
     ):
         return None
-    artifacts = SimpleArtifactRepository(data_dir, checkpoint.identity)
+    artifacts = SimpleArtifactRepository(
+        data_dir, checkpoint.identity, create_dirs=False
+    )
     try:
         bundle = json.loads(artifacts.read_bounded(bundle_ref, 16 * 1024 * 1024))
         if not isinstance(bundle, dict):
@@ -192,12 +245,50 @@ def _static_product_paths(
     if not isinstance(out_of_scope, list) or any(
         not isinstance(item, dict)
         or not isinstance(item.get("path"), str)
+        or not item["path"]
         or not isinstance(item.get("reason"), str)
         or not item["reason"]
-        or Path(item["path"]).suffix.lower() in {".py", ".pyi"}
+        or item["path"] in selected
+        or PurePosixPath(item["path"]).is_absolute()
+        or "\\" in item["path"]
+        or ":" in item["path"]
+        or ".." in PurePosixPath(item["path"]).parts
+        or Path(item["path"]).suffix.lower() == ".py"
+        or (
+            Path(item["path"]).suffix.lower() == ".pyi"
+            and item["reason"]
+            not in {
+                "python_stub_not_scanned",
+                "declared_non_python_entry",
+            }
+        )
         for item in out_of_scope
     ):
         return None
+    if out_of_scope:
+        try:
+            poc_manifest_ref = StoredDataRef.model_validate(
+                bundle.get("poc_source_manifest_ref")
+            )
+            poc_manifest = json.loads(
+                artifacts.read_bounded(poc_manifest_ref, 16 * 1024 * 1024)
+            )
+        except (OSError, ValueError, TypeError, UnicodeError, KeyError):
+            return None
+        if (
+            not isinstance(poc_manifest, dict)
+            or poc_manifest.get("kind") != "simple_tracked_sources"
+            or not isinstance(poc_manifest.get("paths"), list)
+        ):
+            return None
+        poc_paths = poc_manifest["paths"]
+        if (
+            any(not isinstance(item, str) or not item for item in poc_paths)
+            or len(set(poc_paths)) != len(poc_paths)
+            or not set(selected).issubset(poc_paths)
+            or any(item["path"] not in poc_paths for item in out_of_scope)
+        ):
+            return None
     if (
         type(expected) is not int
         or type(verified) is not int
@@ -223,7 +314,12 @@ def _static_product_paths(
         return None
     if run.static_disposition == "PARTIAL" and not out_of_scope:
         return None
-    return frozenset(selected), bool(out_of_scope)
+    out_of_scope_gaps = frozenset(
+        StaticGap(item["path"], "STATIC_SCOPE", item["reason"]) for item in out_of_scope
+    )
+    if len(out_of_scope_gaps) != len(out_of_scope):
+        return None
+    return frozenset(selected), out_of_scope_gaps
 
 
 def _pipeline_complete(
@@ -292,13 +388,403 @@ def _root_hypothesis_current(
         for value in (paths.staging, paths.artifacts / "sha256", paths.quarantine)
     ):
         return False
-    artifacts = SimpleArtifactRepository(data_dir, checkpoint.identity)
+    artifacts = SimpleArtifactRepository(
+        data_dir, checkpoint.identity, create_dirs=False
+    )
     try:
         for ref in checkpoint.output_refs:
             artifacts.read_bounded(ref, 128 * 1024 * 1024)
     except (OSError, ValueError, TypeError, UnicodeError):
         return False
     return True
+
+
+def strict_terminal_proof(
+    connection: sqlite3.Connection, data_dir: Path, run: SimpleAnalysisRun
+) -> bool:
+    """Prove that a claimed Python terminal covers its current durable inputs.
+
+    An absent or still-running terminal is unfinished. A finished marker whose
+    saved evidence disagrees with the marker is invalid, not a measured miss.
+    This function only reads the caller's SQLite snapshot and CAS artifacts.
+    """
+
+    terminal = run.candidate_terminal
+    if (
+        terminal is None
+        or not terminal.producer_finished
+        or terminal.pending_child_count
+    ):
+        return False
+    try:
+        return _strict_terminal_proof(connection, data_dir, run)
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        UnicodeError,
+        sqlite3.Error,
+    ) as error:
+        raise ValueError("RECALL_REVIEW_TERMINAL_EVIDENCE_INVALID") from error
+
+
+def _strict_terminal_proof(
+    connection: sqlite3.Connection, data_dir: Path, run: SimpleAnalysisRun
+) -> bool:
+    terminal = run.candidate_terminal
+    assert terminal is not None
+    bundle = run.static_bundle_ref
+    scope = run.candidate_scope_fingerprint
+    if (
+        bundle is None
+        or not scope
+        or terminal.bundle_hash != bundle.content_hash
+        or terminal.scope_fingerprint != scope
+        or terminal.surface_index_hash is None
+        or terminal.surface_coverage_hash is None
+        or terminal.chaining_pool_fingerprint is None
+        or terminal.chaining_batch_count is None
+    ):
+        raise ValueError("terminal marker lacks current input hashes")
+    identity = CheckpointIdentity(
+        analysis_id=run.analysis_id,
+        workspace_id=run.workspace_id,
+        commit_id=run.commit_id,
+        hypothesis_id=None,
+    )
+    rows = connection.execute(
+        "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+        "WHERE analysis_id = ? AND hypothesis_key = '' AND stage = ?",
+        (run.analysis_id, SimpleStage.HYPOTHESIS_DONE.value),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValueError("root hypothesis checkpoint missing")
+    checkpoint = StageCheckpoint.model_validate_json(rows[0][0])
+    if (
+        checkpoint.identity != identity
+        or checkpoint.stage is not SimpleStage.HYPOTHESIS_DONE
+        or checkpoint.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+        or checkpoint.status is not StageStatus.SUCCEEDED
+        or bundle not in checkpoint.input_refs
+        or len(checkpoint.output_refs) != 2
+        or checkpoint.output_refs[0].content_hash != terminal.surface_index_hash
+        or checkpoint.output_refs[1].content_hash != terminal.surface_coverage_hash
+    ):
+        raise ValueError("terminal surface refs differ from root checkpoint")
+
+    artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+    index_payload = json.loads(
+        artifacts.read_bounded(checkpoint.output_refs[0], 128 * 1024 * 1024)
+    )
+    coverage_payload = json.loads(
+        artifacts.read_bounded(checkpoint.output_refs[1], 128 * 1024 * 1024)
+    )
+    index = surface_index_from_json(index_payload)
+    if (
+        index.scope_fingerprint != scope
+        or index.static_bundle_hash != bundle.content_hash
+        or index.workspace_id != run.workspace_id
+        or index.commit_id != run.commit_id
+    ):
+        raise ValueError("surface index scope differs from run")
+    static_bundle = json.loads(artifacts.read_bounded(bundle, 16 * 1024 * 1024))
+    ast_summary = (
+        static_bundle.get("ast_summary") if isinstance(static_bundle, dict) else None
+    )
+    if (
+        not isinstance(ast_summary, dict)
+        or index.ast_manifest_hash
+        != hashlib.sha256(canonical_bytes(ast_summary)).hexdigest()
+        or index.index_version != (2 if ast_summary.get("format_version") == 3 else 1)
+    ):
+        raise ValueError("surface index AST summary differs from static bundle")
+    validate_ast_manifest(artifacts, ast_summary)
+    if index.index_version == 2:
+        manifest = index_ast_manifest(artifacts, ast_summary)
+        expected_source_hashes = tuple(
+            (path, str(entry["source_sha256"]))
+            for path, entry in sorted(manifest.items())
+        )
+        if index.ast_source_hashes != expected_source_hashes:
+            raise ValueError("surface index AST source hashes differ from manifest")
+
+    candidates: list[StaticCandidate] = []
+    decisions: Counter[str] = Counter()
+    deep: Counter[str] = Counter()
+    cursor = connection.execute(
+        "SELECT candidate_id, candidate_json, decision, deep_status "
+        "FROM simple_static_candidates WHERE analysis_id = ? AND workspace_id = ? "
+        "AND commit_id = ? AND scope_fingerprint = ? ORDER BY candidate_id",
+        (run.analysis_id, run.workspace_id, run.commit_id, scope),
+    )
+    while page := cursor.fetchmany(500):
+        for candidate_id, candidate_json, decision, deep_status in page:
+            candidate = StaticCandidate.model_validate_json(candidate_json)
+            if candidate.candidate_id != candidate_id:
+                raise ValueError("candidate ledger ID differs from candidate")
+            candidates.append(candidate)
+            decisions[str(decision)] += 1
+            if decision in {"INCLUDE", "UNDECIDED"}:
+                deep[str(deep_status)] += 1
+    if (
+        index.candidate_count != len(candidates)
+        or index.candidate_inventory_hash != candidate_inventory_hash(candidates)
+        or dict(decisions)
+        != {key: count for key, count in terminal.decision_counts.items() if count}
+        or dict(deep)
+        != {key: count for key, count in terminal.deep_counts.items() if count}
+    ):
+        raise ValueError("candidate inventory or counts differ from terminal")
+
+    if not isinstance(coverage_payload, dict):
+        raise ValueError("surface coverage is not an object")
+    surface_rows = coverage_payload.get("surfaces")
+    if not isinstance(surface_rows, list) or len(surface_rows) != len(index.surfaces):
+        raise ValueError("surface coverage does not match index")
+    covered_surfaces = []
+    for source, row in zip(index.surfaces, surface_rows, strict=True):
+        if not isinstance(row, dict) or row.get("coverage_status") not in {
+            "COVERED",
+            "UNCOVERED",
+            "INSUFFICIENT",
+        }:
+            raise ValueError("surface coverage status invalid")
+        raw_refs = row.get("review_evidence_refs")
+        if not isinstance(raw_refs, list):
+            raise ValueError("surface review refs invalid")
+        review_refs = tuple(StoredDataRef.model_validate(value) for value in raw_refs)
+        if row["coverage_status"] == "COVERED" and not review_refs:
+            raise ValueError("covered surface lacks review evidence")
+        if row["coverage_status"] != "COVERED" and review_refs:
+            raise ValueError("uncovered surface claims review evidence")
+        for ref in source.evidence_refs + review_refs:
+            artifacts.read_bounded(ref, 128 * 1024 * 1024)
+        covered_surfaces.append(
+            replace(
+                source,
+                coverage_status=row["coverage_status"],
+                review_evidence_refs=review_refs,
+            )
+        )
+    coverage = SurfaceCoverage(
+        scope_fingerprint=index.scope_fingerprint,
+        static_bundle_hash=index.static_bundle_hash,
+        ast_manifest_hash=index.ast_manifest_hash,
+        candidate_inventory_hash=index.candidate_inventory_hash,
+        candidate_count=index.candidate_count,
+        surfaces=tuple(covered_surfaces),
+        static_gaps=index.static_gaps,
+    )
+    counts = {
+        status: sum(item.coverage_status == status for item in coverage.surfaces)
+        for status in ("COVERED", "UNCOVERED", "INSUFFICIENT")
+    }
+    if coverage_payload != coverage.to_json() or terminal.surface_counts != counts:
+        raise ValueError("surface coverage or counts differ from index")
+    if terminal.status == "COMPLETE" and (
+        run.static_disposition != "FULL" or not coverage.complete
+    ):
+        raise ValueError("complete terminal has uncovered surfaces or static gaps")
+
+    hypothesis_ids = {
+        row[0]
+        for row in connection.execute(
+            "SELECT hypothesis_id FROM simple_candidate_hypotheses "
+            "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ?",
+            (run.analysis_id, run.workspace_id, run.commit_id),
+        )
+    }
+    if terminal.hypothesis_count != len(hypothesis_ids):
+        raise ValueError("terminal hypothesis count differs from ledger")
+    poc_index = STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE)
+    for hypothesis_id in hypothesis_ids:
+        child_identity = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+        child_artifacts = SimpleArtifactRepository(
+            data_dir, child_identity, create_dirs=False
+        )
+        stages: dict[SimpleStage, StageCheckpoint] = {}
+        stale_stage = False
+        stale_poc_or_downstream = False
+        for stage_value, raw in connection.execute(
+            "SELECT stage, checkpoint_json FROM simple_runtime_checkpoints "
+            "WHERE analysis_id = ? AND hypothesis_key = ?",
+            (run.analysis_id, hypothesis_id),
+        ):
+            child_checkpoint = StageCheckpoint.model_validate_json(raw)
+            if (
+                child_checkpoint.identity != child_identity
+                or child_checkpoint.stage.value != stage_value
+            ):
+                raise ValueError("terminal hypothesis checkpoint identity differs")
+            if (
+                child_checkpoint.stage in HYPOTHESIS_STAGES
+                and child_checkpoint.stage_version
+                != STAGE_VERSION[child_checkpoint.stage]
+            ):
+                stale_stage = True
+                if STAGE_ORDER.index(child_checkpoint.stage) >= poc_index:
+                    stale_poc_or_downstream = True
+            if (
+                child_checkpoint.status is StageStatus.SUCCEEDED
+                and child_checkpoint.stage_version
+                == STAGE_VERSION[child_checkpoint.stage]
+            ):
+                stages[child_checkpoint.stage] = child_checkpoint
+        terminal_poc = (
+            child_artifacts.verified_terminal_poc_outcome(
+                stages.get(SimpleStage.POC_EXECUTION_DONE)
+            )
+            is not None
+        )
+        if stale_stage and not (terminal_poc and not stale_poc_or_downstream):
+            raise ValueError("terminal hypothesis has stale stage")
+        final = stages.get(SimpleStage.VERIFICATION_FINAL_DONE)
+        chain = stages.get(SimpleStage.CHAINING_DONE)
+        if not (
+            child_artifacts.verified_terminal_initial_outcome(
+                stages.get(SimpleStage.VERIFICATION_INITIAL_DONE)
+            )
+            is not None
+            or terminal_poc
+            or final is not None
+            and (
+                final.verdict == "FALSE"
+                or final.verdict == "HOLD"
+                and chain is not None
+            )
+            or terminal_gate_outcome(stages.get(SimpleStage.TECH_GATE_DONE)) is not None
+            or SimpleStage.REPORT_DONE in stages
+        ):
+            raise ValueError("terminal hypothesis has unfinished work")
+    admitted_by_hash: dict[str, StoredDataRef] = {}
+    primitive_rows = connection.execute(
+        "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+        "WHERE analysis_id = ? AND stage = ?",
+        (run.analysis_id, SimpleStage.PRIMITIVE_ADMISSION_DONE.value),
+    ).fetchall()
+    for row in primitive_rows:
+        admission = StageCheckpoint.model_validate_json(row[0])
+        owner = admission.identity
+        if (
+            admission.stage is not SimpleStage.PRIMITIVE_ADMISSION_DONE
+            or admission.status is not StageStatus.SUCCEEDED
+            or admission.stage_version
+            != STAGE_VERSION[SimpleStage.PRIMITIVE_ADMISSION_DONE]
+            or owner.analysis_id != run.analysis_id
+            or owner.workspace_id != run.workspace_id
+            or owner.commit_id != run.commit_id
+            or owner.hypothesis_id not in hypothesis_ids
+        ):
+            continue
+        for ref in admission.output_refs:
+            value = json.loads(artifacts.read_bounded(ref, 128 * 1024 * 1024))
+            if not isinstance(value, dict) or value.get("kind") != "simple_primitive":
+                continue
+            if (
+                value.get("analysis_id") != run.analysis_id
+                or value.get("workspace_id") != run.workspace_id
+                or value.get("commit_id") != run.commit_id
+                or value.get("source_hypothesis_id") != owner.hypothesis_id
+            ):
+                raise ValueError("admitted primitive has mismatched owner")
+            admitted_by_hash[ref.content_hash] = ref
+    admitted = tuple(admitted_by_hash[key] for key in sorted(admitted_by_hash))
+    fingerprint = hashlib.sha256(
+        canonical_bytes(
+            {
+                "analysis_id": run.analysis_id,
+                "workspace_id": run.workspace_id,
+                "commit_id": run.commit_id,
+                "primitive_refs": admitted,
+            }
+        )
+    ).hexdigest()
+    if terminal.chaining_pool_fingerprint != fingerprint:
+        raise ValueError("chaining fingerprint differs from admitted pool")
+    # The partitioner only reads the exact primitive refs. Its store and client
+    # are unused for this pure planning operation.
+    planner = SimpleChainingStage(store=None, client=None, artifacts=artifacts)  # type: ignore[arg-type]
+    partitions = planner._bounded_pair_partitions(admitted)
+    batch_count = len(partitions)
+    if terminal.chaining_batch_count != batch_count:
+        raise ValueError("chaining batch count differs from current plan")
+    ledger = connection.execute(
+        "SELECT batch_index, batch_count, result_ref_json "
+        "FROM simple_chaining_pool_batches WHERE analysis_id = ? "
+        "AND workspace_id = ? AND commit_id = ? AND pool_fingerprint = ? "
+        "ORDER BY batch_index",
+        (run.analysis_id, run.workspace_id, run.commit_id, fingerprint),
+    ).fetchall()
+    if len(ledger) != batch_count:
+        raise ValueError("chaining batch ledger is incomplete")
+    for batch_index, (row, partition) in enumerate(
+        zip(ledger, partitions, strict=True)
+    ):
+        left, right, same_block = partition
+        considered = left if same_block else left + right
+        considered_hashes = {ref.content_hash for ref in considered}
+        unconsidered = tuple(
+            ref for ref in admitted if ref.content_hash not in considered_hashes
+        )
+        if row[0] != batch_index or row[1] != batch_count:
+            raise ValueError("chaining batch ledger index or count differs")
+        result_ref = StoredDataRef.model_validate_json(row[2])
+        result = json.loads(artifacts.read_bounded(result_ref, 128 * 1024 * 1024))
+        if not isinstance(result, dict):
+            raise ValueError("chaining batch result is not an object")
+        raw_considered = result.get("considered_primitive_refs")
+        raw_unconsidered = result.get("unconsidered_primitive_refs")
+        children = result.get("children")
+        if (
+            not isinstance(raw_considered, list)
+            or not isinstance(raw_unconsidered, list)
+            or not isinstance(children, list)
+            or len(children) >= 4
+            or result.get("kind") != "simple_chaining_result"
+            or result.get("analysis_id") != run.analysis_id
+            or result.get("source_hypothesis_id") is not None
+            or result.get("pool_fingerprint") != fingerprint
+            or type(result.get("batch_index")) is not int
+            or result.get("batch_index") != batch_index
+            or type(result.get("batch_count")) is not int
+            or result.get("batch_count") != batch_count
+            or result.get("status")
+            != ("MATERIAL_CHILD" if children else "NO_MATERIAL_CHILD")
+            or tuple(StoredDataRef.model_validate(ref) for ref in raw_considered)
+            != considered
+            or tuple(StoredDataRef.model_validate(ref) for ref in raw_unconsidered)
+            != unconsidered
+        ):
+            raise ValueError("chaining batch result differs from current plan")
+        validated = validated_chaining_children(
+            artifacts,
+            considered,
+            children,
+            pair_partition=(
+                frozenset(ref.content_hash for ref in left),
+                frozenset(ref.content_hash for ref in right),
+            ),
+        )
+        if canonical_bytes(children) != canonical_bytes(validated):
+            raise ValueError("chaining batch children invalid")
+
+    static_scope = _static_product_paths(connection, data_dir, run)
+    if static_scope is None:
+        if terminal.status == "COMPLETE":
+            raise ValueError("complete terminal lacks verified static evidence")
+        return False
+    if any(surface.coverage_status != "COVERED" for surface in coverage.surfaces):
+        return False
+    if frozenset(index.static_gaps) != static_scope[1]:
+        return False
+    if any(gap.path.lower().endswith((".py", ".pyi")) for gap in index.static_gaps):
+        return False
+    return _pipeline_complete(
+        run,
+        python_scope_complete=True,
+        nonpython_out_of_scope=bool(static_scope[1]),
+    )
 
 
 def _matches(case: OracleCase, candidate: StaticCandidate) -> bool:
@@ -404,6 +890,7 @@ def _confirmed(
             commit_id=run.commit_id,
             hypothesis_id=hypothesis_id,
         ),
+        create_dirs=False,
     )
     try:
         closure = _verified_closure(stages, finding.output_refs[0], artifacts)
@@ -424,15 +911,33 @@ def _confirmed(
     return True
 
 
-def audit_analysis(data_dir: Path, analysis_id: str, oracle: Oracle) -> AuditResult:
+def audit_analysis(
+    data_dir: Path,
+    analysis_id: str,
+    oracle: Oracle,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> AuditResult:
     """Read an existing analysis without initializing or changing its database."""
 
-    database = RuntimePaths(data_dir).database.resolve(strict=True)
-    with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True) as connection:
-        connection.row_factory = sqlite3.Row
-        connection.execute("BEGIN")
+    borrowed = connection is not None
+    manager: AbstractContextManager[sqlite3.Connection]
+    if borrowed:
+        assert connection is not None
+        manager = nullcontext(connection)
+    else:
+        database = RuntimePaths(data_dir).database.resolve(strict=True)
+        manager = closing(
+            sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+        )
+    with manager as connection:
+        if not borrowed:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN")
         run = _analysis_run(connection, analysis_id)
-        if run.commit_id != oracle.commit or run.repository != oracle.repository:
+        if run.commit_id != oracle.commit or not repository_targets_match(
+            oracle.repository, run.repository
+        ):
             raise ValueError("RECALL_ORACLE_TARGET_MISMATCH")
         static_scope = _static_product_paths(connection, data_dir, run)
         static_paths = static_scope[0] if static_scope is not None else None
@@ -443,7 +948,7 @@ def audit_analysis(data_dir: Path, analysis_id: str, oracle: Oracle) -> AuditRes
             and _pipeline_complete(
                 run,
                 python_scope_complete=True,
-                nonpython_out_of_scope=static_scope[1],
+                nonpython_out_of_scope=bool(static_scope[1]),
             )
         )
         cursor = connection.execute(

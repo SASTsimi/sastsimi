@@ -1064,6 +1064,9 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     assert b"safe dotted module identifier" in b" ".join(client.prompt.split())
     assert b"one coherent import root" in client.prompt
     assert b"Do not put both /workspace and a child source directory" in client.prompt
+    assert b"transitive absolute imports" in client.prompt
+    assert b"importlib.util.find_spec" in client.prompt
+    assert b"keep /workspace on sys.path" in client.prompt
     assert b"For a Python NameError" in client.prompt
     assert b"safe simple identifier" in client.prompt
     assert b"transitive closure" in client.prompt

@@ -117,9 +117,10 @@ locking the change.
    valid report evidence, and an independently reviewed same-root-cause match.
    A covered and independently reviewed Python case without a match may be
    `FN`. Environment failures, unexecuted PoCs, nonterminal work, static
-   coverage holes, or damaged evidence are `HOLD`, never an FN or TP. Ambiguous
-   matches remain `REVIEW_REQUIRED`. Predeclared nonPython/operational cases
-   are `OUT_OF_SCOPE`.
+   coverage holes are `HOLD`, never an FN or TP. A damaged static or Finding
+   artifact fails the evaluator without a numeric score; it is not reclassified
+   as `HOLD`. Ambiguous matches remain `REVIEW_REQUIRED`. Predeclared
+   nonPython/operational cases are `OUT_OF_SCOPE`.
 5. An unmatched Finding is `UNMATCHED_REVIEW_REQUIRED`, **not** automatically
    `FP`. Count `FP` only with a separate evidence-backed false-positive review.
    Publish raw Finding count, conservative display-group count, oracle case

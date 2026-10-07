@@ -807,7 +807,6 @@ class SimpleArtifactRepository:
             self.read_bounded(report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES),
             finding_ref=finding_ref,
         )
-        bundle_dir = self._verified_report_directory(report, manifest)
         if (
             manifest.analysis_id != self.identity.analysis_id
             or manifest.display_id != display_id
@@ -864,6 +863,18 @@ class SimpleArtifactRepository:
             report.bundle_archive_ref,
             lambda ref: self.read_bounded(ref, MAX_BUNDLE_ARCHIVE_BYTES),
         )
+        self.require_published_report_bundle(report, manifest, archive)
+        return manifest, archive
+
+    def require_published_report_bundle(
+        self,
+        report: StageCheckpoint,
+        manifest: ReportBundleManifest,
+        archive: bytes,
+    ) -> None:
+        """Require published manifest and ZIP bytes to match their CAS evidence."""
+
+        bundle_dir = self._verified_report_directory(report, manifest)
         path = windows_extended_path(bundle_dir / "bundle.zip")
         if path.resolve(strict=True) != path:
             raise ValueError("BUNDLE_PATH_UNSAFE")
@@ -884,7 +895,6 @@ class SimpleArtifactRepository:
             disk = stream.read(MAX_BUNDLE_ARCHIVE_BYTES + 1)
         if disk != archive:
             raise ValueError("BUNDLE_ARCHIVE_CHANGED")
-        return manifest, archive
 
     def published_report_coverage(
         self, report: StageCheckpoint, finding_ref: StoredDataRef

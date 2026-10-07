@@ -310,7 +310,7 @@ def test_score_mode_uses_separate_review_and_rejects_wrong_hash(tmp_path: Path) 
         data_dir, oracle_path, "analysis-1", "--score", "--review", str(review_path)
     )
     assert valid.returncode == 0, valid.stderr
-    assert json.loads(valid.stdout)["case_counts"]["REVIEW_REQUIRED"] == 1
+    assert json.loads(valid.stdout)["case_counts"]["HOLD"] == 1
 
     review["oracle_sha256"] = "b" * 64
     review_path.write_text(json.dumps(review), encoding="utf-8")
@@ -336,7 +336,12 @@ def test_help_explains_when_missed_status_is_allowed() -> None:
     )
 
     assert completed.returncode == 0
-    assert "finding_inventory_reviewed" in completed.stdout
-    assert "MISSED" in completed.stdout
-    assert "POSSIBLE" in completed.stdout
-    assert "FINDING_INVENTORY_UNREVIEWED" in completed.stdout
+    help_text = " ".join(completed.stdout.split())
+    assert "finding_inventory_reviewed" in help_text
+    assert "MISSED" in help_text
+    assert "POSSIBLE" in help_text
+    assert "FINDING_INVENTORY_UNREVIEWED" in help_text
+    assert "For v2 --score" in help_text
+    assert "inventory_reviewed=true" in help_text
+    assert "separate review JSON" in help_text
+    assert "never in the frozen oracle" in help_text

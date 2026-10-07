@@ -746,7 +746,20 @@ class SimpleAnalysisApplication:
             self._store.prepare_legacy_import_stop_replan(stopped, artifacts)
         elif mode == "generated_input":
             if stopped.error_code == "RECOVERY_EXHAUSTED":
-                self._store.prepare_poc_extract_exhaustion_replay(stopped, artifacts)
+                import_failure = stopped.attempt_id is not None and any(
+                    event.error_code == "POC_RUNTIME_IMPORT_FAILED"
+                    for event in self._store.stage_activity(
+                        child, SimpleStage.POC_EXECUTION_DONE, stopped.attempt_id
+                    )
+                )
+                if import_failure:
+                    self._store.prepare_poc_local_import_exhaustion_replay(
+                        stopped, artifacts
+                    )
+                else:
+                    self._store.prepare_poc_extract_exhaustion_replay(
+                        stopped, artifacts
+                    )
             else:
                 self._store.prepare_fallback_poc_stop_replan(stopped, artifacts)
         elif mode == "placeholder":

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, SQLite read-only URI, pytest, Ruff, mypy, Windows PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-10-08-python-only-recall-evaluation-design.md`
+**Spec:** `docs/plans/2026-10-08-python-only-recall-evaluation-design.md`
 
 ## Global Constraints
 

@@ -13,6 +13,8 @@
 
 운영 승인용 세부 근거 파일이 필요한 경우에만
 [onboarding 근거 안내](./onboarding-evidence.md)를 읽습니다.
+고정 커밋의 Python 취약점 사례를 독립 검토하는 절차와 한계는
+[탐지율 평가 방법](./validation/2026-10-08-python-recall-methodology.md)에 있습니다.
 
 ## 구현 문서
 
