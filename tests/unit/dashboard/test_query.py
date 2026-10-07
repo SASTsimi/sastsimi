@@ -313,6 +313,23 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     )
 
 
+def test_dashboard_summary_paths_do_not_materialize_report_bundles(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+
+    with patch.object(
+        query, "_reports", side_effect=AssertionError("report bundles loaded")
+    ):
+        listed = query.list_analyses()
+        shell = query.get_analysis_shell("A-001")
+
+    assert len(listed) == 1
+    assert listed[0].analysis_id == "analysis-a"
+    assert shell.analysis_id == "analysis-a"
+
+
 def test_dashboard_marks_unleased_candidate_run_interrupted_without_rewriting_it(
     tmp_path: Path,
 ) -> None:

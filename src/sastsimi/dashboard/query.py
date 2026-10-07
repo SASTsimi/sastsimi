@@ -1868,7 +1868,7 @@ class DashboardQuery:
             for item in values
             if item.identity.hypothesis_id is None
         ) + sum(item.completed_count for item in hypotheses)
-        reports = self._reports(analysis_id)
+        reports = self._reports(analysis_id) if detail else ()
         coverage = self._static_coverage_projection(values) if detail else {}
         confirmed_count = (
             0
