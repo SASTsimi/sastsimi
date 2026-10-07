@@ -67,9 +67,7 @@ def _bundle(*wheels: tuple[str, str]) -> bytes:
     with tarfile.open(fileobj=stream, mode="w") as archive:
         for name, package in wheels:
             raw = _wheel(name, package)
-            info = tarfile.TarInfo(
-                f"{name.replace('-', '_')}-1.0-py3-none-any.whl"
-            )
+            info = tarfile.TarInfo(f"{name.replace('-', '_')}-1.0-py3-none-any.whl")
             info.size = len(raw)
             archive.addfile(info, io.BytesIO(raw))
     return stream.getvalue()
@@ -80,7 +78,8 @@ def _purelib_wheel(name: str, member: str) -> bytes:
     normalized = name.replace("-", "_")
     with zipfile.ZipFile(stream, "w") as wheel:
         wheel.writestr(
-            f"{normalized}-1.0.data/purelib/{member}", "",
+            f"{normalized}-1.0.data/purelib/{member}",
+            "",
         )
         wheel.writestr(
             f"{normalized}-1.0.dist-info/WHEEL",
@@ -119,9 +118,7 @@ def _raw_wheel_bundle(*wheels: tuple[str, bytes]) -> bytes:
     return stream.getvalue()
 
 
-def _source_fixture(
-    tmp_path: Path, *, with_manifest: bool = True
-) -> tuple[Path, str]:
+def _source_fixture(tmp_path: Path, *, with_manifest: bool = True) -> tuple[Path, str]:
     workspace, _commit, _path, _digest = _fixture(
         tmp_path, manifest="sample-pkg==1.0\n"
     )
@@ -131,14 +128,24 @@ def _source_fixture(
     subprocess.run(("git", "-C", str(workspace), "add", "-A"), check=True)
     subprocess.run(
         (
-            "git", "-C", str(workspace), "-c", "user.name=Test",
-            "-c", "user.email=test@example.invalid", "commit", "-qm", "import",
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "import",
         ),
         check=True,
     )
-    commit = subprocess.check_output(
-        ("git", "-C", str(workspace), "rev-parse", "HEAD")
-    ).decode("ascii").strip()
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
     return workspace, commit
 
 
@@ -246,7 +253,8 @@ class _Resolver(_Docker):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("with_manifest", (True, False))
 async def test_verified_import_requirement_reused_by_sibling(
-    tmp_path: Path, with_manifest: bool,
+    tmp_path: Path,
+    with_manifest: bool,
 ) -> None:
     """Without reuse, a sibling keeps the same missing product import."""
 
@@ -284,9 +292,7 @@ async def test_verified_import_requirement_reused_by_sibling(
 
     await first_preparer.prepare(first, {}, ("pip:widget-dist",))
     sibling_environment = await second_preparer.prepare(second, {}, ())
-    sibling_recipe = json.loads(
-        second_artifacts.read(sibling_environment.recipe_ref)
-    )
+    sibling_recipe = json.loads(second_artifacts.read(sibling_environment.recipe_ref))
 
     assert "pip:widget-dist" in sibling_recipe["requirements"]
     assert sibling_recipe["dependency_resolution_verified_import_reuse"] == [
@@ -296,8 +302,8 @@ async def test_verified_import_requirement_reused_by_sibling(
             "decision_sha256": first.recovery_decision_refs[-1].content_hash,
         }
     ]
-    expected_download = (
-        (("sample-pkg==1.0",) if with_manifest else ()) + ("widget-dist",)
+    expected_download = (("sample-pkg==1.0",) if with_manifest else ()) + (
+        "widget-dist",
     )
     assert docker.downloads == [expected_download]
     assert docker.smokes == [("sha256:" + "c" * 64, "widget_api")]
@@ -308,9 +314,7 @@ async def test_verified_import_requirement_reused_by_sibling(
 @pytest.mark.parametrize(
     "failure", ("smoke", "ambiguous", "unbound", "stale", "wrong_attempt_id")
 )
-async def test_unverified_import_is_not_reused(
-    tmp_path: Path, failure: str
-) -> None:
+async def test_unverified_import_is_not_reused(tmp_path: Path, failure: str) -> None:
     workspace, commit = _source_fixture(tmp_path)
     artifacts, first = _checkpoint(tmp_path, commit)
     if failure != "unbound":
@@ -354,16 +358,12 @@ async def test_unverified_import_is_not_reused(
 
     await first_preparer.prepare(first, {}, ("pip:widget-dist",))
     sibling_environment = await sibling_preparer.prepare(second, {}, ())
-    sibling_recipe = json.loads(
-        sibling_artifacts.read(sibling_environment.recipe_ref)
-    )
+    sibling_recipe = json.loads(sibling_artifacts.read(sibling_environment.recipe_ref))
 
     assert sibling_recipe["requirements"] == []
     assert docker.downloads[-1] == ("sample-pkg==1.0",)
     expected_smokes = (
-        [("sha256:" + "c" * 64, "widget_api")]
-        if failure == "smoke"
-        else []
+        [("sha256:" + "c" * 64, "widget_api")] if failure == "smoke" else []
     )
     assert docker.smokes == expected_smokes
     assert docker.calls[0][1] != docker.calls[1][1]
@@ -436,9 +436,7 @@ async def test_verified_import_is_scoped_to_base_digest(tmp_path: Path) -> None:
     docker.base_digest = "sha256:" + "d" * 64
 
     sibling_environment = await sibling_preparer.prepare(second, {}, ())
-    sibling_recipe = json.loads(
-        sibling_artifacts.read(sibling_environment.recipe_ref)
-    )
+    sibling_recipe = json.loads(sibling_artifacts.read(sibling_environment.recipe_ref))
     assert sibling_recipe["requirements"] == []
     assert docker.downloads[-1] == ("sample-pkg==1.0",)
     assert docker.calls[0][1] != docker.calls[1][1]
@@ -464,14 +462,24 @@ async def test_verified_import_is_scoped_to_pinned_commit(tmp_path: Path) -> Non
     subprocess.run(("git", "-C", str(workspace), "add", "README.md"), check=True)
     subprocess.run(
         (
-            "git", "-C", str(workspace), "-c", "user.name=Test",
-            "-c", "user.email=test@example.invalid", "commit", "-qm", "next",
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "next",
         ),
         check=True,
     )
-    next_commit = subprocess.check_output(
-        ("git", "-C", str(workspace), "rev-parse", "HEAD")
-    ).decode("ascii").strip()
+    next_commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
     sibling_identity = first.identity.model_copy(
         update={"commit_id": next_commit, "hypothesis_id": "sibling"}
     )
@@ -493,9 +501,7 @@ async def test_verified_import_is_scoped_to_pinned_commit(tmp_path: Path) -> Non
         auto_bundle_cache=cache,
     )
     sibling_environment = await sibling_preparer.prepare(sibling, {}, ())
-    sibling_recipe = json.loads(
-        sibling_artifacts.read(sibling_environment.recipe_ref)
-    )
+    sibling_recipe = json.loads(sibling_artifacts.read(sibling_environment.recipe_ref))
     assert sibling_recipe["requirements"] == []
     assert docker.downloads[-1] == ("sample-pkg==1.0",)
     assert docker.calls[0][1] != docker.calls[1][1]
@@ -518,9 +524,7 @@ def test_conflicting_verified_provider_is_not_reused() -> None:
     assert cache.verified_imports(scope) == ()
 
 
-@pytest.mark.parametrize(
-    "provided_path", ("widget_api.py", "widget_api/__init__.py")
-)
+@pytest.mark.parametrize("provided_path", ("widget_api.py", "widget_api/__init__.py"))
 def test_purelib_wheel_provider_blocks_ambiguous_reuse(
     tmp_path: Path, provided_path: str
 ) -> None:
@@ -539,9 +543,12 @@ def test_purelib_wheel_provider_blocks_ambiguous_reuse(
         artifacts,
         target_tags=frozenset({"py3-none-any"}),
     )
-    assert DirectEnvironmentPreparer._unique_wheel_provider(
-        archive, "widget_api", ("widget-dist",)
-    ) is None
+    assert (
+        DirectEnvironmentPreparer._unique_wheel_provider(
+            archive, "widget_api", ("widget-dist",)
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -577,9 +584,12 @@ def test_native_extension_wheel_blocks_ambiguous_import_binding(
         artifacts,
         target_tags=frozenset({"py3-none-any", tag}),
     )
-    assert DirectEnvironmentPreparer._unique_wheel_provider(
-        archive, "widget_api", ("widget-dist",)
-    ) is None
+    assert (
+        DirectEnvironmentPreparer._unique_wheel_provider(
+            archive, "widget_api", ("widget-dist",)
+        )
+        is None
+    )
 
 
 def test_import_proof_ignores_dirty_checkout_bytes(tmp_path: Path) -> None:
@@ -608,14 +618,24 @@ def test_import_proof_rejects_large_git_blob_before_read(
     subprocess.run(("git", "-C", str(workspace), "add", "app.py"), check=True)
     subprocess.run(
         (
-            "git", "-C", str(workspace), "-c", "user.name=Test",
-            "-c", "user.email=test@example.invalid", "commit", "-qm", "large",
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "large",
         ),
         check=True,
     )
-    commit = subprocess.check_output(
-        ("git", "-C", str(workspace), "rev-parse", "HEAD")
-    ).decode("ascii").strip()
+    commit = (
+        subprocess.check_output(("git", "-C", str(workspace), "rev-parse", "HEAD"))
+        .decode("ascii")
+        .strip()
+    )
     artifacts, _checkpoint_value = _checkpoint(tmp_path, commit)
     preparer = DirectEnvironmentPreparer(
         docker=_Resolver(),  # type: ignore[arg-type]
@@ -626,9 +646,7 @@ def test_import_proof_rejects_large_git_blob_before_read(
     real_run = subprocess.run
     git_actions: list[str] = []
 
-    def record_run(
-        *args: Any, **kwargs: Any
-    ) -> subprocess.CompletedProcess[Any]:
+    def record_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
         command = args[0]
         assert isinstance(command, tuple)
         git_actions.append(command[3])
@@ -661,7 +679,9 @@ class _ProbeDocker(PortableDockerRuntime):
         if args[0] == "run":
             self.container_name = args[args.index("--name") + 1]
             if self.run_mode in {
-                "cancel", "cancel_cleanup_timeout", "cancel_cleanup_error"
+                "cancel",
+                "cancel_cleanup_timeout",
+                "cancel_cleanup_error",
             }:
                 raise asyncio.CancelledError()
             if self.run_mode == "timeout":
@@ -737,9 +757,7 @@ async def test_import_smoke_timeout_forces_removal_and_returns_false() -> None:
     assert not await docker.probe_python_import(
         "sha256:" + "c" * 64, "widget_api", _probe_identity(), "probe-attempt"
     )
-    assert [command[0] for command in docker.commands] == [
-        "run", "rm", "container"
-    ]
+    assert [command[0] for command in docker.commands] == ["run", "rm", "container"]
 
 
 @pytest.mark.asyncio
@@ -748,9 +766,7 @@ async def test_import_smoke_import_failure_returns_false_after_cleanup() -> None
     assert not await docker.probe_python_import(
         "sha256:" + "c" * 64, "widget_api", _probe_identity(), "probe-attempt"
     )
-    assert [command[0] for command in docker.commands] == [
-        "run", "rm", "container"
-    ]
+    assert [command[0] for command in docker.commands] == ["run", "rm", "container"]
 
 
 @pytest.mark.asyncio
@@ -760,15 +776,11 @@ async def test_import_smoke_cancellation_forces_removal() -> None:
         await docker.probe_python_import(
             "sha256:" + "c" * 64, "widget_api", _probe_identity(), "probe-attempt"
         )
-    assert [command[0] for command in docker.commands] == [
-        "run", "rm", "container"
-    ]
+    assert [command[0] for command in docker.commands] == ["run", "rm", "container"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "run_mode", ("cancel_cleanup_timeout", "cancel_cleanup_error")
-)
+@pytest.mark.parametrize("run_mode", ("cancel_cleanup_timeout", "cancel_cleanup_error"))
 async def test_import_smoke_uncertain_cleanup_overrides_cancellation(
     run_mode: str,
 ) -> None:
@@ -868,7 +880,8 @@ async def test_import_smoke_uncertain_cleanup_rejects_binding() -> None:
     ),
 )
 async def test_import_smoke_cleanup_command_errors_are_unconfirmed(
-    failed_command: str, failure: str,
+    failed_command: str,
+    failure: str,
 ) -> None:
     class _CleanupErrorDocker(_ProbeDocker):
         async def _run(
@@ -911,9 +924,7 @@ async def test_uncertain_import_smoke_cleanup_blocks_preparation(
             attempt_id: str,
         ) -> bool:
             del image_digest, module, identity, attempt_id
-            raise ImportSmokeCleanupUnconfirmed(
-                "POC_IMPORT_SMOKE_CLEANUP_FAILED"
-            )
+            raise ImportSmokeCleanupUnconfirmed("POC_IMPORT_SMOKE_CLEANUP_FAILED")
 
     cache = AutoWheelBundleCache()
     preparer = DirectEnvironmentPreparer(
@@ -933,11 +944,10 @@ async def test_uncertain_import_smoke_cleanup_blocks_preparation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "run_mode", ("cancel_cleanup_timeout", "cancel_cleanup_error")
-)
+@pytest.mark.parametrize("run_mode", ("cancel_cleanup_timeout", "cancel_cleanup_error"))
 async def test_uncertain_import_smoke_cleanup_blocks_stage_without_retry_or_poc(
-    tmp_path: Path, run_mode: str,
+    tmp_path: Path,
+    run_mode: str,
 ) -> None:
     identity = _probe_identity()
     docker = _ProbeDocker(run_mode=run_mode)
@@ -987,7 +997,9 @@ async def test_uncertain_import_smoke_cleanup_blocks_stage_without_retry_or_poc(
         return StageResult(output_refs=())
 
     initial_stage = InitialVerificationStage(
-        _Client(), artifacts, _Environment()  # type: ignore[arg-type]
+        _Client(),
+        artifacts,
+        _Environment(),  # type: ignore[arg-type]
     )
 
     async def isolated_initial(

@@ -100,9 +100,7 @@ def _exhausted_extract(
         "image_digest": running.image_digest,
     }
     receipt.update(execution_patch or {})
-    execution_ref = artifacts.put_json(
-        receipt
-    )
+    execution_ref = artifacts.put_json(receipt)
     cleanup_ref = artifacts.put_json(
         {
             "kind": "simple_container_cleanup",
@@ -261,9 +259,12 @@ def test_extract_replay_refuses_nonexact_execution_or_diagnostic_without_mutatio
 
     assert store.require(identity, SimpleStage.POC_CANDIDATE_DONE) == old_candidate
     assert store.require(identity, SimpleStage.POC_EXECUTION_DONE) == exhausted
-    assert AgentActivityStore(store.database_path).list_analysis(
-        identity.analysis_id, hypothesis_id=identity.hypothesis_id
-    ) == old_events
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            identity.analysis_id, hypothesis_id=identity.hypothesis_id
+        )
+        == old_events
+    )
 
 
 def test_extract_replay_refuses_changed_root_or_unresolved_codex_call(
@@ -299,9 +300,12 @@ def test_extract_replay_rolls_back_checkpoint_and_marker_together(
         )
     assert store.require(identity, SimpleStage.POC_CANDIDATE_DONE) == candidate
     assert store.require(identity, SimpleStage.POC_EXECUTION_DONE) == exhausted
-    assert AgentActivityStore(store.database_path).list_analysis(
-        identity.analysis_id, hypothesis_id=identity.hypothesis_id
-    ) == events
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            identity.analysis_id, hypothesis_id=identity.hypothesis_id
+        )
+        == events
+    )
 
 
 @pytest.mark.parametrize("extra_kind", ["old_attempt_decision", "prior_replay"])

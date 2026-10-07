@@ -950,14 +950,39 @@ class PortableDockerRuntime:
         }
         container_name = f"sastsimi-import-smoke-{uuid4().hex}"
         args = (
-            "run", "--pull", "never", "--rm", "--name", container_name,
-            "--network", "none", "--read-only", "--user", "10001:10001",
-            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--pids-limit", "128", "--cpus", "1", "--memory", "1g",
-            "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m,mode=1777",
-            *(part for key, value in sorted(labels.items())
-              for part in ("--label", f"{key}={value}")),
-            "--entrypoint", "python", image_digest, "-I", "-c",
+            "run",
+            "--pull",
+            "never",
+            "--rm",
+            "--name",
+            container_name,
+            "--network",
+            "none",
+            "--read-only",
+            "--user",
+            "10001:10001",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "128",
+            "--cpus",
+            "1",
+            "--memory",
+            "1g",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=16m,mode=1777",
+            *(
+                part
+                for key, value in sorted(labels.items())
+                for part in ("--label", f"{key}={value}")
+            ),
+            "--entrypoint",
+            "python",
+            image_digest,
+            "-I",
+            "-c",
             "import importlib; importlib.import_module(" + repr(module) + ")",
         )
         outcome: DockerCommandOutcome | None = None
@@ -1003,9 +1028,7 @@ class PortableDockerRuntime:
             if cleanup.timed_out or (
                 cleanup.exit_code != 0 and (outcome is None or outcome.timed_out)
             ):
-                raise ImportSmokeCleanupUnconfirmed(
-                    "POC_IMPORT_SMOKE_CLEANUP_FAILED"
-                )
+                raise ImportSmokeCleanupUnconfirmed("POC_IMPORT_SMOKE_CLEANUP_FAILED")
             inspected = await self._run(
                 ("container", "inspect", container_name), timeout_seconds=30
             )
@@ -1021,9 +1044,7 @@ class PortableDockerRuntime:
                 or inspected.stdout.strip() not in {b"", b"[]"}
                 or missing is None
             ):
-                raise ImportSmokeCleanupUnconfirmed(
-                    "POC_IMPORT_SMOKE_CLEANUP_FAILED"
-                )
+                raise ImportSmokeCleanupUnconfirmed("POC_IMPORT_SMOKE_CLEANUP_FAILED")
         except ImportSmokeCleanupUnconfirmed:
             raise
         except (Exception, asyncio.CancelledError) as error:
@@ -1721,9 +1742,9 @@ class AutoWheelBundleCache:
         # A binding is never a replacement for the exact archive/image CAS.
         # It only carries a requirement independently proven by a pinned
         # source import, a unique wheel provider, and an offline image smoke.
-        self._verified_imports: OrderedDict[
-            tuple[str, ...], tuple[str, str]
-        ] = OrderedDict()
+        self._verified_imports: OrderedDict[tuple[str, ...], tuple[str, str]] = (
+            OrderedDict()
+        )
         self._ambiguous_verified_imports: OrderedDict[tuple[str, ...], None] = (
             OrderedDict()
         )
@@ -1783,9 +1804,7 @@ class AutoWheelBundleCache:
         self, scope: tuple[str, ...]
     ) -> tuple[tuple[str, str, str], ...]:
         bindings: list[tuple[str, str, str]] = []
-        for key, (requirement, decision_hash) in tuple(
-            self._verified_imports.items()
-        ):
+        for key, (requirement, decision_hash) in tuple(self._verified_imports.items()):
             if key[:-1] == scope:
                 self._verified_imports.move_to_end(key)
                 bindings.append((key[-1], requirement, decision_hash))
@@ -2600,8 +2619,7 @@ class DirectEnvironmentPreparer:
                     continue
                 blob_ref = f"{commit_id}:{path}"
                 size_result = subprocess.run(
-                    (self._git_executable, "-C", str(root), "cat-file", "-s",
-                     blob_ref),
+                    (self._git_executable, "-C", str(root), "cat-file", "-s", blob_ref),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     timeout=10,
@@ -2613,14 +2631,10 @@ class DirectEnvironmentPreparer:
                 if len(raw_size) > 20 or not raw_size.isdigit():
                     return False
                 blob_size = int(raw_size)
-                if (
-                    blob_size > 256 * 1024
-                    or total_bytes + blob_size > 4 * 1024 * 1024
-                ):
+                if blob_size > 256 * 1024 or total_bytes + blob_size > 4 * 1024 * 1024:
                     return False
                 blob = subprocess.run(
-                    (self._git_executable, "-C", str(root), "show",
-                     blob_ref),
+                    (self._git_executable, "-C", str(root), "show", blob_ref),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     timeout=10,
@@ -2633,7 +2647,10 @@ class DirectEnvironmentPreparer:
                 total_bytes += blob_size
                 tree = ast.parse(blob.stdout, filename=path)
             except (
-                OSError, UnicodeError, SyntaxError, ValueError,
+                OSError,
+                UnicodeError,
+                SyntaxError,
+                ValueError,
                 subprocess.TimeoutExpired,
             ):
                 continue
@@ -2643,7 +2660,8 @@ class DirectEnvironmentPreparer:
                 ):
                     return True
                 if isinstance(node, ast.ImportFrom) and (
-                    node.level == 0 and node.module is not None
+                    node.level == 0
+                    and node.module is not None
                     and node.module.split(".", 1)[0] == module
                 ):
                     return True
@@ -2698,7 +2716,8 @@ class DirectEnvironmentPreparer:
                         if not provides_module:
                             continue
                         metadata_paths = [
-                            name for name in names
+                            name
+                            for name in names
                             if name.endswith(".dist-info/METADATA")
                             and name.count("/") == 1
                         ]
@@ -2707,17 +2726,15 @@ class DirectEnvironmentPreparer:
                         metadata_info = wheel.getinfo(metadata_paths[0])
                         if metadata_info.file_size > 64 * 1024:
                             return None
-                        metadata = BytesParser().parsebytes(
-                            wheel.read(metadata_info)
+                        metadata = BytesParser().parsebytes(wheel.read(metadata_info))
+                        wheel_name, wheel_version, _build, _tags = parse_wheel_filename(
+                            member.name
                         )
-                        wheel_name, wheel_version, _build, _tags = (
-                            parse_wheel_filename(member.name)
-                        )
-                        if (
-                            canonicalize_name(metadata.get("Name", ""))
-                            != canonicalize_name(wheel_name)
-                            or metadata.get("Version") != str(wheel_version)
-                        ):
+                        if canonicalize_name(
+                            metadata.get("Name", "")
+                        ) != canonicalize_name(wheel_name) or metadata.get(
+                            "Version"
+                        ) != str(wheel_version):
                             return None
                         matched = []
                         for raw in agent_requirements:
@@ -2736,9 +2753,15 @@ class DirectEnvironmentPreparer:
                             return None
                         candidates.append(matched[0])
         except (
-            OSError, ValueError, RuntimeError, EOFError, KeyError,
-            tarfile.TarError, zipfile.BadZipFile,
-            InvalidWheelFilename, InvalidRequirement,
+            OSError,
+            ValueError,
+            RuntimeError,
+            EOFError,
+            KeyError,
+            tarfile.TarError,
+            zipfile.BadZipFile,
+            InvalidWheelFilename,
+            InvalidRequirement,
         ):
             return None
         return candidates[0] if len(candidates) == 1 else None
@@ -2844,13 +2867,18 @@ class DirectEnvironmentPreparer:
                 )
                 if not self._auto_bundle_cache.has_verified_import_scope(scope_prefix):
                     return await self._prepare_without_auto_bundle(
-                        checkpoint, prior, requirements,
+                        checkpoint,
+                        prior,
+                        requirements,
                         target_manifest=target_manifest,
                     )
                 requested = ()
                 manifest = canonical_bytes(
-                    {"kind": "sastsimi_explicit_poc_requirements_v1",
-                     "requirements": (), "required_source_paths": ()}
+                    {
+                        "kind": "sastsimi_explicit_poc_requirements_v1",
+                        "requirements": (),
+                        "required_source_paths": (),
+                    }
                 )
                 input_kind = "EXPLICIT_POC_REQUIREMENTS"
         else:
@@ -2901,7 +2929,8 @@ class DirectEnvironmentPreparer:
             *scope_prefix,
             base_digest,
             runtime_metadata.get("python_runtime_observed_version")
-            or requested_runtime or "3.12",
+            or requested_runtime
+            or "3.12",
         )
         verified_bindings = self._auto_bundle_cache.verified_import_bindings(
             import_scope
@@ -2913,24 +2942,30 @@ class DirectEnvironmentPreparer:
             requested = tuple(dict.fromkeys((*requested, *reused_requirements)))
             delegated_requirements = tuple(
                 dict.fromkeys(
-                    (*delegated_requirements,
-                     *(f"pip:{item}" for item in reused_requirements))
+                    (
+                        *delegated_requirements,
+                        *(f"pip:{item}" for item in reused_requirements),
+                    )
                 )
             )
             # Synthetic AUTO documents describe the effective resolver input.
             # Recomputing them keeps the existing exact wheel CAS truthful.
             if input_kind == "EXPLICIT_POC_REQUIREMENTS":
                 manifest = canonical_bytes(
-                    {"kind": "sastsimi_explicit_poc_requirements_v1",
-                     "requirements": requested,
-                     "required_source_paths": source_paths}
+                    {
+                        "kind": "sastsimi_explicit_poc_requirements_v1",
+                        "requirements": requested,
+                        "required_source_paths": source_paths,
+                    }
                 )
             elif input_kind == "DOCKERFILE_LITERAL_PIP_REQUIREMENTS":
                 manifest = canonical_bytes(
-                    {"kind": "sastsimi_dockerfile_literal_pip_requirements_v1",
-                     "dockerfile_sha256": provenance_sha256,
-                     "requirements": requested,
-                     "required_source_paths": source_paths}
+                    {
+                        "kind": "sastsimi_dockerfile_literal_pip_requirements_v1",
+                        "dockerfile_sha256": provenance_sha256,
+                        "requirements": requested,
+                        "required_source_paths": source_paths,
+                    }
                 )
         if not requested:
             return await self._prepare_without_auto_bundle(
@@ -3094,12 +3129,10 @@ class DirectEnvironmentPreparer:
                 ),
             )
             missing_import = self._bound_missing_import(checkpoint)
-            if (
-                missing_import is not None
-                and self._pinned_source_imports(
-                    missing_import, pinned_paths,
-                    commit_id=checkpoint.identity.commit_id,
-                )
+            if missing_import is not None and self._pinned_source_imports(
+                missing_import,
+                pinned_paths,
+                commit_id=checkpoint.identity.commit_id,
             ):
                 provider = self._unique_wheel_provider(
                     bundle_raw, missing_import, agent_requirements

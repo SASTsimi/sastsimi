@@ -5698,8 +5698,7 @@ class SimpleCheckpointStore:
                 or candidate.container_id is not None
                 or len(candidate.output_refs) < 2
                 or any(
-                    ref not in exhausted.input_refs
-                    for ref in candidate.output_refs[:2]
+                    ref not in exhausted.input_refs for ref in candidate.output_refs[:2]
                 )
                 or any(
                     checkpoint_at(stage) is not None
