@@ -208,6 +208,26 @@ def test_explicit_extract_replay_reseeds_only_candidate_with_safe_guidance(
     assert next_candidate.attempt_id != exhausted.attempt_id
 
 
+def test_extract_replay_accepts_bounded_stdout_with_exact_failure_evidence(
+    tmp_path: Path,
+) -> None:
+    stdout = b"fixture progress output\n"
+    store, artifacts, exhausted = _exhausted_extract(tmp_path, stdout=stdout)
+    stdout_ref = exhausted.output_refs[1]
+
+    pending = store.prepare_poc_extract_exhaustion_replay(exhausted, artifacts)
+
+    assert pending.stage is SimpleStage.POC_CANDIDATE_DONE
+    assert pending.status is StageStatus.PENDING
+    assert stdout_ref in pending.input_refs
+    assert artifacts.read(stdout_ref) == stdout
+    rule = json.loads(artifacts.read(pending.recovery_decision_refs[-1]))
+    assert rule["diagnostic_excerpt"] == (
+        "Traceback (sanitized): extract\nRuntimeError"
+    )
+    assert "fixture progress output" not in json.dumps(rule)
+
+
 @pytest.mark.parametrize(
     "exception_name",
     ["AssertionError", "RuntimeError", "TypeError", "ValueError"],
@@ -236,7 +256,7 @@ def test_extract_replay_accepts_each_exact_sanitized_exception_once(
         {"stderr": b"Traceback (most recent call last):\nValueError\n"},
         {"stderr": b"Traceback (sanitized): extract\nOSError\n"},
         {"stderr": b"Traceback (sanitized): extract\nValueError\nother failure\n"},
-        {"stdout": b"unexpected output\n"},
+        {"stdout": b"x" * (1024 * 1024 + 1)},
         {"execution_patch": {"candidate_ref": None}},
         {"execution_patch": {"image_digest": "sha256:" + "f" * 64}},
         {"execution_patch": {"timed_out": True}},

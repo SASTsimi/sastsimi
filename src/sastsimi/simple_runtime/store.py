@@ -5717,7 +5717,8 @@ class SimpleCheckpointStore:
                     candidate.output_refs[1], 1024 * 1024
                 )
                 execution = json.loads(artifacts.read_bounded(execution_ref, 64 * 1024))
-                stdout = artifacts.read_bounded(stdout_ref, 1024 * 1024)
+                # Attest bounded stdout, but use only stderr as the failure diagnostic.
+                artifacts.read_bounded(stdout_ref, 1024 * 1024)
                 stderr = artifacts.read_bounded(stderr_ref, 1024 * 1024)
                 cleanup = json.loads(artifacts.read_bounded(cleanup_ref, 64 * 1024))
             except (OSError, ValueError, TypeError, sqlite3.Error) as error:
@@ -5746,7 +5747,6 @@ class SimpleCheckpointStore:
                 or type(execution.get("exit_code")) is not int
                 or execution["exit_code"] == 0
                 or execution.get("timed_out") is not False
-                or stdout.strip()
                 or diagnostic is None
                 or not isinstance(cleanup, dict)
                 or cleanup.get("kind") != "simple_container_cleanup"
