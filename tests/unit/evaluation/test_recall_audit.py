@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -477,7 +478,160 @@ def test_strict_terminal_proof_rejects_lost_hypothesis_terminal_checkpoint(
             }
         )
     )
+
+    with pytest.raises(ValueError, match="^RECALL_REVIEW_TERMINAL_EVIDENCE_INVALID$"):
+        _strict_proof(data_dir, database)
+
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    final_ref = artifacts.put_json(
+        {
+            "kind": "simple_verification_result",
+            "attempt_id": "attempt-1",
+            "source_refs": [],
+            "result": {"verdict": "FALSE"},
+        }
+    )
+    verified_final = final.model_copy(
+        update={"attempt_id": "attempt-1", "output_refs": (final_ref,)}
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE simple_runtime_checkpoints SET checkpoint_json = ? "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            (
+                verified_final.model_dump_json(),
+                "analysis-1",
+                "hyp-1",
+                SimpleStage.VERIFICATION_FINAL_DONE.value,
+            ),
+        )
     assert _strict_proof(data_dir, database) is True
+
+    contradictory_ref = artifacts.put_json(
+        {
+            "kind": "simple_verification_result",
+            "attempt_id": "attempt-1",
+            "source_refs": [],
+            "result": {"verdict": "TRUE"},
+        }
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE simple_runtime_checkpoints SET checkpoint_json = ? "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            (
+                verified_final.model_copy(
+                    update={"output_refs": (contradictory_ref,)}
+                ).model_dump_json(),
+                "analysis-1",
+                "hyp-1",
+                SimpleStage.VERIFICATION_FINAL_DONE.value,
+            ),
+        )
+    with pytest.raises(ValueError, match="^RECALL_REVIEW_TERMINAL_EVIDENCE_INVALID$"):
+        _strict_proof(data_dir, database)
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE simple_runtime_checkpoints SET checkpoint_json = ? "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            (
+                verified_final.model_dump_json(),
+                "analysis-1",
+                "hyp-1",
+                SimpleStage.VERIFICATION_FINAL_DONE.value,
+            ),
+        )
+    assert _strict_proof(data_dir, database) is True
+
+    input_ref = artifacts.put_json({"kind": "required_prior"})
+    with_input = verified_final.model_copy(
+        update={
+            "input_refs": (input_ref,),
+            "input_hash": input_reference_hash((input_ref,)),
+        }
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE simple_runtime_checkpoints SET checkpoint_json = ? "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            (
+                with_input.model_dump_json(),
+                "analysis-1",
+                "hyp-1",
+                SimpleStage.VERIFICATION_FINAL_DONE.value,
+            ),
+        )
+    with pytest.raises(ValueError, match="^RECALL_REVIEW_TERMINAL_EVIDENCE_INVALID$"):
+        _strict_proof(data_dir, database)
+
+    bound_ref = artifacts.put_json(
+        {
+            "kind": "simple_verification_result",
+            "attempt_id": "attempt-1",
+            "source_refs": [input_ref.model_dump(mode="json")],
+            "result": {"verdict": "FALSE"},
+        }
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE simple_runtime_checkpoints SET checkpoint_json = ? "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            (
+                with_input.model_copy(
+                    update={"output_refs": (bound_ref,)}
+                ).model_dump_json(),
+                "analysis-1",
+                "hyp-1",
+                SimpleStage.VERIFICATION_FINAL_DONE.value,
+            ),
+        )
+    assert _strict_proof(data_dir, database) is True
+    extra_ref = artifacts.put_json({"kind": "additional_prompt_anchor"})
+    with_extra_ref = artifacts.put_json(
+        {
+            "kind": "simple_verification_result",
+            "attempt_id": "attempt-1",
+            "source_refs": [
+                input_ref.model_dump(mode="json"),
+                extra_ref.model_dump(mode="json"),
+            ],
+            "result": {"verdict": "FALSE"},
+        }
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE simple_runtime_checkpoints SET checkpoint_json = ? "
+            "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+            (
+                with_input.model_copy(
+                    update={"output_refs": (with_extra_ref,)}
+                ).model_dump_json(),
+                "analysis-1",
+                "hyp-1",
+                SimpleStage.VERIFICATION_FINAL_DONE.value,
+            ),
+        )
+    assert _strict_proof(data_dir, database) is True
+    extra_path = (
+        RuntimePaths(data_dir).artifacts
+        / "sha256"
+        / extra_ref.content_hash[:2]
+        / extra_ref.content_hash[2:]
+    )
+    extra_path.unlink()
+    with pytest.raises(ValueError, match="^RECALL_REVIEW_TERMINAL_EVIDENCE_INVALID$"):
+        _strict_proof(data_dir, database)
+    assert artifacts.put_json({"kind": "additional_prompt_anchor"}) == extra_ref
+    input_path = (
+        RuntimePaths(data_dir).artifacts
+        / "sha256"
+        / input_ref.content_hash[:2]
+        / input_ref.content_hash[2:]
+    )
+    input_path.unlink()
+    with pytest.raises(ValueError, match="^RECALL_REVIEW_TERMINAL_EVIDENCE_INVALID$"):
+        _strict_proof(data_dir, database)
 
     with sqlite3.connect(database) as connection:
         connection.execute(
@@ -654,7 +808,30 @@ def test_strict_terminal_proof_uses_current_admitted_primitive_pool(
     data_dir, database = _saved_run(tmp_path)
     _strict_proof_fixture(data_dir, database)
     primitive_ref = _admit_primitive(data_dir, database)
-    _checkpoint(database, SimpleStage.VERIFICATION_FINAL_DONE, verdict="FALSE")
+    child_artifacts = SimpleArtifactRepository(
+        data_dir,
+        CheckpointIdentity(
+            analysis_id="analysis-1",
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            hypothesis_id="hyp-1",
+        ),
+    )
+    final_ref = child_artifacts.put_json(
+        {
+            "kind": "simple_verification_result",
+            "attempt_id": "attempt-1",
+            "source_refs": [],
+            "result": {"verdict": "FALSE"},
+        }
+    )
+    _checkpoint(
+        database,
+        SimpleStage.VERIFICATION_FINAL_DONE,
+        verdict="FALSE",
+        attempt_id="attempt-1",
+        output_refs=(final_ref,),
+    )
     store = SimpleCheckpointStore(database)
     run = store.require_analysis_run("analysis-1")
     assert run.candidate_terminal is not None
@@ -853,6 +1030,7 @@ def _candidate(
     line: int = 20,
     decision: str = "INCLUDE",
     deep_status: str = "COMPLETE",
+    flow_trace: dict[str, object] | None = None,
 ) -> None:
     ref = _ref(data_dir)
     candidate = StaticCandidate(
@@ -871,6 +1049,7 @@ def _candidate(
             ),
         ),
         evidence_key=candidate_id,
+        flow_trace=flow_trace,
     )
     with sqlite3.connect(database) as connection:
         connection.execute(
@@ -1534,6 +1713,24 @@ def test_verified_finding_for_linked_flow_is_detected(tmp_path: Path) -> None:
 
     assert result["cases"][0]["status"] == "DETECTED"
     assert result["cases"][0]["hypothesis_ids"] == ["hyp-1"]
+
+
+def test_legacy_audit_still_requires_exact_cwe_without_independent_review(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path)
+    _candidate(data_dir, database)
+    _link(database)
+    _verified_finding_chain(data_dir, database)
+    oracle = _oracle(
+        vetted_candidate_ids=("candidate-1",),
+        vetted_hypothesis_ids=("hyp-1",),
+    )
+    oracle = replace(oracle, cases=(replace(oracle.cases[0], cwe="CWE-74"),))
+
+    result = audit_analysis(data_dir, "analysis-1", oracle)
+
+    assert result["cases"][0]["status"] != "DETECTED"
 
 
 def test_corrupt_current_poc_is_not_counted_as_detected(tmp_path: Path) -> None:

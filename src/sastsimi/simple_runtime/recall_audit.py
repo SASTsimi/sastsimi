@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from collections import Counter
+from collections.abc import Mapping
 from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -41,6 +42,7 @@ from sastsimi.simple_runtime.models import (
     SimpleStage,
     StageCheckpoint,
     StageStatus,
+    input_reference_hash,
     terminal_gate_outcome,
 )
 
@@ -429,6 +431,90 @@ def strict_terminal_proof(
         raise ValueError("RECALL_REVIEW_TERMINAL_EVIDENCE_INVALID") from error
 
 
+def _verified_terminal_decision(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint | None,
+    verified_refs: set[StoredDataRef],
+    *,
+    kind: str,
+    result_field: str,
+    expected: str,
+) -> bool:
+    """A terminal verdict is not evidence without its same-attempt CAS result."""
+
+    if (
+        checkpoint is None
+        or not checkpoint.attempt_id
+        or len(checkpoint.output_refs) != 1
+        or checkpoint.input_hash != input_reference_hash(checkpoint.input_refs)
+    ):
+        return False
+    payload = json.loads(artifacts.read_bounded(checkpoint.output_refs[0], 1024 * 1024))
+    result = payload.get("result") if isinstance(payload, dict) else None
+    sources = payload.get("source_refs") if isinstance(payload, dict) else None
+    if not isinstance(sources, list):
+        return False
+    source_refs = tuple(StoredDataRef.model_validate(value) for value in sources)
+    if not set(checkpoint.input_refs).issubset(source_refs):
+        return False
+    for ref in source_refs:
+        if ref in verified_refs:
+            continue
+        if ref.record_id is None:
+            artifacts.read_bounded(ref, 128 * 1024 * 1024)
+        else:
+            artifacts.read(ref)
+        verified_refs.add(ref)
+    return (
+        isinstance(payload, dict)
+        and payload.get("kind") == kind
+        and payload.get("attempt_id") == checkpoint.attempt_id
+        and isinstance(result, dict)
+        and result.get(result_field) == expected
+    )
+
+
+def _verified_terminal_chain(
+    artifacts: SimpleArtifactRepository, checkpoint: StageCheckpoint | None
+) -> tuple[StoredDataRef, ...] | None:
+    if (
+        checkpoint is None
+        or len(checkpoint.output_refs) != 1
+        or checkpoint.input_hash != input_reference_hash(checkpoint.input_refs)
+    ):
+        return None
+    payload = json.loads(
+        artifacts.read_bounded(checkpoint.output_refs[0], 16 * 1024 * 1024)
+    )
+    if not isinstance(payload, dict):
+        return None
+    parents = payload.get("considered_primitive_refs")
+    children = payload.get("children")
+    if (
+        payload.get("kind") != "simple_chaining_result"
+        or payload.get("analysis_id") != checkpoint.identity.analysis_id
+        or payload.get("source_hypothesis_id") != checkpoint.identity.hypothesis_id
+        or not isinstance(parents, list)
+        or not isinstance(children, list)
+        or not all(isinstance(child, dict) for child in children)
+        or payload.get("status")
+        != ("MATERIAL_CHILD" if children else "NO_MATERIAL_CHILD")
+    ):
+        return None
+    considered = tuple(StoredDataRef.model_validate(value) for value in parents)
+    if len(set(considered)) != len(considered):
+        return None
+    for ref in checkpoint.input_refs:
+        if ref.record_id is None:
+            artifacts.read_bounded(ref, 128 * 1024 * 1024)
+        else:
+            artifacts.read(ref)
+    validated = validated_chaining_children(artifacts, considered, children)
+    if canonical_bytes(validated) != canonical_bytes(children):
+        return None
+    return considered
+
+
 def _strict_terminal_proof(
     connection: sqlite3.Connection, data_dir: Path, run: SimpleAnalysisRun
 ) -> bool:
@@ -598,6 +684,8 @@ def _strict_terminal_proof(
     if terminal.hypothesis_count != len(hypothesis_ids):
         raise ValueError("terminal hypothesis count differs from ledger")
     poc_index = STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE)
+    terminal_chains: list[tuple[StoredDataRef, ...]] = []
+    verified_source_refs: set[StoredDataRef] = set()
     for hypothesis_id in hypothesis_ids:
         child_identity = identity.model_copy(update={"hypothesis_id": hypothesis_id})
         child_artifacts = SimpleArtifactRepository(
@@ -641,22 +729,78 @@ def _strict_terminal_proof(
             raise ValueError("terminal hypothesis has stale stage")
         final = stages.get(SimpleStage.VERIFICATION_FINAL_DONE)
         chain = stages.get(SimpleStage.CHAINING_DONE)
+        gate = stages.get(SimpleStage.TECH_GATE_DONE)
+        finding = stages.get(SimpleStage.FINDING_DONE)
+        report = stages.get(SimpleStage.REPORT_DONE)
+        verified_final = (
+            final is not None
+            and final.verdict in {"FALSE", "HOLD"}
+            and _verified_terminal_decision(
+                child_artifacts,
+                final,
+                verified_source_refs,
+                kind="simple_verification_result",
+                result_field="verdict",
+                expected=final.verdict,
+            )
+        )
+        verified_gate = (
+            gate is not None
+            and terminal_gate_outcome(gate) is not None
+            and gate.gate_decision is not None
+            and _verified_terminal_decision(
+                child_artifacts,
+                gate,
+                verified_source_refs,
+                kind="simple_technical_gate",
+                result_field="status",
+                expected=gate.gate_decision,
+            )
+        )
+        chain_refs = (
+            _verified_terminal_chain(child_artifacts, chain)
+            if verified_final and final is not None and final.verdict == "HOLD"
+            else None
+        )
+        verified_report = False
+        if (
+            finding is not None
+            and report is not None
+            and len(finding.output_refs) == 1
+            and finding.output_refs[0] in report.input_refs
+            and report.input_hash == input_reference_hash(report.input_refs)
+            and report.output_refs
+        ):
+            closure = _verified_closure(stages, finding.output_refs[0], child_artifacts)
+            verified_report = (
+                closure is not None
+                and closure[2]
+                and report.validated_poc_ref == closure[1]
+            )
+            if verified_report:
+                for ref in report.output_refs:
+                    child_artifacts.read_bounded(ref, 16 * 1024 * 1024)
         if not (
             child_artifacts.verified_terminal_initial_outcome(
                 stages.get(SimpleStage.VERIFICATION_INITIAL_DONE)
             )
             is not None
             or terminal_poc
-            or final is not None
-            and (
-                final.verdict == "FALSE"
-                or final.verdict == "HOLD"
-                and chain is not None
+            or (
+                verified_final
+                and final is not None
+                and (
+                    final.verdict == "FALSE"
+                    or final.verdict == "HOLD"
+                    and chain_refs is not None
+                )
             )
-            or terminal_gate_outcome(stages.get(SimpleStage.TECH_GATE_DONE)) is not None
-            or SimpleStage.REPORT_DONE in stages
+            or verified_gate
+            or verified_report
         ):
             raise ValueError("terminal hypothesis has unfinished work")
+        if chain_refs is not None:
+            terminal_chains.append(chain_refs)
     admitted_by_hash: dict[str, StoredDataRef] = {}
     primitive_rows = connection.execute(
         "SELECT checkpoint_json FROM simple_runtime_checkpoints "
@@ -689,6 +833,12 @@ def _strict_terminal_proof(
             ):
                 raise ValueError("admitted primitive has mismatched owner")
             admitted_by_hash[ref.content_hash] = ref
+    if any(
+        admitted_by_hash.get(ref.content_hash) != ref
+        for considered in terminal_chains
+        for ref in considered
+    ):
+        raise ValueError("terminal chaining parent was not admitted")
     admitted = tuple(admitted_by_hash[key] for key in sorted(admitted_by_hash))
     fingerprint = hashlib.sha256(
         canonical_bytes(
@@ -778,7 +928,9 @@ def _strict_terminal_proof(
         return False
     if frozenset(index.static_gaps) != static_scope[1]:
         return False
-    if any(gap.path.lower().endswith((".py", ".pyi")) for gap in index.static_gaps):
+    # A declared .pyi stub is outside this .py-only scan. _static_product_paths
+    # already verifies its exact out-of-scope reason against the saved ledger.
+    if any(gap.path.lower().endswith(".py") for gap in index.static_gaps):
         return False
     return _pipeline_complete(
         run,
@@ -787,7 +939,12 @@ def _strict_terminal_proof(
     )
 
 
-def _matches(case: OracleCase, candidate: StaticCandidate) -> bool:
+def _matches(
+    case: OracleCase,
+    candidate: StaticCandidate,
+    *,
+    reviewed_root_cause: bool = False,
+) -> bool:
     target_path = (
         case.path if candidate.kind == "ENTRY_POINT" else case.sink_path or case.path
     )
@@ -798,7 +955,7 @@ def _matches(case: OracleCase, candidate: StaticCandidate) -> bool:
         return False
     trace = candidate.flow_trace
     trace_cwe = trace.get("cwe") if isinstance(trace, dict) else None
-    if isinstance(trace_cwe, str):
+    if isinstance(trace_cwe, str) and not reviewed_root_cause:
         return trace_cwe.upper() == case.cwe.upper()
     return True
 
@@ -857,6 +1014,8 @@ def _confirmed(
     hypothesis_id: str,
     case: OracleCase,
     stages: dict[SimpleStage, StageCheckpoint],
+    *,
+    reviewed_root_cause: bool = False,
 ) -> bool:
     """Reuse the strict Finding closure and require a current report artifact."""
 
@@ -901,7 +1060,10 @@ def _confirmed(
             not isinstance(cwe_data, dict)
             or cwe_data.get("kind") != "simple_cwe_label"
             or not isinstance(cwe_data.get("result"), dict)
-            or cwe_data["result"].get("primary_cwe") != case.cwe
+            or not isinstance(cwe_data["result"].get("primary_cwe"), str)
+            or not cwe_data["result"]["primary_cwe"]
+            or not reviewed_root_cause
+            and cwe_data["result"]["primary_cwe"] != case.cwe
         ):
             return False
         for ref in report.output_refs:
@@ -917,8 +1079,13 @@ def audit_analysis(
     oracle: Oracle,
     *,
     connection: sqlite3.Connection | None = None,
+    reviewed_root_causes: bool = False,
+    matched_hypotheses_by_case: Mapping[str, frozenset[str]] | None = None,
 ) -> AuditResult:
     """Read an existing analysis without initializing or changing its database."""
+
+    if reviewed_root_causes and matched_hypotheses_by_case is None:
+        raise ValueError("RECALL_REVIEW_MATCH_MAPPING_REQUIRED")
 
     borrowed = connection is not None
     manager: AbstractContextManager[sqlite3.Connection]
@@ -978,7 +1145,9 @@ def audit_analysis(
                 if item[1] in {"INCLUDE", "UNDECIDED"}:
                     observed_deep[item[2]] += 1
                 for index, case in enumerate(oracle.cases):
-                    if _matches(case, candidate):
+                    if _matches(
+                        case, candidate, reviewed_root_cause=reviewed_root_causes
+                    ):
                         matches_by_case[index].append(item)
         terminal = run.candidate_terminal
         ledger_consistent = bool(
@@ -991,6 +1160,11 @@ def audit_analysis(
         pipeline_complete = terminal_complete and ledger_consistent
         cases: list[AuditCaseResult] = []
         for case, matched in zip(oracle.cases, matches_by_case, strict=True):
+            reviewed_matches = (
+                None
+                if matched_hypotheses_by_case is None
+                else matched_hypotheses_by_case.get(case.case_id, frozenset())
+            )
             candidate_ids = tuple(item[0].candidate_id for item in matched)
             decisions = {item[0].candidate_id: item[1] for item in matched}
             deep_states = {item[0].candidate_id: item[2] for item in matched}
@@ -1038,8 +1212,16 @@ def audit_analysis(
                     else "ROOT_HYPOTHESIS_UNVERIFIED",
                 )
             elif any(
-                _confirmed(data_dir, run, key, case, item)
+                _confirmed(
+                    data_dir,
+                    run,
+                    key,
+                    case,
+                    item,
+                    reviewed_root_cause=reviewed_root_causes,
+                )
                 for key, item in vetted_stages.items()
+                if reviewed_matches is None or key in reviewed_matches
             ):
                 status, first_gap = "DETECTED", None
             elif not ledger_consistent:
@@ -1071,7 +1253,8 @@ def audit_analysis(
                 (final := item.get(SimpleStage.VERIFICATION_FINAL_DONE)) is not None
                 and final.status is StageStatus.SUCCEEDED
                 and final.verdict == "TRUE"
-                for item in vetted_stages.values()
+                for key, item in vetted_stages.items()
+                if reviewed_matches is None or key in reviewed_matches
             ):
                 status, first_gap = "INCOMPLETE", "FINDING_EVIDENCE_UNVERIFIED"
             elif not complete:

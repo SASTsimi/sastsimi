@@ -367,8 +367,19 @@ def score_analysis(
         vetted = reviewed_oracle(
             oracle, review, complete_inventory=review.inventory_reviewed
         )
+        matched_hypotheses = {
+            case.case_id: frozenset(
+                current[finding_id][0] for finding_id in case.finding_ids
+            )
+            for case in review.cases
+        }
         stage_audit = audit_analysis(
-            data_dir, analysis_id, vetted, connection=connection
+            data_dir,
+            analysis_id,
+            vetted,
+            connection=connection,
+            reviewed_root_causes=True,
+            matched_hypotheses_by_case=matched_hypotheses,
         )
         by_case = {case.case_id: case for case in review.cases}
         terminal_proven = (
@@ -421,6 +432,7 @@ def score_analysis(
                         current[finding_id][0],
                         oracle_case,
                         _hypothesis_stages(connection, run, current[finding_id][0]),
+                        reviewed_root_cause=True,
                     )
                     for finding_id in linked.finding_ids
                 )

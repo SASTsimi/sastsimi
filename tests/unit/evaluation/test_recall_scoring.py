@@ -159,6 +159,74 @@ def test_verified_finding_is_one_case_tp_and_read_only(tmp_path: Path) -> None:
     assert database.read_bytes() == before
 
 
+def test_human_verified_same_root_cause_is_not_rejected_by_cwe_label(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path)
+    _candidate(data_dir, database, flow_trace={"cwe": "CWE-89"})
+    _link(database)
+    finding_id = _finding_id(data_dir, database)
+    _complete_finding_terminal(data_dir, database)
+    oracle = replace(
+        _v2_oracle(),
+        cases=(replace(_v2_oracle().cases[0], cwe="CWE-74"),),
+    )
+    oracle_bytes = json.dumps(asdict(oracle)).encode("utf-8")
+    review = _review(
+        oracle_sha256=hashlib.sha256(oracle_bytes).hexdigest(),
+        case_links={
+            "candidate_ids": ["candidate-1"],
+            "hypothesis_ids": ["hyp-1"],
+            "finding_ids": [finding_id],
+        },
+        finding_reviews=[
+            {
+                "finding_id": finding_id,
+                "status": "MATCHED",
+                "case_id": "sql-1",
+                "evidence": (
+                    "independently verified request-to-SQL root cause "
+                    "despite a broader CWE label"
+                ),
+            }
+        ],
+    )
+
+    result = score_analysis(data_dir, "analysis-1", oracle, oracle_bytes, review)
+
+    assert result["case_counts"]["TP"] == 1
+    assert result["recall"] == 1.0
+
+
+def test_fully_reviewed_unmatched_finding_is_not_false_detection(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path)
+    _candidate(data_dir, database)
+    _link(database)
+    finding_id = _finding_id(data_dir, database)
+    _complete_finding_terminal(data_dir, database)
+    review = _review(
+        case_links={
+            "candidate_ids": ["candidate-1"],
+            "hypothesis_ids": ["hyp-1"],
+        },
+        finding_reviews=[
+            {
+                "finding_id": finding_id,
+                "status": "UNMATCHED_REVIEWED",
+                "evidence": "reviewed as a different input-to-sink route",
+            }
+        ],
+    )
+
+    result = score_analysis(data_dir, "analysis-1", _v2_oracle(), _ORACLE_BYTES, review)
+
+    assert result["case_counts"]["FN"] == 1
+    assert result["case_counts"]["TP"] == 0
+    assert result["recall"] == 0.0
+
+
 def test_verified_finding_rejects_broken_terminal_chaining_evidence(
     tmp_path: Path,
 ) -> None:
@@ -544,6 +612,35 @@ def test_verified_python_miss_with_nonpython_out_of_scope_is_fn(
     )
 
     assert result["case_counts"]["FN"] == 1
+
+
+def test_verified_python_miss_with_declared_pyi_stub_out_of_scope_is_fn(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(
+        tmp_path,
+        terminal="PARTIAL",
+        static_disposition="PARTIAL",
+        coverage_overrides={
+            "out_of_scope_product_files": [
+                {"path": "types.pyi", "reason": "python_stub_not_scanned"}
+            ]
+        },
+    )
+    _strict_proof_fixture(
+        data_dir,
+        database,
+        surface_gaps=(
+            StaticGap("types.pyi", "STATIC_SCOPE", "python_stub_not_scanned"),
+        ),
+    )
+
+    result = score_analysis(
+        data_dir, "analysis-1", _v2_oracle(), _ORACLE_BYTES, _review()
+    )
+
+    assert result["case_counts"]["FN"] == 1
+    assert result["recall"] == 0.0
 
 
 def test_hold_and_out_of_scope_do_not_become_false_negatives(tmp_path: Path) -> None:
@@ -1125,11 +1222,18 @@ def test_score_audit_uses_same_sqlite_read_snapshot(
         oracle: Oracle,
         *,
         connection: sqlite3.Connection | None = None,
+        reviewed_root_causes: bool = False,
+        matched_hypotheses_by_case: dict[str, frozenset[str]] | None = None,
     ) -> AuditResult:
         assert isinstance(connection, sqlite3.Connection)
         assert connection.in_transaction
         return actual_audit_analysis(
-            data_dir, analysis_id, oracle, connection=connection
+            data_dir,
+            analysis_id,
+            oracle,
+            connection=connection,
+            reviewed_root_causes=reviewed_root_causes,
+            matched_hypotheses_by_case=matched_hypotheses_by_case,
         )
 
     monkeypatch.setattr(recall_scoring_module, "audit_analysis", observe_audit)
