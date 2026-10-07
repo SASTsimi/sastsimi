@@ -51,9 +51,7 @@ _DEFAULT_BIND_PREFIX = re.compile(r"\bdefault\s*$", re.IGNORECASE)
 _ENDPOINT_NOUN_SUFFIX = re.compile(
     r"^\s+(?:bind|binding|host|address|endpoint)\b", re.IGNORECASE
 )
-_VERSION_ROLE_SUFFIX = re.compile(
-    r"\b(?:versions?|releases?|builds?)\b", re.IGNORECASE
-)
+_VERSION_ROLE_SUFFIX = re.compile(r"\b(?:versions?|releases?|builds?)\b", re.IGNORECASE)
 _UNSUPPORTED_ADVISORY_CLAIMS = (
     re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
     re.compile(
