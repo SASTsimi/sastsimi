@@ -1710,6 +1710,61 @@ def test_inactive_unresolved_codex_call_retracts_current_dashboard_report(
         assert query.report_content(identity.analysis_id, "F-001") == b"# report"
 
 
+@pytest.mark.parametrize("block_kind", ["root_invalid", "unresolved_call"])
+def test_report_currentness_block_hides_confirmed_dashboard_kpis(
+    tmp_path: Path, block_kind: str
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 2}))
+    finding = store.require(identity, SimpleStage.FINDING_DONE)
+    store.save_checkpoint(finding.model_copy(update={"verdict": "TRUE"}))
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.VERIFICATION_FINAL_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            verdict="TRUE",
+        )
+    )
+
+    query = DashboardQuery(tmp_path)
+    before = query.get_analysis(identity.analysis_id)
+    before_shell = query.get_analysis_shell(identity.analysis_id)
+    assert before.confirmed_finding_count == 1
+    assert before_shell.kpis.confirmed_findings == 1
+    assert before_shell.validated_poc_count == 1
+
+    if block_kind == "unresolved_call":
+        assert store.begin_codex_call("orphan-call", identity.analysis_id)
+    else:
+        root = identity.model_copy(update={"hypothesis_id": None})
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=root,
+                stage=SimpleStage.HYPOTHESIS_DONE,
+                status=StageStatus.BLOCKED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                error_code="HYPOTHESIS_EVIDENCE_INVALID",
+                retryable=False,
+            )
+        )
+
+    detail = query.get_analysis(identity.analysis_id)
+    shell = query.get_analysis_shell(identity.analysis_id)
+    assert detail.finding_count == 0
+    assert detail.reports == ()
+    assert detail.confirmed_finding_count == 0
+    assert shell.kpis.confirmed_findings == 0
+    assert shell.validated_poc_count == 0
+
+
 @pytest.mark.parametrize(
     ("candidate_version", "error_code"),
     [

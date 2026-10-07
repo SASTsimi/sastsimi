@@ -328,8 +328,11 @@ class DashboardQuery:
         known_ids = set(run.hypothesis_ids) if run is not None else set()
         total = len(known_ids | set(groups)) if run is not None or groups else None
         verified = sum(self._final_verdict_saved(items) for items in groups.values())
-        validated = sum(self._validated_poc(items) for items in groups.values())
-        confirmed = sum(self._confirmed_hypothesis(items) for items in groups.values())
+        validated = (
+            0
+            if self._candidate_report_blocked(run, values)
+            else sum(self._validated_poc(items) for items in groups.values())
+        )
         coverage = self._static_coverage_projection(values)
         return DashboardShellView.model_validate(
             {
@@ -346,7 +349,7 @@ class DashboardQuery:
                     remaining_work=(
                         max(0, total - verified) if total is not None else None
                     ),
-                    confirmed_findings=confirmed,
+                    confirmed_findings=summary.confirmed_finding_count or 0,
                 ),
                 "validated_poc_count": validated if total is not None else None,
                 "llm_token_usage_known": self._known_token_usage(exact),
@@ -1867,9 +1870,13 @@ class DashboardQuery:
         ) + sum(item.completed_count for item in hypotheses)
         reports = self._reports(analysis_id)
         coverage = self._static_coverage_projection(values) if detail else {}
-        confirmed_count = sum(
-            self._confirmed_hypothesis(checkpoints)
-            for checkpoints in hypothesis_groups.values()
+        confirmed_count = (
+            0
+            if report_currentness_blocked
+            else sum(
+                self._confirmed_hypothesis(checkpoints)
+                for checkpoints in hypothesis_groups.values()
+            )
         )
         progress = ProgressProjector(
             _CheckpointProjection(tuple(values)), artifact_data_dir=self._data_dir
