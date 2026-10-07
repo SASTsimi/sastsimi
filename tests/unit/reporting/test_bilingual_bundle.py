@@ -573,6 +573,18 @@ def test_unsupported_metadata_claims_in_prose_are_rejected(
             "The standalone server defaults to 127.0.0.1, while the deployed "
             "bind address is unverified.",
         ),
+        (
+            "127.0.0.1",
+            "The app defaults to 127.0.0.1; external reachability is unverified.",
+        ),
+        (
+            "127.0.0.1",
+            "The request notes the default 127.0.0.1 bind; reachability is unverified.",
+        ),
+        (
+            "127.0.0.1",
+            "The server defaults to 127.0.0.1; the affected version is not verified.",
+        ),
     ],
 )
 def test_report_prose_accepts_bare_ipv4_poc_endpoint(
@@ -590,6 +602,25 @@ def test_report_prose_accepts_bare_ipv4_poc_endpoint(
     }
 
     assert address in files["report_en.md"].body.decode()
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "The release defaults to 1.2.3.4.",
+        "The default 1.2.3.4 version is affected.",
+        "The app defaults to 1.2.3.4 as its release version.",
+    ],
+)
+def test_report_ipv4_wording_does_not_allow_version_claims(claim: str) -> None:
+    content = _content()
+    en = content.en.model_copy(update={"limitations": (claim,)})
+    content = content.model_copy(update={"en": en})
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        render_bundle_files(
+            _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
+        )
 
 
 def test_citation_subrange_is_rendered_in_both_reports() -> None:

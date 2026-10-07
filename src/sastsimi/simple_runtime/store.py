@@ -3178,17 +3178,28 @@ class SimpleCheckpointStore:
         """
 
         identity = stopped.identity
+        exhausted_report = (
+            stopped.error_code == "RECOVERY_EXHAUSTED"
+            and stopped.attempt_number == MAX_RECOVERY_ATTEMPTS
+            and stopped.output_refs == (draft_ref,)
+            and stopped.recovery_origin_stage is SimpleStage.REPORT_DONE
+            and stopped.recovery_lineage_id is not None
+            and len(stopped.recovery_decision_refs) == MAX_RECOVERY_ATTEMPTS - 1
+        )
+        legacy_report = (
+            stopped.error_code
+            in {"STAGE_UNEXPECTED_ERROR", "REPORT_UNSUPPORTED_METADATA_CLAIM"}
+            and 1 <= stopped.attempt_number < MAX_RECOVERY_ATTEMPTS
+            and not stopped.output_refs
+        )
         if (
             identity.hypothesis_id is None
             or stopped.stage is not SimpleStage.REPORT_DONE
             or stopped.stage_version != STAGE_VERSION[SimpleStage.REPORT_DONE]
             or stopped.status is not StageStatus.BLOCKED
-            or stopped.error_code
-            not in {"STAGE_UNEXPECTED_ERROR", "REPORT_UNSUPPORTED_METADATA_CLAIM"}
+            or not (legacy_report or exhausted_report)
             or stopped.retryable
             or stopped.attempt_id is None
-            or not 1 <= stopped.attempt_number < MAX_RECOVERY_ATTEMPTS
-            or stopped.output_refs
             or stopped.report_ref is not None
             or artifacts.identity != identity
             or artifacts.paths.database.resolve() != self._database_path.resolve()
@@ -3217,10 +3228,28 @@ class SimpleCheckpointStore:
         except (OSError, TypeError, ValueError) as error:
             raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_INVALID") from error
         if (
-            stopped.error_code == "STAGE_UNEXPECTED_ERROR"
-            and not has_legacy_report_ipv4_false_positive(content)
-        ):
+            stopped.error_code == "STAGE_UNEXPECTED_ERROR" or exhausted_report
+        ) and not has_legacy_report_ipv4_false_positive(content):
             raise ValueError("REPORT_VALIDATOR_REPLAY_LEGACY_CAUSE_UNPROVEN")
+        if exhausted_report:
+            try:
+                for attempt, ref in enumerate(stopped.recovery_decision_refs, 1):
+                    decision = json.loads(artifacts.read_bounded(ref, 64 * 1024))
+                    if (
+                        not isinstance(decision, dict)
+                        or decision.get("kind") != "simple_recovery_decision"
+                        or decision.get("identity") != identity.model_dump(mode="json")
+                        or decision.get("stage") != SimpleStage.REPORT_DONE.value
+                        or decision.get("attempt") != attempt
+                        or not isinstance(decision.get("attempt_id"), str)
+                        or not decision["attempt_id"]
+                        or not isinstance(decision.get("original_error"), dict)
+                        or decision["original_error"].get("code")
+                        != "REPORT_CONTENT_INVALID"
+                    ):
+                        raise ValueError("recovery decision is not report validation")
+            except (OSError, TypeError, ValueError) as error:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN") from error
 
         connection = self._connect()
         try:
@@ -3242,6 +3271,32 @@ class SimpleCheckpointStore:
 
             if checkpoint_at(identity, SimpleStage.REPORT_DONE) != stopped:
                 raise ValueError("REPORT_VALIDATOR_REPLAY_STALE")
+            if exhausted_report:
+                event_rows = connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ?",
+                    (identity.analysis_id, identity.hypothesis_id, stopped.attempt_id),
+                ).fetchall()
+                try:
+                    failure_events = tuple(
+                        AgentActivityEvent.model_validate_json(row["event_json"])
+                        for row in event_rows
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        "REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"
+                    ) from error
+                if not any(
+                    event.kind is ActivityKind.STAGE_BLOCKED
+                    and event.stage == SimpleStage.REPORT_DONE.value
+                    and event.error_code == "REPORT_CONTENT_INVALID"
+                    and event.status == StageStatus.BLOCKED.value
+                    and event.workspace_id == identity.workspace_id
+                    and event.commit_id == identity.commit_id
+                    and event.output_refs == (draft_ref,)
+                    for event in failure_events
+                ):
+                    raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
             root_identity = identity.model_copy(update={"hypothesis_id": None})
             root = checkpoint_at(root_identity, SimpleStage.HYPOTHESIS_DONE)
             expected_root_error = (

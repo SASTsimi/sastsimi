@@ -44,6 +44,16 @@ _LEGACY_REPORT_ENDPOINT_FIX = re.compile(
     r"\bserver\s+defaults?\s+to\b(?:\s+(?:to|at|on|is))?\s*[:=]?\s*$",
     re.IGNORECASE,
 )
+_APP_DEFAULT_ENDPOINT_PREFIX = re.compile(
+    r"\b(?:app|application)\s+defaults?\s+to\s*$", re.IGNORECASE
+)
+_DEFAULT_BIND_PREFIX = re.compile(r"\bdefault\s*$", re.IGNORECASE)
+_ENDPOINT_NOUN_SUFFIX = re.compile(
+    r"^\s+(?:bind|binding|host|address|endpoint)\b", re.IGNORECASE
+)
+_VERSION_ROLE_SUFFIX = re.compile(
+    r"\b(?:versions?|releases?|builds?)\b", re.IGNORECASE
+)
 _UNSUPPORTED_ADVISORY_CLAIMS = (
     re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
     re.compile(
@@ -162,11 +172,23 @@ def _is_network_ipv4(text: str, match: re.Match[str]) -> bool:
     """Distinguish a PoC endpoint from an otherwise unsupported version token."""
 
     try:
-        ipaddress.IPv4Address(match.group())
+        address = ipaddress.IPv4Address(match.group())
     except ValueError:
         return False
     prefix = text[max(0, match.start() - 48) : match.start()]
-    return bool(_NETWORK_ENDPOINT_PREFIX.search(prefix))
+    suffix = text[match.end() : match.end() + 48]
+    same_clause_suffix = re.split(r"[;.!?]", suffix, maxsplit=1)[0]
+    if _VERSION_ROLE_SUFFIX.search(same_clause_suffix):
+        return False
+    network_prefix = _NETWORK_ENDPOINT_PREFIX.search(prefix)
+    return bool(
+        network_prefix
+        and ("default" not in network_prefix.group().lower() or address.is_loopback)
+        or _APP_DEFAULT_ENDPOINT_PREFIX.search(prefix)
+        and address.is_loopback
+        or _DEFAULT_BIND_PREFIX.search(prefix)
+        and _ENDPOINT_NOUN_SUFFIX.search(suffix)
+    )
 
 
 def _is_bare_endpoint(path: str, port: int) -> bool:
@@ -208,12 +230,16 @@ def has_legacy_report_ipv4_false_positive(content: BilingualReportContent) -> bo
                 claim_text,
             )
             for match in _DOTTED_VERSION_TOKEN.finditer(claim_text):
-                try:
-                    ipaddress.IPv4Address(match.group())
-                except ValueError:
+                if not _is_network_ipv4(claim_text, match):
                     continue
                 prefix = claim_text[max(0, match.start() - 48) : match.start()]
-                if _LEGACY_REPORT_ENDPOINT_FIX.search(prefix):
+                suffix = claim_text[match.end() : match.end() + 24]
+                if (
+                    _LEGACY_REPORT_ENDPOINT_FIX.search(prefix)
+                    or _APP_DEFAULT_ENDPOINT_PREFIX.search(prefix)
+                    or _DEFAULT_BIND_PREFIX.search(prefix)
+                    and _ENDPOINT_NOUN_SUFFIX.search(suffix)
+                ):
                     return True
     return False
 
