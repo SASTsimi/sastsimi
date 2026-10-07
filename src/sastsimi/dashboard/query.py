@@ -2058,6 +2058,7 @@ class DashboardQuery:
             ),
             stale=(
                 progress.status == "RUNNING"
+                and lease_state is not True
                 and (datetime.now(UTC) - latest.updated_at).total_seconds()
                 > _STALE_SECONDS
             ),

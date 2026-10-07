@@ -330,6 +330,21 @@ def test_dashboard_summary_paths_do_not_materialize_report_bundles(
     assert shell.analysis_id == "analysis-a"
 
 
+def test_dashboard_stale_warning_requires_no_active_run_lease(tmp_path: Path) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+
+    idle = query.get_analysis("A-001")
+    assert idle.status == "RUNNING"
+    assert idle.stale is True
+
+    with analysis_run_lease(tmp_path, "analysis-a"):
+        active = query.get_analysis("A-001")
+        assert active.status == "RUNNING"
+        assert active.stale is False
+        assert query.list_analyses()[0].stale is False
+
+
 def test_dashboard_marks_unleased_candidate_run_interrupted_without_rewriting_it(
     tmp_path: Path,
 ) -> None:
