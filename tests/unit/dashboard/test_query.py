@@ -1207,6 +1207,9 @@ def test_current_accepted_report_remains_accessible(tmp_path) -> None:
     detail = query.get_analysis("analysis-a")
 
     assert detail.reports[0].display_id == "F-001"
+    assert detail.reports[0].english_available is False
+    assert detail.reports[0].english_view_url is None
+    assert detail.reports[0].english_download_url is None
     assert detail.finding_group_count is None
     assert detail.finding_groups == ()
     assert query.report_path("analysis-a", "F-001") == report_path
@@ -1750,6 +1753,9 @@ def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
     report = query.get_analysis("analysis-a").reports[0]
 
     assert report.attachment_urls["report_en.md"].endswith("/files/report_en.md")
+    assert report.english_available is True
+    assert report.english_view_url is None
+    assert report.english_download_url == report.attachment_urls["report_en.md"]
     assert report.attachment_urls["bundle.zip"].endswith("/bundle.zip")
     assert query.report_attachment("analysis-a", "F-001", "poc.sh")[0] == (
         b"#!/bin/sh\nprintf ok\n"

@@ -3559,6 +3559,8 @@ class DashboardQuery:
                 self.report_path(analysis_id, display_id)
             except DashboardNotFound:
                 continue
+            attachment_urls = self._attachment_urls(analysis_id, display_id)
+            english_download_url = attachment_urls.get("report_en.md")
             reports.append(
                 FindingReportView(
                     analysis_id=analysis_id,
@@ -3568,7 +3570,9 @@ class DashboardQuery:
                     download_url=(
                         f"/api/analyses/{analysis_id}/reports/{display_id}/download"
                     ),
-                    attachment_urls=self._attachment_urls(analysis_id, display_id),
+                    english_available=english_download_url is not None,
+                    english_download_url=english_download_url,
+                    attachment_urls=attachment_urls,
                 )
             )
         return tuple(reports)

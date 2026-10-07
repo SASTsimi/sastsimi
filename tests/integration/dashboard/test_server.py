@@ -658,7 +658,17 @@ def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
 
     with running_server(tmp_path) as base:
         detail = json.loads(request(f"{base}/api/analyses/A-001").read())
-        urls = detail["reports"][0]["attachment_urls"]
+        report = detail["reports"][0]
+        urls = report["attachment_urls"]
+        assert report["english_available"] is True
+        assert report["english_view_url"] is None
+        assert report["english_download_url"] == urls["report_en.md"]
+        english = request(f"{base}{report['english_download_url']}")
+        assert english.read() == b"# English report\n"
+        assert (
+            english.headers["Content-Disposition"]
+            == 'attachment; filename="report_en.md"'
+        )
         response = request(f"{base}{urls['poc.sh']}")
         assert response.status == 200
         assert response.read() == poc
