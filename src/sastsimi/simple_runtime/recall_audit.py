@@ -48,9 +48,9 @@ class Oracle:
     commit: str
     cases: tuple[OracleCase, ...]
     version: Literal[1, 2] = 1
-    completeness: Literal[
-        "UNDECLARED", "DOCUMENTED_CASES", "EXHAUSTIVE_PYTHON"
-    ] = "UNDECLARED"
+    completeness: Literal["UNDECLARED", "DOCUMENTED_CASES", "EXHAUSTIVE_PYTHON"] = (
+        "UNDECLARED"
+    )
 
 
 class AuditCaseResult(TypedDict):
@@ -88,18 +88,13 @@ def _analysis_run(
 
 def _static_product_paths(
     connection: sqlite3.Connection, data_dir: Path, run: SimpleAnalysisRun
-) -> frozenset[str] | None:
+) -> tuple[frozenset[str], bool] | None:
     """Require exact, hash-verified full static evidence before measuring a miss."""
 
     bundle_ref = run.static_bundle_ref
     coverage_ref = run.static_coverage_ref
     scope = run.candidate_scope_fingerprint
-    if (
-        run.static_disposition != "FULL"
-        or not scope
-        or bundle_ref is None
-        or coverage_ref is None
-    ):
+    if not scope or bundle_ref is None or coverage_ref is None:
         return None
     rows = connection.execute(
         "SELECT checkpoint_json FROM simple_runtime_checkpoints "
@@ -192,8 +187,17 @@ def _static_product_paths(
         "ast_parse_errors",
         "ast_oversize_paths",
         "engine_errors",
-        "out_of_scope_product_files",
     )
+    out_of_scope = coverage.get("out_of_scope_product_files")
+    if not isinstance(out_of_scope, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("path"), str)
+        or not isinstance(item.get("reason"), str)
+        or not item["reason"]
+        or Path(item["path"]).suffix.lower() in {".py", ".pyi"}
+        for item in out_of_scope
+    ):
+        return None
     if (
         type(expected) is not int
         or type(verified) is not int
@@ -217,14 +221,25 @@ def _static_product_paths(
         )
     ):
         return None
-    return frozenset(selected)
+    if run.static_disposition == "PARTIAL" and not out_of_scope:
+        return None
+    return frozenset(selected), bool(out_of_scope)
 
 
-def _pipeline_complete(run: SimpleAnalysisRun) -> bool:
+def _pipeline_complete(
+    run: SimpleAnalysisRun, *, python_scope_complete: bool, nonpython_out_of_scope: bool
+) -> bool:
     terminal = run.candidate_terminal
     return bool(
         terminal is not None
-        and terminal.status == "COMPLETE"
+        and (
+            terminal.status == "COMPLETE"
+            or (
+                terminal.status == "PARTIAL"
+                and python_scope_complete
+                and nonpython_out_of_scope
+            )
+        )
         and terminal.producer_finished
         and terminal.pending_child_count == 0
         and terminal.scope_fingerprint == run.candidate_scope_fingerprint
@@ -235,6 +250,9 @@ def _pipeline_complete(run: SimpleAnalysisRun) -> bool:
         )
         and not any(
             terminal.deep_counts.get(key, 0) for key in ("PENDING", "RUNNING", "ERROR")
+        )
+        and not any(
+            terminal.surface_counts.get(key, 0) for key in ("UNCOVERED", "INSUFFICIENT")
         )
     )
 
@@ -285,9 +303,7 @@ def _root_hypothesis_current(
 
 def _matches(case: OracleCase, candidate: StaticCandidate) -> bool:
     target_path = (
-        case.path
-        if candidate.kind == "ENTRY_POINT"
-        else case.sink_path or case.path
+        case.path if candidate.kind == "ENTRY_POINT" else case.sink_path or case.path
     )
     if candidate.path != target_path:
         return False
@@ -418,10 +434,17 @@ def audit_analysis(data_dir: Path, analysis_id: str, oracle: Oracle) -> AuditRes
         run = _analysis_run(connection, analysis_id)
         if run.commit_id != oracle.commit or run.repository != oracle.repository:
             raise ValueError("RECALL_ORACLE_TARGET_MISMATCH")
-        static_paths = _static_product_paths(connection, data_dir, run)
+        static_scope = _static_product_paths(connection, data_dir, run)
+        static_paths = static_scope[0] if static_scope is not None else None
         root_current = _root_hypothesis_current(connection, data_dir, run)
         terminal_complete = (
-            static_paths is not None and root_current and _pipeline_complete(run)
+            static_scope is not None
+            and root_current
+            and _pipeline_complete(
+                run,
+                python_scope_complete=True,
+                nonpython_out_of_scope=static_scope[1],
+            )
         )
         cursor = connection.execute(
             "SELECT candidate_id, candidate_json, decision, deep_status "
@@ -498,6 +521,7 @@ def audit_analysis(data_dir: Path, analysis_id: str, oracle: Oracle) -> AuditRes
                 static_paths is not None
                 and pipeline_complete
                 and case.path in static_paths
+                and (case.sink_path is None or case.sink_path in static_paths)
             )
             if set(case.vetted_candidate_ids) - set(vetted_ids):
                 status, first_gap = "INCOMPLETE", "ORACLE_CANDIDATE_MAPPING_INVALID"
@@ -515,6 +539,13 @@ def audit_analysis(data_dir: Path, analysis_id: str, oracle: Oracle) -> AuditRes
                 status, first_gap = "DETECTED", None
             elif not ledger_consistent:
                 status, first_gap = "INCOMPLETE", "CANDIDATE_LEDGER_MISMATCH"
+            elif any(
+                checkpoint.verdict == "HOLD"
+                or checkpoint.environment_block_ref is not None
+                for item in stages.values()
+                for checkpoint in item.values()
+            ):
+                status, first_gap = "INCOMPLETE", "HOLD_VERIFICATION"
             elif any(
                 checkpoint.status in {StageStatus.FAILED, StageStatus.BLOCKED}
                 for item in stages.values()

@@ -28,6 +28,7 @@ def _saved_run(
     tmp_path: Path,
     *,
     terminal: Literal["COMPLETE", "PARTIAL"] = "COMPLETE",
+    static_disposition: Literal["FULL", "PARTIAL"] = "FULL",
     static_proof: bool = True,
     manifest_paths: tuple[str, ...] = ("app.py",),
     coverage_overrides: dict[str, object] | None = None,
@@ -90,6 +91,7 @@ def _saved_run(
             repository="https://example.test/python-repo",
             static_bundle_ref=bundle_ref if static_proof else None,
             static_coverage_ref=coverage_ref if static_proof else None,
+            static_disposition=static_disposition,
             candidate_pipeline_version=2,
             candidate_scope_fingerprint="scope-1",
             candidate_terminal=CandidateTerminal(
@@ -487,6 +489,89 @@ def test_full_python_scan_with_stub_file_is_measurable(tmp_path: Path) -> None:
 
     assert result["analysis_complete"] is True
     assert result["cases"][0]["status"] == "MISSED"
+
+
+def test_mixed_repository_partial_is_measurable_for_fully_scanned_python(
+    tmp_path: Path,
+) -> None:
+    data_dir, _ = _saved_run(
+        tmp_path,
+        terminal="PARTIAL",
+        static_disposition="PARTIAL",
+        coverage_overrides={
+            "out_of_scope_product_files": [
+                {"path": "frontend/app.ts", "reason": "NON_PYTHON"}
+            ]
+        },
+    )
+
+    result = audit_analysis(
+        data_dir, "analysis-1", _oracle(finding_inventory_reviewed=True)
+    )
+
+    assert result["analysis_complete"] is True
+    assert result["cases"][0]["status"] == "MISSED"
+    assert result["cases"][0]["first_gap"] == "STATIC_CANDIDATE"
+
+
+def test_partial_with_uncovered_attack_surface_remains_incomplete(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(
+        tmp_path,
+        terminal="PARTIAL",
+        static_disposition="PARTIAL",
+        coverage_overrides={
+            "out_of_scope_product_files": [
+                {"path": "frontend/app.ts", "reason": "NON_PYTHON"}
+            ]
+        },
+    )
+    store = SimpleCheckpointStore(database)
+    run = store.require_analysis_run("analysis-1")
+    assert run.candidate_terminal is not None
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "candidate_terminal": run.candidate_terminal.model_copy(
+                    update={"surface_counts": {"UNCOVERED": 1}}
+                )
+            }
+        )
+    )
+
+    result = audit_analysis(
+        data_dir, "analysis-1", _oracle(finding_inventory_reviewed=True)
+    )
+
+    assert result["analysis_complete"] is False
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [SimpleStage.VERIFICATION_INITIAL_DONE, SimpleStage.VERIFICATION_FINAL_DONE],
+)
+def test_hold_verdict_is_not_a_measured_miss(
+    tmp_path: Path, stage: SimpleStage
+) -> None:
+    data_dir, database = _saved_run(tmp_path)
+    _candidate(data_dir, database)
+    _link(database)
+    _checkpoint(database, stage, verdict="HOLD")
+
+    result = audit_analysis(
+        data_dir,
+        "analysis-1",
+        _oracle(
+            vetted_candidate_ids=("candidate-1",),
+            vetted_hypothesis_ids=("hyp-1",),
+            finding_inventory_reviewed=True,
+        ),
+    )
+
+    assert result["cases"][0]["status"] == "INCOMPLETE"
+    assert result["cases"][0]["first_gap"] == "HOLD_VERIFICATION"
 
 
 @pytest.mark.parametrize(
