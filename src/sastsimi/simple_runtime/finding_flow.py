@@ -2126,6 +2126,228 @@ def _flask_post_percent_ssti_anchor(
     return matches[0] if len(matches) == 1 else None
 
 
+def _flask_cookie_route(tree: ast.Module, function: ast.FunctionDef) -> str | None:
+    """Resolve one literal Flask route without changing other flow families."""
+
+    if len(function.decorator_list) != 1:
+        return None
+    decorator = function.decorator_list[0]
+    if (
+        not isinstance(decorator, ast.Call)
+        or not isinstance(decorator.func, ast.Attribute)
+        or not isinstance(decorator.func.value, ast.Name)
+        or decorator.func.attr not in _FLASK_ROUTE_METHODS
+        or len(decorator.args) != 1
+        or not isinstance(decorator.args[0], ast.Constant)
+        or not isinstance(decorator.args[0].value, str)
+        or not decorator.args[0].value.startswith("/")
+    ):
+        return None
+    if decorator.func.attr == "route":
+        if decorator.keywords:
+            if len(decorator.keywords) != 1 or decorator.keywords[0].arg != "methods":
+                return None
+            methods = decorator.keywords[0].value
+            if (
+                not isinstance(methods, (ast.List, ast.Tuple))
+                or not 1 <= len(methods.elts) <= 2
+            ):
+                return None
+            values = [
+                item.value
+                for item in methods.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            ]
+            if (
+                len(values) != len(methods.elts)
+                or not set(values)
+                <= {
+                    "GET",
+                    "POST",
+                }
+                or len(set(values)) != len(values)
+            ):
+                return None
+    elif decorator.keywords:
+        return None
+    if (
+        not _flask_module_attributes_stable(tree)
+        or not _direct_app_binding(
+            tree,
+            decorator.func.value.id,
+            "Flask",
+            "flask",
+            _FLASK_ROUTE_METHODS,
+            allow_unrelated_getattr=True,
+        )
+        or sum(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == function.name
+            for node in ast.walk(tree)
+        )
+        != 1
+        or _one_hop_import_binds(tree, function.name)
+        or any(
+            isinstance(node, ast.Name)
+            and node.id == function.name
+            and isinstance(node.ctx, (ast.Store, ast.Del, ast.Load))
+            for node in ast.walk(tree)
+        )
+    ):
+        return None
+    return decorator.args[0].value
+
+
+def _direct_flask_cookie_pickle_anchor(
+    tree: ast.Module,
+    path: str,
+    cited: set[int],
+    flow_trace: Mapping[str, object] | None,
+    source_lines: list[str],
+) -> FlowAnchor | None:
+    """Identify only a literal cookie -> base64 -> pickle.loads expression."""
+
+    # A second path to the module can replace ``pickle.loads`` without
+    # assigning through the protected ``pickle`` name. Abstain on dynamic
+    # module resolution rather than treating the direct import as proof.
+    sys_bindings: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.partition(".")[0] in {"importlib", "builtins"}:
+                    return None
+                if alias.name == "sys":
+                    sys_bindings.add(alias.asname or "sys")
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").partition(".")[0] in {"importlib", "builtins"}:
+                return None
+            if node.module == "sys" and any(
+                alias.name == "modules" for alias in node.names
+            ):
+                return None
+    if any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "modules"
+        and isinstance(node.value, ast.Name)
+        and node.value.id in sys_bindings
+        for node in ast.walk(tree)
+    ):
+        return None
+    pickle_imports = [
+        alias
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "pickle"
+    ]
+    if len(pickle_imports) != 1 or pickle_imports[0].asname is not None:
+        return None
+    matches: list[FlowAnchor] = []
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        route = _flask_cookie_route(tree, function)
+        if (
+            route is None
+            or not _stable_imports(
+                tree,
+                function,
+                "pickle",
+                ("import", "pickle"),
+                allow_unrelated_nested_imports=True,
+            )
+            or not _stable_imports(
+                tree,
+                function,
+                "b64decode",
+                ("base64", "b64decode"),
+                allow_unrelated_nested_imports=True,
+            )
+        ):
+            continue
+        calls: list[_Callsite] = []
+        try:
+            _scan_statements(function.body, (), [], calls)
+        except RecursionError:
+            return None
+        for callsite in calls:
+            call = callsite.call
+            if (
+                _name(call.func) != "pickle.loads"
+                or call.lineno not in cited
+                or len(call.args) != 1
+                or call.keywords
+                or _unsupported_writes(function, call.lineno)
+            ):
+                continue
+            decoder = call.args[0]
+            if (
+                not isinstance(decoder, ast.Call)
+                or _name(decoder.func) != "b64decode"
+                or len(decoder.args) != 1
+                or decoder.keywords
+            ):
+                continue
+            source = decoder.args[0]
+            if (
+                not isinstance(source, ast.Subscript)
+                or _name(source.value) != "request.cookies"
+                or not isinstance(source.slice, ast.Constant)
+                or not isinstance(source.slice.value, str)
+                or not source.slice.value
+            ):
+                continue
+            anchor = FlowAnchor(
+                route=route,
+                function=function.name,
+                source_file=path,
+                source_line=source.lineno,
+                source_access="request.cookies",
+                source_key=source.slice.value,
+                def_use_nodes=(f"b64decode@{decoder.lineno}",),
+                sink_file=path,
+                sink_line=call.lineno,
+                sink_callee="pickle.loads",
+                sink_argument=0,
+                branch_nodes=callsite.branches,
+                cwe="CWE-502",
+            )
+            if _cookie_pickle_trace_agrees(
+                flow_trace, anchor, tree, source, call, source_lines
+            ):
+                matches.append(anchor)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _cookie_pickle_trace_agrees(
+    flow_trace: Mapping[str, object] | None,
+    anchor: FlowAnchor,
+    tree: ast.Module,
+    source: ast.Subscript,
+    sink: ast.Call,
+    source_lines: list[str],
+) -> bool:
+    if flow_trace is not None:
+        source_endpoint = flow_trace.get("source")
+        if (
+            isinstance(source_endpoint, Mapping)
+            and "source_key" in source_endpoint
+            and source_endpoint["source_key"] != anchor.source_key
+        ):
+            return False
+        sink_endpoint = flow_trace.get("sink")
+        if isinstance(sink_endpoint, Mapping) and "sink_argument" in sink_endpoint:
+            position = sink_endpoint["sink_argument"]
+            if not (
+                type(position) is int
+                and position == anchor.sink_argument
+                or isinstance(position, str)
+                and position == str(anchor.sink_argument)
+            ):
+                return False
+    return _ssti_trace_agrees(flow_trace, anchor, tree, source, sink, source_lines)
+
+
 def resolve_flow_anchor(
     workspace: Path,
     path: str,
@@ -2146,8 +2368,14 @@ def resolve_flow_anchor(
         return None
     cited = _locations(proposal, path)
     normalized_cwe = cwe.upper().replace("_", "-")
+    if not cited:
+        return None
+    if normalized_cwe == "CWE-502":
+        return _direct_flask_cookie_pickle_anchor(
+            tree, path, cited, flow_trace, source_text.splitlines()
+        )
     allowed_sinks = _DIRECT_SINKS.get(normalized_cwe)
-    if not cited or allowed_sinks is None:
+    if allowed_sinks is None:
         return None
     if normalized_cwe == "CWE-1336":
         return _flask_post_percent_ssti_anchor(
