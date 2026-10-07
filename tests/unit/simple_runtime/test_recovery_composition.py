@@ -34,9 +34,16 @@ from sastsimi.simple_runtime.models import (
     StageFailure,
     StageStatus,
 )
-from sastsimi.simple_runtime.portable_docker import PortableDockerRuntime
+from sastsimi.simple_runtime.portable_docker import (
+    DirectEnvironmentPreparer,
+    PortableDockerRuntime,
+)
 from sastsimi.simple_runtime.run_lease import analysis_run_lease
-from sastsimi.simple_runtime.stages import PoCCandidateStage, RuleScopeGateStage
+from sastsimi.simple_runtime.stages import (
+    InitialVerificationStage,
+    PoCCandidateStage,
+    RuleScopeGateStage,
+)
 
 
 def _config(tmp_path: Path) -> UserConfig:
@@ -178,6 +185,39 @@ def test_composition_injects_identity_scoped_recovery_into_app_and_runner(
     assert created == [identity, identity]
 
 
+def test_composition_reuses_wheel_cache_across_hypothesis_runners(
+    tmp_path: Path,
+) -> None:
+    application = composition.build_analysis_application(
+        _config(tmp_path), _profile(tmp_path)
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=_ref(identity, "profile"),
+        static_bundle_ref=_ref(identity, "bundle"),
+        workspace_path=tmp_path / "workspace",
+    )
+    first = application._runner_factory(application._store, identity, static)
+    second_identity = identity.model_copy(update={"hypothesis_id": "hypothesis-2"})
+    second = application._runner_factory(application._store, second_identity, static)
+
+    first_stage = first.handlers[SimpleStage.VERIFICATION_INITIAL_DONE]
+    second_stage = second.handlers[SimpleStage.VERIFICATION_INITIAL_DONE]
+    assert isinstance(first_stage, InitialVerificationStage)
+    assert isinstance(second_stage, InitialVerificationStage)
+    first_environment = first_stage._environments
+    second_environment = second_stage._environments
+    assert isinstance(first_environment, DirectEnvironmentPreparer)
+    assert isinstance(second_environment, DirectEnvironmentPreparer)
+    assert first_environment is not second_environment
+    assert first_environment._auto_bundle_cache is second_environment._auto_bundle_cache
+
+
 @pytest.mark.parametrize("configured_digest", [None, "sha256:" + "b" * 64])
 @pytest.mark.asyncio
 async def test_composition_wires_local_only_offline_base_preflight(
@@ -252,7 +292,7 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
         status="BLOCKED",
         current_stage=SimpleStage.POC_EXECUTION_DONE,
     )
-    calls: list[tuple[str, str | None]] = []
+    calls: list[tuple[str, str | None, str | None]] = []
 
     class _Application:
         async def resume(
@@ -260,8 +300,27 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
             analysis_id: str,
             *,
             repair_exhausted_hypothesis: str | None = None,
+            repair_legacy_import_stop_hypothesis: str | None = None,
+            repair_fallback_poc_stop_hypothesis: str | None = None,
+            repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
+            repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
+            repair_poc_sensitive_content_hypothesis: str | None = None,
+            repair_report_validator_hypothesis: str | None = None,
         ) -> SimpleAnalysisOutcome:
-            calls.append((analysis_id, repair_exhausted_hypothesis))
+            del (
+                repair_fallback_poc_stop_hypothesis,
+                repair_docker_owned_list_exhaustion_hypothesis,
+                repair_poc_placeholder_exhaustion_hypothesis,
+                repair_poc_sensitive_content_hypothesis,
+                repair_report_validator_hypothesis,
+            )
+            calls.append(
+                (
+                    analysis_id,
+                    repair_exhausted_hypothesis,
+                    repair_legacy_import_stop_hypothesis,
+                )
+            )
             return outcome
 
     async def track(
@@ -296,7 +355,7 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
     else:
         public.resume("A-001", repair_exhausted_hypothesis="hypothesis-1")
 
-    assert calls == [("analysis-1" if with_progress else "A-001", "hypothesis-1")]
+    assert calls == [("analysis-1" if with_progress else "A-001", "hypothesis-1", None)]
 
 
 def test_public_candidate_status_marks_unleased_running_stage_interrupted(

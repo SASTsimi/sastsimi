@@ -275,6 +275,66 @@ async def test_unsupported_requirement_at_attempt_cap_stays_blocked(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "attempt_number,in_flight,expected_replay",
+    [(1, False, True), (1, True, False), (3, False, False)],
+)
+@pytest.mark.parametrize(
+    "stage_version", ("5", STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE])
+)
+async def test_wheel_archive_failure_replays_only_bounded_initial_stage(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    attempt_number: int,
+    in_flight: bool,
+    expected_replay: bool,
+    stage_version: str,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "wheel-recovery" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.PRO_CON_DONE)
+    pro_con = store.require(_identity(), SimpleStage.PRO_CON_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        store.input_refs_for(_identity(), SimpleStage.VERIFICATION_INITIAL_DONE),
+        attempt_id="wheel-recovery-attempt",
+    )
+    failed = store.mark_failure(
+        running,
+        StageFailure(
+            code="WHEEL_ARCHIVE_INVALID",
+            retryable=False,
+            safe_message="Downloaded wheel could not be read by host",
+        ),
+        StageStatus.BLOCKED,
+    ).model_copy(
+        update={"attempt_number": attempt_number, "stage_version": stage_version}
+    )
+    store.save_checkpoint(failed)
+    if in_flight:
+        monkeypatch.setattr(store, "unresolved_codex_call", lambda _id: object())
+    calls: list[SimpleStage] = []
+    runner = SimpleRuntimeRunner(store, _recording_handlers(calls))
+
+    outcome = await runner.resume_hypothesis(_identity())
+
+    assert store.require(_identity(), SimpleStage.PRO_CON_DONE) == pro_con
+    if expected_replay:
+        assert outcome.status is StageStatus.SUCCEEDED
+        assert calls[0] is SimpleStage.VERIFICATION_INITIAL_DONE
+        assert (
+            store.require(
+                _identity(), SimpleStage.VERIFICATION_INITIAL_DONE
+            ).attempt_number
+            == 2
+        )
+    else:
+        assert outcome.status is StageStatus.BLOCKED
+        assert outcome.error_code == "WHEEL_ARCHIVE_INVALID"
+        assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "stage_version", ("4", STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE])
 )
 async def test_offline_base_failure_retries_initial_stage_after_local_preflight(
@@ -942,6 +1002,44 @@ async def test_resume_preserves_other_terminal_poc_failures(
 
 
 @pytest.mark.asyncio
+async def test_poc_candidate_stage_version_upgrade_preserves_exhausted_poc(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "candidate-upgrade" / "sastsimi.sqlite3")
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    old_candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    # A prompt version upgrade must not erase the previous recovery cap.
+    stale_candidate = old_candidate.model_copy(update={"stage_version": "5"})
+    store.save_checkpoint(stale_candidate)
+    execution = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="exhausted-attempt",
+    )
+    exhausted = store.mark_failure(
+        execution,
+        StageFailure(
+            code="RECOVERY_EXHAUSTED",
+            retryable=False,
+            safe_message="previous candidate could not execute",
+        ),
+        StageStatus.BLOCKED,
+    )
+    calls: list[SimpleStage] = []
+
+    outcome = await SimpleRuntimeRunner(
+        store, _recording_handlers(calls)
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == "RECOVERY_EXHAUSTED"
+    assert calls == []
+    assert store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE) == stale_candidate
+    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == exhausted
+
+
+@pytest.mark.asyncio
 async def test_legacy_invalid_output_at_attempt_cap_is_not_replayed(tmp_path) -> None:
     store = SimpleCheckpointStore(tmp_path / "legacy-cap" / "sastsimi.sqlite3")
     _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
@@ -1052,7 +1150,13 @@ async def test_legacy_inconclusive_stop_is_not_replayed_by_version_bump(
             evidence_refs=failed.output_refs,
         ),
     )
-    store.record_recovery_stop(failed, resolution)
+    stopped = store.record_recovery_stop(failed, resolution)
+    for upstream in (
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        SimpleStage.POC_CANDIDATE_DONE,
+    ):
+        previous = store.require(_identity(), upstream)
+        store.save_checkpoint(previous.model_copy(update={"stage_version": "5"}))
     calls: list[SimpleStage] = []
 
     outcome = await SimpleRuntimeRunner(
@@ -1065,7 +1169,57 @@ async def test_legacy_inconclusive_stop_is_not_replayed_by_version_bump(
     assert outcome.status is StageStatus.BLOCKED
     assert outcome.error_code == "POC_INCONCLUSIVE"
     assert calls == []
-    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == failed
+    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == stopped
+
+
+@pytest.mark.asyncio
+async def test_legacy_poc_import_stop_is_not_replayed_by_new_replan_rule(
+    tmp_path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "legacy-import-stop" / "sastsimi.sqlite3")
+    artifacts = SimpleArtifactRepository(tmp_path, _identity())
+    _seeded_through(store, SimpleStage.POC_CANDIDATE_DONE)
+    running = store.mark_running(
+        _identity(),
+        SimpleStage.POC_EXECUTION_DONE,
+        store.input_refs_for(_identity(), SimpleStage.POC_EXECUTION_DONE),
+        attempt_id="legacy-import-stop-attempt",
+    )
+    stderr_ref = artifacts.put_bytes(
+        b"ModuleNotFoundError: jwt\nTraceback: frame -> exec_module",
+        "text/plain",
+    )
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "attempt_id": running.attempt_id,
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+        }
+    )
+    failure = StageFailure(
+        code="POC_EXECUTION_FAILED",
+        retryable=True,
+        safe_message="legacy PoC failed",
+        evidence_refs=(execution_ref, stderr_ref),
+    )
+    failed = store.mark_failure(running, failure, StageStatus.BLOCKED)
+    resolution = await _Recovery(tmp_path, RecoveryAction.STOP).decide(failed, failure)
+    stopped = store.record_recovery_stop(failed, resolution)
+    calls: list[SimpleStage] = []
+    attempted_recovery = _Recovery(tmp_path, RecoveryAction.RETRY_STAGE)
+
+    outcome = await SimpleRuntimeRunner(
+        store,
+        _recording_handlers(calls),
+        recovery=attempted_recovery,
+        cleanup_artifacts=artifacts,
+    ).resume_hypothesis(_identity())
+
+    assert outcome.status is StageStatus.BLOCKED
+    assert outcome.error_code == "POC_EXECUTION_FAILED"
+    assert calls == []
+    assert attempted_recovery.calls == []
+    assert store.require(_identity(), SimpleStage.POC_EXECUTION_DONE) == stopped
 
 
 @pytest.mark.asyncio
@@ -1295,17 +1449,59 @@ def test_poc_candidate_validator_allows_localhost_url() -> None:
     )
 
 
+def test_poc_candidate_validator_rejects_shell_literal_dollar() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\nset -eu\nprintf '%s\\n' '{\"name\":{\"$ne\":null}}'\n",
+            allowed_environment_names=frozenset(),
+        )
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython - <<'PY'\nquery = {'$ne': None}\nprint(query)\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
+    assert validate_candidate(
+        b"#!/bin/sh\npython - <<'PY'\n"
+        b"query = {chr(36) + 'ne': None}\nprint(query)\nPY\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
 @pytest.mark.parametrize(
     "opener",
     (b"<<'PY'", b'<<"PY"', b"<<\\PY", b"<<-'PY'"),
 )
-def test_poc_candidate_validator_allows_literal_dollar_in_quoted_heredoc(
+def test_poc_candidate_validator_rejects_literal_dollar_in_quoted_heredoc(
     opener: bytes,
 ) -> None:
-    assert validate_candidate(
-        b"#!/bin/sh\npython3 - " + opener + b"\nprint({'$ne': 'fixture_absent'})\nPY\n",
-        allowed_environment_names=frozenset(),
-    )
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b"#!/bin/sh\npython3 - "
+            + opener
+            + b"\nprint({'$ne': 'fixture_absent'})\nPY\n",
+            allowed_environment_names=frozenset(),
+        )
+
+
+def test_poc_candidate_validator_still_rejects_expanded_undeclared_inputs() -> None:
+    for script in (
+        b'#!/bin/sh\nprintf "%s\\n" "$ne"\n',
+        b"#!/bin/sh\ncat <<PY\n$ne\nPY\n",
+        b"#!/bin/sh\n# '\nprintf '%s\\n' \"$NE\"\n",
+        b"#!/bin/sh\n# <<'EOF'\nprintf '%s\\n' \"$NE\"\n",
+        b'#!/bin/sh\nX=\nprintf "%s\\n" "${X:-$NE}"\n',
+        b'#!/bin/sh\nprintf "%s\\n" "${NE%foo}"\n',
+        b'#!/bin/sh\nprintf "%s\\n" "${NE#foo}"\n',
+        b'#!/bin/sh\nprintf "%s\\n" "${#NE}"\n',
+    ):
+        with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+            validate_candidate(script, allowed_environment_names=frozenset())
+
+    with pytest.raises(PoCCandidateRejected, match="POC_UNDECLARED_INPUT"):
+        validate_candidate(
+            b'#!/bin/sh\nprintf "%s\\n" "${X:-$NE}"\n',
+            allowed_environment_names=frozenset({"NE"}),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1353,7 +1549,8 @@ def test_poc_candidate_validator_allows_separately_exported_input_in_child() -> 
 def test_poc_candidate_validator_handles_multiple_quoted_heredocs() -> None:
     assert validate_candidate(
         b"#!/bin/sh\npython3 - <<'FIRST' <<'SECOND'\n"
-        b"print({'$ne': 1})\nFIRST\nprint({'$gt': 1})\nSECOND\n",
+        b"print({chr(36) + 'ne': 1})\nFIRST\n"
+        b"print({chr(36) + 'gt': 1})\nSECOND\n",
         allowed_environment_names=frozenset(),
     )
 
@@ -1361,7 +1558,8 @@ def test_poc_candidate_validator_handles_multiple_quoted_heredocs() -> None:
 def test_poc_candidate_validator_allows_direct_python_flags_and_argument() -> None:
     assert validate_candidate(
         b"#!/bin/sh\nworkdir=/tmp\n"
-        b"python3 -B - \"$workdir\" <<'PY'\nprint({'$ne': 1})\nPY\n",
+        b"python3 -B - \"$workdir\" <<'PY'\n"
+        b"print({chr(36) + 'ne': 1})\nPY\n",
         allowed_environment_names=frozenset(),
     )
 
@@ -1384,10 +1582,10 @@ def test_poc_candidate_validator_rejects_python_spawned_shell_variables(
         )
 
 
-def test_poc_candidate_validator_does_not_confuse_mongo_key_with_subprocess() -> None:
+def test_poc_candidate_validator_runtime_mongo_key_with_subprocess() -> None:
     assert validate_candidate(
         b"#!/bin/sh\npython3 - <<'PY'\n"
-        b"import subprocess\nquery = {'$ne': 'x'}\n"
+        b"import subprocess\nquery = {chr(36) + 'ne': 'x'}\n"
         b"subprocess.run(['true'], check=True)\nPY\n",
         allowed_environment_names=frozenset(),
     )
@@ -1756,7 +1954,7 @@ async def test_stale_exhausted_stage_restarts_at_new_version(tmp_path) -> None:
         SimpleStage.POC_CANDIDATE_DONE,
     ]
     assert store.require(_identity(), SimpleStage.PRO_CON_DONE) == pro_con
-    assert initial.stage_version == "5"
+    assert initial.stage_version == STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
     assert initial.attempt_number == 1
     assert initial.recovery_lineage_id is None
     assert initial.input_refs == inputs
@@ -1807,7 +2005,7 @@ async def test_current_version_exhausted_stage_stays_blocked(tmp_path) -> None:
     exhausted = StageCheckpoint(
         identity=_identity(),
         stage=SimpleStage.VERIFICATION_INITIAL_DONE,
-        stage_version="5",
+        stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE],
         status=StageStatus.BLOCKED,
         input_refs=inputs,
         input_hash=input_reference_hash(inputs),

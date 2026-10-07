@@ -8,7 +8,10 @@ from typing import Any, cast
 import pytest
 
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.contracts.reporting import BilingualReportContent
+from sastsimi.contracts.reporting import (
+    BilingualReportContent,
+    has_legacy_report_ipv4_false_positive,
+)
 from sastsimi.contracts.static import CodeLocation
 from sastsimi.reporting.bilingual_bundle import (
     BundleFacts,
@@ -531,6 +534,7 @@ def test_unverified_metadata_cannot_be_filled_by_reporter_prose() -> None:
         ("en", "details", "1.2.3 is affected."),
         ("en", "details", "1.2.3.4 is affected."),
         ("en", "details", "Affected build 1.2.3.4 on the server."),
+        ("en", "details", "The server version 1.2.3.4 was affected."),
         ("en", "details", "1.2.3.4"),
         ("en", "details", "1.2.3 versions are affected."),
         (
@@ -567,6 +571,27 @@ def test_unsupported_metadata_claims_in_prose_are_rejected(
         ("127.0.0.1", "The PoC connects to: 127.0.0.1 only."),
         ("192.168.1.20", "The local PoC connects to 192.168.1.20 only."),
         ("8.8.8.8", "The local PoC connects to 8.8.8.8 only."),
+        (
+            "127.0.0.1",
+            "The standalone server defaults to 127.0.0.1, while the deployed "
+            "bind address is unverified.",
+        ),
+        (
+            "127.0.0.1",
+            "The app defaults to 127.0.0.1; external reachability is unverified.",
+        ),
+        (
+            "127.0.0.1",
+            "The request notes the default 127.0.0.1 bind; reachability is unverified.",
+        ),
+        (
+            "127.0.0.1",
+            "The server defaults to 127.0.0.1; the affected version is not verified.",
+        ),
+        (
+            "127.0.0.1",
+            "The default listener is 127.0.0.1, which limits default network exposure.",
+        ),
     ],
 )
 def test_report_prose_accepts_bare_ipv4_poc_endpoint(
@@ -584,6 +609,89 @@ def test_report_prose_accepts_bare_ipv4_poc_endpoint(
     }
 
     assert address in files["report_en.md"].body.decode()
+
+
+@pytest.mark.parametrize(
+    "limitation",
+    [
+        "기본 수신 주소는 127.0.0.1이므로 기본 설정의 네트워크 노출은 제한됩니다.",
+        "기본 수신 주소는 127.0.0.1 이므로 기본 설정의 네트워크 노출은 제한됩니다.",
+    ],
+)
+def test_report_prose_accepts_korean_listener_ipv4_limitation(
+    limitation: str,
+) -> None:
+    content = _content()
+    ko = content.ko.model_copy(update={"limitations": (limitation,)})
+    content = content.model_copy(update={"ko": ko})
+
+    files = {
+        item.path: item
+        for item in render_bundle_files(
+            _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
+        )
+    }
+
+    assert "기본 수신 주소는 127.0.0.1" in files["report_kr.md"].body.decode()
+
+
+@pytest.mark.parametrize(
+    ("language", "limitation"),
+    [
+        ("en", "The local test server defaults to 127.0.0.1."),
+        ("en", "The default listener is 127.0.0.1, which limits default exposure."),
+        ("ko", "기본 수신 주소는 127.0.0.1이므로 외부 노출이 제한됩니다."),
+        ("ko", "기본 수신 주소는 127.0.0.1 이므로 외부 노출이 제한됩니다."),
+    ],
+)
+def test_report_replay_recognizes_endpoint_false_positive(
+    language: str, limitation: str
+) -> None:
+    content = _content()
+    prose = getattr(content, language).model_copy(update={"limitations": (limitation,)})
+    content = content.model_copy(update={language: prose})
+
+    assert has_legacy_report_ipv4_false_positive(content)
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "The default listener version is 1.2.3.4.",
+        "The default listener is 1.2.3.4 as its release version.",
+        "The release <= 1.2.3.4 is affected; the default listener is unknown.",
+    ],
+)
+def test_report_replay_does_not_misidentify_version_claim_as_endpoint(
+    claim: str,
+) -> None:
+    content = _content()
+    en = content.en.model_copy(update={"limitations": (claim,)})
+    content = content.model_copy(update={"en": en})
+
+    assert not has_legacy_report_ipv4_false_positive(content)
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "The release defaults to 1.2.3.4.",
+        "The default 1.2.3.4 version is affected.",
+        "The app defaults to 1.2.3.4 as its release version.",
+        "The default listener version is 1.2.3.4.",
+        "The release <= 1.2.3.4 is affected; the default listener is unknown.",
+        "기본 수신 주소의 버전은 1.2.3.4입니다.",
+    ],
+)
+def test_report_ipv4_wording_does_not_allow_version_claims(claim: str) -> None:
+    content = _content()
+    en = content.en.model_copy(update={"limitations": (claim,)})
+    content = content.model_copy(update={"en": en})
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        render_bundle_files(
+            _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
+        )
 
 
 def test_citation_subrange_is_rendered_in_both_reports() -> None:

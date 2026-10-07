@@ -78,6 +78,13 @@ Semgrep fallback을 켜면 OpenGrep이 검증하지 못한 제품 코드 조합�
 최종 `FALSE`는 `VERIFICATION_FINAL_DONE`에서 끝납니다. `HOLD`는 Primitive와
 Chaining에는 사용할 수 있지만 CWE, 두 Gate, Finding과 보고서로 진행하지 않습니다.
 `TRUE`는 실행에 성공한 validated PoC가 있어야 뒤 단계로 진행합니다.
+초기·최종 Verification은 가설이 인용한 고정 source line뿐 아니라, 같은 Python
+파일의 감싼 함수와 그 함수를 직접 호출하는 제한된 로컬 caller·decorator 문맥을
+함께 받을 수 있습니다. 이는 Flask/FastAPI 등 HTTP handler가 checkout 안에 있을 때
+로컬 test client PoC를 설계할 근거를 보완하는 것이며, 호출 경로 자체를 자동으로
+입증하거나 외부 전제를 충족했다고 가정하는 규칙은 아닙니다. 문맥은 commit-pinned
+blob에서 읽고 함수별 크기를 제한하며, 구문 오류면 기존 인용 줄 주변으로 안전하게
+되돌아갑니다.
 Technical Gate의 `ACCEPT`만 Scope Gate와 Finding으로 이어집니다. `REJECT`는
 제보 불가로 종료하고, `REVISE`는 해당 가설의 PoC 후보부터 다시 검증합니다.
 세 번째 Gate 결정까지도 `REVISE`이면 `INCONCLUSIVE`로 종료합니다. 이 두 종료는

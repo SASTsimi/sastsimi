@@ -690,6 +690,203 @@ async def test_executed_inconclusive_poc_is_terminal_only_at_attempt_limit(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client_type", "stdout", "stderr", "expected_error", "dynamic_marker"),
+    [
+        (
+            _InterpretationClient,
+            b"SASTSIMI_POC_INCONCLUSIVE\n",
+            b"",
+            "POC_INTERPRETATION_INCONSISTENT",
+            False,
+        ),
+        (
+            _InterpretationClient,
+            b"SASTSIMI_POC_INCONCLUSIVE\n",
+            b"",
+            "POC_INTERPRETATION_INCONSISTENT",
+            True,
+        ),
+        (_InconclusiveClient, b"SASTSIMI_POC_INCONCLUSIVE\n", b"", None, False),
+        (
+            _InterpretationClient,
+            b"x" * (1024 * 1024),
+            b"",
+            "POC_OUTPUT_TRUNCATED",
+            False,
+        ),
+        (
+            _InterpretationClient,
+            b"observed\n",
+            b"x" * (1024 * 1024),
+            "POC_OUTPUT_TRUNCATED",
+            False,
+        ),
+    ],
+    ids=(
+        "marker-mismatch",
+        "runtime-marker-mismatch",
+        "marker-hold",
+        "stdout-tail-limit",
+        "stderr-tail-limit",
+    ),
+)
+async def test_declared_inconclusive_observation_cannot_be_validated_as_supported(
+    tmp_path: Path,
+    client_type: type[_InterpretationClient],
+    stdout: bytes,
+    stderr: bytes,
+    expected_error: str | None,
+    dynamic_marker: bool,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-marker",
+        workspace_id="workspace-marker",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-marker",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    content = (
+        b"#!/bin/sh\nprefix=SASTSIMI_POC_\n"
+        b"printf '%s\\n' \"${prefix}INCONCLUSIVE\"\nexit 0\n"
+        if dynamic_marker
+        else b"#!/bin/sh\nprintf 'SASTSIMI_POC_INCONCLUSIVE\\n'\nexit 0\n"
+    )
+    if dynamic_marker:
+        assert b"SASTSIMI_POC_INCONCLUSIVE" not in content
+    content_ref = artifacts.put_bytes(
+        content,
+        "text/x-shellscript",
+    )
+    candidate_ref = artifacts.put_json({"kind": "simple_poc_candidate"})
+    refs = (candidate_ref, content_ref)
+    recipe_ref = artifacts.put_json(
+        {
+            "kind": "simple_environment_recipe",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "attempt_id": "attempt-marker",
+            "dockerfile_source": "GENERATED",
+            "degraded": False,
+            "status": "BUILT",
+            "image_digest": f"sha256:{'1' * 64}",
+        }
+    )
+    candidate = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=refs,
+        attempt_id="attempt-marker",
+        recipe_ref=recipe_ref,
+        image_digest=f"sha256:{'1' * 64}",
+    )
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.PENDING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-marker",
+        attempt_number=3,
+    )
+
+    class _InconclusiveMarkerDocker(_Docker):
+        async def execute(self, *_args: Any, **_kwargs: Any) -> DockerCommandOutcome:
+            return DockerCommandOutcome(0, stdout, stderr, False)
+
+    stage = PoCExecutionStage(
+        client=client_type(),
+        artifacts=artifacts,
+        docker=_InconclusiveMarkerDocker(),  # type: ignore[arg-type]
+        containers=_Containers(),
+    )
+
+    if expected_error is not None:
+        with pytest.raises(StageBlocked) as blocked:
+            await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+        assert blocked.value.failure.code == expected_error
+        assert len(blocked.value.failure.evidence_refs) >= 2
+    else:
+        result = await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+        assert result.verdict == "HOLD"
+        assert result.validated_poc_ref is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "expected_code"),
+    [
+        (
+            b"#!/bin/sh\npython3 - <<'PY'\nimport pickle\n"
+            b"class Fixture:\n    pass\n"
+            b"payload = pickle.dumps(Fixture())\n"
+            b"client = app.test_client()\n"
+            b"client.set_cookie('value', payload.hex())\n"
+            b"client.get('/cookie')\nPY\n",
+            "POC_PROCESS_LOCAL_FIXTURE_UNVERIFIED",
+        ),
+        (
+            b"#!/bin/sh\nprintf 'SASTSIMI_POC_INCONCLUSIVE\\n'\nexit 2\n",
+            "POC_PLACEHOLDER_FORBIDDEN",
+        ),
+    ],
+    ids=("process-local-pickle", "stale-invalid-placeholder"),
+)
+async def test_saved_candidate_is_revalidated_before_execution(
+    tmp_path: Path,
+    content: bytes,
+    expected_code: str,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-provenance",
+        workspace_id="workspace-provenance",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-provenance",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    content_ref = artifacts.put_bytes(
+        content,
+        "text/x-shellscript",
+    )
+    candidate_ref = artifacts.put_json({"kind": "simple_poc_candidate"})
+    refs = (candidate_ref, content_ref)
+    candidate = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=refs,
+        attempt_id="attempt-provenance",
+    )
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.PENDING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-provenance",
+    )
+    stage = PoCExecutionStage(
+        client=_InterpretationClient(),
+        artifacts=artifacts,
+        docker=_Docker(),  # type: ignore[arg-type]
+        containers=_Containers(),
+    )
+
+    with pytest.raises(StageBlocked) as blocked:
+        await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+
+    assert blocked.value.failure.code == expected_code
+    assert blocked.value.failure.evidence_refs == refs
+
+
+@pytest.mark.asyncio
 async def test_poc_execution_error_is_blocked_and_releases_container(
     tmp_path: Path,
 ) -> None:
@@ -778,8 +975,8 @@ async def test_poc_execution_error_is_blocked_and_releases_container(
             b"ModuleNotFoundError: No module named 'django'",
             True,
             False,
-            True,
-            "POC_RUNTIME_IMPORT_FAILED",
+            False,
+            None,
         ),
         (
             1,
@@ -820,6 +1017,75 @@ async def test_poc_execution_error_is_blocked_and_releases_container(
             False,
             True,
             "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            2,
+            b"ModuleNotFoundError: missing_module\n"
+            b"Traceback: frame -> exec_module -> _call_with_frames_removed -> frame",
+            False,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            2,
+            b"ModuleNotFoundError: missing_module\n"
+            b"traceback: _find_and_load_unlocked > exec_module > frame",
+            False,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            2,
+            b"ModuleNotFoundError: missing_module\n"
+            b"Traceback (functions only):\n  at import_module\n  at exec_module",
+            False,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            2,
+            b"ModuleNotFoundError: missing_module\n"
+            b"Traceback (most recent call last):\n  File <redacted>",
+            False,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            2,
+            b"ModuleNotFoundError: missing_module\n"
+            b"Traceback: unresolved_frame -> unresolved_frame",
+            False,
+            False,
+            True,
+            "POC_RUNTIME_IMPORT_FAILED",
+        ),
+        (
+            2,
+            b"ModuleNotFoundError: missing_module\nTraceback: unrelated text",
+            False,
+            False,
+            True,
+            "POC_EXECUTION_FAILED",
+        ),
+        (
+            0,
+            b"ImportError: optional_plugin\nTraceback: preflight -> fallback",
+            False,
+            False,
+            False,
+            None,
+        ),
+        (
+            2,
+            b"ImportError: optional_plugin\nTraceback: preflight -> fallback",
+            False,
+            False,
+            True,
+            "POC_EXECUTION_FAILED",
         ),
         (2, b"ModuleNotFoundError", False, False, True, "POC_EXECUTION_FAILED"),
         (0, b"ImportError: expected diagnostic text only", False, False, False, None),

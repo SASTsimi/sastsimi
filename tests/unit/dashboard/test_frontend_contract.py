@@ -398,6 +398,51 @@ assert.deepEqual(JSON.parse(JSON.stringify(expansion)), {
     assert result.returncode == 0, result.stderr
 
 
+def test_partial_and_paused_runtime_statuses_are_described_in_history() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    source = _STATIC / "app.js"
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const context = {
+  window: { location: { pathname: '/' } },
+  document: { createElement: (tag) => ({ tag, textContent: '', className: '' }) },
+  Intl, Date, Number, console,
+};
+vm.createContext(context);
+const source = fs.readFileSync(process.argv[1], 'utf8').split(
+  'document.getElementById("log-search").addEventListener'
+)[0];
+vm.runInContext(source, context);
+const partial = vm.runInContext("badge('PARTIAL')", context);
+const paused = vm.runInContext("badge('PAUSED')", context);
+assert.equal(partial.textContent, '부분 분석');
+assert.equal(partial.className, 'badge status-partial');
+assert.equal(paused.textContent, '일시 중단');
+assert.equal(paused.className, 'badge status-paused');
+assert.equal(vm.runInContext(`analysisKey({
+  status: 'PARTIAL', confirmed_finding_count: 2
+})`, context), '미검증 범위 남음');
+assert.equal(vm.runInContext(`analysisKey({
+  status: 'PAUSED', current_stage: 'STATIC_ANALYSIS'
+})`, context), '재개 필요');
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(source)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    css = (_STATIC / "app.css").read_text(encoding="utf-8")
+    assert ".status-partial" in css
+    assert ".status-paused" in css
+
+
 def test_phase_progress_renders_zero_and_unknown_truthfully() -> None:
     node = shutil.which("node")
     if node is None:

@@ -6,6 +6,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.reporting import (
     BilingualReportContent,
     evidence_closure,
+    has_legacy_report_ipv4_false_positive,
     parse_validated_report_content,
 )
 from sastsimi.contracts.static import CodeLocation
@@ -214,3 +215,27 @@ def test_report_v2_allows_local_poc_endpoint_in_both_languages(
     )
 
     assert isinstance(content, BilingualReportContent)
+
+
+@pytest.mark.parametrize(
+    ("limitation", "expected"),
+    [
+        ("The local test server defaults to 127.0.0.1.", True),
+        ("The local test server defaults to 127.0.0.1:8000.", False),
+        ("The local test server defaults to https://127.0.0.1/test.", False),
+        ("The deployment configuration needs review.", False),
+    ],
+)
+def test_legacy_report_ipv4_false_positive_requires_exact_endpoint_claim(
+    limitation: str, expected: bool
+) -> None:
+    value = _bilingual_report()
+    en = value["en"]
+    assert isinstance(en, dict)
+    en["limitations"] = [limitation]
+    content = parse_validated_report_content(
+        canonical_bytes(value), allowed_locations=(_report_location(),)
+    )
+
+    assert isinstance(content, BilingualReportContent)
+    assert has_legacy_report_ipv4_false_positive(content) is expected

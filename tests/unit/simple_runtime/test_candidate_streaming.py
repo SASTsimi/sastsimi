@@ -31,6 +31,7 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.runner import RunOutcome, SimpleRuntimeRunner
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.simple_runtime.surface_contexts import SurfaceContext
 from tests.unit.simple_runtime.test_candidate_batches import _fixture
 from tests.unit.simple_runtime.test_candidate_pipeline import _setup
 
@@ -124,6 +125,65 @@ class _RecordingRunner:
             current_stage=SimpleStage.VERIFICATION_FINAL_DONE,
             status=StageStatus.SUCCEEDED,
         )
+
+
+@pytest.mark.asyncio
+async def test_surface_provider_failure_stays_blocked_with_scoped_error_and_evidence(
+    tmp_path: Path,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+    )
+
+    class FailedSurface:
+        evidence_ref = None
+
+        async def propose_batch(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Excluded candidates must not be proposed")
+
+        async def propose_surface(
+            self,
+            identity: CheckpointIdentity,
+            _static: StaticBootstrapResult,
+            context: SurfaceContext,
+        ) -> StageFailure:
+            self.evidence_ref = SimpleArtifactRepository(
+                tmp_path / "data", identity
+            ).put_json(
+                {
+                    "kind": "simple_surface_hypothesis_prompt_v1",
+                    "surface_id": context.surface_id,
+                    "context_id": context.context_id,
+                }
+            )
+            return StageFailure(
+                code="FAILED",
+                retryable=True,
+                safe_message="Codex call did not succeed: FAILED",
+                evidence_refs=(self.evidence_ref,),
+            )
+
+    producer = FailedSurface()
+    app._candidate_hypotheses = cast(HypothesisBootstrap, producer)
+
+    outcome = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+
+    root = store.require(outcome.identity, SimpleStage.HYPOTHESIS_DONE)
+    assert outcome.status == "BLOCKED"
+    assert outcome.error_code == "HYPOTHESIS_SURFACE_PROVIDER_FAILED"
+    assert root.status is StageStatus.BLOCKED
+    assert root.error_code == outcome.error_code
+    assert producer.evidence_ref in root.output_refs
+    assert store.list_surface_exploration_progress(outcome.identity, "scope-1") == {}
 
 
 @pytest.mark.asyncio

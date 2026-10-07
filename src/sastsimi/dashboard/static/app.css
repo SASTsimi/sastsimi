@@ -193,6 +193,8 @@ body.summary-condensed .compact-summary { display: flex; }
 .badge { display: inline-flex; width: fit-content; padding: .16rem .42rem; border: 1px solid var(--border-strong); border-radius: 999px; color: #cdd5da; font-size: .68rem; font-weight: 800; letter-spacing: .02em; white-space: nowrap; }
 .status-succeeded, .status-complete, .status-ready { border-color: #3f8e76; color: #8ce7ce; }
 .status-running { border-color: #338999; color: #89e6ee; }
+.status-partial { border-color: #a4813d; color: #f0cf87; }
+.status-paused { border-color: #725db0; color: #d9ceff; }
 .status-failed, .status-blocked { border-color: #a44d54; color: #ff9ca2; }
 .status-optional { border-color: #725db0; color: #d9ceff; }
 .status-skipped, .status-not_started, .status-waiting { color: var(--color-muted); }

@@ -181,6 +181,26 @@ rules:
       - pattern: django.utils.html.escape(...)
       - pattern: bleach.clean(...)
 
+  - id: sastsimi.python.session-identity-write
+    languages: [python]
+    message: Candidate session identity write; rotation and fixation risk require verification.
+    severity: INFO
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: $SESSION[$KEY] = $VALUE
+              - pattern-inside: |
+                  $SESSION = await get_session(...)
+                  ...
+          - patterns:
+              - pattern: $REQUEST.session[$KEY] = $VALUE
+              - metavariable-regex:
+                  metavariable: $REQUEST
+                  regex: '^(?:request|req|http_request)$'
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: '^["''](?:user(?:_id|name)?|account_id|principal(?:_id)?|identity(?:_id)?|subject_id|uid|email)["'']$'
+
   - id: sastsimi.python.sql-sink
     languages: [python]
     message: Candidate database-query sink; not a vulnerability verdict.
@@ -193,12 +213,14 @@ rules:
 
   - id: sastsimi.python.weak-password-hash
     languages: [python]
-    message: Candidate weak password hashing; inspect usage before drawing a verdict.
+    message: Candidate password-like value passed to MD5 or SHA-1; context requires verification.
     severity: INFO
     patterns:
       - pattern-either:
           - pattern: md5($PASSWORD.encode(...)).hexdigest()
           - pattern: hashlib.md5($PASSWORD.encode(...)).hexdigest()
+          - pattern: sha1($PASSWORD.encode(...)).hexdigest()
+          - pattern: hashlib.sha1($PASSWORD.encode(...)).hexdigest()
       - metavariable-regex:
           metavariable: $PASSWORD
           regex: (?i).*(?:password|passwd|passphrase|pwd).*

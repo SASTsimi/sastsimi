@@ -91,10 +91,35 @@ def seed(data_dir) -> None:
             "llm_response_ref": hypothesis_response.model_dump(mode="json"),
         }
     )
+    poc_source = artifacts.put_bytes(b"#!/bin/sh\nprintf ok\n", "text/x-shellscript")
+    poc_candidate = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "content_ref": poc_source.model_dump(mode="json"),
+            "attempt_id": "candidate-attempt",
+        }
+    )
+    poc_stdout = artifacts.put_bytes(b"ok", "text/plain")
+    poc_stderr = artifacts.put_bytes(b"", "text/plain")
+    poc_execution = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "candidate_ref": poc_candidate.model_dump(mode="json"),
+            "content_ref": poc_source.model_dump(mode="json"),
+            "attempt_id": "dynamic-attempt",
+            "stdout_ref": poc_stdout.model_dump(mode="json"),
+            "stderr_ref": poc_stderr.model_dump(mode="json"),
+            "exit_code": 0,
+        }
+    )
     poc = artifacts.put_json(
         {
             "kind": "simple_validated_poc",
             "result": "reproduced",
+            "candidate_ref": poc_candidate.model_dump(mode="json"),
+            "content_ref": poc_source.model_dump(mode="json"),
+            "execution_ref": poc_execution.model_dump(mode="json"),
+            "attempt_id": "dynamic-attempt",
             "llm_request_ref": llm_request.model_dump(mode="json"),
             "llm_response_ref": llm_response.model_dump(mode="json"),
         }
@@ -136,12 +161,26 @@ def seed(data_dir) -> None:
         StageCheckpoint(
             identity=identity,
             stage=SimpleStage.POC_CANDIDATE_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
             status=StageStatus.PENDING,
             input_refs=(),
             input_hash=input_reference_hash(()),
-            validated_poc_ref=poc,
+            attempt_id="candidate-attempt",
         ),
-        outputs=(poc,),
+        outputs=(poc_candidate, poc_source),
+    )
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.POC_EXECUTION_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(poc_candidate, poc_source),
+            input_hash=input_reference_hash((poc_candidate, poc_source)),
+            output_refs=(poc_execution,),
+            attempt_id="dynamic-attempt",
+            validated_poc_ref=poc,
+        )
     )
     AgentActivityStore(database).append(
         AgentActivityEvent(
@@ -157,7 +196,7 @@ def seed(data_dir) -> None:
             kind=ActivityKind.STAGE_COMPLETED,
             status="SUCCEEDED",
             summary_ko="PoC 후보를 생성했습니다.",
-            output_refs=(poc,),
+            output_refs=(poc_candidate, poc_source),
             tool_result_refs=(llm_request, llm_response),
             provider="codex-cli",
             model="gpt-test",
@@ -209,6 +248,11 @@ def seed(data_dir) -> None:
                 input_hash=input_reference_hash(inputs),
                 output_refs=outputs,
                 gate_decision="ACCEPT" if stage is SimpleStage.TECH_GATE_DONE else None,
+                validated_poc_ref=(
+                    poc
+                    if stage in {SimpleStage.FINDING_DONE, SimpleStage.REPORT_DONE}
+                    else None
+                ),
                 markdown_path=str(report) if stage is SimpleStage.REPORT_DONE else None,
             )
         )
@@ -269,6 +313,44 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert request(f"{base}/reports/analysis-1/F-001.md").read().decode() == (
             "# 한국어 보고서"
         )
+
+
+def test_server_hides_report_when_saved_poc_source_is_process_local(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    candidate = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+    source = SimpleArtifactRepository(tmp_path, identity).put_bytes(
+        b"""#!/bin/sh
+python3 - <<'PY'
+import pickle
+class LocalFixture: pass
+client = app.test_client()
+value = pickle.dumps(LocalFixture())
+client.set_cookie('value', value)
+client.get('/cookie')
+PY
+""",
+        "text/x-shellscript",
+    )
+    store.save_checkpoint(
+        candidate.model_copy(update={"output_refs": (candidate.output_refs[0], source)})
+    )
+    old_report = tmp_path / "reports" / "analysis-1" / "F-001.md"
+
+    with running_server(tmp_path) as base:
+        detail = json.loads(request(f"{base}/api/analyses/A-001").read())
+        assert detail["reports"] == []
+        assert detail["finding_count"] == 0
+        assert request(f"{base}/reports/analysis-1/F-001.md").status == 404
+        assert request(f"{base}/api/analyses/A-001/reports/F-001").status == 404
+
+    assert old_report.read_text(encoding="utf-8") == "# 한국어 보고서"
 
 
 def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> None:
@@ -576,7 +658,17 @@ def test_server_downloads_only_current_manifest_files(tmp_path) -> None:
 
     with running_server(tmp_path) as base:
         detail = json.loads(request(f"{base}/api/analyses/A-001").read())
-        urls = detail["reports"][0]["attachment_urls"]
+        report = detail["reports"][0]
+        urls = report["attachment_urls"]
+        assert report["english_available"] is True
+        assert report["english_view_url"] is None
+        assert report["english_download_url"] == urls["report_en.md"]
+        english = request(f"{base}{report['english_download_url']}")
+        assert english.read() == b"# English report\n"
+        assert (
+            english.headers["Content-Disposition"]
+            == 'attachment; filename="report_en.md"'
+        )
         response = request(f"{base}{urls['poc.sh']}")
         assert response.status == 200
         assert response.read() == poc

@@ -9,10 +9,10 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import redact_projected_json
@@ -22,6 +22,9 @@ from .artifacts import SimpleArtifactRepository
 from .ast_facts import index_ast_manifest
 from .attack_surfaces import AttackSurface, SurfaceCoverage, SurfaceIndex
 from .file_context import PreparedFileContext, prepare_file_context
+
+if TYPE_CHECKING:
+    from .store import SurfaceExplorationProgressRecord
 
 _NEARBY_LINE_RADIUS = 5
 _MAX_NEARBY_AST_FACTS = 32
@@ -433,6 +436,173 @@ def _expanded_source_lines(
             chosen.update(range(node.lineno, cast(int, node.end_lineno) + 1))
     chosen.add(surface.line)
     return tuple(sorted(chosen)), "ENCLOSING_DEFINITION"
+
+
+def reuse_saved_expanded_surface_contexts(
+    index: SurfaceIndex,
+    surface: AttackSurface,
+    first_contexts: Sequence[SurfaceContext],
+    progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
+    *,
+    artifacts: SimpleArtifactRepository,
+    ast_summary: Mapping[str, object],
+    workspace: Path,
+    index_hash: str,
+    budget_bytes: int = 64 * 1024,
+) -> tuple[SurfaceContext, ...] | None:
+    """Read a complete same-source v2 context set without rendering it again."""
+
+    source_hashes = dict(index.ast_source_hashes)
+    if (
+        index.index_version != 2
+        or surface not in index.surfaces
+        or not first_contexts
+        or not all(item.surface_id == surface.surface_id for item in first_contexts)
+        or str(artifacts.identity.workspace_id) != index.workspace_id
+        or str(artifacts.identity.commit_id) != index.commit_id
+        or not 512 <= budget_bytes <= 64 * 1024
+        or hashlib.sha256(canonical_bytes(index.to_json())).hexdigest() != index_hash
+    ):
+        return None
+    source_sha256 = first_contexts[0].source_sha256
+    if (
+        source_sha256 is None
+        or source_hashes.get(surface.path) != source_sha256
+        or any(item.source_sha256 != source_sha256 for item in first_contexts)
+    ):
+        return None
+    try:
+        current = prepare_file_context(artifacts, ast_summary, workspace, surface.path)
+    except (OSError, ValueError):
+        return None
+    if current.source_sha256 != source_sha256:
+        return None
+    saved = [
+        (context_id, record)
+        for (surface_id, context_id), record in progress.items()
+        if surface_id == surface.surface_id and record.proposal_version == 2
+    ]
+    if not saved:
+        return None
+    contexts: list[SurfaceContext] = []
+    for progress_context_id, record in saved:
+        if (
+            record.surface_id != surface.surface_id
+            or record.context_id != progress_context_id
+            or record.static_bundle_hash != index.static_bundle_hash
+            or record.index_hash != index_hash
+            or record.source_sha256 != source_sha256
+        ):
+            return None
+        try:
+            context_ref = StoredDataRef.model_validate(
+                {
+                    "stored_data_id": record.context_hash,
+                    "data_kind": "artifact",
+                    "content_hash": record.context_hash,
+                    "workspace_id": index.workspace_id,
+                    "commit_id": index.commit_id,
+                    "record_id": None,
+                }
+            )
+            encoded = artifacts.read_bounded(context_ref, budget_bytes)
+            payload = json.loads(encoded)
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        part_index = payload.get("part_index")
+        part_count = payload.get("part_count")
+        source_reason = payload.get("source_unavailable_reason")
+        ast_reason = payload.get("ast_unavailable_reason")
+        omitted_source = payload.get("omitted_source_line_count")
+        omitted_ast = payload.get("omitted_ast_fact_count")
+        if (
+            payload.get("kind") != "simple_surface_context_v2"
+            or payload.get("scope_fingerprint") != index.scope_fingerprint
+            or payload.get("static_bundle_hash") != index.static_bundle_hash
+            or payload.get("ast_manifest_hash") != index.ast_manifest_hash
+            or payload.get("candidate_inventory_hash") != index.candidate_inventory_hash
+            or payload.get("workspace_id") != index.workspace_id
+            or payload.get("commit_id") != index.commit_id
+            or payload.get("surface_id") != surface.surface_id
+            or payload.get("surface_type") != surface.type
+            or payload.get("path") != surface.path
+            or payload.get("symbol") != surface.symbol
+            or payload.get("line") != surface.line
+            or payload.get("detector") != surface.detector
+            or payload.get("flow_identity") != surface.flow_identity
+            or payload.get("linked_candidate_count")
+            != len(surface.linked_candidate_ids)
+            or payload.get("static_evidence_ref_hashes")
+            != sorted({ref.content_hash for ref in surface.evidence_refs})
+            or payload.get("static_evidence_refs")
+            != [
+                ref.model_dump(mode="json")
+                for ref in sorted(
+                    surface.evidence_refs, key=lambda item: item.content_hash
+                )
+            ]
+            or payload.get("source_sha256") != source_sha256
+            or payload.get("source_line_count") != len(current.source_lines)
+            or payload.get("ast_total_count") != len(current.ast_facts)
+            or payload.get("ast_file_ref")
+            != (
+                current.ast_file_ref.model_dump(mode="json")
+                if current.ast_file_ref is not None
+                else None
+            )
+            or payload.get("selection_scope")
+            not in {"FULL_FILE", "FULL_FILE_FALLBACK", "ENCLOSING_DEFINITION"}
+            or type(part_index) is not int
+            or type(part_count) is not int
+            or part_count != len(saved)
+            or part_index < 0
+            or part_index >= part_count
+            or source_reason is not None
+            and not isinstance(source_reason, str)
+            or ast_reason is not None
+            and not isinstance(ast_reason, str)
+            or omitted_source is not None
+            and type(omitted_source) is not int
+            or omitted_ast is not None
+            and type(omitted_ast) is not int
+            or len(encoded) > budget_bytes
+        ):
+            return None
+        context_id = hashlib.sha256(
+            canonical_bytes(
+                {
+                    "kind": "simple_surface_context_id_v2",
+                    "scope_fingerprint": index.scope_fingerprint,
+                    "surface_id": surface.surface_id,
+                    "part_index": part_index,
+                    "context_hash": record.context_hash,
+                }
+            )
+        ).hexdigest()
+        if context_id != record.context_id:
+            return None
+        contexts.append(
+            SurfaceContext(
+                surface_id=surface.surface_id,
+                context_id=context_id,
+                context_hash=record.context_hash,
+                context_ref=context_ref,
+                part_index=part_index,
+                part_count=part_count,
+                prompt_bytes=len(encoded),
+                source_sha256=source_sha256,
+                source_unavailable_reason=source_reason,
+                ast_unavailable_reason=ast_reason,
+                omitted_source_line_count=omitted_source,
+                omitted_ast_fact_count=omitted_ast,
+            )
+        )
+    contexts.sort(key=lambda item: item.part_index)
+    if [item.part_index for item in contexts] != list(range(len(contexts))):
+        return None
+    return tuple(contexts)
 
 
 def expanded_surface_contexts(

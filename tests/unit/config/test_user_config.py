@@ -361,6 +361,30 @@ def test_old_profile_without_bundle_round_trips(tmp_path: Path) -> None:
     assert "poc_offline_base_image_digest" not in path.read_text(encoding="utf-8")
 
 
+def test_profile_defaults_to_auto_dependency_bundle_and_can_disable_it(
+    tmp_path: Path,
+) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="configured-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        docker_network="NONE",
+        tools={},
+    )
+    assert profile.poc_dependency_bundle_mode == "AUTO"
+    path = tmp_path / "profile.toml"
+    profile.write(path)
+    assert 'poc_dependency_bundle_mode = "AUTO"' in path.read_text(encoding="utf-8")
+
+    disabled = profile.model_copy(update={"poc_dependency_bundle_mode": "OFFLINE_ONLY"})
+    assert disabled.poc_dependency_bundle_mode == "OFFLINE_ONLY"
+
+
 def test_profile_round_trips_local_offline_base_digest(tmp_path: Path) -> None:
     profile = SimpleExecutionProfile(
         provider_profile_ref="local-openai",

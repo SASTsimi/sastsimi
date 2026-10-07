@@ -52,7 +52,36 @@ from sastsimi.reporting.markdown_export import (
     ReportMarkdownService,
     ReportUnavailable,
 )
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 from sastsimi.storage.report_export import SQLiteCurrentReportSource
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows long-path publication")
+def test_runtime_markdown_report_publishes_at_deep_windows_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / ("p" * 140) / ("q" * 70) / "data"
+    windows_extended_path(data_dir).mkdir(parents=True)
+    report = data_dir / "reports" / "analysis-1" / "F-001.md"
+    assert len(str(report)) > 260
+    real_replace = os.replace
+
+    def require_extended_replace(
+        source: os.PathLike[str], target: os.PathLike[str]
+    ) -> None:
+        if len(str(target)) > 260 and not str(target).startswith("\\\\?\\"):
+            raise OSError("unprefixed long-path replacement")
+        real_replace(source, target)
+
+    monkeypatch.setattr(
+        "sastsimi.reporting.markdown_export.os.replace", require_extended_replace
+    )
+
+    markdown_export.write_report_markdown(
+        report, "analysis-1", b"# report\n", data_dir=data_dir
+    )
+
+    assert windows_extended_path(report).read_bytes() == b"# report\n"
 
 
 class Source:
@@ -416,7 +445,9 @@ def test_bundle_reference_rechecks_current_report_after_reading_bundle(
         service.bundle_reference(path)
 
 
-def test_bundle_reference_accepts_valid_output_attachments(tmp_path: Path) -> None:
+def test_bundle_reference_accepts_valid_output_attachments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from sastsimi.config.runtime_paths import RuntimePaths
     from sastsimi.storage.artifact_store import LocalArtifactStore
 
@@ -438,9 +469,25 @@ def test_bundle_reference_accepts_valid_output_attachments(tmp_path: Path) -> No
 
     path = service.export(report.finding_id)
 
-    assert service.bundle_reference(path) == (
-        f"reports/{report.analysis_id}/F-001/bundle.zip"
-    )
+    if os.name == "nt":
+        original_resolve = Path.resolve
+
+        def require_extended_report_path(candidate: Path, strict: bool = False) -> Path:
+            report_file = candidate.name in {
+                "F-001.md",
+                "manifest.json",
+                "bundle.zip",
+            }
+            if report_file and not str(candidate).startswith("\\\\?\\"):
+                raise OSError(206, "legacy report path limit")
+            return original_resolve(candidate, strict=strict)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(Path, "resolve", require_extended_report_path)
+            reference = service.bundle_reference(path)
+    else:
+        reference = service.bundle_reference(path)
+    assert reference == f"reports/{report.analysis_id}/F-001/bundle.zip"
 
 
 def test_export_rechecks_current_after_bundle_publication(tmp_path: Path) -> None:

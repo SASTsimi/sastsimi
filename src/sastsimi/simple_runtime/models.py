@@ -36,19 +36,17 @@ HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
 MAX_RECOVERY_ATTEMPTS = 3
 STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
-        "5"
+        "6"
         if stage is SimpleStage.VERIFICATION_INITIAL_DONE
+        else "6"
+        if stage is SimpleStage.POC_CANDIDATE_DONE
+        else "4"
+        if stage is SimpleStage.REPORT_DONE
         else "3"
         if stage
         in {SimpleStage.POC_EXECUTION_DONE, SimpleStage.VERIFICATION_FINAL_DONE}
-        else "4"
-        if stage is SimpleStage.REPORT_DONE
         else "2"
-        if stage
-        in {
-            SimpleStage.POC_CANDIDATE_DONE,
-            SimpleStage.TECH_GATE_DONE,
-        }
+        if stage is SimpleStage.TECH_GATE_DONE
         else "1"
     )
     for stage in STAGE_ORDER
@@ -139,6 +137,7 @@ class StageCheckpoint(ContractModel):
     recovery_decision_refs: tuple[StoredDataRef, ...] = ()
     poc_stop_decision_ref: StoredDataRef | None = None
     external_prerequisites_ref: StoredDataRef | None = None
+    environment_block_ref: StoredDataRef | None = None
     error_code: str | None = None
     retryable: bool = False
     recipe_ref: StoredDataRef | None = None
@@ -163,6 +162,7 @@ class StageCheckpoint(ContractModel):
 class StageResult(ContractModel):
     output_refs: tuple[StoredDataRef, ...]
     external_prerequisites_ref: StoredDataRef | None = None
+    environment_block_ref: StoredDataRef | None = None
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
     bundle_manifest_ref: StoredDataRef | None = None
@@ -193,9 +193,21 @@ def terminal_initial_outcome(
         checkpoint is not None
         and checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
         and checkpoint.status is StageStatus.SUCCEEDED
+        and checkpoint.stage_version
+        == STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
         and checkpoint.verdict == "HOLD"
-        and checkpoint.external_prerequisites_ref is not None
-        and checkpoint.external_prerequisites_ref in checkpoint.output_refs
+        and (
+            (
+                checkpoint.external_prerequisites_ref is not None
+                and checkpoint.environment_block_ref is None
+                and checkpoint.external_prerequisites_ref in checkpoint.output_refs
+            )
+            or (
+                checkpoint.external_prerequisites_ref is None
+                and checkpoint.environment_block_ref is not None
+                and checkpoint.environment_block_ref in checkpoint.output_refs
+            )
+        )
         and checkpoint.recipe_ref is None
         and checkpoint.validated_poc_ref is None
     ):

@@ -66,7 +66,7 @@ function demoAnalysisVariants(items) {
 }
 
 function statusLabel(status) {
-  return ({ RUNNING: "분석 중", COMPLETE: "완료", SUCCEEDED: "완료", FAILED: "실패", BLOCKED: "차단", PENDING: "대기" })[status] || status || "상태 미확인";
+  return ({ RUNNING: "분석 중", COMPLETE: "완료", SUCCEEDED: "완료", PARTIAL: "부분 분석", PAUSED: "일시 중단", FAILED: "실패", BLOCKED: "차단", PENDING: "대기" })[status] || status || "상태 미확인";
 }
 
 function stageLabel(stage) {
@@ -120,6 +120,8 @@ function analysisTimestamp(item) { const value = analysisTime(item); if (!value)
 function analysisKey(item) {
   if (item.status === "RUNNING") return Number.isFinite(item.progress_percent) ? `진행 ${item.progress_percent}%` : "진행 —";
   if (["COMPLETE", "SUCCEEDED"].includes(item.status)) return `확정 Finding ${knownCount(item.confirmed_finding_count)}`;
+  if (item.status === "PARTIAL") return "미검증 범위 남음";
+  if (item.status === "PAUSED") return "재개 필요";
   if (["FAILED", "BLOCKED"].includes(item.status)) return `${item.status === "BLOCKED" ? "차단" : "실패"} 단계 ${item.failed_stage || item.current_stage || "—"}`;
   return "—";
 }
@@ -415,7 +417,7 @@ function renderLlmDetail() { const detail = state.llmDetail; if (!detail) return
 
 function renderArtifactSubset(target, ids, map, message) { const items = (ids || []).map((id) => map.get(id)).filter(Boolean); replace(target, items.length ? items.map(artifactButton) : empty(message)); }
 function renderOutputs(data) { const map = new Map((data.artifacts || []).map((item) => [item.artifact_id, item])); state.artifactMap = map; const trace = (data.finding_traces || []).find((item) => item.display_id === state.pinnedFinding); renderArtifactSubset("poc", trace ? trace.poc_artifact_ids : data.poc_artifact_ids, map, "검증된 PoC가 없습니다."); renderArtifactSubset("evidence", trace ? trace.evidence_artifact_ids : data.evidence_artifact_ids, map, "저장된 정적·동적 증거가 없습니다."); renderReports(trace ? data.reports.filter((item) => item.display_id === trace.display_id) : data.reports || [], data.finding_groups || []); }
-function reportRow(item) { const row = el("div", undefined, "report-row"); const check = document.createElement("input"); check.type = "checkbox"; check.checked = state.selectedReports.has(item.display_id); check.setAttribute("aria-label", `${item.display_id} ZIP 선택`); check.addEventListener("change", () => { check.checked ? state.selectedReports.add(item.display_id) : state.selectedReports.delete(item.display_id); updateSelectionLink(); }); const ko = el("a", `${item.display_id} 한국어 보기`, "small-button"); ko.href = item.download_url; const koDownload = el("a", "한국어 MD", "download small-button"); koDownload.href = item.download_url; row.append(check, ko, koDownload); if (item.english_available) { const en = el("a", "English 보기", "small-button"); en.href = item.english_view_url; const enDownload = el("a", "English MD", "download small-button"); enDownload.href = item.english_download_url; row.append(en, enDownload); } else row.append(el("span", "영문 미생성", "badge status-waiting")); const labels = { "report_en.md": "영문 보고서", "report_kr.md": "국문 보고서", "poc.sh": "검증 PoC", "poc.py": "검증 PoC", "bundle.zip": "첨부파일 ZIP" }; Object.entries(item.attachment_urls || {}).forEach(([name, url]) => { const attachment = el("a", labels[name] || name, "report-attachment"); attachment.href = url; attachment.download = name.split("/").pop(); row.append(attachment); }); return row; }
+function reportRow(item) { const row = el("div", undefined, "report-row"); const check = document.createElement("input"); check.type = "checkbox"; check.checked = state.selectedReports.has(item.display_id); check.setAttribute("aria-label", `${item.display_id} ZIP 선택`); check.addEventListener("change", () => { check.checked ? state.selectedReports.add(item.display_id) : state.selectedReports.delete(item.display_id); updateSelectionLink(); }); const ko = el("a", `${item.display_id} 한국어 보기`, "small-button"); ko.href = item.download_url; const koDownload = el("a", "한국어 MD", "download small-button"); koDownload.href = item.download_url; row.append(check, ko, koDownload); if (item.english_available) { if (item.english_view_url) { const en = el("a", "English 보기", "small-button"); en.href = item.english_view_url; row.append(en); } if (item.english_download_url) { const enDownload = el("a", "English MD", "download small-button"); enDownload.href = item.english_download_url; row.append(enDownload); } } else row.append(el("span", "영문 미생성", "badge status-waiting")); const labels = { "report_en.md": "영문 보고서", "report_kr.md": "국문 보고서", "poc.sh": "검증 PoC", "poc.py": "검증 PoC", "bundle.zip": "첨부파일 ZIP" }; Object.entries(item.attachment_urls || {}).forEach(([name, url]) => { const attachment = el("a", labels[name] || name, "report-attachment"); attachment.href = url; attachment.download = name.split("/").pop(); row.append(attachment); }); return row; }
 function renderReports(items, groups) {
   if (!items.length) { replace("reports", empty("생성된 보고서가 없습니다.")); return; }
   const byId = new Map(items.map((item) => [item.display_id, item]));

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 from urllib.parse import urlsplit
@@ -11,7 +10,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import inspect_poc_candidate_json
 
 _SHELL_VARIABLE = re.compile(
-    rb"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[-=?+][^}]*)?\}|"
+    rb"\$(?:\{#?(?P<braced>[A-Za-z_][A-Za-z0-9_]*)|"
     rb"(?P<plain>[A-Za-z_][A-Za-z0-9_]*))"
 )
 _SHELL_ASSIGNMENT = re.compile(
@@ -40,68 +39,95 @@ _FORBIDDEN_HOST_PATHS = (
 _SAFE_PROCESS_VARIABLES = frozenset(
     {"PATH", "PYTHONPATH", "LANG", "LC_ALL", "TMPDIR", "PWD"}
 )
+_EXIT_ZERO_LINE = re.compile(rb"exit[ \t]+0(?:[ \t]*#.*)?")
+_IF_LINE = re.compile(rb"if[ \t]+.+;[ \t]*then")
+_ELIF_LINE = re.compile(rb"elif[ \t]+.+;[ \t]*then")
+_INCONCLUSIVE_MARKER = b"SASTSIMI_POC_INCONCLUSIVE"
+
+# Bump only when the meaning of candidate validation changes. Explicit
+# code-fix replays may not run twice against the same validator revision.
+POC_CANDIDATE_VALIDATOR_REVISION = "2026-10-07-4"
 
 
 class PoCCandidateRejected(ValueError):
     pass
 
 
-def _python_may_launch_shell(parsed: ast.AST) -> bool:
-    shell_calls = {
-        "system",
-        "popen",
-        "create_subprocess_shell",
-        "eval",
-        "exec",
-        "getattr",
-        "__import__",
+def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str | int]:
+    """Describe a rejected script using only closed enums and numeric shape data."""
+
+    reason = {
+        "POC_PLACEHOLDER_FORBIDDEN": "INCONCLUSIVE_EXIT2_UNPROVEN",
+        "POC_SHEBANG_REQUIRED": "SHEBANG_MISSING",
+        "POC_CONTENT_ENCODING_INVALID": "ENCODING_INVALID",
+        "POC_HOST_PATH_FORBIDDEN": "HOST_RESOURCE_FORBIDDEN",
+        "POC_EXTERNAL_URL_FORBIDDEN": "NETWORK_RESOURCE_FORBIDDEN",
+        "POC_UNDECLARED_INPUT": "UNDECLARED_INPUT",
+        "POC_SENSITIVE_CONTENT": "SENSITIVE_CONTENT",
+    }.get(code, "OTHER_VALIDATOR_REJECTION")
+    lines = tuple(line.strip() for line in content.splitlines())
+    try:
+        shell, _, _ = _shell_scan_sources(content)
+    except PoCCandidateRejected:
+        shell = content
+    diagnostic: dict[str, str | int] = {
+        "reason": reason,
+        "line_count": len(lines),
+        "branch_count": sum(
+            _IF_LINE.fullmatch(line) is not None
+            or _ELIF_LINE.fullmatch(line) is not None
+            or line == b"else"
+            for line in lines
+        ),
+        "inconclusive_line_count": sum(
+            b"inconclusive" in line.lower() for line in lines
+        ),
+        "exit_two_line_count": sum(
+            _has_exit_two_command(line) for line in shell.splitlines()
+        ),
+        "exit_zero_line_count": sum(
+            _EXIT_ZERO_LINE.fullmatch(line) is not None for line in lines
+        ),
     }
-    process_calls = {"run", "Popen", "call", "check_call", "check_output"}
-    for node in ast.walk(parsed):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(
-            node.value, ast.Attribute
-        ):
-            if node.value.attr in process_calls:
-                return True
-        if isinstance(node, ast.Attribute) and node.attr in shell_calls:
-            return True
-        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
-            if node.slice.value in shell_calls:
-                return True
-        if not isinstance(node, ast.Call):
-            continue
-        name = (
-            node.func.id
-            if isinstance(node.func, ast.Name)
-            else node.func.attr
-            if isinstance(node.func, ast.Attribute)
-            else None
-        )
-        if name in shell_calls:
-            return True
-        if any(
-            keyword.arg == "shell"
-            and not (
-                isinstance(keyword.value, ast.Constant) and keyword.value.value is False
-            )
-            for keyword in node.keywords
-        ):
-            return True
-        if name in process_calls and node.args:
-            command = node.args[0]
-            if isinstance(command, (ast.List, ast.Tuple)):
-                words = [
-                    item.value
-                    for item in command.elts
-                    if isinstance(item, ast.Constant) and isinstance(item.value, str)
-                ]
-                if (
-                    words
-                    and words[0] in {"sh", "bash", "dash", "zsh"}
-                    and "-c" in words
-                ):
-                    return True
-    return False
+    if code == "POC_SENSITIVE_CONTENT":
+        # No rejected source, matched identifier, or value crosses this boundary.
+        # A location/category is enough for one bounded LLM repair attempt.
+        diagnostic["sensitive_category"] = "UNCLASSIFIED"
+        diagnostic["sensitive_line"] = 0
+        try:
+            source = content.decode("utf-8")
+            inspected = inspect_poc_candidate_json(canonical_bytes({"content": source}))
+            projected = json.loads(inspected.data)["content"]
+            categories = set(inspected.categories) & {
+                "COOKIE",
+                "TOKEN",
+                "CREDENTIAL",
+                "HOST_ABSOLUTE_PATH",
+            }
+            if isinstance(projected, str) and projected != source:
+                first_difference = next(
+                    (
+                        index
+                        for index, (before, after) in enumerate(
+                            zip(source, projected, strict=False)
+                        )
+                        if before != after
+                    ),
+                    min(len(source), len(projected)),
+                )
+                diagnostic["sensitive_line"] = (
+                    source.count("\n", 0, first_difference) + 1
+                )
+                diagnostic["sensitive_category"] = (
+                    next(iter(categories))
+                    if len(categories) == 1
+                    else "MULTIPLE_RULES"
+                    if categories
+                    else "REDACTION_MISMATCH"
+                )
+        except (UnicodeDecodeError, ValueError, KeyError, TypeError):
+            pass
+    return diagnostic
 
 
 def _heredocs_on_line(
@@ -184,33 +210,9 @@ def _heredocs_on_line(
 
 
 def _python_heredoc_variables(body: bytes) -> bytes:
-    """Ignore literal dictionary keys, not arbitrary Python string contents."""
+    """Keep literal dollars visible; Python syntax is not a shell-safety proof."""
 
-    if _SHELL_VARIABLE.search(body) is None:
-        return b""
-    try:
-        parsed = ast.parse(body.decode("utf-8"))
-    except (UnicodeDecodeError, SyntaxError) as exc:
-        raise PoCCandidateRejected("POC_UNDECLARED_INPUT") from exc
-    if _python_may_launch_shell(parsed):
-        return body
-    masked = bytearray(body)
-    lines = body.splitlines(keepends=True)
-    offsets = [0]
-    for line in lines:
-        offsets.append(offsets[-1] + len(line))
-    for node in ast.walk(parsed):
-        if not isinstance(node, ast.Dict):
-            continue
-        for key in node.keys:
-            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-                continue
-            if key.end_lineno is None or key.end_col_offset is None:
-                continue
-            start = offsets[key.lineno - 1] + key.col_offset
-            end = offsets[key.end_lineno - 1] + key.end_col_offset
-            masked[start:end] = b" " * (end - start)
-    return bytes(masked)
+    return body
 
 
 def _shell_scan_sources(content: bytes) -> tuple[bytes, bytes, tuple[bytes, ...]]:
@@ -264,6 +266,134 @@ def _shell_scan_sources(content: bytes) -> tuple[bytes, bytes, tuple[bytes, ...]
     return bytes(shell), bytes(expanding), tuple(nested_bodies)
 
 
+def _shell_tokens(shell: bytes) -> list[bytes]:
+    """Split shell words and command separators, preserving quote boundaries."""
+
+    tokens: list[bytes] = []
+    word = bytearray()
+    in_word = False
+    quote: int | None = None
+    index = 0
+    while index < len(shell):
+        current = shell[index]
+        if quote is not None:
+            if current == quote:
+                quote = None
+            elif current == ord("\\") and quote == ord('"') and index + 1 < len(shell):
+                following = shell[index + 1]
+                if following in b'$`"\\\n':
+                    if following != ord("\n"):
+                        word.append(following)
+                    index += 1
+                else:
+                    word.append(current)
+            else:
+                word.append(current)
+        elif current == ord("\\") and index + 1 < len(shell):
+            index += 1
+            following = shell[index]
+            if following != ord("\n"):
+                word.append(following)
+                in_word = True
+        elif current in (ord("'"), ord('"')):
+            quote = current
+            in_word = True
+        elif current == ord("#") and not in_word:
+            end = shell.find(b"\n", index)
+            if end < 0:
+                break
+            index = end - 1
+        elif current in b" \t\n;&|(){}<>":
+            if in_word:
+                tokens.append(bytes(word))
+                word.clear()
+                in_word = False
+            if current not in b" \t<>":
+                tokens.append(bytes((current,)))
+        else:
+            word.append(current)
+            in_word = True
+        index += 1
+    if in_word:
+        tokens.append(bytes(word))
+    return tokens
+
+
+def _has_exit_two_command(shell: bytes) -> bool:
+    """Find a shell `exit 2` command, excluding comments and other arguments."""
+
+    command_start = True
+    exit_argument = False
+    for token in _shell_tokens(shell):
+        if token in {b"\n", b";", b"&", b"|", b"(", b")", b"{", b"}"}:
+            command_start = True
+            exit_argument = False
+        elif exit_argument:
+            if token == b"2":
+                return True
+            exit_argument = False
+        elif command_start:
+            if token in {b"then", b"do", b"else", b"!", b"command", b"builtin"}:
+                continue
+            if token == b"exit":
+                exit_argument = True
+            elif re.fullmatch(rb"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+                continue
+            command_start = False
+    return False
+
+
+def _is_direct_marker_print(command: list[bytes]) -> bool:
+    """Recognize a literal marker printed by a simple shell command."""
+
+    words = command[:]
+    while words and words[0] in {b"then", b"do", b"else"}:
+        words.pop(0)
+    return (
+        len(words) > 1
+        and words[0] in {b"printf", b"echo"}
+        and any(_INCONCLUSIVE_MARKER in word for word in words[1:])
+    )
+
+
+def _is_direct_exit_two(command: list[bytes]) -> bool:
+    words = command[:]
+    while words and words[0] in {b"then", b"do", b"else", b"!", b"command", b"builtin"}:
+        words.pop(0)
+    return len(words) > 1 and words[:2] == [b"exit", b"2"]
+
+
+def _has_direct_marker_exit_two(shell: bytes) -> bool:
+    """Recognize adjacent simple marker-print and literal exit-two commands."""
+
+    tokens = _shell_tokens(shell)
+    command: list[bytes] = []
+    previous_printed_marker = False
+    connector = b"\n"
+    separators = {b"\n", b";", b"&", b"|", b"(", b")", b"{", b"}"}
+    index = 0
+    while index <= len(tokens):
+        token = tokens[index] if index < len(tokens) else b"\n"
+        if token in separators:
+            if command:
+                if (
+                    previous_printed_marker
+                    and connector in {b"\n", b";", b"&&"}
+                    and _is_direct_exit_two(command)
+                ):
+                    return True
+                previous_printed_marker = _is_direct_marker_print(command)
+                command.clear()
+            connector = token
+            if token in {b"&", b"|"} and tokens[index + 1 : index + 2] == [token]:
+                connector += token
+                index += 1
+        else:
+            command.append(token)
+        index += 1
+    return False
+
+
 def validate_candidate(
     content: bytes,
     *,
@@ -315,8 +445,7 @@ def validate_candidate(
             | child_declared
         ):
             raise PoCCandidateRejected("POC_UNDECLARED_INPUT")
-    lowered = content.lower()
-    if b"inconclusive" in lowered and re.search(rb"\bexit\s+2\b", lowered):
+    if _has_direct_marker_exit_two(shell):
         raise PoCCandidateRejected("POC_PLACEHOLDER_FORBIDDEN")
     inspected = inspect_poc_candidate_json(
         canonical_bytes({"content": content.decode("utf-8")})
@@ -329,4 +458,9 @@ def validate_candidate(
     return True
 
 
-__all__ = ["PoCCandidateRejected", "validate_candidate"]
+__all__ = [
+    "POC_CANDIDATE_VALIDATOR_REVISION",
+    "PoCCandidateRejected",
+    "candidate_rejection_diagnostic",
+    "validate_candidate",
+]

@@ -15,6 +15,19 @@ from sastsimi.ports.report_export import ReportUnavailable
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
+def _windows_extended_path(path: Path) -> Path:
+    """Use the Win32 extended prefix without resolving links or changing identity."""
+
+    if os.name != "nt":
+        return path
+    absolute = os.path.abspath(path)
+    if absolute.startswith("\\\\?\\"):
+        return Path(absolute)
+    if absolute.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + absolute[2:])
+    return Path("\\\\?\\" + absolute)
+
+
 def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
     if not stat.S_ISDIR(info.st_mode):
         raise ReportUnavailable("UNSAFE_REPORT_PATH")
@@ -23,7 +36,9 @@ def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
 
 def _capture_directory_identity(path: Path) -> tuple[int, int, int] | None:
     try:
-        return _directory_identity(os.stat(path, follow_symlinks=False))
+        return _directory_identity(
+            os.stat(_windows_extended_path(path), follow_symlinks=False)
+        )
     except FileNotFoundError:
         return None
     except OSError as error:
@@ -56,8 +71,9 @@ def _locked_windows_directory(
     import ctypes
     import msvcrt
 
+    long_path = _windows_extended_path(path)
     try:
-        path.mkdir(exist_ok=True)
+        long_path.mkdir(exist_ok=True)
     except OSError as error:
         raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
     load_library = cast(Callable[..., object], _platform_attribute(ctypes, "WinDLL"))
@@ -83,7 +99,7 @@ def _locked_windows_directory(
     file_flag_backup_semantics = 0x02000000
     file_flag_open_reparse_point = 0x00200000
     handle = create_file(
-        str(path),
+        str(long_path),
         generic_read,
         share_mode,
         None,
@@ -130,15 +146,16 @@ def _locked_windows_directory(
 def _guarded_windows_replace_directory(path: Path) -> Iterator[None]:
     """Keep the directory non-empty while replacement needs write sharing."""
 
-    guard_path = path / f".report-export-{uuid4().hex}.guard"
+    long_path = _windows_extended_path(path)
+    guard_path = long_path / f".report-export-{uuid4().hex}.guard"
     guard = None
-    with _locked_windows_directory(path):
+    with _locked_windows_directory(long_path):
         try:
             guard = guard_path.open("xb")
         except OSError as error:
             raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
     try:
-        with _locked_windows_directory(path, allow_write_sharing=True):
+        with _locked_windows_directory(long_path, allow_write_sharing=True):
             yield
     finally:
         if guard is not None:
@@ -155,3 +172,4 @@ def _guarded_windows_replace_directory(path: Path) -> Iterator[None]:
 capture_directory_identity = _capture_directory_identity
 locked_windows_directory = _locked_windows_directory
 guarded_windows_replace_directory = _guarded_windows_replace_directory
+windows_extended_path = _windows_extended_path

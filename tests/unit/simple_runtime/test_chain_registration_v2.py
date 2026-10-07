@@ -10,6 +10,7 @@ import pytest
 from sastsimi.simple_runtime.application import (
     HypothesisBootstrap,
     SimpleAnalysisApplication,
+    SimpleAnalysisOutcome,
     StaticBootstrap,
     StaticBootstrapResult,
 )
@@ -21,6 +22,7 @@ from sastsimi.simple_runtime.models import (
     SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageResult,
     StageStatus,
     input_reference_hash,
@@ -345,3 +347,91 @@ async def test_v2_final_pool_reuses_exact_saved_batch_on_resume(tmp_path: Path) 
         is None
     )
     assert stage.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_v2_legacy_invalid_chain_batch_retries_once_and_keeps_saved_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = CheckpointIdentity(
+        analysis_id="analysis-legacy-chain",
+        workspace_id="workspace-legacy-chain",
+        commit_id="d" * 40,
+        hypothesis_id=None,
+    )
+    data = tmp_path / "data"
+    store = SimpleCheckpointStore(data / "db" / "sastsimi.sqlite3")
+    artifacts = SimpleArtifactRepository(data, root)
+    static_ref = artifacts.put_json({"kind": "simple_static_fact_bundle"})
+    static = StaticBootstrapResult(
+        repository_profile_ref=artifacts.put_json({"kind": "profile"}),
+        static_bundle_ref=static_ref,
+        workspace_path=tmp_path,
+    )
+    run = SimpleAnalysisRun(
+        analysis_id=root.analysis_id,
+        display_analysis_id="A-legacy-chain",
+        workspace_id=root.workspace_id,
+        commit_id=root.commit_id,
+        repository="https://github.com/example/repo",
+        candidate_pipeline_version=2,
+    )
+    store.save_analysis_run(run)
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=root,
+            stage=SimpleStage.HYPOTHESIS_DONE,
+            status=StageStatus.BLOCKED,
+            input_refs=(static_ref,),
+            input_hash=input_reference_hash((static_ref,)),
+            attempt_id="legacy-attempt-1",
+            attempt_number=1,
+            error_code="CHAINING_BATCH_RESPONSE_INVALID",
+            retryable=False,
+        )
+    )
+    saved_ref = artifacts.put_json({"kind": "saved_chaining_batch"})
+    store.save_chaining_pool_batch(root, "pool-legacy", 0, 2, saved_ref)
+    app = SimpleAnalysisApplication(
+        data_dir=data,
+        store=store,
+        static_bootstrap=cast(StaticBootstrap, object()),
+        hypothesis_bootstrap=cast(HypothesisBootstrap, object()),
+        runner_factory=lambda *_args: cast(SimpleRuntimeRunner, object()),
+    )
+    calls = 0
+
+    async def fail_again(
+        _run: SimpleAnalysisRun,
+        _identity: CheckpointIdentity,
+        _static: StaticBootstrapResult,
+    ) -> SimpleAnalysisOutcome:
+        nonlocal calls
+        calls += 1
+        running = store.mark_running(
+            root,
+            SimpleStage.HYPOTHESIS_DONE,
+            (static_ref,),
+            attempt_id=f"retry-{calls + 1}",
+        )
+        failed = store.mark_failure(
+            running,
+            StageFailure(
+                code="CHAINING_BATCH_RESPONSE_INVALID",
+                retryable=False,
+                safe_message="Invalid chaining pair",
+            ),
+            StageStatus.BLOCKED,
+        )
+        return app._bootstrap_outcome(run, failed)
+
+    monkeypatch.setattr(app, "_run_candidate_pipeline_inner", fail_again)
+
+    first = await app._run_candidate_pipeline(run, root, static)
+    second = await app._run_candidate_pipeline(run, root, static)
+
+    assert first.error_code == second.error_code == "CHAINING_BATCH_RESPONSE_INVALID"
+    assert first.status == second.status == "BLOCKED"
+    assert calls == 1
+    assert store.require(root, SimpleStage.HYPOTHESIS_DONE).attempt_number == 2
+    assert store.list_chaining_pool_batches(root, "pool-legacy") == {0: (2, saved_ref)}

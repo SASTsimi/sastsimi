@@ -28,6 +28,7 @@ from sastsimi.reporting.safe_windows_directory import (
     _capture_directory_identity,
     _guarded_windows_replace_directory,
     _locked_windows_directory,
+    windows_extended_path,
 )
 
 MAX_BUNDLE_FILE_BYTES = 1024 * 1024
@@ -330,7 +331,7 @@ def _bundle_directories(
 ) -> Iterator[tuple[_SafeDirectory, _SafeDirectory]]:
     bundle = root / "reports" / analysis_id / display_id
     evidence = bundle / "evidence"
-    if not root.is_dir():
+    if not windows_extended_path(root).is_dir():
         raise ValueError("BUNDLE_PATH_UNSAFE")
     if os.name == "nt":
         identity = _capture_directory_identity(root)
@@ -384,7 +385,7 @@ def _member_directory(
 def _exists(directory: _SafeDirectory, name: str) -> bool:
     try:
         if directory.fd is None:
-            return os.path.lexists(directory.path / name)
+            return os.path.lexists(windows_extended_path(directory.path / name))
         os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
         return True
     except FileNotFoundError:
@@ -394,7 +395,7 @@ def _exists(directory: _SafeDirectory, name: str) -> bool:
 def _read_file(directory: _SafeDirectory, name: str, limit: int) -> bytes:
     try:
         if directory.fd is None:
-            path = directory.path / name
+            path = windows_extended_path(directory.path / name)
             before = path.lstat()
             if (
                 not stat.S_ISREG(before.st_mode)
@@ -430,13 +431,16 @@ def _read_file(directory: _SafeDirectory, name: str, limit: int) -> bytes:
 
 def _write_file(directory: _SafeDirectory, name: str, body: bytes) -> None:
     if directory.fd is None:
-        temporary_path = directory.path / f".{name}.{uuid4().hex}.tmp"
+        temporary_path = windows_extended_path(
+            directory.path / f".{name}.{uuid4().hex}.tmp"
+        )
+        destination = windows_extended_path(directory.path / name)
         try:
             with temporary_path.open("xb") as stream:
                 stream.write(body)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary_path, directory.path / name)
+            os.replace(temporary_path, destination)
             if _read_file(directory, name, len(body)) != body:
                 raise ValueError("BUNDLE_PUBLISHED_FILE_INVALID")
         finally:

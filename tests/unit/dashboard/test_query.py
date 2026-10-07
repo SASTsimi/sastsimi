@@ -313,6 +313,38 @@ def test_query_projects_current_progress_without_cross_analysis_data(tmp_path) -
     )
 
 
+def test_dashboard_summary_paths_do_not_materialize_report_bundles(
+    tmp_path: Path,
+) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+
+    with patch.object(
+        query, "_reports", side_effect=AssertionError("report bundles loaded")
+    ):
+        listed = query.list_analyses()
+        shell = query.get_analysis_shell("A-001")
+
+    assert len(listed) == 1
+    assert listed[0].analysis_id == "analysis-a"
+    assert shell.analysis_id == "analysis-a"
+
+
+def test_dashboard_stale_warning_requires_no_active_run_lease(tmp_path: Path) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+
+    idle = query.get_analysis("A-001")
+    assert idle.status == "RUNNING"
+    assert idle.stale is True
+
+    with analysis_run_lease(tmp_path, "analysis-a"):
+        active = query.get_analysis("A-001")
+        assert active.status == "RUNNING"
+        assert active.stale is False
+        assert query.list_analyses()[0].stale is False
+
+
 def test_dashboard_marks_unleased_candidate_run_interrupted_without_rewriting_it(
     tmp_path: Path,
 ) -> None:
@@ -1207,6 +1239,9 @@ def test_current_accepted_report_remains_accessible(tmp_path) -> None:
     detail = query.get_analysis("analysis-a")
 
     assert detail.reports[0].display_id == "F-001"
+    assert detail.reports[0].english_available is False
+    assert detail.reports[0].english_view_url is None
+    assert detail.reports[0].english_download_url is None
     assert detail.finding_group_count is None
     assert detail.finding_groups == ()
     assert query.report_path("analysis-a", "F-001") == report_path
@@ -1707,6 +1742,61 @@ def test_inactive_unresolved_codex_call_retracts_current_dashboard_report(
         assert query.report_content(identity.analysis_id, "F-001") == b"# report"
 
 
+@pytest.mark.parametrize("block_kind", ["root_invalid", "unresolved_call"])
+def test_report_currentness_block_hides_confirmed_dashboard_kpis(
+    tmp_path: Path, block_kind: str
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity, _ = _attach_bundle(tmp_path)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    run = store.require_analysis_run(identity.analysis_id)
+    store.save_analysis_run(run.model_copy(update={"candidate_pipeline_version": 2}))
+    finding = store.require(identity, SimpleStage.FINDING_DONE)
+    store.save_checkpoint(finding.model_copy(update={"verdict": "TRUE"}))
+    store.save_checkpoint(
+        StageCheckpoint(
+            identity=identity,
+            stage=SimpleStage.VERIFICATION_FINAL_DONE,
+            stage_version=STAGE_VERSION[SimpleStage.VERIFICATION_FINAL_DONE],
+            status=StageStatus.SUCCEEDED,
+            input_refs=(),
+            input_hash=input_reference_hash(()),
+            verdict="TRUE",
+        )
+    )
+
+    query = DashboardQuery(tmp_path)
+    before = query.get_analysis(identity.analysis_id)
+    before_shell = query.get_analysis_shell(identity.analysis_id)
+    assert before.confirmed_finding_count == 1
+    assert before_shell.kpis.confirmed_findings == 1
+    assert before_shell.validated_poc_count == 1
+
+    if block_kind == "unresolved_call":
+        assert store.begin_codex_call("orphan-call", identity.analysis_id)
+    else:
+        root = identity.model_copy(update={"hypothesis_id": None})
+        store.save_checkpoint(
+            StageCheckpoint(
+                identity=root,
+                stage=SimpleStage.HYPOTHESIS_DONE,
+                status=StageStatus.BLOCKED,
+                input_refs=(),
+                input_hash=input_reference_hash(()),
+                error_code="HYPOTHESIS_EVIDENCE_INVALID",
+                retryable=False,
+            )
+        )
+
+    detail = query.get_analysis(identity.analysis_id)
+    shell = query.get_analysis_shell(identity.analysis_id)
+    assert detail.finding_count == 0
+    assert detail.reports == ()
+    assert detail.confirmed_finding_count == 0
+    assert shell.kpis.confirmed_findings == 0
+    assert shell.validated_poc_count == 0
+
+
 @pytest.mark.parametrize(
     ("candidate_version", "error_code"),
     [
@@ -1750,6 +1840,9 @@ def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
     report = query.get_analysis("analysis-a").reports[0]
 
     assert report.attachment_urls["report_en.md"].endswith("/files/report_en.md")
+    assert report.english_available is True
+    assert report.english_view_url is None
+    assert report.english_download_url == report.attachment_urls["report_en.md"]
     assert report.attachment_urls["bundle.zip"].endswith("/bundle.zip")
     assert query.report_attachment("analysis-a", "F-001", "poc.sh")[0] == (
         b"#!/bin/sh\nprintf ok\n"
@@ -1760,6 +1853,65 @@ def test_current_bundle_lists_only_verified_attachment_urls(tmp_path) -> None:
     for invalid in ("../poc.sh", "manifest.json", "other.txt", "evidence/../../poc.sh"):
         with pytest.raises(DashboardNotFound):
             query.report_attachment("analysis-a", "F-001", invalid)
+
+
+def test_historical_process_local_poc_bundle_is_not_verified_or_downloadable(
+    tmp_path: Path,
+) -> None:
+    test_current_accepted_report_remains_accessible(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    attach_current_bundle(
+        tmp_path,
+        identity,
+        ref("finding"),
+        "F-001",
+        poc=b"""#!/bin/sh
+python3 - <<'PY'
+import pickle
+class LocalFixture:
+    pass
+client = app.test_client()
+payload = pickle.dumps(LocalFixture())
+client.set_cookie('value', payload)
+client.get('/cookie')
+PY
+""",
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    checkpoints = {
+        stage: store.require(identity, stage)
+        for stage in (
+            SimpleStage.POC_CANDIDATE_DONE,
+            SimpleStage.POC_EXECUTION_DONE,
+            SimpleStage.TECH_GATE_DONE,
+            SimpleStage.SCOPE_GATE_DONE,
+            SimpleStage.FINDING_DONE,
+            SimpleStage.REPORT_DONE,
+        )
+    }
+    with pytest.raises(ValueError, match="BUNDLE_POC_SOURCE_UNVERIFIED"):
+        artifacts.verified_report_bundle(
+            checkpoints=checkpoints,
+            finding_ref=ref("finding"),
+            display_id="F-001",
+            scope_status="UNCERTAIN",
+            public_projection=lambda body: body,
+        )
+
+    query = DashboardQuery(tmp_path)
+    assert query.get_analysis(identity.analysis_id).reports == ()
+    report_ref = checkpoints[SimpleStage.REPORT_DONE].output_refs[1]
+    with pytest.raises(DashboardNotFound):
+        query.artifact_bytes(identity.analysis_id, report_ref.content_hash)
+    for path in ("poc.sh", "bundle.zip"):
+        with pytest.raises(DashboardNotFound):
+            query.report_attachment(identity.analysis_id, "F-001", path)
 
 
 def test_legacy_bundle_with_local_file_url_is_not_downloadable(tmp_path: Path) -> None:

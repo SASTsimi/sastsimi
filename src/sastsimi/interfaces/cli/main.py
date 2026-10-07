@@ -296,7 +296,14 @@ def main(
     )
     resume_parser.add_argument("analysis_id")
     resume_parser.add_argument("--no-progress", action="store_true")
-    resume_parser.add_argument("--repair-exhausted-hypothesis")
+    resume_repair = resume_parser.add_mutually_exclusive_group()
+    resume_repair.add_argument("--repair-exhausted-hypothesis")
+    resume_repair.add_argument("--repair-legacy-import-stop")
+    resume_repair.add_argument("--repair-fallback-poc-stop")
+    resume_repair.add_argument("--repair-docker-owned-list-exhaustion")
+    resume_repair.add_argument("--repair-poc-placeholder-exhaustion")
+    resume_repair.add_argument("--repair-poc-sensitive-content")
+    resume_repair.add_argument("--repair-report-validator")
     resume_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
@@ -706,9 +713,7 @@ def main(
                             sys.stdout,
                             is_tty=sys.stdout.isatty(),
                         )
-                        if args.repair_exhausted_hypothesis is None:
-                            data = progress_call(args.analysis_id, renderer.render)
-                        else:
+                        if args.repair_exhausted_hypothesis is not None:
                             data = progress_call(
                                 args.analysis_id,
                                 renderer.render,
@@ -716,17 +721,124 @@ def main(
                                     args.repair_exhausted_hypothesis
                                 ),
                             )
-                    elif args.repair_exhausted_hypothesis is None:
-                        data = application.resume(args.analysis_id)
-                    else:
+                        elif args.repair_legacy_import_stop is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_legacy_import_stop_hypothesis=(
+                                    args.repair_legacy_import_stop
+                                ),
+                            )
+                        elif args.repair_fallback_poc_stop is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_fallback_poc_stop_hypothesis=(
+                                    args.repair_fallback_poc_stop
+                                ),
+                            )
+                        elif args.repair_docker_owned_list_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_docker_owned_list_exhaustion_hypothesis=(
+                                    args.repair_docker_owned_list_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_placeholder_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_placeholder_exhaustion_hypothesis=(
+                                    args.repair_poc_placeholder_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_sensitive_content is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_sensitive_content_hypothesis=(
+                                    args.repair_poc_sensitive_content
+                                ),
+                            )
+                        elif args.repair_report_validator is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_report_validator_hypothesis=(
+                                    args.repair_report_validator
+                                ),
+                            )
+                        else:
+                            data = progress_call(args.analysis_id, renderer.render)
+                    elif args.repair_exhausted_hypothesis is not None:
                         data = application.resume(
                             args.analysis_id,
-                            repair_exhausted_hypothesis=args.repair_exhausted_hypothesis,
+                            repair_exhausted_hypothesis=(
+                                args.repair_exhausted_hypothesis
+                            ),
                         )
+                    elif args.repair_legacy_import_stop is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_legacy_import_stop_hypothesis=(
+                                args.repair_legacy_import_stop
+                            ),
+                        )
+                    elif args.repair_fallback_poc_stop is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_fallback_poc_stop_hypothesis=(
+                                args.repair_fallback_poc_stop
+                            ),
+                        )
+                    elif args.repair_docker_owned_list_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_docker_owned_list_exhaustion_hypothesis=(
+                                args.repair_docker_owned_list_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_placeholder_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_placeholder_exhaustion_hypothesis=(
+                                args.repair_poc_placeholder_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_sensitive_content is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_sensitive_content_hypothesis=(
+                                args.repair_poc_sensitive_content
+                            ),
+                        )
+                    elif args.repair_report_validator is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_report_validator_hypothesis=(
+                                args.repair_report_validator
+                            ),
+                        )
+                    else:
+                        data = application.resume(args.analysis_id)
                 except ValueError as error:
-                    if args.repair_exhausted_hypothesis is None or not str(
-                        error
-                    ).startswith("OFFLINE_REPAIR_"):
+                    if not (
+                        args.repair_exhausted_hypothesis is not None
+                        and str(error).startswith("OFFLINE_REPAIR_")
+                        or args.repair_legacy_import_stop is not None
+                        and str(error).startswith("LEGACY_IMPORT_STOP_")
+                        or args.repair_fallback_poc_stop is not None
+                        and str(error).startswith("FALLBACK_POC_STOP_")
+                        or args.repair_docker_owned_list_exhaustion is not None
+                        and str(error).startswith("DOCKER_LIST_EXHAUSTION_")
+                        or args.repair_poc_placeholder_exhaustion is not None
+                        and str(error).startswith("POC_PLACEHOLDER_EXHAUSTION_")
+                        or args.repair_poc_sensitive_content is not None
+                        and str(error).startswith("POC_SENSITIVE_CONTENT_REPLAY_")
+                        or args.repair_report_validator is not None
+                        and str(error).startswith("REPORT_VALIDATOR_REPLAY_")
+                    ):
                         raise
                     code = (
                         ExitCode.CONFIG_ERROR
@@ -753,7 +865,15 @@ def main(
                     data=data,
                 )
                 return int(ExitCode.OK)
-            if args.repair_exhausted_hypothesis is not None:
+            if (
+                args.repair_exhausted_hypothesis is not None
+                or args.repair_legacy_import_stop is not None
+                or args.repair_fallback_poc_stop is not None
+                or args.repair_docker_owned_list_exhaustion is not None
+                or args.repair_poc_placeholder_exhaustion is not None
+                or args.repair_poc_sensitive_content is not None
+                or args.repair_report_validator is not None
+            ):
                 raise _InputError
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)
         if args.command == "cancel":

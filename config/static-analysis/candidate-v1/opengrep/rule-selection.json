@@ -19,6 +19,7 @@
     "sastsimi.python.permission-check",
     "sastsimi.python.request-source",
     "sastsimi.python.sanitizer",
+    "sastsimi.python.session-identity-write",
     "sastsimi.python.sql-sink",
     "sastsimi.python.validator",
     "sastsimi.python.weak-password-hash"

@@ -136,21 +136,105 @@ def require_target_compatible_wheels(
             raise ValueError("WHEEL_TARGET_INCOMPATIBLE")
 
 
-def import_wheel_bundle(
-    path: Path,
-    expected_sha256: str,
+def build_wheel_bundle(wheel_directory: Path) -> bytes:
+    """Create one deterministic, flat TAR from resolver-produced wheel files."""
+
+    try:
+        info = wheel_directory.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or wheel_directory.is_symlink()
+            or int(getattr(info, "st_file_attributes", 0)) & 0x400
+        ):
+            raise ValueError("WHEEL_DIRECTORY_UNSAFE")
+        entries = sorted(wheel_directory.iterdir(), key=lambda item: item.name)
+    except OSError as error:
+        raise ValueError("WHEEL_DIRECTORY_UNSAFE") from error
+    if not entries or len(entries) > MAX_WHEEL_FILES:
+        raise ValueError("WHEEL_ARCHIVE_INVALID")
+    wheels: list[tuple[str, bytes]] = []
+    expanded = 0
+    for path in entries:
+        name = path.name
+        try:
+            before = path.lstat()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or path.is_symlink()
+                or int(getattr(before, "st_file_attributes", 0)) & 0x400
+                or not _safe_member_name(name)
+                or not name.endswith(".whl")
+                or before.st_size < 1
+                or before.st_size > MAX_WHEEL_EXPANDED_BYTES
+            ):
+                raise ValueError("WHEEL_ARCHIVE_INVALID")
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+            )
+            with os.fdopen(descriptor, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if not stat.S_ISREG(opened.st_mode) or (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                ) != (opened.st_dev, opened.st_ino, opened.st_size):
+                    raise ValueError("WHEEL_ARCHIVE_INVALID")
+                raw = stream.read(before.st_size + 1)
+            after = path.lstat()
+            if len(raw) != before.st_size or (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                raise ValueError("WHEEL_ARCHIVE_INVALID")
+        except OSError as error:
+            raise ValueError("WHEEL_ARCHIVE_INVALID") from error
+        try:
+            parse_wheel_filename(name)
+        except InvalidWheelFilename as error:
+            raise ValueError("WHEEL_ARCHIVE_INVALID") from error
+        _validate_wheel_zip(raw)
+        expanded += len(raw)
+        if expanded > MAX_WHEEL_EXPANDED_BYTES:
+            raise ValueError("WHEEL_ARCHIVE_INVALID")
+        wheels.append((name, raw))
+    output_buffer = io.BytesIO()
+    with tarfile.open(
+        fileobj=output_buffer, mode="w", format=tarfile.PAX_FORMAT
+    ) as archive:
+        for name, raw in wheels:
+            member = tarfile.TarInfo(name)
+            member.size = len(raw)
+            member.mode = 0o644
+            member.mtime = 0
+            member.uid = 0
+            member.gid = 0
+            member.uname = ""
+            member.gname = ""
+            archive.addfile(member, io.BytesIO(raw))
+    result = output_buffer.getvalue()
+    if len(result) > MAX_WHEEL_ARCHIVE_BYTES:
+        raise ValueError("WHEEL_ARCHIVE_TOO_LARGE")
+    return result
+
+
+def _import_wheel_bundle_raw(
+    raw: bytes,
     artifacts: SimpleArtifactRepository,
     *,
-    target_tags: frozenset[str] | None = None,
+    expected_sha256: str | None,
+    target_tags: frozenset[str] | None,
 ) -> VerifiedWheelBundle:
-    """Validate all bytes and members before writing the exact archive to CAS."""
-
-    if _SHA256.fullmatch(expected_sha256) is None:
-        raise ValueError("WHEEL_ARCHIVE_DIGEST_INVALID")
-    raw = _read_exact_archive(path)
+    if len(raw) > MAX_WHEEL_ARCHIVE_BYTES:
+        raise ValueError("WHEEL_ARCHIVE_TOO_LARGE")
     actual = hashlib.sha256(raw).hexdigest()
-    if actual != expected_sha256:
-        raise ValueError("WHEEL_ARCHIVE_DIGEST_MISMATCH")
+    if expected_sha256 is not None:
+        if _SHA256.fullmatch(expected_sha256) is None:
+            raise ValueError("WHEEL_ARCHIVE_DIGEST_INVALID")
+        if actual != expected_sha256:
+            raise ValueError("WHEEL_ARCHIVE_DIGEST_MISMATCH")
     names: list[str] = []
     folded: set[str] = set()
     expanded = 0
@@ -192,3 +276,37 @@ def import_wheel_bundle(
     require_target_compatible_wheels(ordered, target_tags)
     ref = artifacts.put_bytes(raw, "application/x-tar")
     return VerifiedWheelBundle(ref, actual, ordered)
+
+
+def import_wheel_bundle_bytes(
+    raw: bytes,
+    artifacts: SimpleArtifactRepository,
+    *,
+    target_tags: frozenset[str] | None = None,
+) -> VerifiedWheelBundle:
+    """Validate resolver output before it becomes an analysis artifact."""
+
+    return _import_wheel_bundle_raw(
+        raw,
+        artifacts,
+        expected_sha256=None,
+        target_tags=target_tags,
+    )
+
+
+def import_wheel_bundle(
+    path: Path,
+    expected_sha256: str,
+    artifacts: SimpleArtifactRepository,
+    *,
+    target_tags: frozenset[str] | None = None,
+) -> VerifiedWheelBundle:
+    """Validate all bytes and members before writing the exact archive to CAS."""
+
+    raw = _read_exact_archive(path)
+    return _import_wheel_bundle_raw(
+        raw,
+        artifacts,
+        expected_sha256=expected_sha256,
+        target_tags=target_tags,
+    )
