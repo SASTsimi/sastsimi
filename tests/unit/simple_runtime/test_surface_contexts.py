@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.simple_runtime import application, surface_contexts
 from sastsimi.simple_runtime.application import SimpleAnalysisApplication
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
@@ -22,6 +25,7 @@ from sastsimi.simple_runtime.surface_contexts import (
     SurfaceContext,
     expanded_surface_contexts,
     iter_uncovered_surface_contexts,
+    reuse_saved_expanded_surface_contexts,
 )
 
 
@@ -495,3 +499,269 @@ def test_v2_expands_an_omitted_hypothesis_context_missing_review_parts(
         {(context.surface_id, context.context_id): complete},
         artifacts=artifacts,
     )
+
+
+@dataclass(frozen=True)
+class _SavedV2:
+    index: SurfaceIndex
+    artifacts: SimpleArtifactRepository
+    summary: dict[str, object]
+    first: tuple[SurfaceContext, ...]
+    expanded: tuple[SurfaceContext, ...]
+    progress: dict[tuple[str, str], SurfaceExplorationProgressRecord]
+    workspace: Path
+    index_hash: str
+
+
+def _saved_v2(tmp_path: Path) -> _SavedV2:
+    source = (
+        "def route(value):\n" + "    # filler\n" * 110 + "    check_permission(value)\n"
+    )
+    index, coverage, artifacts, summary, workspace = _setup(
+        tmp_path, source, surface_line=112
+    )
+    index = replace(
+        index,
+        index_version=2,
+        ast_source_hashes=(
+            ("app.py", hashlib.sha256((workspace / "app.py").read_bytes()).hexdigest()),
+        ),
+    )
+    first = tuple(
+        iter_uncovered_surface_contexts(
+            index,
+            coverage,
+            2400,
+            artifacts=artifacts,
+            ast_summary=summary,
+            workspace=workspace,
+        )
+    )
+    expanded = expanded_surface_contexts(
+        index,
+        index.surfaces[0],
+        artifacts=artifacts,
+        ast_summary=summary,
+        workspace=workspace,
+        budget_bytes=2400,
+    )
+    assert len(expanded) > 1
+    index_ref = artifacts.put_json(index.to_json())
+    result_ref = artifacts.put_json({"kind": "saved-result"})
+    progress = {
+        (context.surface_id, context.context_id): SurfaceExplorationProgressRecord(
+            surface_id=context.surface_id,
+            context_id=context.context_id,
+            static_bundle_hash=index.static_bundle_hash,
+            index_hash=index_ref.content_hash,
+            context_hash=context.context_hash,
+            source_sha256=context.source_sha256,
+            status="NO_HYPOTHESIS",
+            result_ref=result_ref,
+            hypothesis_ids=(),
+            proposal_version=2,
+        )
+        for context in expanded
+    }
+    return _SavedV2(
+        index=index,
+        artifacts=artifacts,
+        summary=summary,
+        first=first,
+        expanded=expanded,
+        progress=progress,
+        workspace=workspace,
+        index_hash=index_ref.content_hash,
+    )
+
+
+def _reuse_saved_v2(
+    saved: _SavedV2,
+    *,
+    progress: dict[tuple[str, str], SurfaceExplorationProgressRecord] | None = None,
+    index: SurfaceIndex | None = None,
+) -> tuple[SurfaceContext, ...] | None:
+    current_index = index or saved.index
+    return reuse_saved_expanded_surface_contexts(
+        current_index,
+        current_index.surfaces[0],
+        saved.first,
+        saved.progress if progress is None else progress,
+        artifacts=saved.artifacts,
+        ast_summary=saved.summary,
+        workspace=saved.workspace,
+        index_hash=saved.index_hash,
+        budget_bytes=2400,
+    )
+
+
+def test_complete_saved_v2_parts_reuse_exact_context_without_rebuilding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = _saved_v2(tmp_path)
+    monkeypatch.setattr(
+        surface_contexts,
+        "_surface_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("saved context was rebuilt")
+        ),
+    )
+
+    actual = _reuse_saved_v2(saved)
+    assert actual == saved.expanded
+
+
+def test_saved_v2_context_is_not_reused_after_source_changes(tmp_path: Path) -> None:
+    saved = _saved_v2(tmp_path)
+    with (saved.workspace / "app.py").open("a", encoding="utf-8") as stream:
+        stream.write("# changed after the first context was built\n")
+
+    assert _reuse_saved_v2(saved) is None
+
+
+def test_changed_source_takes_existing_block_path(tmp_path: Path) -> None:
+    saved = _saved_v2(tmp_path)
+    with (saved.workspace / "app.py").open("a", encoding="utf-8") as stream:
+        stream.write("# changed after the saved context\n")
+
+    with pytest.raises(ValueError, match="SURFACE_CONTEXT_SOURCE_CHANGED"):
+        SimpleAnalysisApplication._second_look_contexts(
+            saved.index,
+            saved.index.surfaces[0],
+            saved.first,
+            saved.progress,
+            artifacts=saved.artifacts,
+            ast_summary=saved.summary,
+            workspace=saved.workspace,
+            index_hash=saved.index_hash,
+        )
+
+
+def test_application_replays_saved_second_look_idempotently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = _saved_v2(tmp_path)
+
+    def no_rebuild(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("completed second look was rendered again")
+
+    monkeypatch.setattr(application, "expanded_surface_contexts", no_rebuild)
+    for _ in range(2):
+        assert (
+            SimpleAnalysisApplication._second_look_contexts(
+                saved.index,
+                saved.index.surfaces[0],
+                saved.first,
+                saved.progress,
+                artifacts=saved.artifacts,
+                ast_summary=saved.summary,
+                workspace=saved.workspace,
+                index_hash=saved.index_hash,
+            )
+            == saved.expanded
+        )
+
+
+def test_missing_saved_part_uses_existing_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = _saved_v2(tmp_path)
+    partial = dict(saved.progress)
+    partial.pop((saved.expanded[-1].surface_id, saved.expanded[-1].context_id))
+    rendered: list[bool] = []
+
+    def render(*_args: object, **_kwargs: object) -> tuple[SurfaceContext, ...]:
+        rendered.append(True)
+        return saved.expanded
+
+    monkeypatch.setattr(application, "expanded_surface_contexts", render)
+    assert (
+        SimpleAnalysisApplication._second_look_contexts(
+            saved.index,
+            saved.index.surfaces[0],
+            saved.first,
+            partial,
+            artifacts=saved.artifacts,
+            ast_summary=saved.summary,
+            workspace=saved.workspace,
+            index_hash=saved.index_hash,
+        )
+        == saved.expanded
+    )
+    assert rendered == [True]
+
+
+def test_saved_v2_rejects_progress_key_mismatch(tmp_path: Path) -> None:
+    saved = _saved_v2(tmp_path)
+    progress = dict(saved.progress)
+    key, record = next(iter(progress.items()))
+    del progress[key]
+    progress[(key[0], "f" * 64)] = record
+
+    assert _reuse_saved_v2(saved, progress=progress) is None
+
+
+def test_saved_v2_rejects_changed_record_scope_version_or_reference(
+    tmp_path: Path,
+) -> None:
+    saved = _saved_v2(tmp_path)
+    key, original = next(iter(saved.progress.items()))
+    mismatches = {
+        "static_bundle_hash": "c" * 64,
+        "index_hash": "d" * 64,
+        "source_sha256": "e" * 64,
+        "proposal_version": 3,
+        "context_hash": "f" * 64,
+    }
+    for field, value in mismatches.items():
+        progress = dict(saved.progress)
+        progress[key] = replace(original, **{field: value})
+        assert _reuse_saved_v2(saved, progress=progress) is None, field
+
+    forged_id = "f" * 64
+    progress = dict(saved.progress)
+    del progress[key]
+    progress[(key[0], forged_id)] = replace(original, context_id=forged_id)
+    assert _reuse_saved_v2(saved, progress=progress) is None
+    assert (
+        _reuse_saved_v2(
+            saved, index=replace(saved.index, scope_fingerprint="changed-scope")
+        )
+        is None
+    )
+
+
+def test_saved_v2_rejects_corrupted_cas_bytes(tmp_path: Path) -> None:
+    saved = _saved_v2(tmp_path)
+    context = saved.expanded[0]
+    saved.artifacts.artifacts.path_for(context.context_hash).write_bytes(b"corrupted")
+    assert _reuse_saved_v2(saved) is None
+
+
+def test_saved_v2_rejects_forged_payload_metadata(tmp_path: Path) -> None:
+    saved = _saved_v2(tmp_path)
+    context = saved.expanded[0]
+    payload = json.loads(saved.artifacts.read(context.context_ref))
+    payload["static_evidence_refs"] = []
+    forged_ref = saved.artifacts.put_json(payload)
+    forged_id = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "simple_surface_context_id_v2",
+                "scope_fingerprint": saved.index.scope_fingerprint,
+                "surface_id": context.surface_id,
+                "part_index": context.part_index,
+                "context_hash": forged_ref.content_hash,
+            }
+        )
+    ).hexdigest()
+    key = (context.surface_id, context.context_id)
+    original = saved.progress[key]
+    progress = dict(saved.progress)
+    del progress[key]
+    progress[(context.surface_id, forged_id)] = replace(
+        original,
+        context_id=forged_id,
+        context_hash=forged_ref.content_hash,
+    )
+    assert _reuse_saved_v2(saved, progress=progress) is None

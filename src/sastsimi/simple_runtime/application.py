@@ -28,6 +28,7 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from .artifacts import SimpleArtifactRepository
 from .ast_facts import focus_ast_facts, index_ast_manifest, validate_ast_manifest
 from .attack_surfaces import (
+    AttackSurface,
     SurfaceCoverage,
     SurfaceIndex,
     SurfaceReview,
@@ -80,6 +81,7 @@ from .surface_contexts import (
     SurfaceContextOverflow,
     expanded_surface_contexts,
     iter_uncovered_surface_contexts,
+    reuse_saved_expanded_surface_contexts,
 )
 
 
@@ -3025,12 +3027,15 @@ class SimpleAnalysisApplication:
                 index, first_contexts, progress, artifacts=artifacts
             ):
                 second = list(
-                    expanded_surface_contexts(
+                    self._second_look_contexts(
                         index,
                         surfaces_by_id[surface_id],
+                        first_contexts,
+                        progress,
                         artifacts=artifacts,
                         ast_summary=ast_summary,
                         workspace=static.workspace_path,
+                        index_hash=index_ref.content_hash,
                     )
                 )
                 expected.update((surface_id, item.context_id) for item in second)
@@ -3159,6 +3164,38 @@ class SimpleAnalysisApplication:
         if kind == "simple_surface_context_v2":
             return 2
         raise ValueError("SURFACE_EXPLORATION_CONTEXT_INVALID")
+
+    @staticmethod
+    def _second_look_contexts(
+        index: SurfaceIndex,
+        surface: AttackSurface,
+        first_contexts: Sequence[SurfaceContext],
+        progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
+        *,
+        artifacts: SimpleArtifactRepository,
+        ast_summary: Mapping[str, object],
+        workspace: Path,
+        index_hash: str,
+    ) -> tuple[SurfaceContext, ...]:
+        saved = reuse_saved_expanded_surface_contexts(
+            index,
+            surface,
+            first_contexts,
+            progress,
+            artifacts=artifacts,
+            ast_summary=ast_summary,
+            workspace=workspace,
+            index_hash=index_hash,
+        )
+        if saved is not None:
+            return saved
+        return expanded_surface_contexts(
+            index,
+            surface,
+            artifacts=artifacts,
+            ast_summary=ast_summary,
+            workspace=workspace,
+        )
 
     @staticmethod
     def _surface_expansion_needed(
@@ -3525,12 +3562,15 @@ class SimpleAnalysisApplication:
                     if self._surface_expansion_needed(
                         index, contexts, updated, artifacts=artifacts
                     ):
-                        yield from expanded_surface_contexts(
+                        yield from self._second_look_contexts(
                             index,
                             surfaces[surface_id],
+                            contexts,
+                            updated,
                             artifacts=artifacts,
                             ast_summary=ast_summary,
                             workspace=static.workspace_path,
+                            index_hash=index_ref.content_hash,
                         )
 
             contexts = contexts_to_review()
