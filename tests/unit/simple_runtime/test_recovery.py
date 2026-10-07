@@ -1797,6 +1797,91 @@ async def test_poc_import_time_database_write_error_regenerates_input(
 
 
 @pytest.mark.asyncio
+async def test_bound_sanitized_extract_failure_gets_source_safe_poc_guidance(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts,
+        stderr=b"Traceback (sanitized): extract\nRuntimeError\n",
+        execution_override={"exit_code": 1},
+    )
+    client = DecisionClient(
+        {
+            "category": "TERMINAL",
+            "action": "STOP",
+            "diagnosis": "unclassified",
+            "guidance": "manual review",
+            "environment_patch": "",
+        }
+    )
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert result.decision.category is RecoveryCategory.GENERATED_INPUT
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert "pinned source" in result.decision.guidance
+    assert "selection" in result.decision.guidance
+    assert "fixed" in result.decision.guidance
+    assert "counterevidence" in result.decision.guidance
+    assert result.decision.environment_patch == ""
+    assert client.calls == 0
+    stored = json.loads(artifacts.read(result.decision_ref))
+    assert stored["diagnostic_excerpt"] == (
+        "Traceback (sanitized): extract\nRuntimeError"
+    )
+    assert stored["decision_origin"] == "RULE"
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        b"Traceback (sanitized): extract\nRuntimeError: private source detail\n",
+        b"SASTSIMI_TEST_SECRET=private\nTraceback (sanitized): extract\nRuntimeError\n",
+        b"Traceback (sanitized): extract\nRuntimeError\nlater failure\n",
+    ],
+)
+@pytest.mark.asyncio
+async def test_extract_guidance_rejects_non_sanitized_or_mixed_stderr(
+    tmp_path: Path, stderr: bytes
+) -> None:
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts, stderr=stderr, execution_override={"exit_code": 1}
+    )
+    client = DecisionClient(
+        {
+            "category": "TERMINAL",
+            "action": "STOP",
+            "diagnosis": "unclassified",
+            "guidance": "manual review",
+            "environment_patch": "",
+        }
+    )
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.STOP
+    assert "diagnostic_excerpt" not in json.loads(artifacts.read(result.decision_ref))
+
+
+@pytest.mark.asyncio
 async def test_unbound_permission_text_does_not_force_poc_regeneration(
     tmp_path: Path,
 ) -> None:

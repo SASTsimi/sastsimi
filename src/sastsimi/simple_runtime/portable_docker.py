@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import io
@@ -11,22 +12,29 @@ import re
 import shlex
 import shutil
 import socket
+import sqlite3
 import stat
 import subprocess
 import tarfile
 import tempfile
 import tomllib
 import weakref
+import zipfile
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from email.parser import BytesParser
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
+from packaging.utils import (
+    InvalidWheelFilename,
+    canonicalize_name,
+    parse_wheel_filename,
+)
 
 from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -113,6 +121,10 @@ _OFFLINE_MISSING = re.compile(
     rb"(?i)(?:no matching distribution found|could not find a version that satisfies|"
     rb"no matching distribution|package.*not found|missing build dependency|"
     rb"ModuleNotFoundError: No module named)"
+)
+_MISSING_TOP_LEVEL_IMPORT = re.compile(
+    r"(?m)^ModuleNotFoundError:\s*(?:No module named\s+)?['\"]?"
+    r"([A-Za-z_][A-Za-z0-9_]*)['\"]?\s*$"
 )
 
 
@@ -225,6 +237,10 @@ class DependencyBundleResolutionError(DockerOperationError):
     ) -> None:
         super().__init__(error.code, error.outcome)
         self.attempt_refs = attempt_refs
+
+
+class ImportSmokeCleanupUnconfirmed(ValueError):
+    """An import smoke container could not be proven absent."""
 
 
 def _foreign_runtime_paths(
@@ -906,6 +922,114 @@ class PortableDockerRuntime:
         if re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version) is None:
             raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
         return version
+
+    async def probe_python_import(
+        self,
+        image_digest: str,
+        module: str,
+        identity: CheckpointIdentity,
+        attempt_id: str,
+    ) -> bool:
+        """Smoke one built image without network, writable root, or mounts."""
+
+        if (
+            _IMAGE_DIGEST.fullmatch(image_digest) is None
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module) is None
+        ):
+            return False
+        owner_labels = self._owner_labels(identity, attempt_id)
+        if any(
+            _RESOURCE_ID.fullmatch(value) is None for value in owner_labels.values()
+        ):
+            raise ValueError("POC_IMPORT_SMOKE_OWNER_INVALID")
+        labels = {
+            **owner_labels,
+            "sastsimi.host": socket.gethostname(),
+            "sastsimi.pid": str(os.getpid()),
+            "sastsimi.purpose": "verified-import-smoke",
+        }
+        container_name = f"sastsimi-import-smoke-{uuid4().hex}"
+        args = (
+            "run", "--pull", "never", "--rm", "--name", container_name,
+            "--network", "none", "--read-only", "--user", "10001:10001",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--pids-limit", "128", "--cpus", "1", "--memory", "1g",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m,mode=1777",
+            *(part for key, value in sorted(labels.items())
+              for part in ("--label", f"{key}={value}")),
+            "--entrypoint", "python", image_digest, "-I", "-c",
+            "import importlib; importlib.import_module(" + repr(module) + ")",
+        )
+        outcome: DockerCommandOutcome | None = None
+        cancelled = False
+        try:
+            outcome = await self._run(args, timeout_seconds=30)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            cleanup_task = asyncio.create_task(
+                self._confirm_import_probe_removed(container_name, outcome)
+            )
+            cleanup_cancelled = False
+            try:
+                while True:
+                    try:
+                        await asyncio.shield(cleanup_task)
+                        break
+                    except asyncio.CancelledError:
+                        cleanup_cancelled = True
+                        if cleanup_task.done():
+                            break
+                cleanup_task.result()
+            except ImportSmokeCleanupUnconfirmed:
+                raise
+            except Exception as cleanup_error:
+                if cancelled or cleanup_cancelled:
+                    raise asyncio.CancelledError() from cleanup_error
+                raise
+            if cleanup_cancelled:
+                raise asyncio.CancelledError()
+        assert outcome is not None
+        return outcome.exit_code == 0 and not outcome.timed_out
+
+    async def _confirm_import_probe_removed(
+        self, container_name: str, outcome: DockerCommandOutcome | None
+    ) -> None:
+        try:
+            cleanup = await self._run(
+                ("rm", "--force", container_name), timeout_seconds=30
+            )
+            if cleanup.timed_out or (
+                cleanup.exit_code != 0 and (outcome is None or outcome.timed_out)
+            ):
+                raise ImportSmokeCleanupUnconfirmed(
+                    "POC_IMPORT_SMOKE_CLEANUP_FAILED"
+                )
+            inspected = await self._run(
+                ("container", "inspect", container_name), timeout_seconds=30
+            )
+            missing = re.fullmatch(
+                rb"(?:Error(?: response from daemon)?: )?"
+                rb"No such (?:container|object): "
+                + re.escape(container_name.encode("ascii")),
+                inspected.stderr.strip(),
+            )
+            if (
+                inspected.timed_out
+                or inspected.exit_code != 1
+                or inspected.stdout.strip() not in {b"", b"[]"}
+                or missing is None
+            ):
+                raise ImportSmokeCleanupUnconfirmed(
+                    "POC_IMPORT_SMOKE_CLEANUP_FAILED"
+                )
+        except ImportSmokeCleanupUnconfirmed:
+            raise
+        except (Exception, asyncio.CancelledError) as error:
+            raise ImportSmokeCleanupUnconfirmed(
+                "POC_IMPORT_SMOKE_CLEANUP_FAILED"
+            ) from error
 
     async def local_base_image_digest(self, base_image: str) -> str:
         """Require an already-local Linux image; never trigger an implicit pull."""
@@ -1594,6 +1718,16 @@ class AutoWheelBundleCache:
         self._max_entries = max_entries
         self._stored_bytes = 0
         self._entries: OrderedDict[tuple[str, str], tuple[str, bytes]] = OrderedDict()
+        # A binding is never a replacement for the exact archive/image CAS.
+        # It only carries a requirement independently proven by a pinned
+        # source import, a unique wheel provider, and an offline image smoke.
+        self._verified_imports: OrderedDict[
+            tuple[str, ...], tuple[str, str]
+        ] = OrderedDict()
+        self._ambiguous_verified_imports: OrderedDict[tuple[str, ...], None] = (
+            OrderedDict()
+        )
+        self._max_verified_imports = max_entries * 8
         # Waiters keep their lock alive; idle keys do not accumulate forever.
         self._locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
             weakref.WeakValueDictionary()
@@ -1635,6 +1769,55 @@ class AutoWheelBundleCache:
             lock = asyncio.Lock()
             self._locks[key] = lock
         return lock
+
+    def verified_imports(self, scope: tuple[str, ...]) -> tuple[str, ...]:
+        requirements: list[str] = []
+        for _module, requirement, _decision_hash in self.verified_import_bindings(
+            scope
+        ):
+            if requirement not in requirements:
+                requirements.append(requirement)
+        return tuple(requirements)
+
+    def verified_import_bindings(
+        self, scope: tuple[str, ...]
+    ) -> tuple[tuple[str, str, str], ...]:
+        bindings: list[tuple[str, str, str]] = []
+        for key, (requirement, decision_hash) in tuple(
+            self._verified_imports.items()
+        ):
+            if key[:-1] == scope:
+                self._verified_imports.move_to_end(key)
+                bindings.append((key[-1], requirement, decision_hash))
+        return tuple(bindings)
+
+    def has_verified_import_scope(self, scope: tuple[str, ...]) -> bool:
+        return any(key[: len(scope)] == scope for key in self._verified_imports)
+
+    def put_verified_import(
+        self,
+        scope: tuple[str, ...],
+        module: str,
+        requirement: str,
+        decision_hash: str,
+    ) -> None:
+        if re.fullmatch(r"[0-9a-f]{64}", decision_hash) is None:
+            return
+        key = (*scope, module)
+        if key in self._ambiguous_verified_imports:
+            return
+        existing = self._verified_imports.get(key)
+        if existing is not None and existing[0] != requirement:
+            # Do not let a later observation re-establish a conflicted binding.
+            self._verified_imports.pop(key)
+            self._ambiguous_verified_imports[key] = None
+            while len(self._ambiguous_verified_imports) > self._max_verified_imports:
+                self._ambiguous_verified_imports.popitem(last=False)
+            return
+        self._verified_imports[key] = (requirement, decision_hash)
+        self._verified_imports.move_to_end(key)
+        while len(self._verified_imports) > self._max_verified_imports:
+            self._verified_imports.popitem(last=False)
 
 
 class DirectEnvironmentPreparer:
@@ -2314,6 +2497,252 @@ class DirectEnvironmentPreparer:
         except InvalidRequirement:
             return False
 
+    def _bound_missing_import(self, checkpoint: StageCheckpoint) -> str | None:
+        """Accept only the current RULE import replan bound to execution evidence."""
+
+        if (
+            checkpoint.attempt_number < 2
+            or checkpoint.recovery_lineage_id is None
+            or not checkpoint.recovery_decision_refs
+        ):
+            return None
+        ref = checkpoint.recovery_decision_refs[-1]
+        if ref not in checkpoint.input_refs:
+            return None
+        try:
+            record = json.loads(self._artifacts.read_bounded(ref, 64 * 1024))
+            if not isinstance(record, dict):
+                return None
+            original = record.get("original_error")
+            decision = record.get("decision")
+            if not isinstance(original, dict) or not isinstance(decision, dict):
+                return None
+            evidence_refs = tuple(
+                StoredDataRef.model_validate(item)
+                for item in original.get("evidence_refs", ())
+            )
+            if (
+                record.get("kind") != "simple_recovery_decision"
+                or record.get("identity") != checkpoint.identity.model_dump(mode="json")
+                or record.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+                or record.get("decision_origin") != "RULE"
+                or record.get("attempt") != checkpoint.attempt_number - 1
+                or not isinstance(record.get("attempt_id"), str)
+                or not record["attempt_id"]
+                or record["attempt_id"] == checkpoint.attempt_id
+                or original.get("code") != "POC_RUNTIME_IMPORT_FAILED"
+                or original.get("retryable") is not True
+                or decision.get("action") != RecoveryAction.REPLAN_ENVIRONMENT.value
+                or decision.get("category") != RecoveryCategory.ENVIRONMENT.value
+                or decision.get("environment_patch")
+                or not evidence_refs
+                or len(evidence_refs) > 16
+                or any(item not in checkpoint.input_refs for item in evidence_refs)
+            ):
+                return None
+            execution_bound = False
+            for evidence_ref in evidence_refs:
+                try:
+                    evidence = json.loads(
+                        self._artifacts.read_bounded(evidence_ref, 64 * 1024)
+                    )
+                except (OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
+                    continue
+                if (
+                    isinstance(evidence, dict)
+                    and evidence.get("kind") == "simple_poc_execution"
+                    and evidence.get("attempt_id") == record["attempt_id"]
+                    and evidence.get("timed_out") is False
+                    and type(evidence.get("exit_code")) is int
+                    and evidence["exit_code"] != 0
+                ):
+                    execution_bound = True
+                    break
+            if not execution_bound:
+                return None
+            diagnostic = record.get("diagnostic_excerpt")
+            if not isinstance(diagnostic, str) or len(diagnostic) > 4096:
+                return None
+            matches = set(_MISSING_TOP_LEVEL_IMPORT.findall(diagnostic))
+            return next(iter(matches)) if len(matches) == 1 else None
+        except (OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
+            return None
+
+    def _pinned_source_imports(
+        self, module: str, pinned_paths: frozenset[str], *, commit_id: str
+    ) -> bool:
+        """Prove the missing top-level module appears in bounded pinned code."""
+
+        if _COMMIT_ID.fullmatch(commit_id) is None:
+            return False
+        try:
+            root = self._workspace.resolve(strict=True)
+        except OSError:
+            return False
+        inspected = 0
+        total_bytes = 0
+        for path in sorted(pinned_paths):
+            if not path.endswith(".py"):
+                continue
+            try:
+                if is_test_only_path(root, path):
+                    continue
+            except ValueError:
+                return False
+            inspected += 1
+            if inspected > 512:
+                return False
+            candidate = root.joinpath(*PurePosixPath(path).parts)
+            try:
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                if not candidate.resolve(strict=True).is_relative_to(root):
+                    continue
+                blob_ref = f"{commit_id}:{path}"
+                size_result = subprocess.run(
+                    (self._git_executable, "-C", str(root), "cat-file", "-s",
+                     blob_ref),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+                if size_result.returncode != 0:
+                    return False
+                raw_size = size_result.stdout.strip()
+                if len(raw_size) > 20 or not raw_size.isdigit():
+                    return False
+                blob_size = int(raw_size)
+                if (
+                    blob_size > 256 * 1024
+                    or total_bytes + blob_size > 4 * 1024 * 1024
+                ):
+                    return False
+                blob = subprocess.run(
+                    (self._git_executable, "-C", str(root), "show",
+                     blob_ref),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+                if blob.returncode != 0:
+                    return False
+                if len(blob.stdout) != blob_size:
+                    return False
+                total_bytes += blob_size
+                tree = ast.parse(blob.stdout, filename=path)
+            except (
+                OSError, UnicodeError, SyntaxError, ValueError,
+                subprocess.TimeoutExpired,
+            ):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) and any(
+                    alias.name.split(".", 1)[0] == module for alias in node.names
+                ):
+                    return True
+                if isinstance(node, ast.ImportFrom) and (
+                    node.level == 0 and node.module is not None
+                    and node.module.split(".", 1)[0] == module
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _unique_wheel_provider(
+        bundle_raw: bytes, module: str, agent_requirements: tuple[str, ...]
+    ) -> str | None:
+        """Match one explicit PEP 508 requirement to one wheel exporting module."""
+
+        candidates: list[str] = []
+        try:
+            with tarfile.open(fileobj=io.BytesIO(bundle_raw), mode="r:*") as archive:
+                for member in archive:
+                    if not member.isfile() or not member.name.endswith(".whl"):
+                        continue
+                    wheel_stream = archive.extractfile(member)
+                    if wheel_stream is None:
+                        return None
+                    wheel_bytes = wheel_stream.read()
+                    with zipfile.ZipFile(io.BytesIO(wheel_bytes)) as wheel:
+                        names = set(wheel.namelist())
+                        provides_module = False
+                        for name in names:
+                            parts = name.split("/")
+                            if len(parts) == 1:
+                                site_parts = parts
+                            elif (
+                                len(parts) >= 3
+                                and parts[0].endswith(".data")
+                                and parts[1] in {"purelib", "platlib"}
+                            ):
+                                site_parts = parts[2:]
+                            else:
+                                site_parts = parts
+                            leaf = site_parts[-1]
+                            native_extension = leaf.endswith((".so", ".pyd"))
+                            if (
+                                len(site_parts) == 1
+                                and (
+                                    leaf == f"{module}.py"
+                                    or native_extension
+                                    and leaf.startswith(f"{module}.")
+                                )
+                                or len(site_parts) >= 2
+                                and site_parts[0] == module
+                                and (leaf.endswith(".py") or native_extension)
+                            ):
+                                provides_module = True
+                                break
+                        if not provides_module:
+                            continue
+                        metadata_paths = [
+                            name for name in names
+                            if name.endswith(".dist-info/METADATA")
+                            and name.count("/") == 1
+                        ]
+                        if len(metadata_paths) != 1:
+                            return None
+                        metadata_info = wheel.getinfo(metadata_paths[0])
+                        if metadata_info.file_size > 64 * 1024:
+                            return None
+                        metadata = BytesParser().parsebytes(
+                            wheel.read(metadata_info)
+                        )
+                        wheel_name, wheel_version, _build, _tags = (
+                            parse_wheel_filename(member.name)
+                        )
+                        if (
+                            canonicalize_name(metadata.get("Name", ""))
+                            != canonicalize_name(wheel_name)
+                            or metadata.get("Version") != str(wheel_version)
+                        ):
+                            return None
+                        matched = []
+                        for raw in agent_requirements:
+                            parsed = Requirement(raw)
+                            if (
+                                parsed.url is None
+                                and not parsed.extras
+                                and parsed.marker is None
+                                and canonicalize_name(parsed.name) == wheel_name
+                                and parsed.specifier.contains(
+                                    wheel_version, prereleases=True
+                                )
+                            ):
+                                matched.append(raw)
+                        if len(matched) != 1:
+                            return None
+                        candidates.append(matched[0])
+        except (
+            OSError, ValueError, RuntimeError, EOFError, KeyError,
+            tarfile.TarError, zipfile.BadZipFile,
+            InvalidWheelFilename, InvalidRequirement,
+        ):
+            return None
+        return candidates[0] if len(candidates) == 1 else None
+
     async def _prepare_auto_bundle(
         self,
         checkpoint: StageCheckpoint,
@@ -2339,6 +2768,7 @@ class DirectEnvironmentPreparer:
         dockerfile_input_ref: StoredDataRef | None = None
         protected_requirements: tuple[str, ...] = ()
         provenance_source_path: str | None = None
+        provenance_sha256 = "NO_MANIFEST"
         agent_requirements, _agent_source_paths = self._offline_agent_requirements(
             requirements, commit_id=checkpoint.identity.commit_id
         )
@@ -2379,6 +2809,7 @@ class DirectEnvironmentPreparer:
                 )
                 input_kind = "DOCKERFILE_LITERAL_PIP_REQUIREMENTS"
                 provenance_source_path = "Dockerfile"
+                provenance_sha256 = hashlib.sha256(pinned_dockerfile).hexdigest()
                 delegated_requirements = (
                     *((f"python:{requested_runtime}",) if requested_runtime else ()),
                     *self._canonical_offline_requirements(
@@ -2405,9 +2836,23 @@ class DirectEnvironmentPreparer:
                 # A stdlib-only project has nothing to resolve. Preserve the
                 # existing offline build path rather than requiring an otherwise
                 # unnecessary packaging manifest.
-                return await self._prepare_without_auto_bundle(
-                    checkpoint, prior, requirements, target_manifest=target_manifest
+                scope_prefix = (
+                    checkpoint.identity.analysis_id,
+                    checkpoint.identity.workspace_id,
+                    checkpoint.identity.commit_id,
+                    provenance_sha256,
                 )
+                if not self._auto_bundle_cache.has_verified_import_scope(scope_prefix):
+                    return await self._prepare_without_auto_bundle(
+                        checkpoint, prior, requirements,
+                        target_manifest=target_manifest,
+                    )
+                requested = ()
+                manifest = canonical_bytes(
+                    {"kind": "sastsimi_explicit_poc_requirements_v1",
+                     "requirements": (), "required_source_paths": ()}
+                )
+                input_kind = "EXPLICIT_POC_REQUIREMENTS"
         else:
             manifest = self._pinned_manifest_bytes(
                 target_manifest, commit_id=checkpoint.identity.commit_id
@@ -2426,7 +2871,16 @@ class DirectEnvironmentPreparer:
             )
             input_kind = "TARGET_MANIFEST"
             provenance_source_path = target_manifest
-        if not requested:
+            provenance_sha256 = hashlib.sha256(manifest).hexdigest()
+        scope_prefix = (
+            checkpoint.identity.analysis_id,
+            checkpoint.identity.workspace_id,
+            checkpoint.identity.commit_id,
+            provenance_sha256,
+        )
+        if not requested and not self._auto_bundle_cache.has_verified_import_scope(
+            scope_prefix
+        ):
             # An empty requirements file (or a package with no declared
             # dependencies) does not need a resolver. The normal build stays
             # offline and still fails closed if its packaging metadata needs
@@ -2443,6 +2897,45 @@ class DirectEnvironmentPreparer:
         runtime_metadata = await self._verified_python_runtime_metadata(
             requested_runtime, base_digest
         )
+        import_scope = (
+            *scope_prefix,
+            base_digest,
+            runtime_metadata.get("python_runtime_observed_version")
+            or requested_runtime or "3.12",
+        )
+        verified_bindings = self._auto_bundle_cache.verified_import_bindings(
+            import_scope
+        )
+        reused_requirements = tuple(
+            dict.fromkeys(requirement for _, requirement, _ in verified_bindings)
+        )
+        if reused_requirements:
+            requested = tuple(dict.fromkeys((*requested, *reused_requirements)))
+            delegated_requirements = tuple(
+                dict.fromkeys(
+                    (*delegated_requirements,
+                     *(f"pip:{item}" for item in reused_requirements))
+                )
+            )
+            # Synthetic AUTO documents describe the effective resolver input.
+            # Recomputing them keeps the existing exact wheel CAS truthful.
+            if input_kind == "EXPLICIT_POC_REQUIREMENTS":
+                manifest = canonical_bytes(
+                    {"kind": "sastsimi_explicit_poc_requirements_v1",
+                     "requirements": requested,
+                     "required_source_paths": source_paths}
+                )
+            elif input_kind == "DOCKERFILE_LITERAL_PIP_REQUIREMENTS":
+                manifest = canonical_bytes(
+                    {"kind": "sastsimi_dockerfile_literal_pip_requirements_v1",
+                     "dockerfile_sha256": provenance_sha256,
+                     "requirements": requested,
+                     "required_source_paths": source_paths}
+                )
+        if not requested:
+            return await self._prepare_without_auto_bundle(
+                checkpoint, prior, requirements, target_manifest=target_manifest
+            )
         base_reference = await self._docker.pin_local_base(base_digest)
         # Marker evaluation belongs to the resolver container, not this host.
         # Keep even conditional repository pins protected from Agent omission.
@@ -2549,6 +3042,15 @@ class DirectEnvironmentPreparer:
                 ref.model_dump(mode="json") for ref in omission_attempt_refs
             ],
         }
+        if verified_bindings:
+            metadata["dependency_resolution_verified_import_reuse"] = [
+                {
+                    "module": module,
+                    "requirement": requirement,
+                    "decision_sha256": decision_hash,
+                }
+                for module, requirement, decision_hash in verified_bindings
+            ]
         if dockerfile_input_ref is not None:
             metadata.update(
                 {
@@ -2580,7 +3082,7 @@ class DirectEnvironmentPreparer:
                 pinned_target_manifest=target_manifest,
                 git_executable=self._git_executable,
             )
-            return await delegated._prepare_offline(
+            environment = await delegated._prepare_offline(
                 checkpoint,
                 prior,
                 delegated_requirements,
@@ -2591,6 +3093,37 @@ class DirectEnvironmentPreparer:
                     operator_configured=self._offline_base_image_digest is not None,
                 ),
             )
+            missing_import = self._bound_missing_import(checkpoint)
+            if (
+                missing_import is not None
+                and self._pinned_source_imports(
+                    missing_import, pinned_paths,
+                    commit_id=checkpoint.identity.commit_id,
+                )
+            ):
+                provider = self._unique_wheel_provider(
+                    bundle_raw, missing_import, agent_requirements
+                )
+                if provider is not None:
+                    try:
+                        smoke_passed = await self._docker.probe_python_import(
+                            environment.image_digest,
+                            missing_import,
+                            checkpoint.identity,
+                            checkpoint.attempt_id or "initial",
+                        )
+                    except ImportSmokeCleanupUnconfirmed:
+                        raise
+                    except (DockerOperationError, OSError, RuntimeError, ValueError):
+                        smoke_passed = False
+                    if smoke_passed:
+                        self._auto_bundle_cache.put_verified_import(
+                            import_scope,
+                            missing_import,
+                            provider,
+                            checkpoint.recovery_decision_refs[-1].content_hash,
+                        )
+            return environment
 
     async def _prepare_without_auto_bundle(
         self,

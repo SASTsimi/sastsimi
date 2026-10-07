@@ -743,7 +743,12 @@ class SimpleAnalysisApplication:
         if mode == "import":
             self._store.prepare_legacy_import_stop_replan(stopped, artifacts)
         elif mode == "generated_input":
-            self._store.prepare_fallback_poc_stop_replan(stopped, artifacts)
+            if stopped.error_code == "RECOVERY_EXHAUSTED":
+                self._store.prepare_poc_extract_exhaustion_replay(
+                    stopped, artifacts
+                )
+            else:
+                self._store.prepare_fallback_poc_stop_replan(stopped, artifacts)
         elif mode == "placeholder":
             self._store.prepare_poc_placeholder_exhaustion_replay(stopped, artifacts)
         elif mode == "sensitive":

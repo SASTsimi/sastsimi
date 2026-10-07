@@ -3408,7 +3408,10 @@ If this list is nonempty, the hypothesis is inconclusive, not verified.
             raise StageBlocked(
                 StageFailure(
                     code=code[:160],
-                    retryable=not code.startswith(("POC_OFFLINE_", "WHEEL_")),
+                    retryable=(
+                        code != "POC_IMPORT_SMOKE_CLEANUP_FAILED"
+                        and not code.startswith(("POC_OFFLINE_", "WHEEL_"))
+                    ),
                     safe_message="Reproduction environment did not complete",
                     evidence_refs=(
                         *rejected_refs,

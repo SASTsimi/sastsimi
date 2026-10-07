@@ -50,12 +50,15 @@ from .models import (
 from .recovery import (
     ALLOWED_ACTIONS,
     MAX_RECOVERY_ATTEMPTS,
+    SANITIZED_EXTRACT_RECOVERY_REVISION,
     RecoveryAction,
     RecoveryCategory,
     RecoveryDecision,
     RecoveryResolution,
     _python_import_traceback_spans,
     has_python_import_failure,
+    sanitized_extract_failure,
+    sanitized_extract_recovery_decision,
 )
 from .run_lease import AnalysisRunBusy, analysis_run_lease
 
@@ -5447,6 +5450,400 @@ class SimpleCheckpointStore:
                     ),
                     output_refs=(marker_ref,),
                     error_code="DOCKER_OWNED_LIST_EXHAUSTION_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def prepare_poc_extract_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Explicitly regenerate one PoC after a bound sanitized extract failure.
+
+        The attempt-3 PoC and exhaustion events remain append-only. A distinct
+        rule event permits one new candidate attempt without changing the
+        automatic three-attempt recovery ceiling.
+        """
+
+        identity = exhausted.identity
+        if (
+            identity.hypothesis_id is None
+            or exhausted.stage is not SimpleStage.POC_EXECUTION_DONE
+            or exhausted.stage_version != STAGE_VERSION[exhausted.stage]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.retryable
+            or exhausted.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or not exhausted.attempt_id
+            or len(exhausted.output_refs) != 4
+            or exhausted.input_hash != input_reference_hash(exhausted.input_refs)
+            or exhausted.container_id is not None
+            or exhausted.recipe_ref is None
+            or exhausted.image_digest is None
+            or exhausted.validated_poc_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("POC_EXTRACT_EXHAUSTION_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, self._hypothesis_key(identity), stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            if checkpoint_at(SimpleStage.POC_EXECUTION_DONE) != exhausted:
+                raise ValueError("POC_EXTRACT_EXHAUSTION_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("POC_EXTRACT_EXHAUSTION_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_RUN_INVALID")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            static = self.get(root_identity, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+                or any(
+                    str(ref.workspace_id) != identity.workspace_id
+                    or str(ref.commit_id) != identity.commit_id
+                    for ref in (
+                        run.repository_profile_ref,
+                        run.static_bundle_ref,
+                        run.static_coverage_ref,
+                    )
+                )
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_STATIC_INVALID")
+            all_rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in all_rows
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_RUN_ACTIVE")
+            root = self.get(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{exhausted.attempt_id}"
+            )
+            if (
+                root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.status is not StageStatus.BLOCKED
+                or root.retryable
+                or not root.attempt_id
+                or root.error_code != root_code
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_ROOT_BOUND_INVALID")
+            activity_rows = connection.execute(
+                "SELECT event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? ORDER BY rowid",
+                (identity.analysis_id,),
+            ).fetchall()
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in activity_rows
+            )
+            if not any(
+                event.kind is ActivityKind.STAGE_BLOCKED
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.error_code == root_code
+                for event in events
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_ROOT_BOUND_INVALID")
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "POC_EXTRACT_EXHAUSTION_REPLAYED"
+                for event in events
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_ALREADY_REPLAYED")
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                and event.attempt_id == exhausted.attempt_id
+            )
+            if (
+                len(stage_events) != 3
+                or tuple((event.kind, event.error_code) for event in stage_events)
+                != (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED, "POC_EXECUTION_FAILED"),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.input_refs != exhausted.input_refs
+                    for event in stage_events
+                )
+                or stage_events[0].output_refs
+                or any(
+                    event.output_refs != exhausted.output_refs
+                    for event in stage_events[1:]
+                )
+                or any(
+                    event.hypothesis_id == identity.hypothesis_id
+                    and event.stage
+                    in {
+                        stage.value
+                        for stage in STAGE_ORDER[
+                            STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                        ]
+                    }
+                    and event.started_at >= stage_events[0].started_at
+                    for event in events
+                )
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_EVENT_INVALID")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("POC_EXTRACT_EXHAUSTION_CODEX_UNRESOLVED")
+            pro_con = checkpoint_at(SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(SimpleStage.VERIFICATION_INITIAL_DONE)
+            candidate = checkpoint_at(SimpleStage.POC_CANDIDATE_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[pro_con.stage]
+                or initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version != STAGE_VERSION[initial.stage]
+                or initial.recipe_ref != exhausted.recipe_ref
+                or initial.image_digest != exhausted.image_digest
+                or candidate is None
+                or candidate.status is not StageStatus.SUCCEEDED
+                or candidate.stage_version != STAGE_VERSION[candidate.stage]
+                or candidate.attempt_id != exhausted.attempt_id
+                or candidate.attempt_number != exhausted.attempt_number
+                or candidate.gate_revision_count != exhausted.gate_revision_count
+                or candidate.recipe_ref != exhausted.recipe_ref
+                or candidate.image_digest != exhausted.image_digest
+                or candidate.container_id is not None
+                or len(candidate.output_refs) < 2
+                or any(
+                    ref not in exhausted.input_refs
+                    for ref in candidate.output_refs[:2]
+                )
+                or any(
+                    checkpoint_at(stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_LINEAGE_INVALID")
+            execution_ref, stdout_ref, stderr_ref, cleanup_ref = exhausted.output_refs
+            try:
+                candidate_record = json.loads(
+                    artifacts.read_bounded(candidate.output_refs[0], 64 * 1024)
+                )
+                candidate_content = artifacts.read_bounded(
+                    candidate.output_refs[1], 1024 * 1024
+                )
+                execution = json.loads(artifacts.read_bounded(execution_ref, 64 * 1024))
+                stdout = artifacts.read_bounded(stdout_ref, 1024 * 1024)
+                stderr = artifacts.read_bounded(stderr_ref, 1024 * 1024)
+                cleanup = json.loads(artifacts.read_bounded(cleanup_ref, 64 * 1024))
+            except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+                raise ValueError("POC_EXTRACT_EXHAUSTION_EVIDENCE_INVALID") from error
+            diagnostic = sanitized_extract_failure(stderr)
+            if (
+                not isinstance(candidate_record, dict)
+                or candidate_record.get("kind") != "simple_poc_candidate"
+                or candidate_record.get("attempt_id") != exhausted.attempt_id
+                or candidate_record.get("content_ref")
+                != candidate.output_refs[1].model_dump(mode="json")
+                or candidate_record.get("content_digest")
+                != hashlib.sha256(candidate_content).hexdigest()
+                or not isinstance(execution, dict)
+                or execution.get("kind") != "simple_poc_execution"
+                or execution.get("attempt_id") != exhausted.attempt_id
+                or execution.get("candidate_ref")
+                != candidate.output_refs[0].model_dump(mode="json")
+                or execution.get("content_ref")
+                != candidate.output_refs[1].model_dump(mode="json")
+                or execution.get("stdout_ref") != stdout_ref.model_dump(mode="json")
+                or execution.get("stderr_ref") != stderr_ref.model_dump(mode="json")
+                or execution.get("image_digest") != exhausted.image_digest
+                or not isinstance(execution.get("container_id"), str)
+                or not execution["container_id"]
+                or type(execution.get("exit_code")) is not int
+                or execution["exit_code"] == 0
+                or execution.get("timed_out") is not False
+                or stdout.strip()
+                or diagnostic is None
+                or not isinstance(cleanup, dict)
+                or cleanup.get("kind") != "simple_container_cleanup"
+                or cleanup.get("attempt_id") != exhausted.attempt_id
+                or cleanup.get("container_id") != execution["container_id"]
+                or cleanup.get("status") != "REMOVED"
+            ):
+                raise ValueError("POC_EXTRACT_EXHAUSTION_EVIDENCE_INVALID")
+
+            rule_decision = sanitized_extract_recovery_decision()
+            original_error = StageFailure(
+                code="POC_EXECUTION_FAILED",
+                retryable=True,
+                safe_message="PoC failed during sanitized source extraction",
+                evidence_refs=exhausted.output_refs,
+            )
+            rule_ref = artifacts.put_json(
+                {
+                    "kind": "simple_recovery_decision",
+                    "identity": identity.model_dump(mode="json"),
+                    "stage": exhausted.stage.value,
+                    "attempt": exhausted.attempt_number,
+                    "attempt_id": exhausted.attempt_id,
+                    "original_error": original_error.model_dump(mode="json"),
+                    "decision": rule_decision.model_dump(mode="json"),
+                    "decision_origin": "RULE",
+                    "diagnostic_excerpt": diagnostic.decode("ascii"),
+                    "explicit_exhaustion_replay": True,
+                    "recovery_revision": SANITIZED_EXTRACT_RECOVERY_REVISION,
+                    "exhausted_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(exhausted.model_dump(mode="json"))
+                    ).hexdigest(),
+                    "failure_event_id": stage_events[1].event_id,
+                    "exhaustion_event_id": stage_events[2].event_id,
+                }
+            )
+            decision_refs = tuple(
+                dict.fromkeys((*exhausted.recovery_decision_refs, rule_ref))
+            )
+            inputs = tuple(
+                dict.fromkeys(
+                    (
+                        *candidate.input_refs,
+                        *candidate.output_refs,
+                        *exhausted.input_refs,
+                        *exhausted.output_refs,
+                        *decision_refs,
+                    )
+                )
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                attempt_number=exhausted.attempt_number,
+                gate_revision_count=exhausted.gate_revision_count,
+                recovery_lineage_id=(
+                    exhausted.recovery_lineage_id
+                    or hashlib.sha256(
+                        canonical_bytes(
+                            {"identity": identity, "attempt_id": exhausted.attempt_id}
+                        )
+                    ).hexdigest()
+                ),
+                recovery_origin_stage=SimpleStage.POC_EXECUTION_DONE,
+                recovery_decision_refs=decision_refs,
+                recipe_ref=exhausted.recipe_ref,
+                image_digest=exhausted.image_digest,
+                container_id=None,
+            )
+            connection.execute(
+                "DELETE FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                "AND hypothesis_key = ? AND stage IN (?, ?)",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.POC_CANDIDATE_DONE.value,
+                    SimpleStage.POC_EXECUTION_DONE.value,
+                ),
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    exhausted,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(exhausted.stage, 102),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "검증된 PoC 추출 오류를 보존하고 후보만 한 번 다시 생성합니다."
+                    ),
+                    output_refs=(rule_ref,),
+                    error_code="POC_EXTRACT_EXHAUSTION_REPLAYED",
                 ),
             )
             if fail_before_commit:

@@ -37,6 +37,11 @@ _SANITIZED_IMPORT_FRAME = re.compile(
     rb"  (?:import_module|_gcd_import|_find_and_load|_load_unlocked|exec_module)"
     rb":line [0-9]+"
 )
+_SANITIZED_EXTRACT_FAILURE = re.compile(
+    rb"Traceback \(sanitized\): extract\r?\n"
+    rb"(?:AssertionError|RuntimeError|TypeError|ValueError)\r?\n?"
+)
+SANITIZED_EXTRACT_RECOVERY_REVISION = 1
 _PLAYWRIGHT_PATCH_PREFIX = (
     "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/sastsimi-playwright-browsers\n"
     "RUN python -m playwright install --with-deps "
@@ -184,6 +189,31 @@ def has_python_import_failure(output: bytes) -> bool:
         ):
             return True
     return False
+
+
+def sanitized_extract_failure(output: bytes) -> bytes | None:
+    """Return only an exact phase/class label, never a traceback or source text."""
+
+    if _SANITIZED_EXTRACT_FAILURE.fullmatch(output) is None:
+        return None
+    return output.strip().replace(b"\r\n", b"\n")
+
+
+def sanitized_extract_recovery_decision() -> RecoveryDecision:
+    """Guidance contains only fixed policy text, never repository source."""
+
+    return RecoveryDecision(
+        category=RecoveryCategory.GENERATED_INPUT,
+        action=RecoveryAction.REGENERATE_INPUT,
+        diagnosis="The generated PoC failed while extracting source context",
+        guidance=(
+            "Regenerate only the PoC from the pinned source. Inspect the actual "
+            "AST route or handler selection and avoid assertions about a fixed "
+            "node count; validate the selected branch before execution. Keep "
+            "target and framework behavior intact and do not treat this setup "
+            "error as vulnerability counterevidence."
+        ),
+    )
 
 
 _SAFE_PYTHON_MODULE = re.compile(
@@ -612,6 +642,33 @@ class SimpleRecoveryCoordinator:
                     guidance=guidance,
                 ),
             )
+
+        if failure.code == "POC_EXECUTION_FAILED":
+            stderr_ref = self._bound_poc_stream_ref(checkpoint, failure, "stderr_ref")
+            stdout_ref = self._bound_poc_stream_ref(checkpoint, failure, "stdout_ref")
+            if stderr_ref is not None and stdout_ref is not None:
+                try:
+                    full_stderr = self._artifacts.read_bounded(
+                        stderr_ref, _MAX_POC_OUTPUT_BYTES
+                    )
+                    full_stdout = self._artifacts.read_bounded(
+                        stdout_ref, _MAX_POC_OUTPUT_BYTES
+                    )
+                except (OSError, ValueError):
+                    pass
+                else:
+                    extract_failure = (
+                        sanitized_extract_failure(full_stderr)
+                        if not full_stdout.strip()
+                        else None
+                    )
+                    if extract_failure is not None:
+                        return self._store(
+                            checkpoint,
+                            failure,
+                            sanitized_extract_recovery_decision(),
+                            diagnostic_excerpt=extract_failure,
+                        )
 
         if self._verified_exit_two_with_clean_cleanup(checkpoint, failure):
             return self._store(
