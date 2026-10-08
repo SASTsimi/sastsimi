@@ -1,0 +1,49 @@
+{
+  "analysis_complete": false,
+  "analysis_id": "7ffb6b24a8764373a7efcee57feab69e",
+  "analysis_status": "PARTIAL",
+  "case_counts": {
+    "FN": 0,
+    "HOLD": 0,
+    "OUT_OF_SCOPE": 1,
+    "REVIEW_REQUIRED": 0,
+    "TP": 4
+  },
+  "cases": [
+    {
+      "case_id": "vulnshop-reflected-xss-template",
+      "first_gap": "DECLARED_OUT_OF_SCOPE",
+      "status": "OUT_OF_SCOPE"
+    },
+    {
+      "case_id": "vulnshop-products-sqli",
+      "first_gap": null,
+      "status": "TP"
+    },
+    {
+      "case_id": "vulnshop-login-sqli",
+      "first_gap": null,
+      "status": "TP"
+    },
+    {
+      "case_id": "vulnshop-admin-role-bypass",
+      "first_gap": null,
+      "status": "TP"
+    },
+    {
+      "case_id": "vulnshop-profile-csrf",
+      "first_gap": null,
+      "status": "TP"
+    }
+  ],
+  "finding_counts": {
+    "FP": 0,
+    "MATCHED": 21,
+    "UNFINISHED_REPORTS": 0,
+    "UNMATCHED_REVIEW_REQUIRED": 3
+  },
+  "oracle_commit": "f201193cbd3987b62050ba32357071aec0f61c18",
+  "oracle_completeness": "DOCUMENTED_CASES",
+  "recall": 1,
+  "recall_label": "documented_cases"
+}

@@ -112,8 +112,14 @@ def _complete_finding_terminal(
     database: Path,
     *,
     surface_gaps: tuple[StaticGap, ...] = (),
+    uncovered_surface: bool = False,
 ) -> None:
-    _strict_proof_fixture(data_dir, database, surface_gaps=surface_gaps)
+    _strict_proof_fixture(
+        data_dir,
+        database,
+        surface_gaps=surface_gaps,
+        uncovered_surface=uncovered_surface,
+    )
     store = SimpleCheckpointStore(database)
     run = store.require_analysis_run("analysis-1")
     assert run.candidate_terminal is not None
@@ -331,6 +337,7 @@ def test_confirmed_finding_before_candidate_terminal_is_hold(tmp_path: Path) -> 
 
     assert result["case_counts"]["TP"] == 0
     assert result["case_counts"]["HOLD"] == 1
+    assert result["analysis_status"] == "UNFINISHED"
     assert result["cases"][0]["first_gap"] == "PIPELINE_UNFINISHED"
     assert result["recall"] is None
 
@@ -382,6 +389,85 @@ def test_confirmed_finding_on_nonpython_only_partial_can_score_tp(
 
     assert result["case_counts"]["TP"] == 1
     assert result["recall"] == 1.0
+
+
+def test_verified_case_is_tp_even_if_unrelated_surface_remains_uncovered(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path, terminal="PARTIAL")
+    _candidate(data_dir, database)
+    _link(database)
+    finding_id = _finding_id(data_dir, database)
+    _complete_finding_terminal(data_dir, database, uncovered_surface=True)
+    review = _review(
+        case_links={
+            "candidate_ids": ["candidate-1"],
+            "hypothesis_ids": ["hyp-1"],
+            "finding_ids": [finding_id],
+        },
+        finding_reviews=[
+            {
+                "finding_id": finding_id,
+                "status": "MATCHED",
+                "case_id": "sql-1",
+                "evidence": "independent review verified same source-to-SQL route",
+            }
+        ],
+    )
+
+    result = score_analysis(data_dir, "analysis-1", _v2_oracle(), _ORACLE_BYTES, review)
+
+    assert result["case_counts"]["TP"] == 1
+    assert result["case_counts"]["HOLD"] == 0
+    assert result["recall"] == 1.0
+    assert result["analysis_status"] == "PARTIAL"
+    assert result["analysis_complete"] is False
+    assert result["cases"][0]["first_gap"] is None
+
+
+def test_unreviewed_case_is_hold_when_unrelated_surface_remains_uncovered(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path, terminal="PARTIAL")
+    _candidate(data_dir, database)
+    _strict_proof_fixture(data_dir, database, uncovered_surface=True)
+
+    result = score_analysis(
+        data_dir, "analysis-1", _v2_oracle(), _ORACLE_BYTES, _review()
+    )
+
+    assert result["case_counts"]["TP"] == 0
+    assert result["case_counts"]["FN"] == 0
+    assert result["case_counts"]["HOLD"] == 1
+    assert result["recall"] is None
+
+
+def test_partial_terminal_without_any_gap_is_invalid_even_with_finding(
+    tmp_path: Path,
+) -> None:
+    data_dir, database = _saved_run(tmp_path, terminal="PARTIAL")
+    _candidate(data_dir, database)
+    _link(database)
+    finding_id = _finding_id(data_dir, database)
+    _complete_finding_terminal(data_dir, database)
+    review = _review(
+        case_links={
+            "candidate_ids": ["candidate-1"],
+            "hypothesis_ids": ["hyp-1"],
+            "finding_ids": [finding_id],
+        },
+        finding_reviews=[
+            {
+                "finding_id": finding_id,
+                "status": "MATCHED",
+                "case_id": "sql-1",
+                "evidence": "verified the same executed request-to-SQL flow",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="RECALL_REVIEW_TERMINAL_EVIDENCE_INVALID"):
+        score_analysis(data_dir, "analysis-1", _v2_oracle(), _ORACLE_BYTES, review)
 
 
 def test_unfinished_unrelated_report_suppresses_numeric_recall(tmp_path: Path) -> None:
@@ -667,6 +753,7 @@ def test_hold_and_out_of_scope_do_not_become_false_negatives(tmp_path: Path) -> 
     assert held["recall"] is None
     assert excluded["case_counts"]["OUT_OF_SCOPE"] == 1
     assert excluded["case_counts"]["FN"] == 0
+    assert excluded["cases"][0]["first_gap"] == "DECLARED_OUT_OF_SCOPE"
 
 
 def test_static_gap_is_hold_not_review_ambiguity(tmp_path: Path) -> None:
@@ -750,7 +837,7 @@ def test_reviewed_unmatched_finding_does_not_hide_documented_case_recall(
     )
     monkeypatch.setattr(
         "sastsimi.simple_runtime.recall_scoring.strict_terminal_proof",
-        lambda *_args: True,
+        lambda *_args, **_kwargs: True,
         raising=False,
     )
 
@@ -1181,11 +1268,14 @@ def test_semantically_invalid_static_coverage_refuses_score(
         score_analysis(data_dir, "analysis-1", _v2_oracle(), _ORACLE_BYTES, _review())
 
 
-def test_score_does_not_recreate_missing_runtime_directories(tmp_path: Path) -> None:
+def test_score_does_not_recreate_missing_runtime_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     data_dir, database = _saved_run(tmp_path)
     _candidate(data_dir, database)
     _link(database)
     finding_id = _finding_id(data_dir, database)
+    _complete_finding_terminal(data_dir, database)
     staging = RuntimePaths(data_dir).staging
     assert staging.is_dir()
     staging.rename(data_dir / "staging-saved")
@@ -1204,10 +1294,16 @@ def test_score_does_not_recreate_missing_runtime_directories(tmp_path: Path) -> 
             }
         ],
     )
+    monkeypatch.setattr(
+        "sastsimi.simple_runtime.recall_scoring.strict_terminal_proof",
+        lambda *_args, **_kwargs: True,
+    )
 
-    score_analysis(data_dir, "analysis-1", _v2_oracle(), _ORACLE_BYTES, review)
+    result = score_analysis(data_dir, "analysis-1", _v2_oracle(), _ORACLE_BYTES, review)
 
     assert not staging.exists()
+    assert result["case_counts"]["TP"] == 0
+    assert result["case_counts"]["HOLD"] == 1
 
 
 def test_score_audit_uses_same_sqlite_read_snapshot(

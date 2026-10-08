@@ -14,6 +14,7 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.attack_surfaces import (
+    AttackSurface,
     StaticGap,
     SurfaceIndex,
     candidate_inventory_hash,
@@ -233,6 +234,7 @@ def _strict_proof_fixture(
     database: Path,
     *,
     surface_gaps: tuple[StaticGap, ...] = (),
+    uncovered_surface: bool = False,
     ast_hash_override: str | None = None,
     source_hash_override: str | None = None,
 ) -> None:
@@ -274,13 +276,29 @@ def _strict_proof_fixture(
         commit_id="a" * 40,
         candidate_inventory_hash=candidate_inventory_hash(candidates),
         candidate_count=len(candidates),
-        surfaces=(),
+        surfaces=(
+            (
+                AttackSurface(
+                    surface_id="surface-1",
+                    type="ROUTE",
+                    path="app.py",
+                    symbol="route",
+                    line=1,
+                    linked_candidate_ids=("candidate-1",),
+                    evidence_refs=(),
+                    detector="test",
+                ),
+            )
+            if uncovered_surface
+            else ()
+        ),
         static_gaps=surface_gaps,
         index_version=2,
         ast_source_hashes=source_hashes,
     )
     index_ref = artifacts.put_json(index.to_json())
-    coverage_ref = artifacts.put_json(evaluate_surface_coverage(index, ()).to_json())
+    surface_coverage = evaluate_surface_coverage(index, ())
+    coverage_ref = artifacts.put_json(surface_coverage.to_json())
     fingerprint = hashlib.sha256(
         canonical_bytes(
             {
@@ -346,9 +364,11 @@ def _strict_proof_fixture(
                         "surface_index_hash": index_ref.content_hash,
                         "surface_coverage_hash": coverage_ref.content_hash,
                         "surface_counts": {
-                            "COVERED": 0,
-                            "UNCOVERED": 0,
-                            "INSUFFICIENT": 0,
+                            status: sum(
+                                item.coverage_status == status
+                                for item in surface_coverage.surfaces
+                            )
+                            for status in ("COVERED", "UNCOVERED", "INSUFFICIENT")
                         },
                         "chaining_pool_fingerprint": fingerprint,
                         "chaining_batch_count": 1,

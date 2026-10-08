@@ -51,6 +51,8 @@ class ScoredCase(TypedDict):
 
 class RecallScore(TypedDict):
     analysis_id: str
+    analysis_status: str
+    analysis_complete: bool
     oracle_commit: str
     oracle_completeness: str
     case_counts: dict[str, int]
@@ -382,21 +384,29 @@ def score_analysis(
             matched_hypotheses_by_case=matched_hypotheses,
         )
         by_case = {case.case_id: case for case in review.cases}
+        terminal = run.candidate_terminal
+        needs_terminal_proof = any(
+            oracle_case.scope == "PYTHON"
+            and (case_review := by_case.get(oracle_case.case_id)) is not None
+            and bool(case_review.finding_ids)
+            for oracle_case in oracle.cases
+        ) or bool(
+            stage_audit["analysis_complete"]
+            and review.inventory_reviewed
+            and any(audit["status"] == "MISSED" for audit in stage_audit["cases"])
+        )
         terminal_proven = (
+            strict_terminal_proof(connection, data_dir, run, allow_surface_gaps=True)
+            if needs_terminal_proof
+            and static_scope is not None
+            and terminal is not None
+            and terminal.producer_finished
+            and terminal.pending_child_count == 0
+            else False
+        )
+        complete_terminal_proven = (
             strict_terminal_proof(connection, data_dir, run)
-            if stage_audit["analysis_complete"]
-            and any(
-                oracle_case.scope == "PYTHON"
-                and oracle_case.case_id in by_case
-                and (
-                    audit["status"] == "DETECTED"
-                    or audit["status"] == "MISSED"
-                    and review.inventory_reviewed
-                )
-                for oracle_case, audit in zip(
-                    oracle.cases, stage_audit["cases"], strict=True
-                )
-            )
+            if terminal_proven and stage_audit["analysis_complete"]
             else False
         )
         scored: list[ScoredCase] = []
@@ -418,6 +428,7 @@ def score_analysis(
                 raise ValueError("RECALL_REVIEW_CANDIDATE_STALE")
             if oracle_case.scope == "OUT_OF_SCOPE":
                 status = "OUT_OF_SCOPE"
+                first_gap = "DECLARED_OUT_OF_SCOPE"
             elif linked is None:
                 status = "REVIEW_REQUIRED"
             elif (
@@ -438,6 +449,7 @@ def score_analysis(
                 )
             ):
                 status = "TP"
+                first_gap = None
             elif audit["status"] == "DETECTED" and not case_static_verified:
                 status = "HOLD"
                 first_gap = (
@@ -456,8 +468,12 @@ def score_analysis(
                 status = "HOLD"
                 first_gap = "REPORT_UNFINISHED"
             elif audit["status"] == "MISSED" and review.inventory_reviewed:
-                status = "FN" if terminal_proven else "HOLD"
-                if not terminal_proven:
+                status = (
+                    "FN"
+                    if stage_audit["analysis_complete"] and complete_terminal_proven
+                    else "HOLD"
+                )
+                if status == "HOLD":
                     first_gap = "TERMINAL_INCOMPLETE"
             elif audit["status"] == "INCOMPLETE":
                 status = "HOLD"
@@ -502,6 +518,14 @@ def score_analysis(
         )
     return {
         "analysis_id": analysis_id,
+        "analysis_status": (
+            terminal.status
+            if terminal is not None
+            and terminal.producer_finished
+            and terminal.pending_child_count == 0
+            else "UNFINISHED"
+        ),
+        "analysis_complete": stage_audit["analysis_complete"],
         "oracle_commit": oracle.commit,
         "oracle_completeness": oracle.completeness,
         "case_counts": {

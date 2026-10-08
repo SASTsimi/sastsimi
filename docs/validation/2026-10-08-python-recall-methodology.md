@@ -1,9 +1,9 @@
 # Python-only pinned-case recall evaluation
 
 This document fixes the **pre-analysis** answer sets for two deliberately
-vulnerable training repositories. It records evidence and scope decisions, not
-an SASTSIMI result. No analysis, PoC, Finding, true-positive count, or recall
-percentage is established by the existence of these files.
+vulnerable training repositories and separately records measurements made
+after execution. The frozen oracle files alone establish no analysis, PoC,
+Finding, true-positive count, or recall percentage.
 
 ## Frozen inputs and provenance
 
@@ -116,11 +116,14 @@ locking the change.
 4. Score `TP` only with a current verified PoC, final TRUE, Technical Gate,
    valid report evidence, and an independently reviewed same-root-cause match.
    A covered and independently reviewed Python case without a match may be
-   `FN`. Environment failures, unexecuted PoCs, nonterminal work, static
-   coverage holes are `HOLD`, never an FN or TP. A damaged static or Finding
-   artifact fails the evaluator without a numeric score; it is not reclassified
-   as `HOLD`. Ambiguous matches remain `REVIEW_REQUIRED`. Predeclared
-   nonPython/operational cases are `OUT_OF_SCOPE`.
+   `FN`. Environment failures, unexecuted PoCs, nonterminal work, or Python
+   file×rule coverage holes leave an unproven case at `HOLD`, never FN.
+   Unrelated uncovered attack surfaces keep the **analysis** `PARTIAL`, but do
+   not erase a separately verified, report-backed TP; an unmatched case under
+   that partial coverage remains HOLD rather than FN. A damaged static or
+   Finding artifact fails the evaluator without a numeric score; it is not
+   reclassified as `HOLD`. Ambiguous matches remain `REVIEW_REQUIRED`.
+   Predeclared nonPython/operational cases are `OUT_OF_SCOPE`.
 5. An unmatched Finding is `UNMATCHED_REVIEW_REQUIRED`, **not** automatically
    `FP`. Count `FP` only with a separate evidence-backed false-positive review.
    Publish raw Finding count, conservative display-group count, oracle case
@@ -130,7 +133,74 @@ locking the change.
    whole-repository recall. Technical detection does not authorize an external
    vulnerability submission; policy/Scope Gate must be checked separately.
 
-No actual trial outcome is entered here yet. The development and held-out
-results must be appended with analysis IDs, exact counts, first-gap evidence,
-and before/after conditions after those runs finish. An absent result is
-**not** a zero.
+## Measured held-out result: VulnShop
+
+The isolated Codex `gpt-6-sol` run at the frozen VulnShop commit has exact
+analysis ID `7ffb6b24a8764373a7efcee57feab69e`. It finished as **PARTIAL**,
+not COMPLETE: the Python static file×rule ledger is 24/24 verified, and all 25
+collected candidates received a triage decision (7 INCLUDE, 15 EXCLUDE, 3
+UNDECIDED), but attack-surface review recorded 16 covered and **17
+insufficient** surfaces. The run processed 29 hypotheses and 28 PoC attempts;
+24 raw Findings have current reports. Paused token-budget checkpoints were
+resumed under the **same** analysis ID, retaining completed work. The final
+LLM attempt ledger records 328 attempts, 7,320,817 input tokens, and 337,582
+output tokens. These counts describe this one trial, not an expected cost for
+other repositories.
+
+The separate [post-run review ledger](reviews/vulnshop-f201193c-v2-review.json)
+matched 21 report-backed Findings to the frozen four Python cases. Each case
+has at least one independently checked same-root
+Finding with an executed PoC, final TRUE, Technical Gate ACCEPT, and report
+evidence:
+
+| Frozen Python case | Case score | Distinct raw Finding IDs reviewed as the same case |
+| --- | --- | --- |
+| Products SQL injection | TP | F-001, F-004–F-010, F-012 |
+| Login SQL injection | TP | F-002, F-003, F-011, F-014–F-018 |
+| Admin role bypass | TP | F-013, F-020, F-022 |
+| Profile CSRF | TP | F-024 |
+
+For the admin case, the reports use CWE-862 while the frozen oracle uses
+CWE-863; the independent review verified the same ordinary-user `/admin`
+role-check omission rather than treating a label match as proof. For profile
+CSRF, F-024's headless-browser PoC recorded a cross-site form POST with the
+session cookie and a changed database email. An earlier inconclusive CSRF
+hypothesis is **not** counted as a TP. F-019, F-021, and F-023 are separately
+reviewed findings outside the five documented route-level oracle cases;
+they remain `UNMATCHED_REVIEW_REQUIRED`, **not** automatic false positives.
+The template-dependent reflected XSS case remains predeclared
+`OUT_OF_SCOPE` for this `.py`-only evaluation.
+
+The strict scorer therefore reports **4 TP, 0 FN, 0 HOLD, 1 OUT_OF_SCOPE**;
+`4 / 4 = 100%` is the recall of these **documented, evaluable Python cases
+only**. It is not repository-wide recall, proof that the 17 insufficient
+surfaces are safe, or proof of zero false positives. No Finding was separately
+adjudicated false positive, so an FP rate is **not measured**. `PARTIAL` remains
+the overall analysis state. Scope Gate or private-disclosure authorization
+must be checked before any external report; a technically confirmed training
+Finding is not automatically submission-ready.
+
+The [saved scorer output](results/vulnshop-f201193c-v2-score.json) and
+[redacted CAS-hash provenance](results/vulnshop-f201193c-v2-provenance.json)
+bind all 24 Finding IDs to their PoC, final-verification, Technical Gate, and
+report artifact hashes. The underlying run database and artifact bytes remain
+in the isolated local trial directory and are **not** published in this PR;
+the published ledger and hashes are an adjudication record, not standalone
+reproducible exploit evidence. A reviewer needs those local bytes to rerun
+the strict scorer and independently inspect the PoCs.
+
+After this run, the read-only evaluator was tightened so a fully verified,
+human-matched case can be TP despite unrelated uncovered surfaces, while an
+unmatched case cannot become FN under `PARTIAL`. This changed the **scoring
+implementation**, not the frozen oracle or saved analysis. The detector was
+not tuned to VulnShop source, but this is not an untouched, preregistered
+scorer result; the correction and its fail-closed regression tests are part of
+this PR.
+
+## Development-trial status
+
+The fresh DSVPWA run at analysis ID
+`583994a460304ad2acf0b2af488faab2` is still processing its saved
+candidates and hypotheses. Do not report its provisional Finding inventory as
+a final TP/FN count. Its result and first-gap evidence will be added after the
+terminal state and full post-run review are available.

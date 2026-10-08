@@ -402,7 +402,11 @@ def _root_hypothesis_current(
 
 
 def strict_terminal_proof(
-    connection: sqlite3.Connection, data_dir: Path, run: SimpleAnalysisRun
+    connection: sqlite3.Connection,
+    data_dir: Path,
+    run: SimpleAnalysisRun,
+    *,
+    allow_surface_gaps: bool = False,
 ) -> bool:
     """Prove that a claimed Python terminal covers its current durable inputs.
 
@@ -419,7 +423,9 @@ def strict_terminal_proof(
     ):
         return False
     try:
-        return _strict_terminal_proof(connection, data_dir, run)
+        return _strict_terminal_proof(
+            connection, data_dir, run, allow_surface_gaps=allow_surface_gaps
+        )
     except (
         OSError,
         ValueError,
@@ -516,7 +522,11 @@ def _verified_terminal_chain(
 
 
 def _strict_terminal_proof(
-    connection: sqlite3.Connection, data_dir: Path, run: SimpleAnalysisRun
+    connection: sqlite3.Connection,
+    data_dir: Path,
+    run: SimpleAnalysisRun,
+    *,
+    allow_surface_gaps: bool = False,
 ) -> bool:
     terminal = run.candidate_terminal
     assert terminal is not None
@@ -672,6 +682,12 @@ def _strict_terminal_proof(
         run.static_disposition != "FULL" or not coverage.complete
     ):
         raise ValueError("complete terminal has uncovered surfaces or static gaps")
+    if (
+        terminal.status == "PARTIAL"
+        and run.static_disposition == "FULL"
+        and coverage.complete
+    ):
+        raise ValueError("partial terminal has no static or surface gap")
 
     hypothesis_ids = {
         row[0]
@@ -924,7 +940,9 @@ def _strict_terminal_proof(
         if terminal.status == "COMPLETE":
             raise ValueError("complete terminal lacks verified static evidence")
         return False
-    if any(surface.coverage_status != "COVERED" for surface in coverage.surfaces):
+    if not allow_surface_gaps and any(
+        surface.coverage_status != "COVERED" for surface in coverage.surfaces
+    ):
         return False
     if frozenset(index.static_gaps) != static_scope[1]:
         return False
@@ -932,6 +950,20 @@ def _strict_terminal_proof(
     # already verifies its exact out-of-scope reason against the saved ledger.
     if any(gap.path.lower().endswith(".py") for gap in index.static_gaps):
         return False
+    if allow_surface_gaps:
+        # A verified Finding can satisfy one reviewed oracle case even when
+        # unrelated attack surfaces leave the analysis itself PARTIAL. Never
+        # use this weaker proof to turn an unreported case into an FN.
+        return bool(
+            terminal.status in {"COMPLETE", "PARTIAL"}
+            and not any(
+                terminal.decision_counts.get(key, 0) for key in ("PENDING", "ERROR")
+            )
+            and not any(
+                terminal.deep_counts.get(key, 0)
+                for key in ("PENDING", "RUNNING", "ERROR")
+            )
+        )
     return _pipeline_complete(
         run,
         python_scope_complete=True,
