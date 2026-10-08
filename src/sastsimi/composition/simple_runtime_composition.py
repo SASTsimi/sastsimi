@@ -665,11 +665,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             )
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
-        data = self._outcome(
-            outcome.display_analysis_id,
-            run.repository,
-            run.commit_id,
-        )
+        data = self._resume_outcome(outcome, run.repository, run.commit_id)
         if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
             data["resume_skipped_reason"] = outcome.error_code
         return data
@@ -718,11 +714,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
 
         outcome = asyncio.run(run())
         stored = self._store.require_analysis_run(outcome.identity.analysis_id)
-        data = self._outcome(
-            outcome.display_analysis_id,
-            stored.repository,
-            stored.commit_id,
-        )
+        data = self._resume_outcome(outcome, stored.repository, stored.commit_id)
         if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
             data["resume_skipped_reason"] = outcome.error_code
         return data
@@ -1510,6 +1502,24 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "commit": commit,
             "dashboard_url": f"http://127.0.0.1:8765/analyses/{display_id}",
         }
+
+    def _resume_outcome(
+        self,
+        outcome: SimpleAnalysisOutcome,
+        repository: str,
+        commit: str,
+    ) -> dict[str, object]:
+        data = self._outcome(outcome.display_analysis_id, repository, commit)
+        if outcome.error_code == "MODEL_ROUTE_PROVIDER_MISMATCH":
+            # This preflight intentionally leaves the saved run unchanged. Surface the
+            # refusal from this invocation, not the previous persisted status.
+            data.update(
+                status=outcome.status,
+                current_stage=outcome.current_stage.value,
+                error_code=outcome.error_code,
+                resume_action=None,
+            )
+        return data
 
 
 def build_public_simple_runtime(

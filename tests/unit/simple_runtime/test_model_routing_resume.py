@@ -7,8 +7,12 @@ from typing import Any
 
 import pytest
 
-from sastsimi.composition.simple_runtime_composition import SimpleClientFactory
-from sastsimi.config.user_config import SimpleExecutionProfile
+import sastsimi.composition.simple_runtime_composition as composition
+from sastsimi.composition.simple_runtime_composition import (
+    PublicSimpleRuntimeApplication,
+    SimpleClientFactory,
+)
+from sastsimi.config.user_config import SimpleExecutionProfile, UserConfig
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
     SimpleAnalysisApplication,
@@ -245,3 +249,64 @@ async def test_provider_mismatch_blocks_before_repair_or_database_mutation(
             connection.execute("SELECT COUNT(*) FROM simple_llm_attempts").fetchone()[0]
             == before_attempts
         )
+
+
+@pytest.mark.parametrize("with_progress", [False, True])
+def test_public_resume_reports_provider_mismatch_without_changing_saved_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_progress: bool
+) -> None:
+    profile = _profile(
+        tmp_path,
+        provider="codex",
+        model="new-primary",
+        light_model="new-light",
+        auth_mode="SUBSCRIPTION_LOGIN",
+        credential_ref="OFFICIAL_CLIENT_SESSION",
+    )
+    config = UserConfig(
+        data_dir=tmp_path,
+        profile_path=tmp_path / "profile.toml",
+        auth_mode="SUBSCRIPTION_LOGIN",
+        provider="codex",
+        model="new-primary",
+        light_model="new-light",
+        credential_ref="OFFICIAL_CLIENT_SESSION",
+        execution_profile="LIGHTWEIGHT",
+        max_cost_minor_units=1000,
+        docker_network="NONE",
+        enabled_tools=(),
+        detected_versions={},
+        setup_ready=True,
+    )
+    public = PublicSimpleRuntimeApplication(config, profile)
+    run = _run(public._store)
+    public._store.save_analysis_run(run)
+    public._store.mark_running(
+        _identity(run), SimpleStage.STATIC_DONE, (), attempt_id="static-1"
+    )
+    before = public._store.require_analysis_run(run.analysis_id).model_dump_json()
+    app = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=public._store,
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("must not run")
+        ),
+        provider="codex",
+        model="new-primary",
+    )
+    monkeypatch.setattr(composition, "build_analysis_application", lambda *_: app)
+
+    data = (
+        public.resume_with_progress(run.display_analysis_id, lambda _snapshot: None)
+        if with_progress
+        else public.resume(run.display_analysis_id)
+    )
+
+    assert data["status"] == "BLOCKED"
+    assert data["current_stage"] == "STATIC_DONE"
+    assert data["error_code"] == "MODEL_ROUTE_PROVIDER_MISMATCH"
+    assert (
+        public._store.require_analysis_run(run.analysis_id).model_dump_json() == before
+    )

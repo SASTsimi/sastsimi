@@ -859,6 +859,23 @@ def main(
                         reason_code=str(error),
                     )
                     return int(code)
+                if data.get("error_code") == "MODEL_ROUTE_PROVIDER_MISMATCH":
+                    if output_format == "json":
+                        emit_data(
+                            output_format,
+                            sys.stderr,
+                            command=command_name,
+                            data=data,
+                            code=ExitCode.CONFIG_ERROR,
+                        )
+                    else:
+                        public_command.emit_public(
+                            output_format,
+                            sys.stderr,
+                            command=command_name,
+                            data=data,
+                        )
+                    return int(ExitCode.CONFIG_ERROR)
                 public_command.emit_public(
                     output_format,
                     sys.stdout,

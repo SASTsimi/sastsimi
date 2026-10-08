@@ -157,6 +157,16 @@ class _BusyPublicApplication(_PublicApplication):
         }
 
 
+class _ProviderMismatchApplication(_PublicApplication):
+    def resume(self, analysis_id: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "analysis_id": analysis_id,
+            "status": "BLOCKED",
+            "current_stage": "STATIC_DONE",
+            "error_code": "MODEL_ROUTE_PROVIDER_MISMATCH",
+        }
+
+
 class _RepairPublicApplication(_PublicApplication):
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str | None]] = []
@@ -405,6 +415,31 @@ def test_public_resume_explains_concurrent_run_without_internal_error(
     output = capsys.readouterr()
     assert "이미 다른 프로세스" in output.out
     assert "INTERNAL_ERROR" not in output.err
+
+
+@pytest.mark.parametrize("output_format", ["text", "json"])
+def test_resume_provider_mismatch_exits_with_config_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    output_format: str,
+) -> None:
+    code = main(
+        ["resume", "A-001", "--no-progress", "--format", output_format],
+        public_application=_ProviderMismatchApplication(),
+        user_config_store=_config(tmp_path),
+    )
+
+    assert code == int(ExitCode.CONFIG_ERROR)
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "MODEL_ROUTE_PROVIDER_MISMATCH" in output.err
+    if output_format == "json":
+        result = json.loads(output.err)
+        assert result["code"] == "CONFIG_ERROR"
+        assert result["data"]["status"] == "BLOCKED"
+    else:
+        assert "원래 공급자" in output.err
+        assert "sastsimi resume A-001" not in output.err
 
 
 def test_public_analyze_uses_positional_repo_and_human_output(
