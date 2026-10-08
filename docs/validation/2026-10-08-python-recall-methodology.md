@@ -147,6 +147,13 @@ LLM attempt ledger records 328 attempts, 7,320,817 input tokens, and 337,582
 output tokens. These counts describe this one trial, not an expected cost for
 other repositories.
 
+This run predates the later Docker recovery-build correction in this PR. Its
+saved result is evidence for the tool version used by that trial, **not** an
+end-to-end rerun of the final PR tree. The trial data did not record an exact
+SASTSIMI code revision, so no revision is inferred from the analysis ID or
+commit history. The frozen target repository commit and oracle hash above are
+separate from that unrecorded tool revision.
+
 The separate [post-run review ledger](reviews/vulnshop-f201193c-v2-review.json)
 matched 21 report-backed Findings to the frozen four Python cases. Each case
 has at least one independently checked same-root
