@@ -16,6 +16,7 @@ from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.models import (
     STAGE_VERSION,
     CheckpointIdentity,
+    SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
@@ -177,6 +178,37 @@ def _with_pinned_recipe(
     recipe.update(overrides)
     recipe_ref = artifacts.put_json(recipe)
     return checkpoint.model_copy(update={"recipe_ref": recipe_ref})
+
+
+def _with_pinned_sources(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    paths: list[str],
+) -> None:
+    identity = checkpoint.identity
+    manifest_ref = artifacts.put_json(
+        {"kind": "simple_tracked_sources", "paths": paths}
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "source_manifest_ref": manifest_ref.model_dump(mode="json"),
+            "poc_source_manifest_ref": manifest_ref.model_dump(mode="json"),
+        }
+    )
+    SimpleCheckpointStore(artifacts.paths.database).save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="example/repository",
+            static_bundle_ref=bundle_ref,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -1197,6 +1229,12 @@ def test_environment_patch_accepts_allowlisted_package_commands(patch: str) -> N
     assert validate_environment_patch(f"\n{patch}\n") == patch
 
 
+def test_environment_patch_refreshes_apt_index_before_install() -> None:
+    assert validate_environment_patch("RUN apt-get install -y libxml2-dev") == (
+        "RUN apt-get update\nRUN apt-get install -y libxml2-dev"
+    )
+
+
 @pytest.mark.asyncio
 async def test_missing_python_playwright_browser_rebuilds_only_the_container_image(
     tmp_path: Path,
@@ -1312,6 +1350,106 @@ async def test_bound_python_import_error_replans_requirements_without_docker_pat
     assert json.loads(artifacts.read(resolution.decision_ref))["decision_origin"] == (
         "RULE"
     )
+
+
+@pytest.mark.parametrize("missing", ("dsvpwa", "dsvpwa.attacks"))
+@pytest.mark.asyncio
+async def test_pinned_local_package_import_regenerates_poc_not_environment(
+    tmp_path: Path, missing: str
+) -> None:
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts,
+        stderr=(
+            f"ModuleNotFoundError: {missing}\n"
+            "Traceback: unresolved_frame -> exec_module"
+        ).encode(),
+    )
+    checkpoint = _with_pinned_recipe(artifacts, checkpoint)
+    _with_pinned_sources(
+        artifacts,
+        checkpoint,
+        ["dsvpwa.py", "dsvpwa/__init__.py", "dsvpwa/attacks.py"],
+    )
+    client = DecisionClient({})
+
+    resolution = await SimpleRecoveryCoordinator(
+        client=client, artifacts=artifacts
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_RUNTIME_IMPORT_FAILED",
+            retryable=True,
+            safe_message="isolated runtime import failed",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert resolution.decision.category is RecoveryCategory.GENERATED_INPUT
+    assert resolution.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert "import root" in resolution.decision.guidance
+    assert "pip:" not in resolution.decision.guidance
+    assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_unrelated_missing_external_package_still_replans_environment(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts,
+        stderr=b"ModuleNotFoundError: external_lib\n"
+        b"Traceback: unresolved_frame -> exec_module",
+    )
+    checkpoint = _with_pinned_recipe(artifacts, checkpoint)
+    _with_pinned_sources(
+        artifacts,
+        checkpoint,
+        ["dsvpwa.py", "dsvpwa/__init__.py", "dsvpwa/attacks.py"],
+    )
+
+    resolution = await SimpleRecoveryCoordinator(
+        client=DecisionClient({}), artifacts=artifacts
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_RUNTIME_IMPORT_FAILED",
+            retryable=True,
+            safe_message="isolated runtime import failed",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert resolution.decision.category is RecoveryCategory.ENVIRONMENT
+    assert resolution.decision.action is RecoveryAction.REPLAN_ENVIRONMENT
+
+
+@pytest.mark.asyncio
+async def test_local_source_name_without_verified_built_recipe_is_not_regenerated(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts,
+        stderr=b"ModuleNotFoundError: dsvpwa\n"
+        b"Traceback: unresolved_frame -> exec_module",
+    )
+    _with_pinned_sources(artifacts, checkpoint, ["dsvpwa/__init__.py"])
+
+    resolution = await SimpleRecoveryCoordinator(
+        client=DecisionClient({}), artifacts=artifacts
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_RUNTIME_IMPORT_FAILED",
+            retryable=True,
+            safe_message="isolated runtime import failed",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert resolution.decision.action is RecoveryAction.REPLAN_ENVIRONMENT
 
 
 @pytest.mark.asyncio

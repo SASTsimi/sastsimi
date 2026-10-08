@@ -1,0 +1,38 @@
+{
+  "analysis_complete": false,
+  "analysis_id": "4bd80ec92d344543b9e629d52242948e",
+  "analysis_status": "PARTIAL",
+  "case_counts": {
+    "FN": 0,
+    "HOLD": 11,
+    "OUT_OF_SCOPE": 2,
+    "REVIEW_REQUIRED": 0,
+    "TP": 1
+  },
+  "cases": [
+    {"case_id": "dsvpwa-login-sqli", "first_gap": "PIPELINE_UNFINISHED", "status": "HOLD"},
+    {"case_id": "dsvpwa-users-sqli", "first_gap": null, "status": "TP"},
+    {"case_id": "dsvpwa-reflected-xss", "first_gap": "HOLD_VERIFICATION", "status": "HOLD"},
+    {"case_id": "dsvpwa-stored-xss", "first_gap": "PIPELINE_UNFINISHED", "status": "HOLD"},
+    {"case_id": "dsvpwa-command-injection", "first_gap": "HOLD_VERIFICATION", "status": "HOLD"},
+    {"case_id": "dsvpwa-unsafe-deserialization", "first_gap": "HOLD_VERIFICATION", "status": "HOLD"},
+    {"case_id": "dsvpwa-path-traversal", "first_gap": "HOLD_VERIFICATION", "status": "HOLD"},
+    {"case_id": "dsvpwa-session-fixation", "first_gap": "PIPELINE_UNFINISHED", "status": "HOLD"},
+    {"case_id": "dsvpwa-csrf-settings", "first_gap": "PIPELINE_UNFINISHED", "status": "HOLD"},
+    {"case_id": "dsvpwa-execution-after-redirect", "first_gap": "PIPELINE_UNFINISHED", "status": "HOLD"},
+    {"case_id": "dsvpwa-open-redirect", "first_gap": "PIPELINE_UNFINISHED", "status": "HOLD"},
+    {"case_id": "dsvpwa-clickjacking", "first_gap": "PIPELINE_UNFINISHED", "status": "HOLD"},
+    {"case_id": "dsvpwa-session-hijacking-lesson", "first_gap": "DECLARED_OUT_OF_SCOPE", "status": "OUT_OF_SCOPE"},
+    {"case_id": "dsvpwa-insecure-transport-lesson", "first_gap": "DECLARED_OUT_OF_SCOPE", "status": "OUT_OF_SCOPE"}
+  ],
+  "finding_counts": {
+    "FP": 0,
+    "MATCHED": 1,
+    "UNFINISHED_REPORTS": 0,
+    "UNMATCHED_REVIEW_REQUIRED": 6
+  },
+  "oracle_commit": "c98b77950bf1c54080c4113a2488ce0509b21cff",
+  "oracle_completeness": "DOCUMENTED_CASES",
+  "recall": null,
+  "recall_label": null
+}

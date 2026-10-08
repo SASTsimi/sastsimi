@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import math
@@ -94,6 +95,89 @@ _NO_MODEL_RESPONSE_STATUSES = (
     "CLAUDE_AUTH_REQUIRED",
     "CLAUDE_RATE_LIMITED",
 )
+
+_SAFE_LOCAL_MODULE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+_SECRET_SHAPED_MODULE = re.compile(rb"secret|token|password|credential|cookie", re.I)
+_POC_SUCCESS_CLAIM_LINE = re.compile(
+    rb"(?:REPRODUCED|SUPPORTED|SUCCESS)(?:[ \t]+.*|[:=].*)?", re.I
+)
+
+
+def _pinned_local_import_diagnostic(
+    stderr: bytes, workspace: Path
+) -> tuple[str, bytes] | None:
+    """Prove a terminal import names source present in this pinned checkout."""
+
+    matches, terminal = _python_import_traceback_spans(stderr)
+    if not terminal or len(matches) != 1:
+        return None
+    key, excerpt = next(iter(matches.items()))
+    prefix = b"ModuleNotFoundError:"
+    if (
+        not key.startswith(prefix)
+        or stderr.strip() != excerpt.strip()
+        or len(excerpt) > 4 * 1024
+    ):
+        return None
+    raw_name = key.removeprefix(prefix)
+    if (
+        len(raw_name) > 128
+        or _SAFE_LOCAL_MODULE.fullmatch(raw_name) is None
+        or any(_SECRET_SHAPED_MODULE.search(part) for part in raw_name.split(b"."))
+    ):
+        return None
+    try:
+        if redact_untrusted_text(excerpt).data != excerpt:
+            return None
+        root = workspace.resolve(strict=True)
+        if not root.is_dir() or workspace.is_symlink():
+            return None
+        parts = raw_name.decode("ascii").split(".")
+        package = workspace / parts[0]
+        target = workspace.joinpath(*parts)
+        source_module = target.with_suffix(".py")
+        source_package = target / "__init__.py"
+        if not (source_module.is_file() or source_package.is_file()):
+            return None
+        for path in (package, target, source_module, source_package):
+            if path.exists() and (
+                path.is_symlink() or not path.resolve(strict=True).is_relative_to(root)
+            ):
+                return None
+        # The failure must be an absolute import used by pinned repository
+        # source, not merely a distribution name appearing in a traceback.
+        for index, source in enumerate(workspace.rglob("*.py")):
+            if index >= 512:
+                break
+            if (
+                source.is_symlink()
+                or not source.resolve(strict=True).is_relative_to(root)
+                or source.stat().st_size > 512 * 1024
+            ):
+                continue
+            try:
+                tree = ast.parse(source.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) and any(
+                    alias.name == parts[0] or alias.name.startswith(parts[0] + ".")
+                    for alias in node.names
+                ):
+                    return ".".join(parts), excerpt
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.level == 0
+                    and node.module is not None
+                    and (
+                        node.module == parts[0]
+                        or node.module.startswith(parts[0] + ".")
+                    )
+                ):
+                    return ".".join(parts), excerpt
+    except (OSError, UnicodeError, ValueError, RuntimeError):
+        return None
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -5733,12 +5817,41 @@ class SimpleCheckpointStore:
         finally:
             connection.close()
 
+    def prepare_poc_local_import_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay one exhausted PoC whose missing module is pinned local source."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _local_import=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_LOCAL_IMPORT_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
     def prepare_poc_extract_exhaustion_replay(
         self,
         exhausted: StageCheckpoint,
         artifacts: SimpleArtifactRepository,
         *,
         fail_before_commit: bool = False,
+        _local_import: bool = False,
     ) -> StageCheckpoint:
         """Explicitly regenerate one PoC after a bound sanitized extract failure.
 
@@ -5855,13 +5968,18 @@ class SimpleCheckpointStore:
                 "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
                 f"{identity.hypothesis_id}:{exhausted.attempt_id}"
             )
+            budget_root = (
+                _local_import
+                and root is not None
+                and (root.error_code == "LLM_TOKEN_BUDGET_EXHAUSTED")
+            )
             if (
                 root is None
                 or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
                 or root.status is not StageStatus.BLOCKED
                 or root.retryable
                 or not root.attempt_id
-                or root.error_code != root_code
+                or (root.error_code != root_code and not budget_root)
             ):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_ROOT_BOUND_INVALID")
             activity_rows = connection.execute(
@@ -5873,7 +5991,7 @@ class SimpleCheckpointStore:
                 AgentActivityEvent.model_validate_json(row["event_json"])
                 for row in activity_rows
             )
-            if not any(
+            root_events = tuple(
                 event.kind is ActivityKind.STAGE_BLOCKED
                 and event.analysis_id == identity.analysis_id
                 and event.workspace_id == identity.workspace_id
@@ -5881,14 +5999,22 @@ class SimpleCheckpointStore:
                 and event.hypothesis_id is None
                 and event.stage == SimpleStage.HYPOTHESIS_DONE.value
                 and event.attempt_id == root.attempt_id
-                and event.error_code == root_code
+                and event.error_code == root.error_code
+                and event.input_refs == root.input_refs
+                and event.output_refs == root.output_refs
                 for event in events
-            ):
+            )
+            if not any(root_events):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_ROOT_BOUND_INVALID")
+            replay_code = (
+                "POC_LOCAL_IMPORT_EXHAUSTION_REPLAYED"
+                if _local_import
+                else "POC_EXTRACT_EXHAUSTION_REPLAYED"
+            )
             if any(
                 event.hypothesis_id == identity.hypothesis_id
                 and event.kind is ActivityKind.DECISION_RECORDED
-                and event.error_code == "POC_EXTRACT_EXHAUSTION_REPLAYED"
+                and event.error_code == replay_code
                 for event in events
             ):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_ALREADY_REPLAYED")
@@ -5904,7 +6030,12 @@ class SimpleCheckpointStore:
                 or tuple((event.kind, event.error_code) for event in stage_events)
                 != (
                     (ActivityKind.STAGE_STARTED, None),
-                    (ActivityKind.STAGE_BLOCKED, "POC_EXECUTION_FAILED"),
+                    (
+                        ActivityKind.STAGE_BLOCKED,
+                        "POC_RUNTIME_IMPORT_FAILED"
+                        if _local_import
+                        else "POC_EXECUTION_FAILED",
+                    ),
                     (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
                 )
                 or any(
@@ -5933,6 +6064,11 @@ class SimpleCheckpointStore:
                 )
             ):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_EVENT_INVALID")
+            if budget_root and (
+                len(events) < 2 or events[-2] != stage_events[-1] or not root_events[-1]
+            ):
+                # The token pause must directly follow this child's exhaustion.
+                raise ValueError("POC_EXTRACT_EXHAUSTION_ROOT_BOUND_INVALID")
             unresolved = connection.execute(
                 "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
                 "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
@@ -5989,12 +6125,28 @@ class SimpleCheckpointStore:
                 )
                 execution = json.loads(artifacts.read_bounded(execution_ref, 64 * 1024))
                 # Attest bounded stdout, but use only stderr as the failure diagnostic.
-                artifacts.read_bounded(stdout_ref, 1024 * 1024)
+                stdout = artifacts.read_bounded(stdout_ref, 1024 * 1024)
                 stderr = artifacts.read_bounded(stderr_ref, 1024 * 1024)
                 cleanup = json.loads(artifacts.read_bounded(cleanup_ref, 64 * 1024))
             except (OSError, ValueError, TypeError, sqlite3.Error) as error:
                 raise ValueError("POC_EXTRACT_EXHAUSTION_EVIDENCE_INVALID") from error
-            diagnostic = sanitized_extract_failure(stderr)
+            if _local_import:
+                # Earlier diagnostics may precede the failing import. They are
+                # not proof of this failure, and a competing import traceback
+                # or explicit success claim must not authorize a replay.
+                stdout_conflicts = has_python_import_failure(stdout) or any(
+                    _POC_SUCCESS_CLAIM_LINE.fullmatch(line.strip()) is not None
+                    for line in stdout.splitlines()
+                )
+                local_import = (
+                    None
+                    if stdout_conflicts
+                    else _pinned_local_import_diagnostic(stderr, run.workspace_path)
+                )
+                diagnostic = local_import[1] if local_import is not None else None
+            else:
+                local_import = None
+                diagnostic = sanitized_extract_failure(stderr)
             if (
                 not isinstance(candidate_record, dict)
                 or candidate_record.get("kind") != "simple_poc_candidate"
@@ -6017,6 +6169,7 @@ class SimpleCheckpointStore:
                 or not execution["container_id"]
                 or type(execution.get("exit_code")) is not int
                 or execution["exit_code"] == 0
+                or (_local_import and execution["exit_code"] != 2)
                 or execution.get("timed_out") is not False
                 or diagnostic is None
                 or not isinstance(cleanup, dict)
@@ -6027,11 +6180,35 @@ class SimpleCheckpointStore:
             ):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_EVIDENCE_INVALID")
 
-            rule_decision = sanitized_extract_recovery_decision()
+            rule_decision = (
+                RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis="The generated PoC lost a pinned local Python module",
+                    guidance=(
+                        "Regenerate only the PoC candidate. Derive one import root "
+                        "from the pinned source layout and preserve transitive "
+                        "absolute imports; keep /workspace as the working directory "
+                        "and writable runtime state under /tmp. The missing module "
+                        "is present in the pinned checkout, so do not add a pip "
+                        "requirement or rebuild the image for this error."
+                    ),
+                )
+                if _local_import
+                else sanitized_extract_recovery_decision()
+            )
             original_error = StageFailure(
-                code="POC_EXECUTION_FAILED",
+                code=(
+                    "POC_RUNTIME_IMPORT_FAILED"
+                    if _local_import
+                    else "POC_EXECUTION_FAILED"
+                ),
                 retryable=True,
-                safe_message="PoC failed during sanitized source extraction",
+                safe_message=(
+                    "PoC failed to import pinned local source"
+                    if _local_import
+                    else "PoC failed during sanitized source extraction"
+                ),
                 evidence_refs=exhausted.output_refs,
             )
             rule_ref = artifacts.put_json(
@@ -6047,6 +6224,11 @@ class SimpleCheckpointStore:
                     "diagnostic_excerpt": diagnostic.decode("ascii"),
                     "explicit_exhaustion_replay": True,
                     "recovery_revision": SANITIZED_EXTRACT_RECOVERY_REVISION,
+                    **(
+                        {"source_module": local_import[0]}
+                        if local_import is not None
+                        else {}
+                    ),
                     "exhausted_checkpoint_hash": hashlib.sha256(
                         canonical_bytes(exhausted.model_dump(mode="json"))
                     ).hexdigest(),
@@ -6110,10 +6292,14 @@ class SimpleCheckpointStore:
                     sequence=self._stage_sequence(exhausted.stage, 102),
                     status=StageStatus.BLOCKED,
                     summary_ko=(
-                        "검증된 PoC 추출 오류를 보존하고 후보만 한 번 다시 생성합니다."
+                        "로컬 Python import 오류를 보존하고 "
+                        "PoC 후보만 한 번 다시 생성합니다."
+                        if _local_import
+                        else "검증된 PoC 추출 오류를 보존하고 "
+                        "후보만 한 번 다시 생성합니다."
                     ),
                     output_refs=(rule_ref,),
-                    error_code="POC_EXTRACT_EXHAUSTION_REPLAYED",
+                    error_code=replay_code,
                 ),
             )
             if fail_before_commit:

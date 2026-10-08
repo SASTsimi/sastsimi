@@ -1,0 +1,249 @@
+{
+  "version": 2,
+  "analysis_id": "7ffb6b24a8764373a7efcee57feab69e",
+  "oracle_sha256": "8c4f27e159a7e142dbc9b6b6349522b36aa5ec41840d727aed32b19eec112a2b",
+  "inventory_reviewed": true,
+  "cases": [
+    {
+      "case_id": "vulnshop-reflected-xss-template",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "Frozen oracle places the essential Jinja |safe sink in templates/search.html outside the Python-only scan."
+    },
+    {
+      "case_id": "vulnshop-products-sqli",
+      "candidate_ids": [
+        "5b6004999b40df0b0dfa684fd387e9b6fba663485d8d3d7864d13bf56a41a96d",
+        "92ef03d23fb89d433d8904476b82ae5a18eb48cafc6ed7d2369fb486875726d0",
+        "c7427b83387bf6b94542fba1868bd645d2cee1b1420bdc1887ee997cd076c2ed"
+      ],
+      "hypothesis_ids": [
+        "hypothesis-2861dfceb26a146a09976be1fc684cc1",
+        "hypothesis-8bfec4ec5dd2a05ba4aee85262e2aa0f",
+        "hypothesis-e6459fb4cd4e32d1405922cca176d5be",
+        "hypothesis-7f51b6a717d741013a6db847400c1def",
+        "hypothesis-5c614d0ceadde0dc3ef4ce08af137af8",
+        "hypothesis-ea0ac0e68f66a0e862d6ced849c53220",
+        "hypothesis-93937f6070da85c30edb5234bbcb757c",
+        "hypothesis-37216402ec0f8bc2b449fd20175440df",
+        "hypothesis-45f1a4766a03eda0a9d00a0453ec6bb8"
+      ],
+      "finding_ids": [
+        "F-001",
+        "F-004",
+        "F-005",
+        "F-006",
+        "F-007",
+        "F-008",
+        "F-009",
+        "F-010",
+        "F-012"
+      ],
+      "rationale": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "case_id": "vulnshop-login-sqli",
+      "candidate_ids": [
+        "05be5e2fc41b57247b65bac8af90f545aec8e56f8ab88ea865f7c0ce0bebbc8a",
+        "516693dc103cbc77f7bfc2cc1cf6466ec849545d43df81b4a5317ac7bd6fb98a",
+        "6761aeb2410deea88e188d6b3e41c0506aa2680bb033e6955dfacd381fda6b7b",
+        "dcdb0c068e55693b7fdee2f4488d9044e5430ba09b49161480588e3a2c570d25",
+        "fa786136db2bcb7526b939385ddfe3d7db31b45d2f5e7638d4fc5a4b0d70a511"
+      ],
+      "hypothesis_ids": [
+        "hypothesis-46997189ae1dd7959d7d1bf6e463dece",
+        "hypothesis-48f77296e625abafe0615dd3e7ee39bf",
+        "hypothesis-3909f5ea2fd06cfae5c1eccf85763d14",
+        "hypothesis-27151a582742c3eb7a0e54f03614980a",
+        "hypothesis-a147f0cdeffac4275960f57ae0d883af",
+        "hypothesis-c80196a8bcc0bf7a0afb29f796d7380f",
+        "hypothesis-8bf8b27d16fcd4cf3fcad5021376af36",
+        "hypothesis-2382e74cef1fb07391d96c46c2b6b46d"
+      ],
+      "finding_ids": [
+        "F-002",
+        "F-003",
+        "F-011",
+        "F-014",
+        "F-015",
+        "F-016",
+        "F-017",
+        "F-018"
+      ],
+      "rationale": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "case_id": "vulnshop-admin-role-bypass",
+      "candidate_ids": [],
+      "hypothesis_ids": [
+        "hypothesis-b47ccaec162c458712ac03368d1ec8dc",
+        "hypothesis-14e8457d9d3cac7cae48d68e51a25fed",
+        "hypothesis-db41912f565884abcd5380e53eb36f9f"
+      ],
+      "finding_ids": [
+        "F-013",
+        "F-020",
+        "F-022"
+      ],
+      "rationale": "Independent review confirmed ordinary authenticated user reaches /admin through missing role check in app.py:101-108. Report CWE-862 and oracle CWE-863 describe the same reviewed root cause; executed PoC, final TRUE, gate ACCEPT and report."
+    },
+    {
+      "case_id": "vulnshop-profile-csrf",
+      "candidate_ids": [],
+      "hypothesis_ids": [
+        "hypothesis-61729d8e044461525a07ea178a2863a3"
+      ],
+      "finding_ids": [
+        "F-024"
+      ],
+      "rationale": "Independent review of headless Chromium cross-site form POST: Sec-Fetch-Site cross-site, attacker Origin, victim cookie sent, HTTP 200 and database email changed; app.py:116-128. Separate earlier inconclusive attempt is not counted."
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "F-001",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-002",
+      "status": "MATCHED",
+      "case_id": "vulnshop-login-sqli",
+      "evidence": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-003",
+      "status": "MATCHED",
+      "case_id": "vulnshop-login-sqli",
+      "evidence": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-004",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-005",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-006",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-007",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-008",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-009",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-010",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-011",
+      "status": "MATCHED",
+      "case_id": "vulnshop-login-sqli",
+      "evidence": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-012",
+      "status": "MATCHED",
+      "case_id": "vulnshop-products-sqli",
+      "evidence": "Independently reviewed request parameter to SQL query in app.py:40-50, with executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-013",
+      "status": "MATCHED",
+      "case_id": "vulnshop-admin-role-bypass",
+      "evidence": "Independent review confirmed ordinary authenticated user reaches /admin through missing role check in app.py:101-108. Report CWE-862 and oracle CWE-863 describe the same reviewed root cause; executed PoC, final TRUE, gate ACCEPT and report."
+    },
+    {
+      "finding_id": "F-014",
+      "status": "MATCHED",
+      "case_id": "vulnshop-login-sqli",
+      "evidence": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-015",
+      "status": "MATCHED",
+      "case_id": "vulnshop-login-sqli",
+      "evidence": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-016",
+      "status": "MATCHED",
+      "case_id": "vulnshop-login-sqli",
+      "evidence": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-017",
+      "status": "MATCHED",
+      "case_id": "vulnshop-login-sqli",
+      "evidence": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-018",
+      "status": "MATCHED",
+      "case_id": "vulnshop-login-sqli",
+      "evidence": "Independently reviewed login request to SQL query in app.py:57-70, distinct from products SQLi; executed PoC, final TRUE, Technical Gate ACCEPT and report evidence."
+    },
+    {
+      "finding_id": "F-019",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "Plaintext password storage is a separate finding outside the five documented route-level oracle cases; not classified false positive."
+    },
+    {
+      "finding_id": "F-020",
+      "status": "MATCHED",
+      "case_id": "vulnshop-admin-role-bypass",
+      "evidence": "Independent review confirmed ordinary authenticated user reaches /admin through missing role check in app.py:101-108. Report CWE-862 and oracle CWE-863 describe the same reviewed root cause; executed PoC, final TRUE, gate ACCEPT and report."
+    },
+    {
+      "finding_id": "F-021",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "Hardcoded Flask key enabling forged /admin session is outside the frozen documented route-level oracle; not classified false positive."
+    },
+    {
+      "finding_id": "F-022",
+      "status": "MATCHED",
+      "case_id": "vulnshop-admin-role-bypass",
+      "evidence": "Independent review confirmed ordinary authenticated user reaches /admin through missing role check in app.py:101-108. Report CWE-862 and oracle CWE-863 describe the same reviewed root cause; executed PoC, final TRUE, gate ACCEPT and report."
+    },
+    {
+      "finding_id": "F-023",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "Hardcoded key and forged-session profile update is outside the frozen documented route-level oracle; not classified false positive."
+    },
+    {
+      "finding_id": "F-024",
+      "status": "MATCHED",
+      "case_id": "vulnshop-profile-csrf",
+      "evidence": "Independent review of headless Chromium cross-site form POST: Sec-Fetch-Site cross-site, attacker Origin, victim cookie sent, HTTP 200 and database email changed; app.py:116-128. Separate earlier inconclusive attempt is not counted."
+    }
+  ]
+}

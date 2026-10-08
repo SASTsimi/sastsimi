@@ -2122,7 +2122,8 @@ class DirectEnvironmentPreparer:
         else:
             dockerfile = self._generated_dockerfile(target_manifest)
             source = "GENERATED"
-        dockerfile += self._recovery_patch(checkpoint)
+        recovery_patch = self._recovery_patch(checkpoint)
+        dockerfile += recovery_patch
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
         labels = PortableDockerRuntime._owner_labels(
             checkpoint.identity, checkpoint.attempt_id or "initial"
@@ -2147,6 +2148,7 @@ class DirectEnvironmentPreparer:
                 )
                 if (
                     not degraded
+                    and not recovery_patch
                     and not target_install
                     and target_manifest in {None, "requirements.txt", "pyproject.toml"}
                     and self._dependency_install_failed(error, dockerfile)

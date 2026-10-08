@@ -797,10 +797,32 @@ def test_validated_shell_poc_keeps_multiple_container_tmp_paths_on_one_line() ->
     assert provenance["poc"]["redacted"] is False
 
 
+def test_shell_poc_preserves_tmp_path_in_command_substitution() -> None:
+    poc = (
+        b"#!/bin/sh\nset -eu\n"
+        b"scratch=$(mktemp -d /tmp/sastsimi.XXXXXX) || { "
+        b"printf '%s\\n' 'scratch setup failed' >&2; exit 2; }\n"
+        b"trap 'rm -rf \"$scratch\"' EXIT\n"
+    )
+    digest = hashlib.sha256(poc).hexdigest()
+
+    files = _render(facts=_facts(poc_original_sha256=digest), poc=poc)
+
+    assert files["poc.sh"].body == poc
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["poc"]["attachment_sha256"] == digest
+    assert provenance["poc"]["redacted"] is False
+
+
 @pytest.mark.parametrize(
     "poc, sensitive_fragment",
     (
         (b"#!/bin/sh\necho /home/alice/private.txt\n", b"/home/alice/private.txt"),
+        (
+            b"#!/bin/sh\nscratch=$(mktemp -d /tmp/sastsimi.XXXXXX)\n"
+            b"echo /home/alice/private.txt\n",
+            b"/home/alice/private.txt",
+        ),
         (b"#!/bin/sh\necho /root/private.txt\n", b"/root/private.txt"),
         (b"#!/bin/sh\necho C:\\Users\\Alice\\private.txt\n", b"C:\\Users\\Alice"),
         (

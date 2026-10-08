@@ -680,6 +680,17 @@ async def test_executed_inconclusive_poc_is_terminal_only_at_attempt_limit(
         with pytest.raises(StageBlocked) as blocked:
             await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
         assert blocked.value.failure.code == expected_error
+        if exit_code == 1:
+            assert len(blocked.value.failure.evidence_refs) == 5
+            cleanup = json.loads(
+                artifacts.read(blocked.value.failure.evidence_refs[-1])
+            )
+            assert cleanup == {
+                "kind": "simple_container_cleanup",
+                "container_id": "a" * 64,
+                "attempt_id": "attempt-inconclusive",
+                "status": "REMOVED",
+            }
     else:
         result = await stage(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
         assert result.verdict == "HOLD"

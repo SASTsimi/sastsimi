@@ -157,13 +157,19 @@ def _read_pinned_blob(
     remaining: int,
 ) -> tuple[bytes | None, str | None]:
     def git(*args: str) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(
-            (git_executable, "-C", str(workspace), *args),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
-        )
+        for attempt in range(2):
+            try:
+                return subprocess.run(
+                    (git_executable, "-C", str(workspace), *args),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                if attempt == 1:
+                    raise
+        raise AssertionError("unreachable")
 
     try:
         tree = git("--literal-pathspecs", "ls-tree", "-z", commit, "--", path)

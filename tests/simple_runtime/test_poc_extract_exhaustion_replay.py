@@ -42,13 +42,20 @@ def _exhausted_extract(
     stdout: bytes = b"",
     execution_patch: dict[str, object] | None = None,
     cleanup_status: str = "REMOVED",
+    failure_code: str = "POC_EXECUTION_FAILED",
+    candidate_content: bytes | None = None,
+    root_error_code: str | None = None,
 ) -> tuple[SimpleCheckpointStore, SimpleArtifactRepository, StageCheckpoint]:
     store, artifacts, old_stop, _ = _seed(
         tmp_path, stderr=b"TypeError: earlier PoC harness failure\n"
     )
     identity = old_stop.identity
     candidate = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
-    content_ref = candidate.output_refs[1]
+    content_ref = (
+        artifacts.put_bytes(candidate_content, "text/x-shellscript")
+        if candidate_content is not None
+        else candidate.output_refs[1]
+    )
     candidate_ref = artifacts.put_json(
         {
             "kind": "simple_poc_candidate",
@@ -113,7 +120,7 @@ def _exhausted_extract(
     failed = store.mark_failure(
         running,
         StageFailure(
-            code="POC_EXECUTION_FAILED",
+            code=failure_code,
             retryable=True,
             safe_message="PoC execution failed",
             evidence_refs=evidence,
@@ -135,7 +142,8 @@ def _exhausted_extract(
     store.mark_failure(
         root_running,
         StageFailure(
-            code=(
+            code=root_error_code
+            or (
                 "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
                 f"{identity.hypothesis_id}:{running.attempt_id}"
             ),

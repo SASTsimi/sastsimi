@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,116 @@ import pytest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import CheckpointIdentity
 from sastsimi.simple_runtime.retrieval import collect_requested_sources
+
+
+def test_pinned_source_retries_one_git_timeout_without_using_partial_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[tuple[str, ...]] = []
+    object_id = "a" * 40
+
+    def fake_run(
+        command: tuple[str, ...], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        assert kwargs["timeout"] == 10
+        if "ls-tree" in command:
+            if sum("ls-tree" in item for item in commands) == 1:
+                raise subprocess.TimeoutExpired(
+                    command,
+                    10,
+                    output=b"100644 blob " + object_id.encode() + b"\twrong.py\0",
+                )
+            output = b"100644 blob " + object_id.encode() + b"\tapp.py\0"
+        elif command[-2:] == ("-s", object_id):
+            output = b"6\n"
+        elif command[-2:] == ("blob", object_id):
+            output = b"safe\n"
+        else:
+            raise AssertionError(f"unexpected Git command: {command}")
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr=b"")
+
+    monkeypatch.setattr("sastsimi.simple_runtime.retrieval.subprocess.run", fake_run)
+
+    result = collect_requested_sources(
+        ("app.py",),
+        workspace=tmp_path,
+        tracked=("app.py",),
+        pinned_commit="b" * 40,
+    )
+
+    assert result["served"] == [{"path": "app.py", "content": "safe\n"}]
+    assert result["refused"] == []
+    assert sum("ls-tree" in command for command in commands) == 2
+    assert len(commands) == 4
+
+
+def test_pinned_source_stops_after_repeated_git_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = 0
+
+    def fake_run(
+        command: tuple[str, ...], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal attempts
+        attempts += 1
+        raise subprocess.TimeoutExpired(command, 10, output=b"untrusted partial")
+
+    monkeypatch.setattr("sastsimi.simple_runtime.retrieval.subprocess.run", fake_run)
+
+    result = collect_requested_sources(
+        ("app.py",),
+        workspace=tmp_path,
+        tracked=("app.py",),
+        pinned_commit="b" * 40,
+    )
+
+    assert result["served"] == []
+    assert result["refused"] == [
+        {"path": "app.py", "reason": "PINNED_SOURCE_UNAVAILABLE"}
+    ]
+    assert attempts == 2
+
+
+@pytest.mark.parametrize(
+    ("returncode", "output"),
+    (
+        (1, b""),
+        (0, b"100644 blob\tapp.py\0"),
+    ),
+)
+def test_pinned_source_does_not_retry_non_timeout_or_malformed_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    output: bytes,
+) -> None:
+    attempts = 0
+
+    def fake_run(
+        command: tuple[str, ...], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal attempts
+        attempts += 1
+        return subprocess.CompletedProcess(
+            command, returncode, stdout=output, stderr=b""
+        )
+
+    monkeypatch.setattr("sastsimi.simple_runtime.retrieval.subprocess.run", fake_run)
+
+    result = collect_requested_sources(
+        ("app.py",),
+        workspace=tmp_path,
+        tracked=("app.py",),
+        pinned_commit="b" * 40,
+    )
+
+    assert result["served"] == []
+    assert result["refused"] == [
+        {"path": "app.py", "reason": "PINNED_SOURCE_UNAVAILABLE"}
+    ]
+    assert attempts == 1
 
 
 def test_host_paths_and_bad_spans_are_refused(tmp_path: Path) -> None:

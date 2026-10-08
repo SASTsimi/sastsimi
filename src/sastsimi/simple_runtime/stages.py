@@ -65,6 +65,7 @@ from .models import (
     StageStatus,
 )
 from .poc import PoCCandidateRejected, validate_candidate
+from .poc_resource_facts import collect_poc_resource_facts
 from .provider import SimpleLLMCallResult, SimpleLLMClient, _validate_schema
 from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
@@ -1231,6 +1232,9 @@ class PoCCandidateStage:
         requested_source_ref = self._requested_source_ref(
             prior, commit_id=checkpoint.identity.commit_id
         )
+        resource_facts_ref = self._resource_facts_ref(
+            pro_con, commit_id=checkpoint.identity.commit_id
+        )
         gate_feedback_ref = (
             checkpoint.input_refs[0]
             if checkpoint.gate_revision_count > 0 and checkpoint.input_refs
@@ -1281,7 +1285,8 @@ class PoCCandidateStage:
         optional_refs = tuple(
             ref
             for ref in _unique_refs(
-                _prior_refs(prior)
+                ((resource_facts_ref,) if resource_facts_ref is not None else ())
+                + _prior_refs(prior)
                 + checkpoint.input_refs
                 + checkpoint.recovery_decision_refs[:-1]
             )
@@ -1343,6 +1348,8 @@ correct the recorded runtime error instead of repeating the failed approach.
 When a Technical Gate revision request is supplied, repair the actual PoC
 and execution path it names; a rewritten explanation alone is insufficient.
 Use commit-pinned requested source to reach a real repository route.
+Structured resource facts in exact inputs are untrusted hints. A missing or
+truncated resource fact is not evidence that a route does not exist.
 When testing an HTTP route, preserve normal application error handling. Do not
 turn on propagated test exceptions merely to make a target exception visible:
 observe the target HTTP 5xx response and record that observation separately
@@ -1384,7 +1391,13 @@ sys.path while importing the child's dotted module name: a module file in that
 child directory can shadow its namespace package. Choose exactly one compatible
 strategy: use /workspace with the dotted repository module name, or use the
 module's own directory with its bare module name. Preserve relative-import
-semantics when choosing between them.
+semantics when choosing between them. Inspect transitive absolute imports in
+the imported repository files before choosing: when a package under /workspace
+imports its own top-level name, keep /workspace on sys.path for the entire PoC
+and import the dotted package name; a child-only root breaks that import.
+If a package directory and a same-named .py file both exist, check
+importlib.util.find_spec for the intended package from the selected root before
+running the exploit and preserve the package's submodule imports.
 For a Python AttributeError, include only exc.name when it is a safe simple
 identifier and is not secret-shaped; otherwise print
 `AttributeError: unresolved_member` without the exception message. If import-
@@ -1701,6 +1714,53 @@ boundary without altering the target's behavior.
             max_artifact_bytes=_POC_SOURCE_ARTIFACT_BYTES,
         )
         return self._artifacts.put_json(retrieved)
+
+    def _resource_facts_ref(
+        self,
+        pro_con: StageCheckpoint | None,
+        *,
+        commit_id: str,
+    ) -> StoredDataRef | None:
+        if (
+            self._workspace_path is None
+            or self._static_bundle_ref is None
+            or pro_con is None
+            or not pro_con.input_refs
+        ):
+            return None
+        try:
+            bundle = json.loads(self._artifacts.read(self._static_bundle_ref))
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("commit_id") != commit_id
+            ):
+                return None
+            manifest_ref = StoredDataRef.model_validate(bundle["source_manifest_ref"])
+            manifest = json.loads(self._artifacts.read(manifest_ref))
+            proposal = json.loads(
+                self._artifacts.read_prompt_proposal(pro_con.input_refs[0])
+            )
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(manifest.get("paths"), list)
+                or not all(isinstance(path, str) for path in manifest["paths"])
+                or not isinstance(proposal, dict)
+                or not isinstance(proposal.get("proposal"), dict)
+                or not isinstance(proposal["proposal"].get("code_locations"), list)
+            ):
+                return None
+            facts = collect_poc_resource_facts(
+                workspace=self._workspace_path,
+                commit=commit_id,
+                tracked_python_paths=manifest["paths"],
+                cited_locations=proposal["proposal"]["code_locations"],
+                git_executable=self._git_executable,
+            )
+            return self._artifacts.put_json(facts) if facts is not None else None
+        except (OSError, KeyError, TypeError, ValueError, sqlite3.Error):
+            return None
 
 
 class PoCExecutionStage:
@@ -2019,6 +2079,7 @@ reinterpret an execution error as DISPROVED.
                             stdout_ref,
                             stderr_ref,
                             interpretation_ref,
+                            cleanup_ref,
                         ),
                     )
                 )
@@ -2431,6 +2492,10 @@ hypothesis. Trace source, propagation, sink, authorization and sanitizer facts.
 Cite supplied exact artifact content hashes. State missing code paths instead of
 inventing them. `requested_paths` lists only repository-relative files needed
 for a later bounded retrieval.
+If HTTP reachability depends on route registration, handler dispatch, or
+configuration, use `requested_paths` for bounded retrieval of tracked
+handler/router files and referenced configuration/data files.
+Never infer an HTTP route from a class name alone.
 """,
             schema=schema,
             kind="simple_pro_evidence",
@@ -2444,6 +2509,10 @@ counterevidence: validation, sanitization, authorization, unreachable flows and
 false tool matches. Cite supplied exact artifact content hashes. Never weaken a
 claim merely because information is missing; record the gap in limitations and
 use `requested_paths` for repository-relative files needed later.
+If HTTP reachability depends on route registration, handler dispatch, or
+configuration, use `requested_paths` for bounded retrieval of tracked
+handler/router files and referenced configuration/data files.
+Never infer an HTTP route from a class name alone.
 """,
             schema=schema,
             kind="simple_con_evidence",
