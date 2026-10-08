@@ -65,6 +65,7 @@ from .models import (
     StageStatus,
 )
 from .poc import PoCCandidateRejected, validate_candidate
+from .poc_resource_facts import collect_poc_resource_facts
 from .provider import SimpleLLMCallResult, SimpleLLMClient, _validate_schema
 from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
@@ -1231,6 +1232,9 @@ class PoCCandidateStage:
         requested_source_ref = self._requested_source_ref(
             prior, commit_id=checkpoint.identity.commit_id
         )
+        resource_facts_ref = self._resource_facts_ref(
+            pro_con, commit_id=checkpoint.identity.commit_id
+        )
         gate_feedback_ref = (
             checkpoint.input_refs[0]
             if checkpoint.gate_revision_count > 0 and checkpoint.input_refs
@@ -1281,7 +1285,8 @@ class PoCCandidateStage:
         optional_refs = tuple(
             ref
             for ref in _unique_refs(
-                _prior_refs(prior)
+                ((resource_facts_ref,) if resource_facts_ref is not None else ())
+                + _prior_refs(prior)
                 + checkpoint.input_refs
                 + checkpoint.recovery_decision_refs[:-1]
             )
@@ -1343,6 +1348,8 @@ correct the recorded runtime error instead of repeating the failed approach.
 When a Technical Gate revision request is supplied, repair the actual PoC
 and execution path it names; a rewritten explanation alone is insufficient.
 Use commit-pinned requested source to reach a real repository route.
+Structured resource facts in exact inputs are untrusted hints. A missing or
+truncated resource fact is not evidence that a route does not exist.
 When testing an HTTP route, preserve normal application error handling. Do not
 turn on propagated test exceptions merely to make a target exception visible:
 observe the target HTTP 5xx response and record that observation separately
@@ -1707,6 +1714,53 @@ boundary without altering the target's behavior.
             max_artifact_bytes=_POC_SOURCE_ARTIFACT_BYTES,
         )
         return self._artifacts.put_json(retrieved)
+
+    def _resource_facts_ref(
+        self,
+        pro_con: StageCheckpoint | None,
+        *,
+        commit_id: str,
+    ) -> StoredDataRef | None:
+        if (
+            self._workspace_path is None
+            or self._static_bundle_ref is None
+            or pro_con is None
+            or not pro_con.input_refs
+        ):
+            return None
+        try:
+            bundle = json.loads(self._artifacts.read(self._static_bundle_ref))
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("commit_id") != commit_id
+            ):
+                return None
+            manifest_ref = StoredDataRef.model_validate(bundle["source_manifest_ref"])
+            manifest = json.loads(self._artifacts.read(manifest_ref))
+            proposal = json.loads(
+                self._artifacts.read_prompt_proposal(pro_con.input_refs[0])
+            )
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(manifest.get("paths"), list)
+                or not all(isinstance(path, str) for path in manifest["paths"])
+                or not isinstance(proposal, dict)
+                or not isinstance(proposal.get("proposal"), dict)
+                or not isinstance(proposal["proposal"].get("code_locations"), list)
+            ):
+                return None
+            facts = collect_poc_resource_facts(
+                workspace=self._workspace_path,
+                commit=commit_id,
+                tracked_python_paths=manifest["paths"],
+                cited_locations=proposal["proposal"]["code_locations"],
+                git_executable=self._git_executable,
+            )
+            return self._artifacts.put_json(facts) if facts is not None else None
+        except (OSError, KeyError, TypeError, ValueError, sqlite3.Error):
+            return None
 
 
 class PoCExecutionStage:
