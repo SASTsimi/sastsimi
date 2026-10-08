@@ -662,16 +662,19 @@ def test_poc_resource_facts_reuses_pinned_git_reads_across_candidates(
         return original_popen(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", counted_popen)
-    kwargs = {
-        "workspace": workspace,
-        "commit": commit,
-        "tracked_python_paths": ["attacks.py", "handlers.py"],
-        "cited_locations": ["attacks.py:2"],
-    }
-
-    first = collect_poc_resource_facts(**kwargs)
+    first = collect_poc_resource_facts(
+        workspace=workspace,
+        commit=commit,
+        tracked_python_paths=["attacks.py", "handlers.py"],
+        cited_locations=["attacks.py:2"],
+    )
     first_calls = calls
-    second = collect_poc_resource_facts(**kwargs)
+    second = collect_poc_resource_facts(
+        workspace=workspace,
+        commit=commit,
+        tracked_python_paths=["attacks.py", "handlers.py"],
+        cited_locations=["attacks.py:2"],
+    )
 
     assert first is not None and first["routes"]
     assert second == first
@@ -758,16 +761,19 @@ def test_poc_resource_facts_does_not_count_ast_false_loaders_toward_loader_cap(
         return original_popen(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", counted_popen)
-    kwargs = {
-        "workspace": workspace,
-        "commit": commit,
-        "tracked_python_paths": ["attacks.py", *false_loaders, "zz_handlers.py"],
-        "cited_locations": ["attacks.py:2"],
-    }
-
-    first = collect_poc_resource_facts(**kwargs)
+    first = collect_poc_resource_facts(
+        workspace=workspace,
+        commit=commit,
+        tracked_python_paths=["attacks.py", *false_loaders, "zz_handlers.py"],
+        cited_locations=["attacks.py:2"],
+    )
     first_calls = calls
-    second = collect_poc_resource_facts(**kwargs)
+    second = collect_poc_resource_facts(
+        workspace=workspace,
+        commit=commit,
+        tracked_python_paths=["attacks.py", *false_loaders, "zz_handlers.py"],
+        cited_locations=["attacks.py:2"],
+    )
 
     assert first is not None
     assert first["routes"] == [
