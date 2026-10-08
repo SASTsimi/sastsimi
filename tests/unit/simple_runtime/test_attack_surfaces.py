@@ -501,3 +501,31 @@ def test_candidate_inventory_hash_detects_changed_origin(tmp_path: Path) -> None
     )
 
     assert candidate_inventory_hash(candidates) != candidate_inventory_hash((altered,))
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "expected_type"),
+    [
+        ("sastsimi.python.query-parse-source", "POSSIBLE_REQUEST_INPUT"),
+        ("sastsimi.python.http-method-handler", "REQUEST_ENTRY"),
+        ("sastsimi.python.deserialization-sink", "DESERIALIZATION"),
+        ("sastsimi.python.identity-cookie-write", "SESSION_CONTROL"),
+        ("sastsimi.python.session-identity-write", "SESSION_CONTROL"),
+        ("sastsimi.python.redirect-sink", "REDIRECT"),
+    ],
+)
+def test_python_hints_keep_distinct_attack_surface_types(
+    tmp_path: Path, rule_id: str, expected_type: str
+) -> None:
+    bundle, summary, candidates, artifacts = _fixture(tmp_path, candidate_lines=(6,))
+    origin = candidates[0].origins[0].model_copy(update={"rule_id": rule_id})
+    candidate = candidates[0].model_copy(update={"origins": (origin,)})
+
+    index = build_attack_surface_index(
+        bundle, summary, (candidate,), artifacts=artifacts
+    )
+
+    assert any(
+        surface.detector == "STATIC_RULE" and surface.type == expected_type
+        for surface in index.surfaces
+    )

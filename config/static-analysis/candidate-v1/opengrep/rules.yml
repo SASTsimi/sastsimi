@@ -112,6 +112,41 @@ rules:
       - pattern: django.utils.safestring.mark_safe(...)
       - pattern: render_template_string(...)
 
+  - id: sastsimi.python.http-method-handler
+    languages: [python]
+    message: Candidate HTTP method entry in a direct BaseHTTPRequestHandler subclass.
+    severity: INFO
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              class $HANDLER(BaseHTTPRequestHandler):
+                  ...
+          - pattern-inside: |
+              class $HANDLER(http.server.BaseHTTPRequestHandler):
+                  ...
+      - pattern-either:
+          - pattern: |
+              def do_GET(...):
+                  ...
+          - pattern: |
+              def do_POST(...):
+                  ...
+          - pattern: |
+              def do_PUT(...):
+                  ...
+          - pattern: |
+              def do_PATCH(...):
+                  ...
+          - pattern: |
+              def do_DELETE(...):
+                  ...
+          - pattern: |
+              def do_HEAD(...):
+                  ...
+          - pattern: |
+              def do_OPTIONS(...):
+                  ...
+
   - id: sastsimi.python.http-client-sink
     languages: [python]
     message: Candidate outbound HTTP sink; not a vulnerability verdict.
@@ -142,6 +177,27 @@ rules:
       - pattern: $USER.has_perm(...)
       - pattern: $USER.has_perms(...)
       - pattern: $REQUEST.user.has_perm(...)
+
+  - id: sastsimi.python.query-parse-source
+    languages: [python]
+    message: Candidate request-query parser; request provenance requires verification.
+    severity: INFO
+    pattern-either:
+      - pattern: parse_qs($REQUEST.query_string)
+      - pattern: parse_qsl($REQUEST.query_string)
+      - pattern: urllib.parse.parse_qs($REQUEST.query_string)
+      - pattern: urllib.parse.parse_qsl($REQUEST.query_string)
+      - pattern: parse_qs(urlparse($REQUEST.path).query)
+      - pattern: parse_qsl(urlparse($REQUEST.path).query)
+      - pattern: urllib.parse.parse_qs(urllib.parse.urlparse($REQUEST.path).query)
+      - pattern: urllib.parse.parse_qsl(urllib.parse.urlparse($REQUEST.path).query)
+      - patterns:
+          - pattern-either:
+              - pattern: $PARSER.parse_qs($PARSED.query)
+              - pattern: $PARSER.parse_qsl($PARSED.query)
+          - pattern-inside: |
+              $PARSED = $PARSER.urlparse($REQUEST.path)
+              ...
 
   - id: sastsimi.python.request-source
     languages: [python]
@@ -181,6 +237,51 @@ rules:
       - pattern: django.utils.html.escape(...)
       - pattern: bleach.clean(...)
 
+  - id: sastsimi.python.deserialization-sink
+    languages: [python]
+    message: Candidate unsafe deserialization call; input provenance requires verification.
+    severity: INFO
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+      - pattern: dill.load(...)
+      - pattern: dill.loads(...)
+      - pattern: marshal.load(...)
+      - pattern: marshal.loads(...)
+      - pattern: yaml.unsafe_load(...)
+      - pattern: yaml.load($DATA, Loader=yaml.UnsafeLoader)
+
+  - id: sastsimi.python.identity-cookie-write
+    languages: [python]
+    message: Candidate identity-cookie write; fixation and cookie safety require verification.
+    severity: INFO
+    patterns:
+      - pattern-either:
+          - pattern: $RESPONSE.set_cookie($KEY, ...)
+          - pattern: $RESPONSE.cookie[$KEY] = $VALUE
+          - patterns:
+              - pattern: $COOKIE[$KEY] = $VALUE
+              - pattern-inside: |
+                  $COOKIE = $RESPONSE.cookie
+                  ...
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: '(?i)^(["''])(?:session(?:[_-]?id)?|auth|authentication|access_token|refresh_token|id_token|jwt|identity|user_id)\1$'
+
+  - id: sastsimi.python.redirect-sink
+    languages: [python]
+    message: Candidate dynamic redirect target; external control requires verification.
+    severity: INFO
+    patterns:
+      - pattern-either:
+          - pattern: redirect($TARGET)
+          - pattern: HttpResponseRedirect($TARGET)
+          - pattern: $HANDLER.send_header('Location', $TARGET)
+          - pattern: $HANDLER.send_header("Location", $TARGET)
+      - metavariable-regex:
+          metavariable: $TARGET
+          regex: '^(?:(?!(?:[rRuUbBfF]*["''])).+|[fF]["''].*\{[^}]+\}.*)$'
+
   - id: sastsimi.python.session-identity-write
     languages: [python]
     message: Candidate session identity write; rotation and fixation risk require verification.
@@ -197,6 +298,11 @@ rules:
               - metavariable-regex:
                   metavariable: $REQUEST
                   regex: '^(?:request|req|http_request)$'
+          - patterns:
+              - pattern: $SESSION[$KEY] = $VALUE
+              - metavariable-regex:
+                  metavariable: $SESSION
+                  regex: '^session$'
       - metavariable-regex:
           metavariable: $KEY
           regex: '^["''](?:user(?:_id|name)?|account_id|principal(?:_id)?|identity(?:_id)?|subject_id|uid|email)["'']$'

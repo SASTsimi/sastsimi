@@ -32,27 +32,27 @@
     },
     {
       "path": "opengrep/rule-catalog.json",
-      "sha256": "6904f8ebb0347e8ceb9213b7892e4899aa8fd3e5eee227bbcc2e52f93cd285b9",
-      "size_bytes": 2724
+      "sha256": "5819c2bb666d38d0852067fb8f98be5c925841e5e1c36c2e51effe901d7d8626",
+      "size_bytes": 3413
     },
     {
       "path": "opengrep/rule-mapping.json",
-      "sha256": "994b9bc4213809dbd8ff8e60e1390dcf0f5ccb008e3d29aebb3099807443c558",
-      "size_bytes": 2934
+      "sha256": "b99aef800c47a316b50ff25b74956607cd3e8f0995f40ec75e8962ab043164df",
+      "size_bytes": 3648
     },
     {
       "path": "opengrep/rule-selection.json",
-      "sha256": "bfc30c4da3c8b2f14f423a508541ff4dfc96a44a34f7ce08d2812f4a02794716",
-      "size_bytes": 1012
+      "sha256": "bc0e7c6073c36de5ce65d5f877efbd940ae1aff510bb756eb235f9da7a60ab61",
+      "size_bytes": 1223
     },
     {
       "path": "opengrep/rules.yml",
-      "sha256": "38dea067f47fa294f146eb4e68ea85edabbe34e7b2bcbe47323da045474e0d33",
-      "size_bytes": 8126
+      "sha256": "50cb35975d2786150e608ece691c608d3fcf6de5a674fd1fc4876818ef18c814",
+      "size_bytes": 12035
     }
   ],
   "material_set": "sastsimi-static-candidate-v1",
-  "material_set_sha256": "7f6e51ab889a391d6f0b1e3b3833a5be1dc008db122a3554c64aea6267a38493",
+  "material_set_sha256": "9380af1efe1765f77ab7eec0d605785fcacc658ef8f0453f1c0d625ebebfa26b",
   "production_ready": false,
   "schema_version": 1,
   "status": "CANDIDATE"
