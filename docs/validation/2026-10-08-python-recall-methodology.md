@@ -223,3 +223,23 @@ then correctly rejected as unverified instead of being used as PoC evidence.
 This run is preserved. Ordinary `resume` cannot safely rebuild that bound
 recipe; a subsequent isolated trial after the generic build fix will receive
 a new analysis ID while using the **same pre-run oracle**.
+
+## Commit-pinned PoC route context added after the trial launch
+
+The first DSVPWA run showed a separate PoC-generation gap: a cited Python
+attack class did not itself name its HTTP route. The route was registered in
+tracked `db/attacks.xml`, which another Python module loaded. The optional PoC
+context helper now looks for this class-to-route relationship using pinned
+Python and XML blobs, emits only bounded route/path/hash scalars, and labels
+them **untrusted hints**. It does not claim a route when indexing, parsing, or
+its explicit size/time limits prevent a complete check; a missing hint is not
+evidence that a route is absent. Static coverage and final PoC verification
+remain unchanged.
+
+A read-only helper check against the frozen DSVPWA commit and cited
+`dsvpwa/attacks.py:287` returned `CommandInjection -> /diag`, referencing
+`db/attacks.xml` through `dsvpwa/handlers.py`, with pinned resource hashes.
+This verifies the helper's input construction, **not** that the ongoing
+end-to-end analysis used the later patch or that its recall improved. The
+isolated end-to-end trial launched before this helper was added; its score
+must be attributed to its launch-time tool code, not to this final PR tree.
