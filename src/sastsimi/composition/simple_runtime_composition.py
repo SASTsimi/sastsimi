@@ -256,10 +256,24 @@ class SimpleClientFactory:
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
     ) -> SimpleLLMClient:
-        primary_model = self._profile.model
-        agent_models = effective_agent_models(
-            primary_model, self._profile.light_model, self._profile.agent_models
-        )
+        try:
+            run = self._store.require_analysis_run(identity.analysis_id)
+        except LookupError:
+            run = None
+        if run is not None and run.model_route_version == 1:
+            if run.provider != self._profile.provider:
+                raise ValueError("MODEL_ROUTE_PROVIDER_MISMATCH")
+            if run.model is None or run.model_routes is None:
+                raise ValueError("MODEL_ROUTE_SNAPSHOT_INCOMPLETE")
+            primary_model = run.model
+            agent_models = dict(run.model_routes)
+        else:
+            primary_model = self._profile.model
+            agent_models = effective_agent_models(
+                primary_model,
+                self._profile.light_model if run is None else None,
+                self._profile.agent_models,
+            )
         if self._profile.provider == "claude":
             try:
                 tool = self._profile.tools["claude"]
@@ -542,6 +556,9 @@ def build_analysis_application(
         profile_ref=profile.provider_profile_ref,
         provider=profile.provider,
         model=profile.model,
+        model_routes=effective_agent_models(
+            profile.model, profile.light_model, profile.agent_models
+        ),
         recovery_factory=recovery_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
         max_pending_candidate_children=profile.max_pending_candidate_children,

@@ -191,6 +191,7 @@ class SimpleAnalysisApplication:
         profile_ref: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        model_routes: Mapping[str, str] | None = None,
         llm_provider: str | None = None,
         on_demand_possible: bool = False,
         max_parallel_hypotheses: int = 1,
@@ -229,6 +230,7 @@ class SimpleAnalysisApplication:
         self._profile_ref = profile_ref
         self._provider = provider
         self._model = model
+        self._model_routes = dict(model_routes) if model_routes is not None else None
         self._llm_provider = llm_provider
         self._on_demand_possible = on_demand_possible
         self._max_parallel_hypotheses = (
@@ -273,6 +275,10 @@ class SimpleAnalysisApplication:
             profile_ref=self._profile_ref,
             provider=self._provider,
             model=self._model,
+            model_route_version=1 if self._model_routes is not None else None,
+            model_routes=(
+                dict(self._model_routes) if self._model_routes is not None else None
+            ),
             started_at=datetime.now(UTC),
             llm_provider=self._llm_provider,
             on_demand_possible=self._on_demand_possible,
@@ -436,6 +442,29 @@ class SimpleAnalysisApplication:
         exact = self._display.resolve(analysis_id_or_display)
         try:
             with analysis_run_lease(self._data_dir, exact):
+                saved_run = self._store.require_analysis_run(exact)
+                if (
+                    saved_run.model_route_version == 1
+                    and saved_run.provider != self._provider
+                ):
+                    checkpoints = self._store.list_checkpoints(exact)
+                    current_stage = (
+                        max(checkpoints, key=lambda item: item.updated_at).stage
+                        if checkpoints
+                        else SimpleStage.STATIC_DONE
+                    )
+                    return SimpleAnalysisOutcome(
+                        identity=CheckpointIdentity(
+                            analysis_id=saved_run.analysis_id,
+                            workspace_id=saved_run.workspace_id,
+                            commit_id=saved_run.commit_id,
+                            hypothesis_id=None,
+                        ),
+                        display_analysis_id=saved_run.display_analysis_id,
+                        status="BLOCKED",
+                        current_stage=current_stage,
+                        error_code="MODEL_ROUTE_PROVIDER_MISMATCH",
+                    )
                 if repair_exhausted_hypothesis is not None:
                     await self._prepare_offline_repair_locked(
                         exact, repair_exhausted_hypothesis

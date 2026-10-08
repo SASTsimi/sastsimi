@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic v2, asyncio, SQLite attempt ledger, pytest, Ruff, mypy.
 
-**Spec:** `docs/superpowers/specs/2026-10-09-same-provider-model-routing-design.md`
+**Spec:** `docs/plans/2026-10-09-same-provider-model-routing-design.md`
 
 ## Global Constraints
 
