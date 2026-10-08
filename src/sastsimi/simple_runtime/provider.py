@@ -345,6 +345,13 @@ class SimpleCodexClient:
                     ref for ref in (request_ref, diagnostic_ref) if ref is not None
                 ),
             )
+        if result.status == "FAILED" and result.model_unavailable:
+            return StageFailure(
+                code="MODEL_UNAVAILABLE",
+                retryable=False,
+                safe_message="Codex model is unavailable",
+                evidence_refs=((request_ref,) if request_ref is not None else ()),
+            )
         if result.status != "SUCCEEDED" or result.final_message is None:
             return StageFailure(
                 code=result.status,

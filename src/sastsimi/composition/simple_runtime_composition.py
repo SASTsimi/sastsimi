@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
 from sastsimi.config.local_evaluation_profile import LocalCodexSubscriptionSettings
+from sastsimi.config.model_roles import effective_agent_models
 from sastsimi.config.user_config import (
     SimpleExecutionProfile,
     UserConfig,
@@ -87,6 +88,7 @@ from sastsimi.simple_runtime.group_report_projection import (
     current_group_bundle,
     current_report_groups,
 )
+from sastsimi.simple_runtime.model_routing import ModelRoutedClient
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
@@ -254,6 +256,10 @@ class SimpleClientFactory:
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
     ) -> SimpleLLMClient:
+        primary_model = self._profile.model
+        agent_models = effective_agent_models(
+            primary_model, self._profile.light_model, self._profile.agent_models
+        )
         if self._profile.provider == "claude":
             try:
                 tool = self._profile.tools["claude"]
@@ -264,8 +270,8 @@ class SimpleClientFactory:
             )
             return ClaudeProvider(
                 artifacts=artifacts,
-                default_model=self._profile.model,
-                agent_models=self._profile.agent_models,
+                default_model=primary_model,
+                agent_models=agent_models,
                 timeout_seconds=self._profile.llm_timeout_seconds,
                 max_retries=min(self._profile.llm_max_retries, 2),
                 semaphore=self._semaphore,
@@ -305,8 +311,8 @@ class SimpleClientFactory:
                 transport = OfficialCursorCLITransport(str(inspection.executable))
             return CursorProvider(
                 artifacts=artifacts,
-                default_model=self._profile.model,
-                agent_models=self._profile.agent_models,
+                default_model=primary_model,
+                agent_models=agent_models,
                 timeout_seconds=self._profile.llm_timeout_seconds,
                 max_retries=min(
                     self._profile.llm_max_retries,
@@ -320,22 +326,25 @@ class SimpleClientFactory:
                 use_cli_login=cli_login,
                 model_catalog=self._cursor_models,
             )
-        if self._profile.provider == "openai":
-            return self._limited(
-                SimpleOpenAIClient(
+
+        def model_client(model: str) -> RunLimitedClient:
+            inner: SimpleLLMClient
+            if self._profile.provider == "openai":
+                inner = SimpleOpenAIClient(
                     credential_ref=self._profile.credential_ref,
-                    model=self._profile.model,
+                    model=model,
                     artifacts=artifacts,
-                ),
-                identity,
-                artifacts,
-                self._profile.model,
-            )
-        return self._limited(
-            self._codex(identity, artifacts, self._profile.model),
-            identity,
-            artifacts,
-            self._profile.model,
+                )
+            else:
+                inner = self._codex(identity, artifacts, model)
+            return self._limited(inner, identity, artifacts, model)
+
+        if all(model == primary_model for model in agent_models.values()):
+            return model_client(primary_model)
+        return ModelRoutedClient(
+            primary_model=primary_model,
+            agent_models=agent_models,
+            client_factory=model_client,
         )
 
     def _codex(

@@ -167,6 +167,7 @@ def _parse_stream(raw: bytes, model: str) -> ClaudeCLIResponse:
     result: dict[str, Any] | None = None
     usage: dict[str, Any] = {}
     total_cost_usd: int | float | None = None
+    model_not_found = False
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -220,6 +221,8 @@ def _parse_stream(raw: bytes, model: str) -> ClaudeCLIResponse:
                 isinstance(event.get("error"), str) and event["error"].strip()
             ):
                 raise ClaudeBoundaryError("CLAUDE_MODEL_MISMATCH")
+            if event.get("error") == "model_not_found":
+                model_not_found = True
             content = message.get("content")
             if not isinstance(content, list):
                 raise ClaudeBoundaryError("CLAUDE_STREAM_INVALID")
@@ -244,6 +247,14 @@ def _parse_stream(raw: bytes, model: str) -> ClaudeCLIResponse:
         elif state == "TURN" and kind == "result":
             if event.get("is_error") is not False:
                 status = event.get("api_error_status")
+                selected_model_error = (
+                    "There's an issue with the selected model "
+                    f"({model}). It may not exist or you may not have access to it."
+                )
+                if status == 404 and (
+                    model_not_found or event.get("result") == selected_model_error
+                ):
+                    raise ClaudeTransportError("CLAUDE_MODEL_UNSUPPORTED")
                 if status in (401, 403):
                     raise ClaudeTransportError("CLAUDE_AUTH_REQUIRED")
                 if status == 429:
@@ -657,7 +668,11 @@ class ClaudeProvider:
                     last_failure = StageFailure(
                         code=code,
                         retryable=retryable,
-                        safe_message="Claude CLI call did not complete",
+                        safe_message=(
+                            "Configured Claude model is unavailable or inaccessible"
+                            if code == "CLAUDE_MODEL_UNSUPPORTED"
+                            else "Claude CLI call did not complete"
+                        ),
                     )
                 except TimeoutError:
                     code = "CLAUDE_TIMED_OUT"
