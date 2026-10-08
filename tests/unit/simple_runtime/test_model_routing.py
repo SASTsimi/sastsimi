@@ -203,15 +203,18 @@ def test_factory_routes_codex_and_openai_per_model(
     routed = factory(identity, artifacts)
 
     assert isinstance(routed, ModelRoutedClient)
-    assert isinstance(routed.client_for_agent("cwe_label"), RunLimitedClient)
-    assert routed.client_for_agent("cwe_label")._model == "light"
-    assert routed.client_for_agent("technical_gate")._model == "explicit"
-    assert routed.client_for_agent("hypothesis")._model == "primary"
-    assert routed.client_for_agent("cwe_label") is routed.client_for_agent(
-        "report_draft"
-    )
-    assert routed.client_for_agent("cwe_label")._semaphore is factory._semaphore
-    assert routed.client_for_agent("hypothesis")._semaphore is factory._semaphore
+    cwe_client = routed.client_for_agent("cwe_label")
+    technical_gate_client = routed.client_for_agent("technical_gate")
+    hypothesis_client = routed.client_for_agent("hypothesis")
+    assert isinstance(cwe_client, RunLimitedClient)
+    assert isinstance(technical_gate_client, RunLimitedClient)
+    assert isinstance(hypothesis_client, RunLimitedClient)
+    assert cwe_client._model == "light"
+    assert technical_gate_client._model == "explicit"
+    assert hypothesis_client._model == "primary"
+    assert cwe_client is routed.client_for_agent("report_draft")
+    assert cwe_client._semaphore is factory._semaphore
+    assert hypothesis_client._semaphore is factory._semaphore
 
 
 @pytest.mark.parametrize("provider", ["claude", "cursor"])
@@ -344,6 +347,8 @@ async def test_mixed_openai_models_share_concurrency_limit(
 async def test_codex_model_route_keeps_codex_run_guard_and_actual_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from sastsimi.simple_runtime.model_routing import ModelRoutedClient
+
     profile = _profile(tmp_path, "codex")
     factory = SimpleClientFactory(profile)
     identity, artifacts = _context(tmp_path)
@@ -374,8 +379,13 @@ async def test_codex_model_route_keeps_codex_run_guard_and_actual_model(
 
     assert all(isinstance(result, SimpleLLMCallResult) for result in results)
     assert seen == ["light", "primary"]
-    assert routed.client_for_agent("cwe_label")._provider == "codex-cli"
-    assert routed.client_for_agent("hypothesis")._provider == "codex-cli"
+    assert isinstance(routed, ModelRoutedClient)
+    cwe_client = routed.client_for_agent("cwe_label")
+    hypothesis_client = routed.client_for_agent("hypothesis")
+    assert isinstance(cwe_client, RunLimitedClient)
+    assert isinstance(hypothesis_client, RunLimitedClient)
+    assert cwe_client._provider == "codex-cli"
+    assert hypothesis_client._provider == "codex-cli"
     assert factory._store.unresolved_codex_call(identity.analysis_id) is None
     with sqlite3.connect(factory._store.database_path) as connection:
         rows = connection.execute(

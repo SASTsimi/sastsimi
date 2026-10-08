@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -17,8 +17,11 @@ from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
     SimpleAnalysisApplication,
     SimpleAnalysisRequest,
+    StaticBootstrapResult,
 )
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
+from sastsimi.simple_runtime.call_queue import RunLimitedClient
+from sastsimi.simple_runtime.model_routing import ModelRoutedClient
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
@@ -26,7 +29,7 @@ from sastsimi.simple_runtime.models import (
     StageCheckpoint,
     StageResult,
 )
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, SimpleStageHandler
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from tests.simple_runtime.test_simple_analysis_application import (
     _Hypotheses,
@@ -57,7 +60,7 @@ def _profile(tmp_path: Path, **changes: Any) -> SimpleExecutionProfile:
 def _run(
     store: SimpleCheckpointStore,
     *,
-    version: int | None = 1,
+    version: Literal[1] | None = 1,
     routes: dict[str, str] | None = None,
 ) -> SimpleAnalysisRun:
     analysis_id = "analysis-route-resume"
@@ -116,17 +119,22 @@ async def test_new_analysis_saves_routes_and_completed_work_is_not_replayed(
     store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
     calls: list[SimpleStage] = []
 
-    def runner_factory(runtime_store, identity, static):
+    def runner_factory(
+        runtime_store: SimpleCheckpointStore,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+    ) -> SimpleRuntimeRunner:
         del identity, static
-        handlers = {}
+        handlers: dict[SimpleStage, SimpleStageHandler] = {}
         for stage in tuple(SimpleStage)[2:]:
 
             async def handle(
-                _checkpoint: StageCheckpoint,
-                _prior: Mapping[SimpleStage, StageCheckpoint],
+                checkpoint: StageCheckpoint,
+                prior: Mapping[SimpleStage, StageCheckpoint],
                 *,
                 current: SimpleStage = stage,
             ) -> StageResult:
+                del checkpoint, prior
                 calls.append(current)
                 return StageResult(
                     output_refs=(_ref(current.value.lower()),),
@@ -193,9 +201,16 @@ def test_factory_resumes_with_stored_primary_and_routes_not_edited_profile(
     identity = _identity(run)
     client = factory(identity, SimpleArtifactRepository(tmp_path, identity))
 
-    assert client.client_for_agent("cwe_label")._model == "old-light"
-    assert client.client_for_agent("technical_gate")._model == "old-explicit"
-    assert client.client_for_agent("hypothesis")._model == "old-primary"
+    assert isinstance(client, ModelRoutedClient)
+    cwe_client = client.client_for_agent("cwe_label")
+    technical_gate_client = client.client_for_agent("technical_gate")
+    hypothesis_client = client.client_for_agent("hypothesis")
+    assert isinstance(cwe_client, RunLimitedClient)
+    assert isinstance(technical_gate_client, RunLimitedClient)
+    assert isinstance(hypothesis_client, RunLimitedClient)
+    assert cwe_client._model == "old-light"
+    assert technical_gate_client._model == "old-explicit"
+    assert hypothesis_client._model == "old-primary"
 
 
 def test_legacy_run_ignores_new_light_policy_but_keeps_explicit_override(
@@ -208,8 +223,13 @@ def test_legacy_run_ignores_new_light_policy_but_keeps_explicit_override(
     identity = _identity(run)
     client = factory(identity, SimpleArtifactRepository(tmp_path, identity))
 
-    assert client.client_for_agent("cwe_label")._model == "new-primary"
-    assert client.client_for_agent("technical_gate")._model == "new-explicit"
+    assert isinstance(client, ModelRoutedClient)
+    cwe_client = client.client_for_agent("cwe_label")
+    technical_gate_client = client.client_for_agent("technical_gate")
+    assert isinstance(cwe_client, RunLimitedClient)
+    assert isinstance(technical_gate_client, RunLimitedClient)
+    assert cwe_client._model == "new-primary"
+    assert technical_gate_client._model == "new-explicit"
 
 
 @pytest.mark.asyncio
