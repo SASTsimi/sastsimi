@@ -73,6 +73,69 @@ def test_semgrep_fallback_defaults_off_and_round_trips(tmp_path: Path) -> None:
     assert store.load().semgrep_fallback is True
 
 
+def test_optional_light_model_round_trips_in_both_config_files(tmp_path: Path) -> None:
+    config = UserConfig(
+        data_dir=tmp_path / "data",
+        profile_path=tmp_path / "profile.toml",
+        auth_mode="API_KEY",
+        provider="openai",
+        model="primary-model",
+        light_model="light-model",
+        credential_ref="env:OPENAI_API_KEY",
+        execution_profile="FULL",
+        max_cost_minor_units=10_000,
+        docker_network="NONE",
+        enabled_tools=("AST", "OPENGREP", "CODEQL", "DOCKER"),
+        detected_versions={},
+        setup_ready=True,
+    )
+    store = UserConfigStore(tmp_path / "config.toml")
+    store.save(config)
+    assert store.load().light_model == "light-model"
+    assert 'light_model = "light-model"' in store.path.read_text(encoding="utf-8")
+
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="primary-model",
+        light_model="light-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        docker_network="NONE",
+        tools={},
+    )
+    profile.write(tmp_path / "profile.toml")
+    assert load_simple_execution_profile(tmp_path / "profile.toml").light_model == (
+        "light-model"
+    )
+
+
+def test_legacy_config_omits_light_model_and_rejects_unsafe_id(
+    tmp_path: Path,
+) -> None:
+    profile = SimpleExecutionProfile(
+        provider_profile_ref="local-openai",
+        provider="openai",
+        model="primary-model",
+        auth_mode="API_KEY",
+        credential_ref="env:OPENAI_API_KEY",
+        data_dir=tmp_path / "data",
+        workspace_root=tmp_path / "workspaces",
+        max_cost_minor_units=10_000,
+        docker_network="NONE",
+        tools={},
+    )
+    assert profile.light_model is None
+    assert "light_model" not in profile.to_toml()
+    with pytest.raises(ValueError, match="LIGHT_MODEL_INVALID"):
+        SimpleExecutionProfile.model_validate(
+            {**profile.model_dump(), "light_model": "bad\nmodel"}
+        )
+
+
 def test_legacy_static_scan_pass_budget_loads_but_is_not_emitted(
     tmp_path: Path,
 ) -> None:

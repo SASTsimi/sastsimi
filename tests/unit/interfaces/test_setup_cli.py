@@ -97,6 +97,40 @@ def test_setup_cli_writes_ready_secret_free_configuration(
     assert "sk-" not in raw
 
 
+def test_setup_cli_persists_optional_light_model(tmp_path: Path, capsys) -> None:
+    from sastsimi.config.user_config import load_simple_execution_profile
+
+    service = _service(tmp_path)
+    code = main(
+        [
+            "setup",
+            "--non-interactive",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--auth",
+            "subscription",
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-6-sol",
+            "--light-model",
+            "gpt-6-luna",
+            "--profile",
+            "lightweight",
+            "--format",
+            "json",
+        ],
+        setup_service=service,
+    )
+
+    assert code == 0
+    capsys.readouterr()
+    assert service.config_store.load().light_model == "gpt-6-luna"
+    assert load_simple_execution_profile(tmp_path / "profile.toml").light_model == (
+        "gpt-6-luna"
+    )
+
+
 def test_new_codex_setup_defaults_to_gpt_6_sol(tmp_path: Path, capsys) -> None:
     from sastsimi.config.user_config import load_simple_execution_profile
 

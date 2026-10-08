@@ -189,6 +189,7 @@ def main(
     setup_parser.add_argument("--auth", choices=["api-key", "subscription"])
     setup_parser.add_argument("--provider")
     setup_parser.add_argument("--model")
+    setup_parser.add_argument("--light-model")
     setup_parser.add_argument("--agent-model", action="append", default=[])
     setup_parser.add_argument("--llm-timeout-seconds", type=int, default=180)
     setup_parser.add_argument("--llm-max-retries", type=int, default=2)
