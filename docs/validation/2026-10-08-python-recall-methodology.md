@@ -221,8 +221,63 @@ For the browser-based CSRF PoC, a recovery Docker build appended an
 lists. The build failed to locate Chromium. A source-only fallback image was
 then correctly rejected as unverified instead of being used as PoC evidence.
 This run is preserved. Ordinary `resume` cannot safely rebuild that bound
-recipe; a subsequent isolated trial after the generic build fix will receive
+recipe; the subsequent isolated trial after the generic build fix received
 a new analysis ID while using the **same pre-run oracle**.
+
+## Measured development result: DSVPWA
+
+The second isolated run at the frozen DSVPWA commit has exact analysis ID
+`4bd80ec92d344543b9e629d52242948e`. It reached its candidate terminal
+as **PARTIAL**, not COMPLETE: Python static file×rule coverage was 60/60;
+50/50 candidates were triaged (28 INCLUDE, 12 EXCLUDE, 10 UNDECIDED), and
+38/38 selected candidates finished deep analysis. It processed 41
+hypotheses and 24 PoC attempts. Attack-surface review covered 16/51 surfaces
+and left **35 insufficient**; one test file and three nonPython product files
+were outside the Python product-code scan. Seven raw Findings each have a
+report, executed PoC, final TRUE, Technical Gate ACCEPT, and intact PoC,
+Finding, and report CAS references. Scope Gate remained **UNCERTAIN** because
+no published target policy was available; these are not automatically
+submission-ready.
+
+The independent [post-run review ledger](reviews/dsvpwa-c98b7795-v2-review.json)
+matches only F-001 to one frozen case: the `/users` request `id` reaches a
+concatenated SQLite query. Its PoC compared ordinary and injected IDs in the
+attack class **in process**; it did not replay the HTTP route. The matched
+source/sink, PoC, final TRUE, Technical Gate, and report satisfy the strict
+scorer's case criteria, but the narrower reproduction boundary must be kept
+visible. The six other raw Findings are not matches to the frozen 12 Python
+cases: F-002/003 share one static-file symlink root, F-004/005/007 share a
+separate `do_BDR` shell root, and F-006 is the `/docs` URL SSRF branch rather
+than the oracle's local-file traversal. They are **review-required unmatched
+Findings**, not automatically false positives. Seven raw Findings thus
+represent four reviewed roots, of which one matches this documented-case
+oracle; display grouping never changes the source records or the TP count.
+
+Four remaining documented cases reached a relevant hypothesis but not final
+verification: reflected XSS, `/diag` command injection, unsafe
+deserialization, and `/docs` local-file traversal. The XSS and command
+injection PoCs did not establish their HTTP route; the deserialization
+hypothesis stopped before PoC; the file-path PoCs showed an in-process
+outside-directory read but not the HTTP route. Seven other documented cases
+did not acquire a validated hypothesis for the **exact** route and root:
+login-password SQL injection, stored XSS, session fixation, settings CSRF,
+admin execution-after-redirect, jump open redirect, and clickjacking.
+Related candidates or same-CWE hypotheses for different inputs/routes are
+not credited to these cases. This is the observed gap breakdown, not proof
+that those seven paths are safe.
+
+The [saved strict score](results/dsvpwa-c98b7795-v2-score.json) is **1 TP,
+0 established FN, 11 HOLD, 2 predeclared OUT_OF_SCOPE**, with 1 matched and
+6 review-required unmatched raw Findings. `recall` is **null**, not `1/12`
+or 100%, because the 35 insufficient surfaces make unmatched cases
+inconclusive under `PARTIAL`. No false-positive rate is measured. The frozen
+oracle and separate review ledger were never given to the analysis Agents.
+The second run was launched before the later commit-pinned XML route helper,
+additional OpenGrep hints, and bounded Git timeout retry were committed. Its
+measured outcomes therefore cannot be attributed to those later changes.
+The underlying run database and artifact bytes remain in isolated local
+trial data, not in this PR; the published review and score alone do not
+reproduce an exploit.
 
 ## Commit-pinned PoC route context added after the trial launch
 
@@ -239,7 +294,37 @@ remain unchanged.
 A read-only helper check against the frozen DSVPWA commit and cited
 `dsvpwa/attacks.py:287` returned `CommandInjection -> /diag`, referencing
 `db/attacks.xml` through `dsvpwa/handlers.py`, with pinned resource hashes.
-This verifies the helper's input construction, **not** that the ongoing
+This verifies the helper's input construction, **not** that the second
 end-to-end analysis used the later patch or that its recall improved. The
 isolated end-to-end trial launched before this helper was added; its score
 must be attributed to its launch-time tool code, not to this final PR tree.
+
+## Generic Python candidate hints added after the trial launch
+
+The development trial also exposed a candidate-collection gap: several
+documented Python paths had no direct static hint. The candidate rule pack
+now includes bounded hints for query parsing, unsafe deserialization,
+identity-cookie writes, dynamic redirect targets, and direct
+`BaseHTTPRequestHandler` HTTP-method entries. They are **hints**, not verified
+input-to-sink flows or vulnerability verdicts. A query parser is labelled
+`POSSIBLE_REQUEST_INPUT`, not a proven request source. Constant redirects and
+unrelated cookie keys have negative-rule tests; JavaScript redirects assembled
+as HTML strings remain outside these new patterns because a broad string
+rule would be unreliable.
+
+A read-only OpenGrep probe of the exact DSVPWA commit scanned five tracked
+Python product files with 17 selected Python rules and recorded no scan
+errors. The new rules emitted six location hints: one deserialization call,
+two identity-cookie writes, two HTTP method handlers, and one query parser.
+These counts are **not** Finding, PoC, TP, or recall counts. The probe output
+stays in ignored local trial data; no oracle was supplied to the scanner.
+Adding rules changes the static scope fingerprint, so the already-running
+DSVPWA analysis retains its original static evidence and cannot be cited as
+an end-to-end validation of the expanded rules. A new analysis ID is required
+to measure their eventual effect on verified findings.
+
+The pinned Git reader now retries a timed-out read once, keeping each attempt
+finite and rejecting partial subprocess output. This addresses a possible
+transient host-I/O failure mode without relaxing commit, path, blob, or source
+hash checks. It does not prove the exact cause of an earlier generic
+`HYPOTHESIS_ANCHOR_INVALID`, whose inner exception was not persisted.
