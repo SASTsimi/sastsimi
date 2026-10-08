@@ -1229,6 +1229,12 @@ def test_environment_patch_accepts_allowlisted_package_commands(patch: str) -> N
     assert validate_environment_patch(f"\n{patch}\n") == patch
 
 
+def test_environment_patch_refreshes_apt_index_before_install() -> None:
+    assert validate_environment_patch("RUN apt-get install -y libxml2-dev") == (
+        "RUN apt-get update\nRUN apt-get install -y libxml2-dev"
+    )
+
+
 @pytest.mark.asyncio
 async def test_missing_python_playwright_browser_rebuilds_only_the_container_image(
     tmp_path: Path,

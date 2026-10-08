@@ -430,6 +430,7 @@ def validate_environment_patch(patch: str) -> str:
         _PLAYWRIGHT_PATCH_PREFIX + browser for browser in _PLAYWRIGHT_BROWSERS
     }:
         return normalized
+    safe_lines: list[str] = []
     for line in normalized.splitlines():
         if (
             not line.startswith("RUN ")
@@ -454,6 +455,14 @@ def validate_environment_patch(patch: str) -> str:
             for item in _ALLOWED_PACKAGE_COMMAND_PREFIXES
         ):
             raise ValueError("RECOVERY_ENVIRONMENT_PATCH_FORBIDDEN")
+        if _allowed_package_command(command, "apt-get install ") and (
+            not safe_lines or safe_lines[-1].lower() != "run apt-get update"
+        ):
+            safe_lines.append("RUN apt-get update")
+        safe_lines.append(line)
+    normalized = "\n".join(safe_lines)
+    if len(normalized.encode("utf-8")) > _MAX_ENVIRONMENT_PATCH_BYTES:
+        raise ValueError("RECOVERY_ENVIRONMENT_PATCH_FORBIDDEN")
     return normalized
 
 

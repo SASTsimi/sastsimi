@@ -199,8 +199,20 @@ this PR.
 
 ## Development-trial status
 
-The fresh DSVPWA run at analysis ID
-`583994a460304ad2acf0b2af488faab2` is still processing its saved
-candidates and hypotheses. Do not report its provisional Finding inventory as
-a final TP/FN count. Its result and first-gap evidence will be added after the
-terminal state and full post-run review are available.
+The first fresh DSVPWA run, analysis ID
+`583994a460304ad2acf0b2af488faab2`, stopped as **BLOCKED** at
+`POC_ENVIRONMENT_UNVERIFIED`; it did not reach a candidate terminal. Its Python
+file×rule coverage was 60/60, and seven Findings had reports, but that is not
+a completed recall measurement. Four reports provisionally matched different
+frozen cases (command injection, `/users` SQL injection, unsafe
+deserialization, and local-file traversal); three reports concerned separate
+or duplicate roots outside this documented-case oracle. No final TP/FN or
+recall value is assigned to this blocked run.
+
+For the browser-based CSRF PoC, a recovery Docker build appended an
+`apt-get install` after the repository Dockerfile had removed its apt package
+lists. The build failed to locate Chromium. A source-only fallback image was
+then correctly rejected as unverified instead of being used as PoC evidence.
+This run is preserved. Ordinary `resume` cannot safely rebuild that bound
+recipe; a subsequent isolated trial after the generic build fix will receive
+a new analysis ID while using the **same pre-run oracle**.

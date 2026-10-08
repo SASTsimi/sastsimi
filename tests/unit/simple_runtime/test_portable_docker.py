@@ -1092,6 +1092,43 @@ async def test_dependency_failure_uses_recorded_source_only_fallback(
 
 
 @pytest.mark.asyncio
+async def test_failed_recovery_install_keeps_build_failure_for_recovery(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-recovery-install-failure",
+        workspace_id="workspace-recovery-install-failure",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-recovery-install-failure",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    checkpoint = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN apt-get install -y libxml2-dev",
+    )
+    docker = _FailingBuildDocker([b"RUN apt-get install -y libxml2-dev: exit code 100"])
+
+    with pytest.raises(DockerOperationError, match="DOCKER_BUILD_FAILED") as failure:
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(checkpoint, {}, ())
+
+    assert len(docker.dockerfiles) == 1
+    assert b"RUN apt-get install -y libxml2-dev" in docker.dockerfiles[0]
+    recipe = json.loads(artifacts.read(failure.value.recipe_ref))  # type: ignore[attr-defined]
+    assert recipe["status"] == "BLOCKED"
+    assert recipe["degraded"] is False
+    assert recipe["dockerfile_source"] == "REPOSITORY_DOCKERFILE"
+    assert len(recipe["build_attempt_refs"]) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "diagnostics", [b"syntax error near FROM", b"pull access denied"]
 )
