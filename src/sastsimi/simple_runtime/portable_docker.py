@@ -507,7 +507,9 @@ def build_pinned_context(
                 mode, kind, object_id = header.split()
             except ValueError as error:
                 raise ValueError("PINNED_CONTEXT_UNSAFE") from error
-            if mode != b"100644" or kind != b"blob":
+            # The executable bit on a tracked ignore file does not affect its
+            # content or Docker's matching rules; Git may legitimately store it.
+            if mode not in {b"100644", b"100755"} or kind != b"blob":
                 raise ValueError("PINNED_CONTEXT_UNSAFE")
             ignored = git("cat-file", "blob", object_id.decode("ascii"))
             if ignored.returncode != 0 or len(ignored.stdout) > 1024 * 1024:

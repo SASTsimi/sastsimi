@@ -64,6 +64,7 @@ from .models import (
     StageResult,
     StageStatus,
 )
+from .offline_wheels import WHEEL_ARCHIVE_REASON_CODES
 from .poc import PoCCandidateRejected, validate_candidate
 from .poc_resource_facts import collect_poc_resource_facts
 from .provider import SimpleLLMCallResult, SimpleLLMClient, _validate_schema
@@ -3423,6 +3424,20 @@ If this list is nonempty, the hypothesis is inconclusive, not verified.
             )
         except (OSError, RuntimeError, ValueError) as error:
             code = str(error)
+            wheel_archive_reason = getattr(error, "wheel_archive_reason", None)
+            wheel_diagnostic_ref = (
+                self._stage._artifacts.put_json(
+                    {
+                        "kind": "simple_wheel_validation_diagnostic_v1",
+                        "error_code": "WHEEL_ARCHIVE_INVALID",
+                        "reason": wheel_archive_reason,
+                    }
+                )
+                if code == "WHEEL_ARCHIVE_INVALID"
+                and isinstance(wheel_archive_reason, str)
+                and wheel_archive_reason in WHEEL_ARCHIVE_REASON_CODES
+                else None
+            )
             attempt_refs = getattr(error, "attempt_refs", ())
             if not isinstance(attempt_refs, tuple) or any(
                 not isinstance(ref, StoredDataRef) for ref in attempt_refs
@@ -3487,6 +3502,7 @@ If this list is nonempty, the hypothesis is inconclusive, not verified.
                         output_ref,
                         *attempt_refs,
                         *failed_recipe_refs,
+                        *((wheel_diagnostic_ref,) if wheel_diagnostic_ref else ()),
                     ),
                 )
             ) from error

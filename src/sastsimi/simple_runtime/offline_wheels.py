@@ -11,6 +11,7 @@ import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 
@@ -25,6 +26,49 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SECRET_NAME = re.compile(
     r"(?i)(?:^|[-_.])(?:secret|password|api[-_]?key|token)(?:[-_.]|$)"
 )
+
+WheelArchiveReason = Literal[
+    "WHEEL_ZIP_STRUCTURE_INVALID",
+    "WHEEL_ZIP_EXPANDED_SIZE_LIMIT",
+    "WHEEL_FILENAME_INVALID",
+    "RESOLVED_WHEEL_SET_INVALID",
+    "RESOLVED_WHEEL_FILE_UNSAFE",
+    "RESOLVED_WHEEL_FILE_CHANGED",
+    "RESOLVED_WHEEL_FILE_IO",
+    "BUNDLE_EXPANDED_SIZE_LIMIT",
+    "TAR_PAX_METADATA",
+    "TAR_MEMBER_UNSAFE",
+    "TAR_MEMBER_DUPLICATE",
+    "TAR_READ_ERROR",
+    "TAR_EMPTY",
+]
+WHEEL_ARCHIVE_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "WHEEL_ZIP_STRUCTURE_INVALID",
+        "WHEEL_ZIP_EXPANDED_SIZE_LIMIT",
+        "WHEEL_FILENAME_INVALID",
+        "RESOLVED_WHEEL_SET_INVALID",
+        "RESOLVED_WHEEL_FILE_UNSAFE",
+        "RESOLVED_WHEEL_FILE_CHANGED",
+        "RESOLVED_WHEEL_FILE_IO",
+        "BUNDLE_EXPANDED_SIZE_LIMIT",
+        "TAR_PAX_METADATA",
+        "TAR_MEMBER_UNSAFE",
+        "TAR_MEMBER_DUPLICATE",
+        "TAR_READ_ERROR",
+        "TAR_EMPTY",
+    }
+)
+
+
+class WheelArchiveValidationError(ValueError):
+    """Preserve the public code while carrying a safe, fixed failure category."""
+
+    def __init__(self, reason: WheelArchiveReason) -> None:
+        if reason not in WHEEL_ARCHIVE_REASON_CODES:
+            raise ValueError("WHEEL_ARCHIVE_REASON_INVALID")
+        super().__init__("WHEEL_ARCHIVE_INVALID")
+        self.wheel_archive_reason = reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +135,7 @@ def _validate_wheel_zip(raw: bytes) -> None:
         with zipfile.ZipFile(io.BytesIO(raw)) as wheel:
             infos = wheel.infolist()
             if not infos or len(infos) > MAX_WHEEL_FILES:
-                raise ValueError("WHEEL_ARCHIVE_INVALID")
+                raise WheelArchiveValidationError("WHEEL_ZIP_STRUCTURE_INVALID")
             expanded = 0
             files: set[str] = set()
             for info in infos:
@@ -105,18 +149,18 @@ def _validate_wheel_zip(raw: bytes) -> None:
                     or any(part in {"", ".", ".."} for part in parts)
                     or stat.S_ISLNK(info.external_attr >> 16)
                 ):
-                    raise ValueError("WHEEL_ARCHIVE_INVALID")
+                    raise WheelArchiveValidationError("WHEEL_ZIP_STRUCTURE_INVALID")
                 expanded += info.file_size
                 if expanded > MAX_WHEEL_EXPANDED_BYTES:
-                    raise ValueError("WHEEL_ARCHIVE_INVALID")
+                    raise WheelArchiveValidationError("WHEEL_ZIP_EXPANDED_SIZE_LIMIT")
                 if not info.is_dir():
                     files.add(name)
             if not any(name.endswith(".dist-info/WHEEL") for name in files) or not any(
                 name.endswith(".dist-info/METADATA") for name in files
             ):
-                raise ValueError("WHEEL_ARCHIVE_INVALID")
+                raise WheelArchiveValidationError("WHEEL_ZIP_STRUCTURE_INVALID")
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
-        raise ValueError("WHEEL_ARCHIVE_INVALID") from error
+        raise WheelArchiveValidationError("WHEEL_ZIP_STRUCTURE_INVALID") from error
 
 
 def require_target_compatible_wheels(
@@ -128,7 +172,7 @@ def require_target_compatible_wheels(
         try:
             _project, _version, _build, tags = parse_wheel_filename(name)
         except InvalidWheelFilename as error:
-            raise ValueError("WHEEL_ARCHIVE_INVALID") from error
+            raise WheelArchiveValidationError("WHEEL_FILENAME_INVALID") from error
         names = {str(tag) for tag in tags}
         if "py3-none-any" not in names and (
             target_tags is None or not names.intersection(target_tags)
@@ -151,7 +195,7 @@ def build_wheel_bundle(wheel_directory: Path) -> bytes:
     except OSError as error:
         raise ValueError("WHEEL_DIRECTORY_UNSAFE") from error
     if not entries or len(entries) > MAX_WHEEL_FILES:
-        raise ValueError("WHEEL_ARCHIVE_INVALID")
+        raise WheelArchiveValidationError("RESOLVED_WHEEL_SET_INVALID")
     wheels: list[tuple[str, bytes]] = []
     expanded = 0
     for path in entries:
@@ -165,9 +209,10 @@ def build_wheel_bundle(wheel_directory: Path) -> bytes:
                 or not _safe_member_name(name)
                 or not name.endswith(".whl")
                 or before.st_size < 1
-                or before.st_size > MAX_WHEEL_EXPANDED_BYTES
             ):
-                raise ValueError("WHEEL_ARCHIVE_INVALID")
+                raise WheelArchiveValidationError("RESOLVED_WHEEL_FILE_UNSAFE")
+            if before.st_size > MAX_WHEEL_EXPANDED_BYTES:
+                raise WheelArchiveValidationError("BUNDLE_EXPANDED_SIZE_LIMIT")
             descriptor = os.open(
                 path,
                 os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
@@ -179,7 +224,7 @@ def build_wheel_bundle(wheel_directory: Path) -> bytes:
                     before.st_ino,
                     before.st_size,
                 ) != (opened.st_dev, opened.st_ino, opened.st_size):
-                    raise ValueError("WHEEL_ARCHIVE_INVALID")
+                    raise WheelArchiveValidationError("RESOLVED_WHEEL_FILE_CHANGED")
                 raw = stream.read(before.st_size + 1)
             after = path.lstat()
             if len(raw) != before.st_size or (
@@ -188,21 +233,23 @@ def build_wheel_bundle(wheel_directory: Path) -> bytes:
                 before.st_size,
                 before.st_mtime_ns,
             ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
-                raise ValueError("WHEEL_ARCHIVE_INVALID")
+                raise WheelArchiveValidationError("RESOLVED_WHEEL_FILE_CHANGED")
         except OSError as error:
-            raise ValueError("WHEEL_ARCHIVE_INVALID") from error
+            raise WheelArchiveValidationError("RESOLVED_WHEEL_FILE_IO") from error
         try:
             parse_wheel_filename(name)
         except InvalidWheelFilename as error:
-            raise ValueError("WHEEL_ARCHIVE_INVALID") from error
+            raise WheelArchiveValidationError("WHEEL_FILENAME_INVALID") from error
         _validate_wheel_zip(raw)
         expanded += len(raw)
         if expanded > MAX_WHEEL_EXPANDED_BYTES:
-            raise ValueError("WHEEL_ARCHIVE_INVALID")
+            raise WheelArchiveValidationError("BUNDLE_EXPANDED_SIZE_LIMIT")
         wheels.append((name, raw))
     output_buffer = io.BytesIO()
+    # GNU long-name records preserve valid wheel filenames without the PAX
+    # metadata that the fail-closed importer deliberately rejects.
     with tarfile.open(
-        fileobj=output_buffer, mode="w", format=tarfile.PAX_FORMAT
+        fileobj=output_buffer, mode="w", format=tarfile.GNU_FORMAT
     ) as archive:
         for name, raw in wheels:
             member = tarfile.TarInfo(name)
@@ -242,36 +289,40 @@ def _import_wheel_bundle_raw(
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as archive:
             for member in archive:
                 name = member.name
+                if member.pax_headers:
+                    raise WheelArchiveValidationError("TAR_PAX_METADATA")
                 if (
                     not member.isfile()
-                    or member.pax_headers
                     or not _safe_member_name(name)
                     or not name.endswith(".whl")
-                    or name.casefold() in folded
                     or len(names) >= MAX_WHEEL_FILES
                     or member.size < 1
                 ):
-                    raise ValueError("WHEEL_ARCHIVE_INVALID")
+                    raise WheelArchiveValidationError("TAR_MEMBER_UNSAFE")
+                if name.casefold() in folded:
+                    raise WheelArchiveValidationError("TAR_MEMBER_DUPLICATE")
                 expanded += member.size
                 if expanded > MAX_WHEEL_EXPANDED_BYTES:
-                    raise ValueError("WHEEL_ARCHIVE_INVALID")
+                    raise WheelArchiveValidationError("BUNDLE_EXPANDED_SIZE_LIMIT")
                 try:
                     parse_wheel_filename(name)
                 except InvalidWheelFilename as error:
-                    raise ValueError("WHEEL_ARCHIVE_INVALID") from error
+                    raise WheelArchiveValidationError(
+                        "WHEEL_FILENAME_INVALID"
+                    ) from error
                 stream = archive.extractfile(member)
                 if stream is None:
-                    raise ValueError("WHEEL_ARCHIVE_INVALID")
+                    raise WheelArchiveValidationError("TAR_READ_ERROR")
                 wheel_bytes = stream.read(member.size + 1)
                 if len(wheel_bytes) != member.size:
-                    raise ValueError("WHEEL_ARCHIVE_INVALID")
+                    raise WheelArchiveValidationError("TAR_READ_ERROR")
                 _validate_wheel_zip(wheel_bytes)
                 names.append(name)
                 folded.add(name.casefold())
     except (OSError, EOFError, tarfile.TarError) as error:
-        raise ValueError("WHEEL_ARCHIVE_INVALID") from error
+        raise WheelArchiveValidationError("TAR_READ_ERROR") from error
     if not names:
-        raise ValueError("WHEEL_ARCHIVE_INVALID")
+        raise WheelArchiveValidationError("TAR_EMPTY")
     ordered = tuple(sorted(names))
     require_target_compatible_wheels(ordered, target_tags)
     ref = artifacts.put_bytes(raw, "application/x-tar")
