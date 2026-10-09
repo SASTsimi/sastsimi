@@ -13,7 +13,9 @@ import pytest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import CheckpointIdentity
 from sastsimi.simple_runtime.offline_wheels import (
+    build_wheel_bundle,
     import_wheel_bundle,
+    import_wheel_bundle_bytes,
     require_target_compatible_wheels,
 )
 
@@ -76,6 +78,58 @@ def test_archive_imports_exact_universal_wheel(tmp_path: Path) -> None:
     assert bundle.archive_sha256 == digest
     assert bundle.wheel_names == (name,)
     assert artifacts.read(bundle.archive_ref) == path.read_bytes()
+
+
+def test_resolver_bundle_round_trips_long_wheel_name(tmp_path: Path) -> None:
+    name = (
+        "charset_normalizer-3.4.4-cp312-cp312-manylinux2014_x86_64."
+        "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+    )
+    assert len(name.encode("ascii")) > 100
+    wheel_dir = tmp_path / "downloaded"
+    wheel_dir.mkdir()
+    (wheel_dir / name).write_bytes(_wheel_bytes())
+
+    raw = build_wheel_bundle(wheel_dir)
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        members = archive.getmembers()
+    assert len(members) == 1
+    assert members[0].name == name
+    assert not members[0].pax_headers
+
+    bundle = import_wheel_bundle_bytes(
+        raw,
+        _artifacts(tmp_path),
+        target_tags=frozenset({"cp312-cp312-manylinux_2_17_x86_64"}),
+    )
+    assert bundle.wheel_names == (name,)
+
+
+def test_operator_bundle_rejects_pax_metadata(tmp_path: Path) -> None:
+    name = "sample_pkg-1.0-py3-none-any.whl"
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        member = tarfile.TarInfo(name)
+        member.pax_headers = {"comment": "untrusted"}
+        wheel = _wheel_bytes()
+        member.size = len(wheel)
+        archive.addfile(member, io.BytesIO(wheel))
+
+    with pytest.raises(ValueError, match="WHEEL_ARCHIVE_INVALID") as caught:
+        import_wheel_bundle_bytes(stream.getvalue(), _artifacts(tmp_path))
+    assert getattr(caught.value, "wheel_archive_reason", None) == "TAR_PAX_METADATA"
+
+
+def test_invalid_wheel_zip_records_structure_reason(tmp_path: Path) -> None:
+    name = "sample_pkg-1.0-py3-none-any.whl"
+    raw = _tar_bytes(((name, b"not-a-zip", tarfile.REGTYPE),))
+
+    with pytest.raises(ValueError, match="WHEEL_ARCHIVE_INVALID") as caught:
+        import_wheel_bundle_bytes(raw, _artifacts(tmp_path))
+    assert (
+        getattr(caught.value, "wheel_archive_reason", None)
+        == "WHEEL_ZIP_STRUCTURE_INVALID"
+    )
 
 
 def test_archive_rejects_symlink_digest_mismatch_and_oversize(

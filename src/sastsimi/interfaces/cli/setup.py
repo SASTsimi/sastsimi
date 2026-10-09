@@ -81,6 +81,7 @@ def choices_from_args(
             if provider == "codex"
             else "gpt-5.6-sol",
         ),
+        light_model=getattr(args, "light_model", None),
         credential_ref=credential_ref,
         execution_profile=execution_profile,
         max_cost_minor_units=args.max_cost_minor_units,

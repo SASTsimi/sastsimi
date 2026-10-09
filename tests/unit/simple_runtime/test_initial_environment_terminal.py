@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from shutil import rmtree
@@ -23,6 +24,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
     terminal_initial_outcome,
 )
+from sastsimi.simple_runtime.offline_wheels import WheelArchiveValidationError
 from sastsimi.simple_runtime.portable_docker import DependencyBundleResolutionError
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.recovery import (
@@ -31,7 +33,7 @@ from sastsimi.simple_runtime.recovery import (
     RecoveryDecision,
     RecoveryResolution,
 )
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, StageBlocked
 from sastsimi.simple_runtime.stages import (
     InitialVerificationStage,
     ReproductionEnvironment,
@@ -272,6 +274,62 @@ async def test_initial_stage_preserves_agent_output_and_terminalizes_receipted_b
         }
     )
     assert artifacts.verified_terminal_initial_outcome(completed) == "INCONCLUSIVE"
+
+
+@pytest.mark.asyncio
+async def test_initial_stage_records_wheel_archive_reason_in_block_evidence(
+    tmp_path: Path,
+) -> None:
+    artifacts, template = _checkpoint_with_environment_block(tmp_path)
+    checkpoint = template.model_copy(
+        update={
+            "status": StageStatus.RUNNING,
+            "output_refs": (),
+            "environment_block_ref": None,
+        }
+    )
+
+    class _Client:
+        async def call(self, **_kwargs: object) -> SimpleLLMCallResult:
+            return SimpleLLMCallResult(
+                value={
+                    "initial_assessment": "TRUE",
+                    "rationale": "A dynamic reproduction is needed.",
+                    "reproduction_goal": "Run the local reproduction.",
+                    "environment_requirements": ["pip:example==1.0"],
+                    "unmet_external_prerequisites": [],
+                    "supporting_refs": [],
+                    "limitations": [],
+                },
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    class _Environment:
+        async def prepare(
+            self,
+            _checkpoint: StageCheckpoint,
+            _prior: Mapping[SimpleStage, StageCheckpoint],
+            _requirements: tuple[str, ...],
+        ) -> ReproductionEnvironment:
+            raise WheelArchiveValidationError("TAR_PAX_METADATA")
+
+    with pytest.raises(StageBlocked) as blocked:
+        await InitialVerificationStage(_Client(), artifacts, _Environment())(
+            checkpoint, {}
+        )
+
+    assert blocked.value.failure.code == "WHEEL_ARCHIVE_INVALID"
+    evidence = [
+        json.loads(artifacts.read(ref)) for ref in blocked.value.failure.evidence_refs
+    ]
+    assert {
+        "error_code": "WHEEL_ARCHIVE_INVALID",
+        "reason": "TAR_PAX_METADATA",
+    } in [
+        {"error_code": item.get("error_code"), "reason": item.get("reason")}
+        for item in evidence
+    ]
 
 
 @pytest.mark.asyncio

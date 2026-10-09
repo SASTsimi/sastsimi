@@ -4,7 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -99,6 +99,8 @@ class SimpleAnalysisRun(ContractModel):
     profile_ref: str | None = None
     provider: str | None = None
     model: str | None = None
+    model_route_version: Literal[1] | None = None
+    model_routes: dict[str, str] | None = None
     started_at: datetime | None = None
     llm_provider: str | None = None
     on_demand_possible: bool = False
@@ -115,6 +117,15 @@ class SimpleAnalysisRun(ContractModel):
     hypothesis_ids: tuple[str, ...] = ()
     parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     chain_depths: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_model_route_snapshot(self) -> Self:
+        if self.model_route_version is None:
+            if self.model_routes is not None:
+                raise ValueError("MODEL_ROUTE_VERSION_REQUIRED")
+        elif self.provider is None or self.model is None or self.model_routes is None:
+            raise ValueError("MODEL_ROUTE_SNAPSHOT_INCOMPLETE")
+        return self
 
 
 def input_reference_hash(refs: tuple[StoredDataRef, ...]) -> str:

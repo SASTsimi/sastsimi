@@ -275,15 +275,19 @@ async def test_unsupported_requirement_at_attempt_cap_stays_blocked(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "error_code", ("WHEEL_ARCHIVE_INVALID", "PINNED_CONTEXT_UNSAFE")
+)
+@pytest.mark.parametrize(
     "attempt_number,in_flight,expected_replay",
     [(1, False, True), (1, True, False), (3, False, False)],
 )
 @pytest.mark.parametrize(
     "stage_version", ("5", STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE])
 )
-async def test_wheel_archive_failure_replays_only_bounded_initial_stage(
+async def test_corrected_environment_failure_replays_only_bounded_initial_stage(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    error_code: str,
     attempt_number: int,
     in_flight: bool,
     expected_replay: bool,
@@ -301,7 +305,7 @@ async def test_wheel_archive_failure_replays_only_bounded_initial_stage(
     failed = store.mark_failure(
         running,
         StageFailure(
-            code="WHEEL_ARCHIVE_INVALID",
+            code=error_code,
             retryable=False,
             safe_message="Downloaded wheel could not be read by host",
         ),
@@ -329,7 +333,7 @@ async def test_wheel_archive_failure_replays_only_bounded_initial_stage(
         )
     else:
         assert outcome.status is StageStatus.BLOCKED
-        assert outcome.error_code == "WHEEL_ARCHIVE_INVALID"
+        assert outcome.error_code == error_code
         assert calls == []
 
 

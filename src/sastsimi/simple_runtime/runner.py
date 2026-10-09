@@ -215,6 +215,7 @@ class SimpleRuntimeRunner:
                         in {
                             "POC_OFFLINE_REQUIREMENT_UNSUPPORTED",
                             "WHEEL_ARCHIVE_INVALID",
+                            "PINNED_CONTEXT_UNSAFE",
                         }
                     ):
                         if (
@@ -626,7 +627,11 @@ class SimpleRuntimeRunner:
             checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
             and checkpoint.status is StageStatus.BLOCKED
             and checkpoint.error_code
-            in {"POC_OFFLINE_REQUIREMENT_UNSUPPORTED", "WHEEL_ARCHIVE_INVALID"}
+            in {
+                "POC_OFFLINE_REQUIREMENT_UNSUPPORTED",
+                "WHEEL_ARCHIVE_INVALID",
+                "PINNED_CONTEXT_UNSAFE",
+            }
         ):
             if (
                 checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS

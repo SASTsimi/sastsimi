@@ -189,6 +189,7 @@ def main(
     setup_parser.add_argument("--auth", choices=["api-key", "subscription"])
     setup_parser.add_argument("--provider")
     setup_parser.add_argument("--model")
+    setup_parser.add_argument("--light-model")
     setup_parser.add_argument("--agent-model", action="append", default=[])
     setup_parser.add_argument("--llm-timeout-seconds", type=int, default=180)
     setup_parser.add_argument("--llm-max-retries", type=int, default=2)
@@ -858,6 +859,23 @@ def main(
                         reason_code=str(error),
                     )
                     return int(code)
+                if data.get("error_code") == "MODEL_ROUTE_PROVIDER_MISMATCH":
+                    if output_format == "json":
+                        emit_data(
+                            output_format,
+                            sys.stderr,
+                            command=command_name,
+                            data=data,
+                            code=ExitCode.CONFIG_ERROR,
+                        )
+                    else:
+                        public_command.emit_public(
+                            output_format,
+                            sys.stderr,
+                            command=command_name,
+                            data=data,
+                        )
+                    return int(ExitCode.CONFIG_ERROR)
                 public_command.emit_public(
                     output_format,
                     sys.stdout,

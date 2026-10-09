@@ -46,6 +46,8 @@ sastsimi analyze $repo --commit $commit
 
 새 PowerShell 창에서는 `.venv`를 다시 활성화하세요. 개발용 잠금 의존성까지 설치할 때는 `uv sync --frozen --all-groups`를 사용할 수 있습니다. OpenAI API 방식은 `OPENAI_API_KEY`를 환경변수로 전달하며, Cursor·Claude 인증과 모델별 설정은 [Provider 안내](docs/provider-setup.md)에 있습니다. 대상은 허가받은 저장소와 정확한 커밋으로 지정하세요.
 
+같은 Provider 안에서 가벼운 분류·보고서 초안만 다른 모델로 실행하려면, 두 모델의 계정 사용 가능 여부를 확인한 뒤 setup에 `--light-model <모델-ID>`를 추가할 수 있습니다. 취약점 선별·PoC·검증은 기본 모델을 유지합니다. 모델 배치는 비용·대기시간 선택이며 입력 토큰 수가 자동으로 줄어든다는 뜻은 아닙니다.
+
 OpenGrep이 확인하지 못한 파일·규칙 조합을 선택형 Semgrep CE로 재검사하려면 `python -m pip install semgrep`으로 설치한 뒤 `sastsimi setup`에 `--semgrep-fallback`을 추가하세요. 기존 인증·모델·프로필 옵션도 함께 유지해야 합니다.
 
 ### 진행 상황과 결과

@@ -652,6 +652,30 @@ def test_archive_context_honors_dockerignore_and_blocks_tracked_secret(
         build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
 
 
+def test_archive_context_accepts_executable_dockerignore(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    (workspace / ".dockerignore").write_text("ignored.py\n", encoding="utf-8")
+    (workspace / ".dockerignore").chmod(0o755)
+    (workspace / "ignored.py").write_text("print('ignore me')\n", encoding="utf-8")
+    subprocess.run(("git", "-C", str(workspace), "add", "."), check=True)
+    subprocess.run(
+        ("git", "-C", str(workspace), "update-index", "--chmod=+x", ".dockerignore"),
+        check=True,
+    )
+    commit = _commit_fixture(workspace, "executable dockerignore")
+    mode = subprocess.check_output(
+        ("git", "-C", str(workspace), "ls-tree", commit, ".dockerignore")
+    )
+    assert mode.startswith(b"100755 blob ")
+
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = set(archive.getnames())
+    assert "app.py" in names
+    assert "ignored.py" not in names
+
+
 def test_archive_context_honors_dockerignore_character_class(tmp_path: Path) -> None:
     workspace, _commit = _committed_workspace(tmp_path)
     (workspace / ".dockerignore").write_text(

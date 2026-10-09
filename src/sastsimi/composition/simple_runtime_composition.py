@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
 from sastsimi.config.local_evaluation_profile import LocalCodexSubscriptionSettings
+from sastsimi.config.model_roles import effective_agent_models
 from sastsimi.config.user_config import (
     SimpleExecutionProfile,
     UserConfig,
@@ -87,6 +88,7 @@ from sastsimi.simple_runtime.group_report_projection import (
     current_group_bundle,
     current_report_groups,
 )
+from sastsimi.simple_runtime.model_routing import ModelRoutedClient
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
@@ -254,6 +256,24 @@ class SimpleClientFactory:
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
     ) -> SimpleLLMClient:
+        try:
+            run = self._store.require_analysis_run(identity.analysis_id)
+        except LookupError:
+            run = None
+        if run is not None and run.model_route_version == 1:
+            if run.provider != self._profile.provider:
+                raise ValueError("MODEL_ROUTE_PROVIDER_MISMATCH")
+            if run.model is None or run.model_routes is None:
+                raise ValueError("MODEL_ROUTE_SNAPSHOT_INCOMPLETE")
+            primary_model = run.model
+            agent_models = dict(run.model_routes)
+        else:
+            primary_model = self._profile.model
+            agent_models = effective_agent_models(
+                primary_model,
+                self._profile.light_model if run is None else None,
+                self._profile.agent_models,
+            )
         if self._profile.provider == "claude":
             try:
                 tool = self._profile.tools["claude"]
@@ -264,8 +284,8 @@ class SimpleClientFactory:
             )
             return ClaudeProvider(
                 artifacts=artifacts,
-                default_model=self._profile.model,
-                agent_models=self._profile.agent_models,
+                default_model=primary_model,
+                agent_models=agent_models,
                 timeout_seconds=self._profile.llm_timeout_seconds,
                 max_retries=min(self._profile.llm_max_retries, 2),
                 semaphore=self._semaphore,
@@ -305,8 +325,8 @@ class SimpleClientFactory:
                 transport = OfficialCursorCLITransport(str(inspection.executable))
             return CursorProvider(
                 artifacts=artifacts,
-                default_model=self._profile.model,
-                agent_models=self._profile.agent_models,
+                default_model=primary_model,
+                agent_models=agent_models,
                 timeout_seconds=self._profile.llm_timeout_seconds,
                 max_retries=min(
                     self._profile.llm_max_retries,
@@ -320,22 +340,25 @@ class SimpleClientFactory:
                 use_cli_login=cli_login,
                 model_catalog=self._cursor_models,
             )
-        if self._profile.provider == "openai":
-            return self._limited(
-                SimpleOpenAIClient(
+
+        def model_client(model: str) -> RunLimitedClient:
+            inner: SimpleLLMClient
+            if self._profile.provider == "openai":
+                inner = SimpleOpenAIClient(
                     credential_ref=self._profile.credential_ref,
-                    model=self._profile.model,
+                    model=model,
                     artifacts=artifacts,
-                ),
-                identity,
-                artifacts,
-                self._profile.model,
-            )
-        return self._limited(
-            self._codex(identity, artifacts, self._profile.model),
-            identity,
-            artifacts,
-            self._profile.model,
+                )
+            else:
+                inner = self._codex(identity, artifacts, model)
+            return self._limited(inner, identity, artifacts, model)
+
+        if all(model == primary_model for model in agent_models.values()):
+            return model_client(primary_model)
+        return ModelRoutedClient(
+            primary_model=primary_model,
+            agent_models=agent_models,
+            client_factory=model_client,
         )
 
     def _codex(
@@ -533,6 +556,9 @@ def build_analysis_application(
         profile_ref=profile.provider_profile_ref,
         provider=profile.provider,
         model=profile.model,
+        model_routes=effective_agent_models(
+            profile.model, profile.light_model, profile.agent_models
+        ),
         recovery_factory=recovery_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
         max_pending_candidate_children=profile.max_pending_candidate_children,
@@ -639,11 +665,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             )
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
-        data = self._outcome(
-            outcome.display_analysis_id,
-            run.repository,
-            run.commit_id,
-        )
+        data = self._resume_outcome(outcome, run.repository, run.commit_id)
         if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
             data["resume_skipped_reason"] = outcome.error_code
         return data
@@ -692,11 +714,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
 
         outcome = asyncio.run(run())
         stored = self._store.require_analysis_run(outcome.identity.analysis_id)
-        data = self._outcome(
-            outcome.display_analysis_id,
-            stored.repository,
-            stored.commit_id,
-        )
+        data = self._resume_outcome(outcome, stored.repository, stored.commit_id)
         if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
             data["resume_skipped_reason"] = outcome.error_code
         return data
@@ -1484,6 +1502,24 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "commit": commit,
             "dashboard_url": f"http://127.0.0.1:8765/analyses/{display_id}",
         }
+
+    def _resume_outcome(
+        self,
+        outcome: SimpleAnalysisOutcome,
+        repository: str,
+        commit: str,
+    ) -> dict[str, object]:
+        data = self._outcome(outcome.display_analysis_id, repository, commit)
+        if outcome.error_code == "MODEL_ROUTE_PROVIDER_MISMATCH":
+            # This preflight intentionally leaves the saved run unchanged. Surface the
+            # refusal from this invocation, not the previous persisted status.
+            data.update(
+                status=outcome.status,
+                current_stage=outcome.current_stage.value,
+                error_code=outcome.error_code,
+                resume_action=None,
+            )
+        return data
 
 
 def build_public_simple_runtime(

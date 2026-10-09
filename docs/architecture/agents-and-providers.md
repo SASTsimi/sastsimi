@@ -27,9 +27,37 @@ candidate ID 누락·중복·불명 ID를 검증합니다. 근거가 있는 가�
 묶어 호출할 수 있어도 서로 독립된 역할과 가설 ID별 증거를 저장하며, 빠진 ID만
 다시 요청합니다. 묶음 호출이 불가능하면 기존 개별 호출 경로를 사용합니다.
 
+## 같은 Provider 안의 모델 라우팅
+
+분석의 기본 모델은 `model`입니다. 선택 항목인 `light_model`을 설정하면
+`cwe_label`과 `report_draft`만 기본적으로 그 모델을 사용합니다. 그 밖의 역할과
+알 수 없는 역할은 기본 모델을 사용합니다. `agent_models[agent_name]`에 명시한
+모델이 있으면 이 기본 규칙보다 우선합니다. 모델 ID는 설정에서 가져오며 라우팅
+때문에 분석의 Provider나 인증 경로가 바뀌지 않습니다. 별도로 설정한 Provider
+fallback은 기존 오류 처리 규칙을 따릅니다.
+
+Codex와 OpenAI는 선택한 모델별 client를 실행 제한 wrapper로 감싸 호출하고,
+Claude와 Cursor는 기존 역할별 모델 라우팅을 사용합니다. 어느 모델로 호출하든
+분석의 동시성 semaphore와 예산을 공유하며, 호출 기록에는 실제 사용한 모델과
+제공된 토큰·시간·비용 정보를 남깁니다. 지원하지 않는 모델이라는 Provider 오류를
+식별할 수 있으면 해당 Agent 호출은 최종 실패로 처리하며 다른 모델로 자동
+대체하지 않습니다.
+
+새 분석은 버전이 있는 유효 모델 경로 snapshot을 저장합니다. 재개할 때는 로컬
+설정이 바뀌었어도 저장된 기본 모델과 역할별 경로를 사용하고, 설정된 Provider가
+저장된 Provider와 다르면 LLM 호출 전에 `BLOCKED`로 처리합니다. 이미 완료된
+checkpoint는 모델 경로 때문에 다시 실행하지 않습니다. 이 기능 이전에 생성되어
+snapshot이 없는 분석에는 `light_model`의 자동 역할 배정을 소급 적용하지 않으며,
+기존의 명시적 `agent_models` override는 계속 사용할 수 있습니다.
+
+가벼운 모델을 사용해도 입력 토큰 수가 줄어든다는 보장은 없습니다. 실제 모델별
+사용량과 지연 시간, 적용 가능한 가격을 확인한 뒤 절감 효과를 판단해야 합니다.
+
 ## 코드 위치
 
 - 단순 Runtime LLM client: `src/sastsimi/simple_runtime/provider.py`
+- 역할별 모델 정책: `src/sastsimi/config/model_roles.py`
+- Codex/OpenAI 모델별 호출 라우팅: `src/sastsimi/simple_runtime/model_routing.py`
 - stage prompt와 구조화 출력: `src/sastsimi/simple_runtime/stages.py`
 - Provider 구성: `src/sastsimi/composition/simple_runtime_composition.py`
 - 사용자 설정: `src/sastsimi/config/user_config.py`
