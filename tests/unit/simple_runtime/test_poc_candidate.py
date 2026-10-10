@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.simple_runtime import stages
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
@@ -169,6 +170,88 @@ class _SourceRecordingClient:
             prompt_digest="a" * 64,
             output_digest="b" * 64,
         )
+
+
+class _ServerConstructorClient:
+    def __init__(self, *contents: bytes) -> None:
+        self.contents = contents
+        self.prompts: list[bytes] = []
+
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        if len(self.prompts) > len(self.contents):
+            raise AssertionError("unexpected PoC regeneration")
+        return SimpleLLMCallResult(
+            value={"content": self.contents[len(self.prompts) - 1].decode("utf-8")},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+def _attempt4_poc() -> bytes:
+    path = Path(__file__).parents[2] / "fixtures/simple_runtime/a001_attempt4_poc.sh"
+    content = path.read_bytes().replace(b"\r\n", b"\n").removesuffix(b"\n")
+    assert hashlib.sha256(content).hexdigest() == (
+        "db74ad8ef5d3527d781c7448a7cf8cd101b5c47e0714e863a50a5b31ee354c91"
+    )
+    return content
+
+
+def test_attempt4_cas_preflight_detects_unbound_variadic_server_constructor() -> None:
+    assert stages._has_unbound_server_constructor(_attempt4_poc())
+
+
+def test_server_constructor_preflight_accepts_explicit_bound_call() -> None:
+    content = _attempt4_poc().replace(
+        b"server = server_class(*arguments[0], **arguments[1])",
+        b"server = server_class(('127.0.0.1', 0), handlers[0])",
+    )
+    assert not stages._has_unbound_server_constructor(content)
+
+
+def test_server_constructor_preflight_accepts_concrete_base_signature() -> None:
+    content = _attempt4_poc().replace(
+        b"inspect.signature(server_class).parameters.items()",
+        b"inspect.signature(http.server.HTTPServer).parameters.items()",
+    )
+    assert not stages._has_unbound_server_constructor(content)
+
+
+def test_variadic_server_candidate_is_regenerated_once_before_storage(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-variadic-server",
+        workspace_id="workspace-variadic-server",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-variadic-server",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-variadic-server",
+    )
+    # Current placeholder validation also rejects the captured setup `exit 2`.
+    # Changing only that exit isolates the constructor preflight behavior.
+    unsafe = _attempt4_poc().replace(b"exit 2", b"exit 3")
+    repaired = unsafe.replace(
+        b"inspect.signature(server_class).parameters.items()",
+        b"inspect.signature(http.server.HTTPServer).parameters.items()",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    client = _ServerConstructorClient(unsafe, repaired)
+
+    operation = PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+    with pytest.raises(StopIteration) as completed:
+        operation.send(None)
+    result = completed.value.value
+
+    assert len(client.prompts) == 2
+    assert b"VAR_POSITIONAL" in client.prompts[1]
+    assert artifacts.read(result.output_refs[1]) == repaired
 
 
 @pytest.mark.asyncio
@@ -1062,11 +1145,13 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     assert b"ModuleNotFoundError" in client.prompt
     assert b"exc.name" in client.prompt
     assert b"safe dotted module identifier" in b" ".join(client.prompt.split())
-    assert b"one coherent import root" in client.prompt
-    assert b"Do not put both /workspace and a child source directory" in client.prompt
+    prompt_words = b" ".join(client.prompt.split())
+    assert b"import roots for each distinct top-level package" in prompt_words
+    assert b"may need both roots on sys.path" in prompt_words
+    assert b"Do not import the same package under two roots" in prompt_words
     assert b"transitive absolute imports" in client.prompt
     assert b"importlib.util.find_spec" in client.prompt
-    assert b"keep /workspace on sys.path" in client.prompt
+    assert b"verify each selected module resolves to its actual file" in prompt_words
     assert b"For a Python NameError" in client.prompt
     assert b"safe simple identifier" in client.prompt
     assert b"transitive closure" in client.prompt

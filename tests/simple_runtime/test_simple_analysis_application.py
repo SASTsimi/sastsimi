@@ -457,6 +457,171 @@ def test_opengrep_unavailable_static_evidence_requires_independent_proof(
             application._validate_static_evidence(static, identity)
 
 
+def _python_scope_static_evidence(
+    tmp_path: Path,
+    *,
+    disposition: Literal["FULL", "PARTIAL"],
+    out_of_scope: list[dict[str, str]] | None = None,
+    engine_errors: list[str] | None = None,
+    gaps: list[dict[str, str]] | None = None,
+) -> tuple[SimpleAnalysisApplication, StaticBootstrapResult, CheckpointIdentity]:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-python-scope",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text(
+        "def ready():\n    return True\n", encoding="utf-8"
+    )
+    ast_summary = collect_python_ast(
+        workspace, ("app.py",), artifacts, max_source_bytes=32_768
+    )
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "f" * 64,
+            "expected_count": 1,
+            "verified_count": 1 - len(gaps or []),
+            "gaps": gaps or [],
+            "unsupported": [],
+            "unsupported_files": [],
+            "unavailable_paths": [],
+            "ast_parsed_file_count": 1,
+            "ast_parse_errors": [],
+            "ast_parse_error_count": 0,
+            "ast_oversize_paths": [],
+            "ast_oversize_count": 0,
+            "ast_truncated": False,
+            "engine_errors": engine_errors or [],
+            "out_of_scope_product_files": out_of_scope or [],
+        }
+    )
+    source_ref = artifacts.put_json(
+        {"kind": "simple_tracked_sources", "paths": ["app.py"]}
+    )
+    bundle_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_fact_bundle",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "static_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "source_manifest_ref": source_ref.model_dump(mode="json"),
+            "ast_summary": ast_summary,
+        }
+    )
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path,
+        store=SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3"),
+        static_bootstrap=_Static(),
+        hypothesis_bootstrap=_Hypotheses(),
+        runner_factory=_runner,
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=artifacts.put_json({"kind": "repository_profile"}),
+        static_bundle_ref=bundle_ref,
+        static_coverage_ref=coverage_ref,
+        static_disposition=disposition,
+        workspace_path=workspace,
+    )
+    return application, static, identity
+
+
+def test_full_static_evidence_accepts_proven_non_python_source_exclusion(
+    tmp_path: Path,
+) -> None:
+    application, static, identity = _python_scope_static_evidence(
+        tmp_path,
+        disposition="FULL",
+        out_of_scope=[{"path": "web/app.js", "reason": "non_python_product_source"}],
+    )
+
+    application._validate_static_evidence(static, identity)
+
+
+def test_saved_partial_static_evidence_accepts_historical_non_python_exclusion(
+    tmp_path: Path,
+) -> None:
+    application, static, identity = _python_scope_static_evidence(
+        tmp_path,
+        disposition="PARTIAL",
+        out_of_scope=[{"path": "web/app.js", "reason": "non_python_product_source"}],
+    )
+
+    application._validate_static_evidence(static, identity)
+
+
+def test_partial_static_evidence_rejects_no_recorded_limitation(
+    tmp_path: Path,
+) -> None:
+    application, static, identity = _python_scope_static_evidence(
+        tmp_path, disposition="PARTIAL"
+    )
+
+    with pytest.raises(StaticEvidenceInvalid):
+        application._validate_static_evidence(static, identity)
+
+
+def test_partial_static_evidence_accepts_engine_error_as_only_limitation(
+    tmp_path: Path,
+) -> None:
+    application, static, identity = _python_scope_static_evidence(
+        tmp_path,
+        disposition="PARTIAL",
+        engine_errors=["OPENGREP_EXECUTION_FAILED"],
+    )
+
+    application._validate_static_evidence(static, identity)
+
+
+def test_full_static_evidence_rejects_engine_error(tmp_path: Path) -> None:
+    application, static, identity = _python_scope_static_evidence(
+        tmp_path,
+        disposition="FULL",
+        engine_errors=["OPENGREP_EXECUTION_FAILED"],
+    )
+
+    with pytest.raises(StaticEvidenceInvalid):
+        application._validate_static_evidence(static, identity)
+
+
+def test_full_static_evidence_rejects_unverified_python_rule(tmp_path: Path) -> None:
+    application, static, identity = _python_scope_static_evidence(
+        tmp_path,
+        disposition="FULL",
+        gaps=[{"path": "app.py", "rule_id": "python.ready", "reason": "timeout"}],
+    )
+
+    with pytest.raises(StaticEvidenceInvalid):
+        application._validate_static_evidence(static, identity)
+
+
+@pytest.mark.parametrize(
+    "excluded",
+    [
+        {"path": "api/types.pyi", "reason": "declared_non_python_entry"},
+        {"path": "web/app.js", "reason": "manifest_unverified_possible_product"},
+        {"path": "web/app.txt", "reason": "non_python_product_source"},
+    ],
+)
+def test_full_static_evidence_rejects_unproven_python_scope_exclusion(
+    tmp_path: Path, excluded: dict[str, str]
+) -> None:
+    application, static, identity = _python_scope_static_evidence(
+        tmp_path, disposition="FULL", out_of_scope=[excluded]
+    )
+
+    with pytest.raises(StaticEvidenceInvalid):
+        application._validate_static_evidence(static, identity)
+
+
 @pytest.mark.parametrize(
     "damage", ["missing_file", "missing_format", "missing_manifest"]
 )

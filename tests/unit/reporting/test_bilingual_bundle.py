@@ -138,6 +138,7 @@ def test_bilingual_reports_share_section_order_and_exact_facts() -> None:
     assert "report_en.md" not in en  # Report prose does not invent a new source.
     assert files["poc.sh"].body == b"#!/bin/sh\necho safe\n"
     provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"] is None
     assert (
         provenance["poc"]["original_sha256"]
         == hashlib.sha256(files["poc.sh"].body).hexdigest()
@@ -310,6 +311,8 @@ def test_partial_coverage_is_disclosed_equally_without_embedding_ledger() -> Non
     assert "confirmed Finding" in files["report_en.md"].body.decode()
     assert "Finding 확인" in files["report_kr.md"].body.decode()
     provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["scope"] == "python_only"
+    assert provenance["static_coverage"]["disposition"] == "PARTIAL"
     assert provenance["static_coverage"]["verified_count"] == 12
     assert provenance["static_coverage"]["ref"]["content_hash"] == "d" * 64
 
@@ -343,7 +346,7 @@ def test_bilingual_report_discloses_excluded_tests_and_out_of_scope_code() -> No
     files = _render(facts=_facts(coverage=coverage))
     en = files["report_en.md"].body.decode()
     ko = files["report_kr.md"].body.decode()
-    assert coverage.partial is True
+    assert coverage.partial is False
     assert "Excluded test files: 1" in en
     assert "제외된 테스트 파일: 1" in ko
     assert "tests/test_api.py" in en and "tests/test_api.py" in ko
@@ -351,6 +354,8 @@ def test_bilingual_report_discloses_excluded_tests_and_out_of_scope_code() -> No
     assert "검사 범위 밖 제품 파일: 1" in ko
     assert "web/app.ts" in en and "web/app.ts" in ko
     provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["scope"] == "python_only"
+    assert provenance["static_coverage"]["disposition"] == "FULL"
     assert provenance["static_coverage"]["excluded_test_file_count"] == 1
     assert provenance["static_coverage"]["out_of_scope_product_count"] == 1
 
@@ -426,7 +431,7 @@ def test_coverage_rejects_windows_separator_in_scope_path(
         )
 
 
-def test_full_disposition_rejects_unverified_out_of_scope_product_code() -> None:
+def test_full_disposition_rejects_unverified_python_stub() -> None:
     with pytest.raises(ValueError, match="REPORT_STATIC_COVERAGE_DISPOSITION_INVALID"):
         coverage_disclosure(
             {
@@ -441,7 +446,7 @@ def test_full_disposition_rejects_unverified_out_of_scope_product_code() -> None
                 "unsupported_files": [],
                 "excluded_test_files": [],
                 "out_of_scope_product_files": [
-                    {"path": "web/app.ts", "reason": "non_python_product_source"}
+                    {"path": "api/types.pyi", "reason": "python_stub_not_scanned"}
                 ],
             },
             _ref("coverage", "d" * 64),

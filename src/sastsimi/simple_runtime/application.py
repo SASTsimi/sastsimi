@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import Field
@@ -22,6 +22,7 @@ from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
 from sastsimi.contracts.prompt_redaction import redact_projected_json
+from sastsimi.contracts.python_coverage_scope import out_of_scope_limits_python_coverage
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 
@@ -74,7 +75,12 @@ from .recovery import (
 )
 from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner, StageBlocked, StageFailed
-from .stages import ProConEvidenceRefInvalid, ProConStage
+from .stages import (
+    PoCCandidateStage,
+    ProConEvidenceRefInvalid,
+    ProConStage,
+    _verification_anchor_refs,
+)
 from .store import SimpleCheckpointStore, SurfaceExplorationProgressRecord
 from .surface_contexts import (
     SurfaceContext,
@@ -83,6 +89,7 @@ from .surface_contexts import (
     iter_uncovered_surface_contexts,
     reuse_saved_expanded_surface_contexts,
 )
+from .surface_supplemental_replay import build_saved_surface_supplement_plan
 
 
 class SimpleAnalysisRequest(ContractModel):
@@ -106,6 +113,17 @@ class StaticEvidenceInvalid(ValueError):
 
     def __init__(self) -> None:
         super().__init__("STATIC_EVIDENCE_INVALID")
+
+
+class _PoCProviderBoundaryReached(Exception):
+    """Private sentinel proving the PoC candidate reached its provider call."""
+
+
+class _PoCPreProviderProbe:
+    async def call(self, **kwargs: object) -> NoReturn:
+        if kwargs.get("agent_name") != "poc_candidate":
+            raise ValueError("unexpected pre-provider agent")
+        raise _PoCProviderBoundaryReached
 
 
 class ChainingEvidenceInvalid(ValueError):
@@ -212,6 +230,7 @@ class SimpleAnalysisApplication:
         owned_attempt_container: (
             Callable[[CheckpointIdentity, str], Awaitable[bool]] | None
         ) = None,
+        git_executable: str = "git",
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
             raise ValueError("PARALLEL_HYPOTHESIS_LIMIT_INVALID")
@@ -250,6 +269,7 @@ class SimpleAnalysisApplication:
         )
         self._offline_repair_preflight = offline_repair_preflight
         self._owned_attempt_container = owned_attempt_container
+        self._git_executable = git_executable
 
     async def analyze(
         self,
@@ -418,10 +438,29 @@ class SimpleAnalysisApplication:
         repair_exhausted_hypothesis: str | None = None,
         repair_legacy_import_stop_hypothesis: str | None = None,
         repair_fallback_poc_stop_hypothesis: str | None = None,
+        repair_poc_fixture_exhaustion_hypothesis: str | None = None,
+        repair_poc_fixture_dependency_exhaustion_hypothesis: str | None = None,
+        repair_poc_candidate_app_exhaustion_hypothesis: str | None = None,
+        repair_poc_urlconf_exhaustion_hypothesis: str | None = None,
+        repair_poc_candidate_constraint_hypothesis: str | None = None,
+        repair_poc_urlconf_candidate_hypothesis: str | None = None,
+        repair_poc_generated_input_hypothesis: str | None = None,
+        repair_poc_source_gap_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_schema_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_relation_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_migration_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_server_constructor_exhaustion_hypothesis: str | None = None,
+        repair_poc_in_memory_storage_exhaustion_hypothesis: str | None = None,
+        repair_initial_environment_exhaustion_hypothesis: str | None = None,
+        repair_interrupted_initial_exhaustion_hypothesis: str | None = None,
         repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_poc_anchor_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
+        repair_auth_required_hypothesis: str | None = None,
+        supplement_saved_v2_ast_orphans: bool = False,
     ) -> SimpleAnalysisOutcome:
         if (
             sum(
@@ -430,12 +469,31 @@ class SimpleAnalysisApplication:
                     repair_exhausted_hypothesis,
                     repair_legacy_import_stop_hypothesis,
                     repair_fallback_poc_stop_hypothesis,
+                    repair_poc_fixture_exhaustion_hypothesis,
+                    repair_poc_fixture_dependency_exhaustion_hypothesis,
+                    repair_poc_candidate_app_exhaustion_hypothesis,
+                    repair_poc_urlconf_exhaustion_hypothesis,
+                    repair_poc_candidate_constraint_hypothesis,
+                    repair_poc_urlconf_candidate_hypothesis,
+                    repair_poc_generated_input_hypothesis,
+                    repair_poc_source_gap_exhaustion_hypothesis,
+                    repair_poc_django_schema_exhaustion_hypothesis,
+                    repair_poc_django_settings_exhaustion_hypothesis,
+                    repair_poc_django_relation_settings_exhaustion_hypothesis,
+                    repair_poc_django_migration_settings_exhaustion_hypothesis,
+                    repair_poc_server_constructor_exhaustion_hypothesis,
+                    repair_poc_in_memory_storage_exhaustion_hypothesis,
+                    repair_initial_environment_exhaustion_hypothesis,
+                    repair_interrupted_initial_exhaustion_hypothesis,
                     repair_docker_owned_list_exhaustion_hypothesis,
                     repair_poc_placeholder_exhaustion_hypothesis,
                     repair_poc_sensitive_content_hypothesis,
+                    repair_poc_anchor_hypothesis,
                     repair_report_validator_hypothesis,
+                    repair_auth_required_hypothesis,
                 )
             )
+            + int(supplement_saved_v2_ast_orphans)
             > 1
         ):
             raise ValueError("LEGACY_IMPORT_STOP_REPAIR_CONFLICT")
@@ -477,6 +535,80 @@ class SimpleAnalysisApplication:
                     await self._prepare_fallback_poc_stop_locked(
                         exact, repair_fallback_poc_stop_hypothesis
                     )
+                if repair_poc_fixture_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_fixture_exhaustion_locked(
+                        exact, repair_poc_fixture_exhaustion_hypothesis
+                    )
+                if repair_poc_fixture_dependency_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_fixture_dependency_exhaustion_locked(
+                        exact, repair_poc_fixture_dependency_exhaustion_hypothesis
+                    )
+                if repair_poc_candidate_app_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_candidate_app_exhaustion_locked(
+                        exact, repair_poc_candidate_app_exhaustion_hypothesis
+                    )
+                if repair_poc_urlconf_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_urlconf_exhaustion_locked(
+                        exact, repair_poc_urlconf_exhaustion_hypothesis
+                    )
+                if repair_poc_candidate_constraint_hypothesis is not None:
+                    await self._prepare_poc_candidate_constraint_locked(
+                        exact, repair_poc_candidate_constraint_hypothesis
+                    )
+                if repair_poc_urlconf_candidate_hypothesis is not None:
+                    await self._prepare_poc_urlconf_candidate_locked(
+                        exact, repair_poc_urlconf_candidate_hypothesis
+                    )
+                if repair_poc_generated_input_hypothesis is not None:
+                    await self._prepare_poc_generated_input_locked(
+                        exact, repair_poc_generated_input_hypothesis
+                    )
+                if repair_poc_source_gap_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_source_gap_exhaustion_locked(
+                        exact, repair_poc_source_gap_exhaustion_hypothesis
+                    )
+                if repair_poc_django_schema_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_django_schema_exhaustion_locked(
+                        exact, repair_poc_django_schema_exhaustion_hypothesis
+                    )
+                if repair_poc_django_settings_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_django_settings_exhaustion_locked(
+                        exact, repair_poc_django_settings_exhaustion_hypothesis
+                    )
+                if (
+                    repair_poc_django_relation_settings_exhaustion_hypothesis
+                    is not None
+                ):
+                    await self._prepare_poc_django_relation_settings_exhaustion_locked(
+                        exact,
+                        repair_poc_django_relation_settings_exhaustion_hypothesis,
+                    )
+                if (
+                    repair_poc_django_migration_settings_exhaustion_hypothesis
+                    is not None
+                ):
+                    await self._prepare_poc_django_migration_settings_exhaustion_locked(
+                        exact,
+                        repair_poc_django_migration_settings_exhaustion_hypothesis,
+                    )
+                if repair_poc_server_constructor_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_server_constructor_exhaustion_locked(
+                        exact, repair_poc_server_constructor_exhaustion_hypothesis
+                    )
+                if repair_poc_in_memory_storage_exhaustion_hypothesis is not None:
+                    await self._prepare_poc_in_memory_storage_exhaustion_locked(
+                        exact, repair_poc_in_memory_storage_exhaustion_hypothesis
+                    )
+                if repair_initial_environment_exhaustion_hypothesis is not None:
+                    await self._prepare_initial_environment_exhaustion_locked(
+                        exact, repair_initial_environment_exhaustion_hypothesis
+                    )
+                if repair_interrupted_initial_exhaustion_hypothesis is not None:
+                    await self._prepare_initial_environment_exhaustion_locked(
+                        exact,
+                        repair_interrupted_initial_exhaustion_hypothesis,
+                        interrupted_budget_reuse=True,
+                    )
                 if repair_docker_owned_list_exhaustion_hypothesis is not None:
                     await self._prepare_docker_owned_list_exhaustion_locked(
                         exact, repair_docker_owned_list_exhaustion_hypothesis
@@ -489,10 +621,37 @@ class SimpleAnalysisApplication:
                     await self._prepare_poc_sensitive_content_locked(
                         exact, repair_poc_sensitive_content_hypothesis
                     )
+                if repair_poc_anchor_hypothesis is not None:
+                    await self._prepare_poc_anchor_locked(
+                        exact, repair_poc_anchor_hypothesis
+                    )
                 if repair_report_validator_hypothesis is not None:
                     self._prepare_report_validator_locked(
                         exact, repair_report_validator_hypothesis
                     )
+                if repair_auth_required_hypothesis is not None:
+                    await self._prepare_auth_required_locked(
+                        exact, repair_auth_required_hypothesis
+                    )
+                if supplement_saved_v2_ast_orphans:
+                    try:
+                        await self._prepare_surface_supplement_locked(exact)
+                    except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+                        run = self._store.require_analysis_run(exact)
+                        return SimpleAnalysisOutcome(
+                            identity=CheckpointIdentity(
+                                analysis_id=run.analysis_id,
+                                workspace_id=run.workspace_id,
+                                commit_id=run.commit_id,
+                                hypothesis_id=None,
+                            ),
+                            display_analysis_id=run.display_analysis_id,
+                            status="BLOCKED",
+                            current_stage=SimpleStage.HYPOTHESIS_DONE,
+                            error_code=self._safe_error_code(
+                                error, "SURFACE_SUPPLEMENT_SCOPE_INVALID"
+                            ),
+                        )
                 return await self._resume_locked(exact)
         except AnalysisRunBusy:
             run = self._store.require_analysis_run(exact)
@@ -514,6 +673,120 @@ class SimpleAnalysisApplication:
                 current_stage=current_stage,
                 error_code="ANALYSIS_ALREADY_RUNNING",
             )
+
+    async def _prepare_surface_supplement_locked(self, exact: str) -> None:
+        """Pin one immutable v3 plan before starting any supplemental LLM call."""
+
+        run = self._store.require_analysis_run(exact)
+        if (
+            run.candidate_pipeline_version != 2
+            or run.static_bundle_ref is None
+            or run.static_coverage_ref is None
+            or run.repository_profile_ref is None
+            or run.workspace_path is None
+            or run.candidate_scope_fingerprint is None
+            or (
+                run.surface_supplement_plan_ref is None
+                and (
+                    run.candidate_terminal is None
+                    or run.candidate_terminal.status != "PARTIAL"
+                )
+            )
+        ):
+            raise ValueError("SURFACE_SUPPLEMENT_ANALYSIS_INVALID")
+        identity = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        await self._assert_completed_static_scope(run, identity)
+        artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        coverage = json.loads(artifacts.read(run.static_coverage_ref))
+        bundle = json.loads(artifacts.read(run.static_bundle_ref))
+        ast_summary = bundle.get("ast_summary") if isinstance(bundle, dict) else None
+        if (
+            not isinstance(coverage, dict)
+            or coverage.get("fingerprint") != run.candidate_scope_fingerprint
+            or not isinstance(ast_summary, dict)
+            or ast_summary.get("format_version") != 3
+        ):
+            raise ValueError("SURFACE_SUPPLEMENT_SCOPE_MISMATCH")
+        static = StaticBootstrapResult(
+            repository_profile_ref=run.repository_profile_ref,
+            static_bundle_ref=run.static_bundle_ref,
+            workspace_path=run.workspace_path,
+            static_coverage_ref=run.static_coverage_ref,
+            static_disposition=run.static_disposition,
+            security_policy_ref=run.security_policy_ref,
+            policy_snapshot_ref=run.policy_snapshot_ref,
+        )
+        if (
+            self._store.get_attack_surface_index(
+                identity, run.candidate_scope_fingerprint
+            )
+            is None
+        ):
+            raise ValueError("SURFACE_SUPPLEMENT_INDEX_MISSING")
+        index, index_ref = self._ensure_attack_surface_index(
+            identity,
+            static,
+            run.candidate_scope_fingerprint,
+            artifacts,
+            bundle,
+            ast_summary,
+        )
+        plan, contexts = build_saved_surface_supplement_plan(
+            identity,
+            run.candidate_scope_fingerprint,
+            run.static_bundle_ref,
+            index,
+            index_ref,
+            ast_summary,
+            run.workspace_path,
+            artifacts,
+            self._store,
+        )
+        if not contexts:
+            raise ValueError("SURFACE_SUPPLEMENT_NO_ORPHANS")
+        if run.surface_supplement_plan_ref is not None:
+            if artifacts.read(run.surface_supplement_plan_ref) != canonical_bytes(plan):
+                raise ValueError("SURFACE_SUPPLEMENT_PLAN_CHANGED")
+            return
+        plan_ref = artifacts.put_json(plan)
+        self._store.save_analysis_run(
+            run.model_copy(update={"surface_supplement_plan_ref": plan_ref})
+        )
+
+    def _saved_surface_supplements(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        scope: str,
+        artifacts: SimpleArtifactRepository,
+        ast_summary: dict[str, object],
+        index: SurfaceIndex,
+        index_ref: StoredDataRef,
+    ) -> tuple[SurfaceContext, ...]:
+        if run.surface_supplement_plan_ref is None:
+            return ()
+        if run.candidate_scope_fingerprint != scope:
+            raise ValueError("SURFACE_SUPPLEMENT_SCOPE_MISMATCH")
+        plan, contexts = build_saved_surface_supplement_plan(
+            identity,
+            scope,
+            static.static_bundle_ref,
+            index,
+            index_ref,
+            ast_summary,
+            static.workspace_path,
+            artifacts,
+            self._store,
+        )
+        if artifacts.read(run.surface_supplement_plan_ref) != canonical_bytes(plan):
+            raise ValueError("SURFACE_SUPPLEMENT_PLAN_CHANGED")
+        return contexts
 
     async def _prepare_offline_repair_locked(
         self, analysis_id: str, hypothesis_id: str
@@ -620,6 +893,256 @@ class SimpleAnalysisApplication:
                 ) from error
             raise
 
+    async def _prepare_poc_fixture_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Validate pinned scope, then replay one bound Django PoC setup error."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="fixture"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace("LEGACY_IMPORT_STOP_", "POC_FIXTURE_EXHAUSTION_", 1)
+                ) from error
+            raise
+
+    async def _prepare_poc_fixture_dependency_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay only a bound fourth PoC with skipped fixture dependencies."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="fixture_dependency"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_",
+                        "POC_FIXTURE_DEPENDENCY_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_candidate_app_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay only a bound fourth PoC with an invented Django app."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="candidate_app"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_", "POC_CANDIDATE_APP_EXHAUSTION_", 1
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_urlconf_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Preserve the stop until repository URLConf provenance can be proved."""
+
+        raise ValueError("POC_URLCONF_EXHAUSTION_ORIGIN_UNVERIFIED")
+
+    async def _prepare_poc_candidate_constraint_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Regenerate one candidate rejected for violating a proven app constraint."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="candidate_constraint"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_", "POC_CANDIDATE_CONSTRAINT_REPLAY_", 1
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_urlconf_candidate_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Preserve the stop until repository URLConf provenance can be proved."""
+
+        raise ValueError("POC_URLCONF_CANDIDATE_REPLAY_ORIGIN_UNVERIFIED")
+
+    async def _prepare_poc_generated_input_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay a pinned layout failure or its corrected validator stop."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="pinned_layout"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_", "POC_GENERATED_INPUT_REPLAY_", 1
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_source_gap_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay one bound PoC after a verified requested-source omission."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="source_gap"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_", "POC_SOURCE_GAP_EXHAUSTION_", 1
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_django_schema_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay only an attested sixth Django fixture failure."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="django_schema"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_", "POC_DJANGO_SCHEMA_EXHAUSTION_", 1
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_django_settings_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay one bound PoC after a verified Django settings omission."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="django_settings"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_", "POC_DJANGO_SETTINGS_EXHAUSTION_", 1
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_django_relation_settings_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay one bound PoC after a verified Django relation-setting omission."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="django_relation_settings"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_",
+                        "POC_DJANGO_RELATION_SETTINGS_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_django_migration_settings_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay one bound PoC after a verified migration-setting omission."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="django_migration_settings"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_",
+                        "POC_DJANGO_MIGRATION_SETTINGS_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_server_constructor_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay one bound PoC only for a pinned server constructor error."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="server_constructor"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_",
+                        "POC_SERVER_CONSTRUCTOR_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    async def _prepare_poc_in_memory_storage_exhaustion_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay one PoC only after proving a pinned in-memory SQLite source."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="in_memory_storage"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace(
+                        "LEGACY_IMPORT_STOP_",
+                        "POC_IN_MEMORY_STORAGE_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
     async def _prepare_docker_owned_list_exhaustion_locked(
         self, analysis_id: str, hypothesis_id: str
     ) -> None:
@@ -675,13 +1198,67 @@ class SimpleAnalysisApplication:
                 ) from error
             raise
 
+    async def _prepare_poc_anchor_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Recheck the pinned anchor before one explicit pre-provider replay."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="anchor"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace("LEGACY_IMPORT_STOP_", "POC_ANCHOR_REPLAY_", 1)
+                ) from error
+            raise
+
+    async def _prepare_auth_required_locked(
+        self, analysis_id: str, hypothesis_id: str
+    ) -> None:
+        """Replay one exact PoC candidate after the operator restores login."""
+
+        try:
+            await self._prepare_bound_fallback_stop_locked(
+                analysis_id, hypothesis_id, mode="auth_required"
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("LEGACY_IMPORT_STOP_"):
+                raise ValueError(
+                    message.replace("LEGACY_IMPORT_STOP_", "AUTH_REQUIRED_REPLAY_", 1)
+                ) from error
+            raise
+
     async def _prepare_bound_fallback_stop_locked(
         self,
         analysis_id: str,
         hypothesis_id: str,
         *,
         mode: Literal[
-            "import", "generated_input", "docker_list", "placeholder", "sensitive"
+            "import",
+            "generated_input",
+            "fixture",
+            "fixture_dependency",
+            "candidate_app",
+            "urlconf",
+            "candidate_constraint",
+            "urlconf_candidate",
+            "pinned_layout",
+            "source_gap",
+            "django_schema",
+            "django_settings",
+            "django_relation_settings",
+            "django_migration_settings",
+            "server_constructor",
+            "in_memory_storage",
+            "docker_list",
+            "placeholder",
+            "sensitive",
+            "anchor",
+            "auth_required",
         ],
     ) -> None:
         """Share checkout, static CAS, and proposal guards between repairs."""
@@ -699,14 +1276,29 @@ class SimpleAnalysisApplication:
         ):
             raise ValueError("LEGACY_IMPORT_STOP_HYPOTHESIS_INVALID")
         child = root.model_copy(update={"hypothesis_id": hypothesis_id})
-        stopped = self._store.get(
-            child,
+        stopped_stage = (
             SimpleStage.POC_CANDIDATE_DONE
-            if mode in {"placeholder", "sensitive"}
-            else SimpleStage.POC_EXECUTION_DONE,
+            if mode
+            in {
+                "placeholder",
+                "sensitive",
+                "anchor",
+                "auth_required",
+                "candidate_constraint",
+                "urlconf_candidate",
+            }
+            or mode in {"pinned_layout", "django_migration_settings"}
+            and self._store.get(child, SimpleStage.POC_EXECUTION_DONE) is None
+            else SimpleStage.POC_EXECUTION_DONE
         )
+        stopped = self._store.get(child, stopped_stage)
         if stopped is None:
             raise ValueError("LEGACY_IMPORT_STOP_HYPOTHESIS_INVALID")
+        if mode == "anchor" and (
+            stopped.status is not StageStatus.FAILED
+            or stopped.error_code != "HYPOTHESIS_ANCHOR_INVALID"
+        ):
+            raise ValueError("POC_ANCHOR_REPLAY_STOP_INVALID")
         if (
             run.static_bundle_ref is None
             or run.static_coverage_ref is None
@@ -773,6 +1365,46 @@ class SimpleAnalysisApplication:
         artifacts = SimpleArtifactRepository(self._data_dir, child)
         if mode == "import":
             self._store.prepare_legacy_import_stop_replan(stopped, artifacts)
+        elif mode == "fixture":
+            self._store.prepare_poc_fixture_exhaustion_replay(stopped, artifacts)
+        elif mode == "fixture_dependency":
+            self._store.prepare_poc_fixture_dependency_exhaustion_replay(
+                stopped, artifacts
+            )
+        elif mode == "candidate_app":
+            self._store.prepare_poc_candidate_app_exhaustion_replay(stopped, artifacts)
+        elif mode == "urlconf":
+            self._store.prepare_poc_urlconf_exhaustion_replay(stopped, artifacts)
+        elif mode == "candidate_constraint":
+            self._store.prepare_poc_candidate_constraint_replay(stopped, artifacts)
+        elif mode == "urlconf_candidate":
+            self._store.prepare_poc_urlconf_candidate_replay(stopped, artifacts)
+        elif mode == "pinned_layout":
+            self._store.prepare_poc_generated_input_replay(stopped, artifacts)
+        elif mode == "source_gap":
+            self._store.prepare_poc_source_gap_exhaustion_replay(stopped, artifacts)
+        elif mode == "django_schema":
+            self._store.prepare_poc_django_schema_exhaustion_replay(stopped, artifacts)
+        elif mode == "django_settings":
+            self._store.prepare_poc_django_settings_exhaustion_replay(
+                stopped, artifacts
+            )
+        elif mode == "django_relation_settings":
+            self._store.prepare_poc_django_relation_settings_exhaustion_replay(
+                stopped, artifacts
+            )
+        elif mode == "django_migration_settings":
+            self._store.prepare_poc_django_migration_settings_exhaustion_replay(
+                stopped, artifacts
+            )
+        elif mode == "server_constructor":
+            self._store.prepare_poc_server_constructor_exhaustion_replay(
+                stopped, artifacts
+            )
+        elif mode == "in_memory_storage":
+            self._store.prepare_poc_in_memory_storage_exhaustion_replay(
+                stopped, artifacts
+            )
         elif mode == "generated_input":
             if stopped.error_code == "RECOVERY_EXHAUSTED":
                 import_failure = stopped.attempt_id is not None and any(
@@ -795,6 +1427,74 @@ class SimpleAnalysisApplication:
             self._store.prepare_poc_placeholder_exhaustion_replay(stopped, artifacts)
         elif mode == "sensitive":
             self._store.prepare_poc_sensitive_content_replay(stopped, artifacts)
+        elif mode == "anchor":
+            prior = self._store.prior(child, SimpleStage.POC_CANDIDATE_DONE)
+            pro_con = prior.get(SimpleStage.PRO_CON_DONE)
+            initial = prior.get(SimpleStage.VERIFICATION_INITIAL_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_ANCHOR_INVALID")
+            try:
+                _verification_anchor_refs(
+                    stopped,
+                    prior,
+                    artifacts,
+                    workspace_path=run.workspace_path,
+                    git_executable=self._git_executable,
+                    require_anchor=True,
+                )
+            except (StageFailed, OSError, ValueError, sqlite3.Error) as error:
+                raise ValueError("POC_ANCHOR_REPLAY_ANCHOR_INVALID") from error
+            if stopped.attempt_number in {
+                MAX_RECOVERY_ATTEMPTS + 1,
+                MAX_RECOVERY_ATTEMPTS + 2,
+            }:
+                # The runner will reopen this failed checkpoint and mark its
+                # *next* attempt RUNNING. Probe that exact input/attempt shape,
+                # without writing a checkpoint or calling a real provider.
+                probe_inputs = tuple(
+                    dict.fromkeys(stopped.input_refs + stopped.recovery_decision_refs)
+                )
+                probe_checkpoint = StageCheckpoint(
+                    identity=child,
+                    stage=SimpleStage.POC_CANDIDATE_DONE,
+                    stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                    status=StageStatus.RUNNING,
+                    input_refs=probe_inputs,
+                    input_hash=input_reference_hash(probe_inputs),
+                    attempt_id=uuid4().hex,
+                    attempt_number=stopped.attempt_number + 1,
+                    gate_revision_count=stopped.gate_revision_count,
+                    recovery_lineage_id=stopped.recovery_lineage_id,
+                    recovery_origin_stage=stopped.recovery_origin_stage,
+                    recovery_decision_refs=stopped.recovery_decision_refs,
+                    recipe_ref=stopped.recipe_ref,
+                    image_digest=stopped.image_digest,
+                    container_id=stopped.container_id,
+                )
+                try:
+                    await PoCCandidateStage(
+                        client=_PoCPreProviderProbe(),
+                        artifacts=artifacts,
+                        workspace_path=run.workspace_path,
+                        static_bundle_ref=run.static_bundle_ref,
+                        git_executable=self._git_executable,
+                    )(probe_checkpoint, prior)
+                except _PoCProviderBoundaryReached:
+                    pass
+                except Exception as error:
+                    raise ValueError(
+                        "POC_ANCHOR_REPLAY_PRE_PROVIDER_INVALID"
+                    ) from error
+                else:
+                    raise ValueError("POC_ANCHOR_REPLAY_PRE_PROVIDER_INVALID")
+            self._store.prepare_poc_anchor_failure_replay(stopped, artifacts)
+        elif mode == "auth_required":
+            self._store.prepare_auth_required_replay(stopped, artifacts)
         else:
             check = self._owned_attempt_container
             if check is None or not stopped.attempt_id:
@@ -821,6 +1521,110 @@ class SimpleAnalysisApplication:
             )
             self._store.prepare_pre_execution_docker_replay(
                 stopped, absence_ref, artifacts
+            )
+
+    async def _prepare_initial_environment_exhaustion_locked(
+        self,
+        analysis_id: str,
+        hypothesis_id: str,
+        *,
+        interrupted_budget_reuse: bool = False,
+    ) -> None:
+        """Verify the pinned checkout before reopening one bound child attempt."""
+
+        run = self._store.require_analysis_run(analysis_id)
+        root = CheckpointIdentity(
+            analysis_id=run.analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        if not hypothesis_id or not (
+            hypothesis_id in run.hypothesis_ids
+            or self._store.has_hypothesis(root, hypothesis_id)
+        ):
+            raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_HYPOTHESIS_INVALID")
+        child = root.model_copy(update={"hypothesis_id": hypothesis_id})
+        exhausted = self._store.get(child, SimpleStage.VERIFICATION_INITIAL_DONE)
+        if exhausted is None:
+            raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_HYPOTHESIS_INVALID")
+        if (
+            run.static_bundle_ref is None
+            or run.static_coverage_ref is None
+            or run.repository_profile_ref is None
+            or run.workspace_path is None
+            or not callable(getattr(self._static, "coverage_fingerprint", None))
+        ):
+            raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_STATIC_SCOPE_INVALID")
+        workspace_root = getattr(
+            getattr(self._static, "_profile", None), "workspace_root", None
+        )
+        verify_checkout = getattr(self._static, "_verify_opengrep_workspace", None)
+        if not isinstance(workspace_root, Path) or not callable(verify_checkout):
+            raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_WORKSPACE_INVALID")
+        expected_workspace = workspace_root / run.workspace_id
+        try:
+            resolved_root = workspace_root.resolve(strict=True)
+            resolved_workspace = run.workspace_path.resolve(strict=True)
+            file_attributes = getattr(
+                run.workspace_path.lstat(), "st_file_attributes", 0
+            )
+            if (
+                run.workspace_path != expected_workspace
+                or run.workspace_path.is_symlink()
+                or run.workspace_path.is_junction()
+                or bool(
+                    file_attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                )
+                or not run.workspace_path.is_dir()
+                or resolved_workspace == resolved_root
+                or not resolved_workspace.is_relative_to(resolved_root)
+            ):
+                raise ValueError("Saved checkout does not match configured workspace")
+            await verify_checkout(
+                run.workspace_path,
+                SimpleAnalysisRequest(
+                    data_dir=self._data_dir,
+                    repository=run.repository,
+                    commit=run.commit_id,
+                ),
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            raise ValueError(
+                "INITIAL_ENVIRONMENT_EXHAUSTION_WORKSPACE_INVALID"
+            ) from error
+        try:
+            await self._assert_completed_static_scope(run, root)
+            self._validate_static_evidence(
+                StaticBootstrapResult(
+                    repository_profile_ref=run.repository_profile_ref,
+                    static_bundle_ref=run.static_bundle_ref,
+                    workspace_path=run.workspace_path,
+                    static_coverage_ref=run.static_coverage_ref,
+                    static_disposition=run.static_disposition,
+                    security_policy_ref=run.security_policy_ref,
+                    policy_snapshot_ref=run.policy_snapshot_ref,
+                ),
+                root,
+            )
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise ValueError(
+                "INITIAL_ENVIRONMENT_EXHAUSTION_STATIC_SCOPE_INVALID"
+            ) from error
+        try:
+            self._verify_registered_candidate_proposals(root)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise ValueError(
+                "INITIAL_ENVIRONMENT_EXHAUSTION_PROPOSAL_INVALID"
+            ) from error
+        artifacts = SimpleArtifactRepository(self._data_dir, child)
+        if interrupted_budget_reuse:
+            self._store.prepare_interrupted_initial_exhaustion_replay(
+                exhausted, artifacts
+            )
+        else:
+            self._store.prepare_initial_environment_exhaustion_replay(
+                exhausted, artifacts
             )
 
     def _prepare_report_validator_locked(
@@ -1136,6 +1940,29 @@ class SimpleAnalysisApplication:
             security_policy_ref=run.security_policy_ref,
             policy_snapshot_ref=run.policy_snapshot_ref,
         )
+        if (
+            run.candidate_pipeline_version == 2
+            and run.static_disposition == "PARTIAL"
+            and not run.hypothesis_ids
+            and run.candidate_terminal is None
+            and static_checkpoint is not None
+            and static_checkpoint.status is StageStatus.SUCCEEDED
+            and all(
+                checkpoint.stage is SimpleStage.STATIC_DONE
+                for checkpoint in self._store.list_checkpoints(identity.analysis_id)
+            )
+        ):
+            # Older runs marked proven non-Python exclusions PARTIAL. Correct
+            # the disposition only before downstream work can bind to it.
+            full_static = static.model_copy(update={"static_disposition": "FULL"})
+            try:
+                self._validate_static_evidence(full_static, identity)
+            except StaticEvidenceInvalid:
+                pass
+            else:
+                run = run.model_copy(update={"static_disposition": "FULL"})
+                self._store.save_analysis_run(run)
+                static = full_static
         if run.candidate_pipeline_version in {1, 2}:
             if run.candidate_pipeline_version == 2:
                 return await self._run_candidate_pipeline(run, identity, static)
@@ -1150,7 +1977,7 @@ class SimpleAnalysisApplication:
                 if downstream_terminal:
                     try:
                         artifacts = SimpleArtifactRepository(self._data_dir, identity)
-                        bundle = json.loads(artifacts.read(run.static_bundle_ref))
+                        bundle = json.loads(artifacts.read(static.static_bundle_ref))
                         ast_summary = (
                             bundle.get("ast_summary")
                             if isinstance(bundle, dict)
@@ -1598,6 +2425,7 @@ class SimpleAnalysisApplication:
             gaps = coverage.get("gaps")
             unsupported = coverage.get("unsupported")
             unavailable_paths = coverage.get("unavailable_paths", [])
+            out_of_scope = coverage.get("out_of_scope_product_files", [])
             if (
                 not isinstance(coverage.get("fingerprint"), str)
                 or type(expected) is not int
@@ -1607,7 +2435,15 @@ class SimpleAnalysisApplication:
                 or not isinstance(gaps, list)
                 or not isinstance(unsupported, list)
                 or not isinstance(unavailable_paths, list)
+                or not isinstance(out_of_scope, list)
                 or len(gaps) != expected - verified
+            ):
+                raise StaticEvidenceInvalid()
+            if any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("path"), str)
+                or not isinstance(item.get("reason"), str)
+                for item in out_of_scope
             ):
                 raise StaticEvidenceInvalid()
             if any(
@@ -1722,6 +2558,10 @@ class SimpleAnalysisApplication:
                     artifacts.read(codeql_ref)
                     codeql_proof = True
             independent_verified = parsed > 0 or codeql_proof
+            out_of_scope_limits = any(
+                out_of_scope_limits_python_coverage(item["path"], item["reason"])
+                for item in out_of_scope
+            )
             has_limitations = bool(
                 gaps
                 or unsupported
@@ -1734,10 +2574,15 @@ class SimpleAnalysisApplication:
                 or coverage.get("ast_parse_error_count")
                 or coverage.get("ast_oversize_count")
                 or coverage.get("ast_truncated")
-                or coverage.get("out_of_scope_product_files")
+                or coverage.get("engine_errors")
+                or out_of_scope_limits
             )
             if static.static_disposition == "PARTIAL":
-                if (verified == 0 and not independent_verified) or not has_limitations:
+                # Older static evidence marked proven non-Python exclusions PARTIAL.
+                legacy_exclusion_only = bool(out_of_scope) and not has_limitations
+                if (verified == 0 and not independent_verified) or not (
+                    has_limitations or legacy_exclusion_only
+                ):
                     raise StaticEvidenceInvalid()
             elif has_limitations:
                 raise StaticEvidenceInvalid()
@@ -1794,11 +2639,32 @@ class SimpleAnalysisApplication:
                 or checkpoint.status is not StageStatus.BLOCKED
                 or checkpoint.error_code
                 not in {"RECOVERY_EXHAUSTED", "POC_INCONCLUSIVE"}
-                or len(checkpoint.output_refs) != 2
+                or len(checkpoint.output_refs) not in {2, 5}
                 or checkpoint.validated_poc_ref is not None
             ):
                 continue
             artifacts = SimpleArtifactRepository(self._data_dir, checkpoint.identity)
+            if (
+                checkpoint.error_code == "RECOVERY_EXHAUSTED"
+                and len(checkpoint.output_refs) == 5
+                and checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+            ):
+                try:
+                    self._store.promote_exit_one_inconclusive_execution(
+                        checkpoint, artifacts=artifacts
+                    )
+                except ValueError as error:
+                    if str(error) not in {
+                        "POC_EXIT_ONE_INCONCLUSIVE_PROMOTION_INVALID",
+                        "POC_EXIT_ONE_INCONCLUSIVE_PROMOTION_STALE",
+                        "POC_EXIT_ONE_INCONCLUSIVE_UNVERIFIED",
+                    }:
+                        raise
+                    continue
+                promoted += 1
+                continue
+            if len(checkpoint.output_refs) != 2:
+                continue
             if checkpoint.error_code == "POC_INCONCLUSIVE":
                 try:
                     self._store.promote_inconclusive_execution(
@@ -2962,7 +3828,14 @@ class SimpleAnalysisApplication:
                 current_checkpoint=checkpoint,
             )
         coverage = self._final_surface_coverage(
-            identity, static, scope, artifacts, ast_summary, index, index_ref
+            identity,
+            static,
+            scope,
+            artifacts,
+            ast_summary,
+            index,
+            index_ref,
+            run=run,
         )
         coverage_ref = artifacts.put_json(coverage.to_json())
         handler = self._runner_factory(self._store, identity, static).handlers.get(
@@ -3041,6 +3914,8 @@ class SimpleAnalysisApplication:
         ast_summary: dict[str, object],
         index: SurfaceIndex,
         index_ref: StoredDataRef,
+        *,
+        run: SimpleAnalysisRun | None = None,
     ) -> SurfaceCoverage:
         """Recheck every context part and its downstream child before coverage."""
 
@@ -3083,6 +3958,17 @@ class SimpleAnalysisApplication:
                 expected.update((surface_id, item.context_id) for item in second)
                 contexts_by_surface[surface_id] = [*first_contexts, *second]
                 effective_contexts[surface_id] = second
+        supplements = (
+            self._saved_surface_supplements(
+                run, identity, static, scope, artifacts, ast_summary, index, index_ref
+            )
+            if run is not None
+            else ()
+        )
+        supplemental_by_surface: dict[str, list[SurfaceContext]] = {}
+        for context in supplements:
+            supplemental_by_surface.setdefault(context.surface_id, []).append(context)
+            expected.add((context.surface_id, context.context_id))
         prior_covered = {
             surface.surface_id
             for surface in initial.surfaces
@@ -3090,6 +3976,8 @@ class SimpleAnalysisApplication:
         }
         if any(key not in expected and key[0] not in prior_covered for key in progress):
             raise ValueError("SURFACE_EXPLORATION_SCOPE_CHANGED")
+        unresolved_effective_v2: dict[str, set[str]] = {}
+        blocked_old_children: set[str] = set()
         for surface_id, contexts in contexts_by_surface.items():
             records = [progress.get((surface_id, item.context_id)) for item in contexts]
             if any(record is None for record in records):
@@ -3128,6 +4016,9 @@ class SimpleAnalysisApplication:
                     evidence_refs.append(record.result_ref)
                     if record.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS":
                         complete = False
+                        unresolved_effective_v2.setdefault(surface_id, set()).add(
+                            context.context_id
+                        )
                 for hypothesis_id in record.hypothesis_ids:
                     child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
                     initial_checkpoint = self._store.get(
@@ -3139,6 +4030,7 @@ class SimpleAnalysisApplication:
                     final = self._store.get(child, SimpleStage.VERIFICATION_FINAL_DONE)
                     if not self._candidate_hypothesis_terminal(identity, hypothesis_id):
                         complete = False
+                        blocked_old_children.add(surface_id)
                         continue
                     if (
                         initial_checkpoint is not None
@@ -3150,6 +4042,7 @@ class SimpleAnalysisApplication:
                         # An environment/prerequisite HOLD ends this child
                         # safely, but it did not verify the attack surface.
                         complete = False
+                        blocked_old_children.add(surface_id)
                         output_refs = initial_checkpoint.output_refs
                     elif (
                         poc_checkpoint is not None
@@ -3157,6 +4050,7 @@ class SimpleAnalysisApplication:
                         is not None
                     ):
                         complete = False
+                        blocked_old_children.add(surface_id)
                         output_refs = poc_checkpoint.output_refs
                     elif (
                         final is not None
@@ -3166,6 +4060,7 @@ class SimpleAnalysisApplication:
                         output_refs = final.output_refs
                     else:
                         complete = False
+                        blocked_old_children.add(surface_id)
                         continue
                     for ref in output_refs:
                         artifacts.read(ref)
@@ -3191,6 +4086,128 @@ class SimpleAnalysisApplication:
                     evidence_refs=tuple(dict.fromkeys(evidence_refs)),
                 )
             )
+        # Supplemental evidence is a parallel review. A weaker v3 result must
+        # never demote an independently COVERED v2 surface or rewrite its seed.
+        for surface_id, contexts in supplemental_by_surface.items():
+            supplement_parts: set[str] = set()
+            supplement_locations: set[str] = set()
+            supplement_refs: list[StoredDataRef] = []
+            supplemented_parent_ids: set[str] = set()
+            complete = True
+            for context in contexts:
+                payload = json.loads(artifacts.read(context.context_ref))
+                parent_id = payload.get("parent_v2_context_id")
+                if not isinstance(parent_id, str) or parent_id not in {
+                    old.context_id for old in effective_contexts[surface_id]
+                }:
+                    raise ValueError("SURFACE_EXPLORATION_SCOPE_CHANGED")
+                supplemented_parent_ids.add(parent_id)
+                if payload.get("unavailable_implementation") is not None:
+                    complete = False
+                record = progress.get((surface_id, context.context_id))
+                if record is None:
+                    raise ValueError("SURFACE_EXPLORATION_PROGRESS_INCOMPLETE")
+                if (
+                    record.static_bundle_hash != static.static_bundle_ref.content_hash
+                    or record.index_hash != index_ref.content_hash
+                    or record.context_hash != context.context_hash
+                    or record.source_sha256 != context.source_sha256
+                    or record.proposal_version != 3
+                ):
+                    raise ValueError("SURFACE_EXPLORATION_SCOPE_CHANGED")
+                self._surface_result_valid(
+                    artifacts,
+                    context,
+                    record.status,
+                    record.result_ref,
+                    static.static_bundle_ref.content_hash,
+                    analysis_id=identity.analysis_id,
+                    expected_seed_ids=record.hypothesis_ids,
+                )
+                value = json.loads(artifacts.read(record.result_ref))
+                supplement_parts.update(value["reviewed_parts"])
+                supplement_locations.update(value["evidence_locations"])
+                supplement_refs.append(record.result_ref)
+                if record.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS":
+                    complete = False
+                for hypothesis_id in record.hypothesis_ids:
+                    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                    if not self._candidate_hypothesis_terminal(identity, hypothesis_id):
+                        complete = False
+                        continue
+                    supplement_initial = self._store.get(
+                        child, SimpleStage.VERIFICATION_INITIAL_DONE
+                    )
+                    supplement_poc = self._store.get(
+                        child, SimpleStage.POC_EXECUTION_DONE
+                    )
+                    supplement_final = self._store.get(
+                        child, SimpleStage.VERIFICATION_FINAL_DONE
+                    )
+                    if (
+                        supplement_initial is not None
+                        and self._store.verified_terminal_initial_outcome(
+                            supplement_initial
+                        )
+                        is not None
+                    ) or (
+                        supplement_poc is not None
+                        and self._store.verified_terminal_poc_outcome(supplement_poc)
+                        is not None
+                    ):
+                        complete = False
+                        output_refs = (
+                            supplement_initial.output_refs
+                            if supplement_initial is not None
+                            and self._store.verified_terminal_initial_outcome(
+                                supplement_initial
+                            )
+                            is not None
+                            else supplement_poc.output_refs
+                            if supplement_poc is not None
+                            else ()
+                        )
+                    elif (
+                        supplement_final is not None
+                        and supplement_final.status is StageStatus.SUCCEEDED
+                        and supplement_final.output_refs
+                    ):
+                        output_refs = supplement_final.output_refs
+                    else:
+                        complete = False
+                        continue
+                    for ref in output_refs:
+                        artifacts.read(ref)
+                    supplement_refs.extend(output_refs)
+            # A v3 snippet may repair only its bound v2 part. An unrelated
+            # insufficient v2 part or any prior child HOLD/PENDING remains a
+            # coverage gap even when the supplemental reply cites all roles.
+            if (
+                surface_id in blocked_old_children
+                or not unresolved_effective_v2.get(surface_id, set())
+                <= supplemented_parent_ids
+            ):
+                complete = False
+            reviews.append(
+                SurfaceReview(
+                    surface_id=surface_id,
+                    candidate_id=None,
+                    hypothesis_id=None,
+                    verification_status="COMPLETE" if complete else "PENDING",
+                    reviewed_parts=frozenset(
+                        cast(
+                            set[
+                                Literal[
+                                    "ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"
+                                ]
+                            ],
+                            supplement_parts,
+                        )
+                    ),
+                    evidence_locations=tuple(sorted(supplement_locations)),
+                    evidence_refs=tuple(dict.fromkeys(supplement_refs)),
+                )
+            )
         return evaluate_surface_coverage(index, reviews)
 
     @staticmethod
@@ -3205,6 +4222,8 @@ class SimpleAnalysisApplication:
             return 1
         if kind == "simple_surface_context_v2":
             return 2
+        if kind == "simple_surface_context_v3":
+            return 3
         raise ValueError("SURFACE_EXPLORATION_CONTEXT_INVALID")
 
     @staticmethod
@@ -3258,7 +4277,11 @@ class SimpleAnalysisApplication:
             if record.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS":
                 needs_more_evidence = True
                 break
-            if record.status != "HYPOTHESES" or artifacts is None:
+            if (
+                record.status not in {"HYPOTHESES", "NO_HYPOTHESIS"}
+                or artifacts is None
+                or (record.status == "NO_HYPOTHESIS" and record.proposal_version != 1)
+            ):
                 continue
             try:
                 result = json.loads(artifacts.read(record.result_ref))
@@ -3582,6 +4605,9 @@ class SimpleAnalysisApplication:
         progress = self._store.list_surface_exploration_progress(identity, scope)
         seen_contexts: set[tuple[str, str]] = set()
         try:
+            supplements = self._saved_surface_supplements(
+                run, identity, static, scope, artifacts, ast_summary, index, index_ref
+            )
             first_contexts = iter_uncovered_surface_contexts(
                 index,
                 coverage,
@@ -3614,6 +4640,7 @@ class SimpleAnalysisApplication:
                             workspace=static.workspace_path,
                             index_hash=index_ref.content_hash,
                         )
+                yield from supplements
 
             contexts = contexts_to_review()
             for context in contexts:
@@ -3839,11 +4866,17 @@ class SimpleAnalysisApplication:
     ) -> None:
         value = json.loads(artifacts.read(result_ref))
         context_payload = json.loads(artifacts.read(context.context_ref))
+        context_kind = (
+            context_payload.get("kind") if isinstance(context_payload, dict) else None
+        )
         expected_kind = (
-            "simple_surface_hypothesis_result_v2"
-            if isinstance(context_payload, dict)
-            and context_payload.get("kind") == "simple_surface_context_v2"
-            else "simple_surface_hypothesis_result_v1"
+            {
+                "simple_surface_context_v1": "simple_surface_hypothesis_result_v1",
+                "simple_surface_context_v2": "simple_surface_hypothesis_result_v2",
+                "simple_surface_context_v3": "simple_surface_hypothesis_result_v3",
+            }.get(context_kind)
+            if isinstance(context_kind, str)
+            else None
         )
         seed_ids = value.get("seed_ids") if isinstance(value, dict) else None
         parts = value.get("reviewed_parts") if isinstance(value, dict) else None

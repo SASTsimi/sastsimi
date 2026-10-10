@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.poc_candidate import (
     PoCCandidateRejected,
     candidate_rejection_diagnostic,
     validate_candidate,
 )
+from sastsimi.contracts.prompt_redaction import inspect_poc_candidate_json
 
 
 def test_rejection_diagnostic_contains_only_closed_reason_and_counts() -> None:
@@ -61,6 +63,59 @@ def test_sensitive_rejection_locates_assignment_split_across_lines() -> None:
     assert b"never-print-this-secret" not in str(diagnostic).encode()
 
 
+@pytest.mark.parametrize(
+    ("assignment", "category", "rule_id"),
+    [
+        (b"auth = object()", "CREDENTIAL", "CREDENTIAL_ASSIGNMENT"),
+        (b"session_id = object()", "COOKIE", "COOKIE_ASSIGNMENT"),
+        (b"token = object()", "TOKEN", "TOKEN_ASSIGNMENT"),
+        (
+            b"password = never-print-this-password",
+            "CREDENTIAL",
+            "CREDENTIAL_ASSIGNMENT",
+        ),
+    ],
+)
+def test_sensitive_rejection_records_only_closed_rule_id_and_line(
+    assignment: bytes, category: str, rule_id: str
+) -> None:
+    script = b"#!/bin/sh\nprintf ok\n" + assignment + b"\n"
+
+    diagnostic = candidate_rejection_diagnostic(script, "POC_SENSITIVE_CONTENT")
+
+    assert diagnostic["sensitive_category"] == category
+    assert diagnostic["sensitive_rule_id"] == rule_id
+    assert diagnostic["sensitive_line"] == 3
+    assert assignment not in str(diagnostic).encode()
+    assert b"never-print-this" not in str(diagnostic).encode()
+
+
+def test_sensitive_rejection_records_first_rule_without_values() -> None:
+    script = (
+        b"#!/bin/sh\nauth = never-print-this-password\ntoken = never-print-this-token\n"
+    )
+
+    diagnostic = candidate_rejection_diagnostic(script, "POC_SENSITIVE_CONTENT")
+
+    assert diagnostic["sensitive_category"] == "MULTIPLE_RULES"
+    assert diagnostic["sensitive_rule_id"] == "CREDENTIAL_ASSIGNMENT"
+    assert diagnostic["sensitive_line"] == 2
+    assert b"never-print-this" not in str(diagnostic).encode()
+
+
+def test_rule_diagnostic_does_not_relax_sensitive_candidate_block() -> None:
+    with pytest.raises(PoCCandidateRejected, match="POC_SENSITIVE_CONTENT"):
+        validate_candidate(
+            b"#!/bin/sh\nauth=object\nprintf ok\n",
+            allowed_environment_names=frozenset(),
+        )
+
+    assert validate_candidate(
+        b"#!/bin/sh\nsession=object\nprintf ok\n",
+        allowed_environment_names=frozenset(),
+    )
+
+
 def test_xml_element_name_without_assignment_is_not_sensitive_content() -> None:
     script = (
         b"#!/bin/sh\npython3 - <<'PY'\n"
@@ -71,6 +126,50 @@ def test_xml_element_name_without_assignment_is_not_sensitive_content() -> None:
     )
 
     assert validate_candidate(script, allowed_environment_names=frozenset())
+
+
+def test_many_sandbox_paths_round_trip_without_sensitive_rejection() -> None:
+    script = b"#!/bin/sh\n" + b"".join(
+        f"test -f /workspace/package_{index}/module.py\n".encode()
+        for index in range(17)
+    )
+    encoded = canonical_bytes({"content": script.decode()})
+
+    inspected = inspect_poc_candidate_json(encoded)
+
+    assert inspected.categories == ()
+    assert inspected.data == encoded
+    assert validate_candidate(script, allowed_environment_names=frozenset())
+
+
+def test_many_sandbox_paths_do_not_hide_a_secret_assignment() -> None:
+    script = (
+        b"#!/bin/sh\n"
+        + b"".join(
+            f"test -f /workspace/package_{index}/module.py\n".encode()
+            for index in range(17)
+        )
+        + b"token=never-print-this-token\n"
+    )
+
+    with pytest.raises(PoCCandidateRejected, match="POC_SENSITIVE_CONTENT"):
+        validate_candidate(script, allowed_environment_names=frozenset())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        b"/workspace/sk-abcdefghijklmnop123456",
+        b"/workspace/token=never-print-this-token",
+        b"/workspace/token= never-print-this-token",
+        b"/workspace/authorization: with amber river stone",
+    ],
+)
+def test_sandbox_path_does_not_hide_embedded_secret(path: bytes) -> None:
+    script = b"#!/bin/sh\nprintf '%s\\n' '" + path + b"'\n"
+
+    with pytest.raises(PoCCandidateRejected, match="POC_SENSITIVE_CONTENT"):
+        validate_candidate(script, allowed_environment_names=frozenset())
 
 
 @pytest.mark.parametrize(

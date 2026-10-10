@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.python_coverage_scope import out_of_scope_limits_python_coverage
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
@@ -520,11 +521,16 @@ def _static_gaps(
                 or not entry["path"]
             ):
                 raise ValueError("SURFACE_EVIDENCE_INVALID")
+            reason = str(entry.get("reason") or "UNSUPPORTED_PRODUCT_FILE")
+            if field_name == "out_of_scope_product_files" and not (
+                out_of_scope_limits_python_coverage(entry["path"], reason)
+            ):
+                continue
             result.add(
                 StaticGap(
                     path=entry["path"],
                     rule_id="STATIC_SCOPE",
-                    reason=str(entry.get("reason") or "UNSUPPORTED_PRODUCT_FILE"),
+                    reason=reason,
                 )
             )
     unsupported = coverage.get("unsupported", [])

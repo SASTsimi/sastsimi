@@ -320,10 +320,29 @@ def main(
     resume_repair.add_argument("--repair-exhausted-hypothesis")
     resume_repair.add_argument("--repair-legacy-import-stop")
     resume_repair.add_argument("--repair-fallback-poc-stop")
+    resume_repair.add_argument("--repair-poc-fixture-exhaustion")
+    resume_repair.add_argument("--repair-poc-fixture-dependency-exhaustion")
+    resume_repair.add_argument("--repair-poc-candidate-app-exhaustion")
+    resume_repair.add_argument("--repair-poc-urlconf-exhaustion")
+    resume_repair.add_argument("--repair-poc-candidate-constraint")
+    resume_repair.add_argument("--repair-poc-urlconf-candidate")
+    resume_repair.add_argument("--repair-poc-generated-input")
+    resume_repair.add_argument("--repair-poc-source-gap-exhaustion")
+    resume_repair.add_argument("--repair-poc-django-schema-exhaustion")
+    resume_repair.add_argument("--repair-poc-django-settings-exhaustion")
+    resume_repair.add_argument("--repair-poc-django-relation-settings-exhaustion")
+    resume_repair.add_argument("--repair-poc-django-migration-settings-exhaustion")
+    resume_repair.add_argument("--repair-poc-server-constructor-exhaustion")
+    resume_repair.add_argument("--repair-poc-in-memory-storage-exhaustion")
+    resume_repair.add_argument("--repair-initial-environment-exhaustion")
+    resume_repair.add_argument("--repair-interrupted-initial-exhaustion")
     resume_repair.add_argument("--repair-docker-owned-list-exhaustion")
     resume_repair.add_argument("--repair-poc-placeholder-exhaustion")
     resume_repair.add_argument("--repair-poc-sensitive-content")
+    resume_repair.add_argument("--repair-poc-anchor")
     resume_repair.add_argument("--repair-report-validator")
+    resume_repair.add_argument("--repair-auth-required-hypothesis")
+    resume_repair.add_argument("--supplement-saved-v2-ast-orphans", action="store_true")
     resume_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
@@ -774,6 +793,140 @@ def main(
                                     args.repair_fallback_poc_stop
                                 ),
                             )
+                        elif args.repair_poc_fixture_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_fixture_exhaustion_hypothesis=(
+                                    args.repair_poc_fixture_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_fixture_dependency_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_fixture_dependency_exhaustion_hypothesis=(
+                                    args.repair_poc_fixture_dependency_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_candidate_app_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_candidate_app_exhaustion_hypothesis=(
+                                    args.repair_poc_candidate_app_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_urlconf_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_urlconf_exhaustion_hypothesis=(
+                                    args.repair_poc_urlconf_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_candidate_constraint is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_candidate_constraint_hypothesis=(
+                                    args.repair_poc_candidate_constraint
+                                ),
+                            )
+                        elif args.repair_poc_urlconf_candidate is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_urlconf_candidate_hypothesis=(
+                                    args.repair_poc_urlconf_candidate
+                                ),
+                            )
+                        elif args.repair_poc_generated_input is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_generated_input_hypothesis=(
+                                    args.repair_poc_generated_input
+                                ),
+                            )
+                        elif args.repair_poc_source_gap_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_source_gap_exhaustion_hypothesis=(
+                                    args.repair_poc_source_gap_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_django_schema_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_django_schema_exhaustion_hypothesis=(
+                                    args.repair_poc_django_schema_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_django_settings_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_django_settings_exhaustion_hypothesis=(
+                                    args.repair_poc_django_settings_exhaustion
+                                ),
+                            )
+                        elif (
+                            args.repair_poc_django_relation_settings_exhaustion
+                            is not None
+                        ):
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_django_relation_settings_exhaustion_hypothesis=(
+                                    args.repair_poc_django_relation_settings_exhaustion
+                                ),
+                            )
+                        elif (
+                            args.repair_poc_django_migration_settings_exhaustion
+                            is not None
+                        ):
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_django_migration_settings_exhaustion_hypothesis=(
+                                    args.repair_poc_django_migration_settings_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_server_constructor_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_server_constructor_exhaustion_hypothesis=(
+                                    args.repair_poc_server_constructor_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_in_memory_storage_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_in_memory_storage_exhaustion_hypothesis=(
+                                    args.repair_poc_in_memory_storage_exhaustion
+                                ),
+                            )
+                        elif args.repair_initial_environment_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_initial_environment_exhaustion_hypothesis=(
+                                    args.repair_initial_environment_exhaustion
+                                ),
+                            )
+                        elif args.repair_interrupted_initial_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_interrupted_initial_exhaustion_hypothesis=(
+                                    args.repair_interrupted_initial_exhaustion
+                                ),
+                            )
                         elif args.repair_docker_owned_list_exhaustion is not None:
                             data = progress_call(
                                 args.analysis_id,
@@ -798,6 +951,12 @@ def main(
                                     args.repair_poc_sensitive_content
                                 ),
                             )
+                        elif args.repair_poc_anchor is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_anchor_hypothesis=args.repair_poc_anchor,
+                            )
                         elif args.repair_report_validator is not None:
                             data = progress_call(
                                 args.analysis_id,
@@ -805,6 +964,20 @@ def main(
                                 repair_report_validator_hypothesis=(
                                     args.repair_report_validator
                                 ),
+                            )
+                        elif args.repair_auth_required_hypothesis is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_auth_required_hypothesis=(
+                                    args.repair_auth_required_hypothesis
+                                ),
+                            )
+                        elif args.supplement_saved_v2_ast_orphans:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                supplement_saved_v2_ast_orphans=True,
                             )
                         else:
                             data = progress_call(args.analysis_id, renderer.render)
@@ -829,6 +1002,122 @@ def main(
                                 args.repair_fallback_poc_stop
                             ),
                         )
+                    elif args.repair_poc_fixture_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_fixture_exhaustion_hypothesis=(
+                                args.repair_poc_fixture_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_fixture_dependency_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_fixture_dependency_exhaustion_hypothesis=(
+                                args.repair_poc_fixture_dependency_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_candidate_app_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_candidate_app_exhaustion_hypothesis=(
+                                args.repair_poc_candidate_app_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_urlconf_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_urlconf_exhaustion_hypothesis=(
+                                args.repair_poc_urlconf_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_candidate_constraint is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_candidate_constraint_hypothesis=(
+                                args.repair_poc_candidate_constraint
+                            ),
+                        )
+                    elif args.repair_poc_urlconf_candidate is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_urlconf_candidate_hypothesis=(
+                                args.repair_poc_urlconf_candidate
+                            ),
+                        )
+                    elif args.repair_poc_generated_input is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_generated_input_hypothesis=(
+                                args.repair_poc_generated_input
+                            ),
+                        )
+                    elif args.repair_poc_source_gap_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_source_gap_exhaustion_hypothesis=(
+                                args.repair_poc_source_gap_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_django_schema_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_django_schema_exhaustion_hypothesis=(
+                                args.repair_poc_django_schema_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_django_settings_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_django_settings_exhaustion_hypothesis=(
+                                args.repair_poc_django_settings_exhaustion
+                            ),
+                        )
+                    elif (
+                        args.repair_poc_django_relation_settings_exhaustion is not None
+                    ):
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_django_relation_settings_exhaustion_hypothesis=(
+                                args.repair_poc_django_relation_settings_exhaustion
+                            ),
+                        )
+                    elif (
+                        args.repair_poc_django_migration_settings_exhaustion is not None
+                    ):
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_django_migration_settings_exhaustion_hypothesis=(
+                                args.repair_poc_django_migration_settings_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_server_constructor_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_server_constructor_exhaustion_hypothesis=(
+                                args.repair_poc_server_constructor_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_in_memory_storage_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_in_memory_storage_exhaustion_hypothesis=(
+                                args.repair_poc_in_memory_storage_exhaustion
+                            ),
+                        )
+                    elif args.repair_initial_environment_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_initial_environment_exhaustion_hypothesis=(
+                                args.repair_initial_environment_exhaustion
+                            ),
+                        )
+                    elif args.repair_interrupted_initial_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_interrupted_initial_exhaustion_hypothesis=(
+                                args.repair_interrupted_initial_exhaustion
+                            ),
+                        )
                     elif args.repair_docker_owned_list_exhaustion is not None:
                         data = application.resume(
                             args.analysis_id,
@@ -850,12 +1139,29 @@ def main(
                                 args.repair_poc_sensitive_content
                             ),
                         )
+                    elif args.repair_poc_anchor is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_anchor_hypothesis=args.repair_poc_anchor,
+                        )
                     elif args.repair_report_validator is not None:
                         data = application.resume(
                             args.analysis_id,
                             repair_report_validator_hypothesis=(
                                 args.repair_report_validator
                             ),
+                        )
+                    elif args.repair_auth_required_hypothesis is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_auth_required_hypothesis=(
+                                args.repair_auth_required_hypothesis
+                            ),
+                        )
+                    elif args.supplement_saved_v2_ast_orphans:
+                        data = application.resume(
+                            args.analysis_id,
+                            supplement_saved_v2_ast_orphans=True,
                         )
                     else:
                         data = application.resume(args.analysis_id)
@@ -867,14 +1173,61 @@ def main(
                         and str(error).startswith("LEGACY_IMPORT_STOP_")
                         or args.repair_fallback_poc_stop is not None
                         and str(error).startswith("FALLBACK_POC_STOP_")
+                        or args.repair_poc_fixture_exhaustion is not None
+                        and str(error).startswith("POC_FIXTURE_EXHAUSTION_")
+                        or args.repair_poc_fixture_dependency_exhaustion is not None
+                        and str(error).startswith("POC_FIXTURE_DEPENDENCY_EXHAUSTION_")
+                        or args.repair_poc_candidate_app_exhaustion is not None
+                        and str(error).startswith("POC_CANDIDATE_APP_EXHAUSTION_")
+                        or args.repair_poc_urlconf_exhaustion is not None
+                        and str(error).startswith("POC_URLCONF_EXHAUSTION_")
+                        or args.repair_poc_candidate_constraint is not None
+                        and str(error).startswith("POC_CANDIDATE_CONSTRAINT_REPLAY_")
+                        or args.repair_poc_urlconf_candidate is not None
+                        and str(error).startswith("POC_URLCONF_CANDIDATE_REPLAY_")
+                        or args.repair_poc_generated_input is not None
+                        and str(error).startswith("POC_GENERATED_INPUT_REPLAY_")
+                        or args.repair_poc_source_gap_exhaustion is not None
+                        and str(error).startswith("POC_SOURCE_GAP_EXHAUSTION_")
+                        or args.repair_poc_django_schema_exhaustion is not None
+                        and str(error).startswith("POC_DJANGO_SCHEMA_EXHAUSTION_")
+                        or args.repair_poc_django_settings_exhaustion is not None
+                        and str(error).startswith("POC_DJANGO_SETTINGS_EXHAUSTION_")
+                        or args.repair_poc_django_relation_settings_exhaustion
+                        is not None
+                        and str(error).startswith(
+                            "POC_DJANGO_RELATION_SETTINGS_EXHAUSTION_"
+                        )
+                        or args.repair_poc_django_migration_settings_exhaustion
+                        is not None
+                        and str(error).startswith(
+                            "POC_DJANGO_MIGRATION_SETTINGS_EXHAUSTION_"
+                        )
+                        or args.repair_poc_server_constructor_exhaustion is not None
+                        and str(error).startswith("POC_SERVER_CONSTRUCTOR_EXHAUSTION_")
+                        or args.repair_poc_in_memory_storage_exhaustion is not None
+                        and str(error).startswith("POC_IN_MEMORY_STORAGE_EXHAUSTION_")
+                        or args.repair_initial_environment_exhaustion is not None
+                        and str(error).startswith("INITIAL_ENVIRONMENT_EXHAUSTION_")
+                        or args.repair_interrupted_initial_exhaustion is not None
+                        and str(error).startswith(
+                            (
+                                "INITIAL_ENVIRONMENT_EXHAUSTION_",
+                                "INTERRUPTED_INITIAL_EXHAUSTION_",
+                            )
+                        )
                         or args.repair_docker_owned_list_exhaustion is not None
                         and str(error).startswith("DOCKER_LIST_EXHAUSTION_")
                         or args.repair_poc_placeholder_exhaustion is not None
                         and str(error).startswith("POC_PLACEHOLDER_EXHAUSTION_")
                         or args.repair_poc_sensitive_content is not None
                         and str(error).startswith("POC_SENSITIVE_CONTENT_REPLAY_")
+                        or args.repair_poc_anchor is not None
+                        and str(error).startswith("POC_ANCHOR_REPLAY_")
                         or args.repair_report_validator is not None
                         and str(error).startswith("REPORT_VALIDATOR_REPLAY_")
+                        or args.repair_auth_required_hypothesis is not None
+                        and str(error).startswith("AUTH_REQUIRED_REPLAY_")
                     ):
                         raise
                     code = (
@@ -923,10 +1276,29 @@ def main(
                 args.repair_exhausted_hypothesis is not None
                 or args.repair_legacy_import_stop is not None
                 or args.repair_fallback_poc_stop is not None
+                or args.repair_poc_fixture_exhaustion is not None
+                or args.repair_poc_fixture_dependency_exhaustion is not None
+                or args.repair_poc_candidate_app_exhaustion is not None
+                or args.repair_poc_urlconf_exhaustion is not None
+                or args.repair_poc_candidate_constraint is not None
+                or args.repair_poc_urlconf_candidate is not None
+                or args.repair_poc_generated_input is not None
+                or args.repair_poc_source_gap_exhaustion is not None
+                or args.repair_poc_django_schema_exhaustion is not None
+                or args.repair_poc_django_settings_exhaustion is not None
+                or args.repair_poc_django_relation_settings_exhaustion is not None
+                or args.repair_poc_django_migration_settings_exhaustion is not None
+                or args.repair_poc_server_constructor_exhaustion is not None
+                or args.repair_poc_in_memory_storage_exhaustion is not None
+                or args.repair_initial_environment_exhaustion is not None
+                or args.repair_interrupted_initial_exhaustion is not None
                 or args.repair_docker_owned_list_exhaustion is not None
                 or args.repair_poc_placeholder_exhaustion is not None
                 or args.repair_poc_sensitive_content is not None
+                or args.repair_poc_anchor is not None
                 or args.repair_report_validator is not None
+                or args.repair_auth_required_hypothesis is not None
+                or args.supplement_saved_v2_ast_orphans
             ):
                 raise _InputError
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)

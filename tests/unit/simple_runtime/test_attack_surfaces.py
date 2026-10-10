@@ -294,6 +294,82 @@ def test_static_file_rule_gap_is_separate_from_surface_gap(tmp_path: Path) -> No
     assert coverage.complete is False
 
 
+def test_proven_non_python_exclusions_do_not_block_full_surface_coverage(
+    tmp_path: Path,
+) -> None:
+    bundle, summary, candidates, artifacts = _fixture(tmp_path)
+    exclusions = [
+        {"path": "web/app.js", "reason": "non_python_product_source"},
+        {"path": "scripts/entry.ts", "reason": "declared_non_python_entry"},
+    ]
+    bundle["static_coverage_ref"] = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "scope-surface",
+            "expected_count": 2,
+            "verified_count": 2,
+            "gaps": [],
+            "unsupported": [],
+            "out_of_scope_product_files": exclusions,
+        }
+    ).model_dump(mode="json")
+
+    index = build_attack_surface_index(bundle, summary, candidates, artifacts=artifacts)
+    proof_ref = artifacts.put_json({"kind": "verified-surface-review"})
+    reviews = tuple(
+        SurfaceReview(
+            surface_id=surface.surface_id,
+            candidate_id=None,
+            hypothesis_id=None,
+            verification_status="COMPLETE",
+            reviewed_parts=frozenset(
+                {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
+            ),
+            evidence_locations=(f"{surface.path}:{surface.line}",),
+            evidence_refs=(proof_ref,),
+        )
+        for surface in index.surfaces
+    )
+
+    coverage = evaluate_surface_coverage(index, reviews)
+
+    assert len(coverage.surfaces) >= 1
+    assert all(surface.coverage_status == "COVERED" for surface in coverage.surfaces)
+    assert coverage.static_gaps == ()
+    assert coverage.complete is True
+
+
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        ("web/app.js", "unknown_exclusion_reason"),
+        ("api/types.pyi", "declared_non_python_entry"),
+        ("app.py", "non_python_product_source"),
+    ],
+)
+def test_uncertain_out_of_scope_product_remains_a_surface_gap(
+    tmp_path: Path, path: str, reason: str
+) -> None:
+    bundle, summary, candidates, artifacts = _fixture(tmp_path)
+    bundle["static_coverage_ref"] = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "scope-surface",
+            "expected_count": 2,
+            "verified_count": 2,
+            "gaps": [],
+            "unsupported": [],
+            "out_of_scope_product_files": [{"path": path, "reason": reason}],
+        }
+    ).model_dump(mode="json")
+
+    index = build_attack_surface_index(bundle, summary, candidates, artifacts=artifacts)
+
+    assert (path, "STATIC_SCOPE", reason) in {
+        (gap.path, gap.rule_id, gap.reason) for gap in index.static_gaps
+    }
+
+
 def test_distinct_flows_at_same_sink_remain_distinct(tmp_path: Path) -> None:
     bundle, summary, candidates, artifacts = _fixture(
         tmp_path,

@@ -53,6 +53,9 @@ def _diagnostic(*, new: bool = False) -> dict[str, object]:
 
 def _sensitive_stop(
     tmp_path: Path,
+    *,
+    new_diagnostic: bool = False,
+    diagnostic_override: dict[str, object] | None = None,
 ) -> tuple[SimpleCheckpointStore, SimpleArtifactRepository, StageCheckpoint]:
     store, artifacts, previous, _ = _seed(tmp_path)
     identity = previous.identity
@@ -75,7 +78,8 @@ def _sensitive_stop(
         candidate.input_refs,
         attempt_id="sensitive-attempt-1",
     )
-    first_diag = artifacts.put_json(_diagnostic())
+    diagnostic = diagnostic_override or _diagnostic(new=new_diagnostic)
+    first_diag = artifacts.put_json(diagnostic)
     first_failed = store.mark_failure(
         first,
         StageFailure(
@@ -133,7 +137,7 @@ def _sensitive_stop(
         inputs,
         attempt_id="sensitive-attempt-2",
     )
-    second_diag = artifacts.put_json(_diagnostic())
+    second_diag = artifacts.put_json(diagnostic)
     second_failed = store.mark_failure(
         second,
         StageFailure(
@@ -231,6 +235,54 @@ def test_replay_only_sensitive_stopped_candidate_preserves_completed_work(
     assert marker["old_attempt_id"] == "sensitive-attempt-2"
     assert "content" not in marker
     assert "prompt" not in marker
+
+
+def test_replay_accepts_bounded_current_sensitive_diagnostic(tmp_path: Path) -> None:
+    store, artifacts, stopped = _sensitive_stop(tmp_path, new_diagnostic=True)
+
+    pending = store.prepare_poc_sensitive_content_replay(stopped, artifacts)
+
+    assert pending.status is StageStatus.PENDING
+    assert pending.stage is SimpleStage.POC_CANDIDATE_DONE
+
+
+def test_replay_accepts_closed_optional_sensitive_rule_id(tmp_path: Path) -> None:
+    diagnostic = _diagnostic(new=True) | {"sensitive_rule_id": "COOKIE_ASSIGNMENT"}
+    store, artifacts, stopped = _sensitive_stop(
+        tmp_path, diagnostic_override=diagnostic
+    )
+
+    pending = store.prepare_poc_sensitive_content_replay(stopped, artifacts)
+
+    assert pending.status is StageStatus.PENDING
+    assert pending.stage is SimpleStage.POC_CANDIDATE_DONE
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"sensitive_category": "UNRECOGNIZED"},
+        {"sensitive_category": {"untrusted": "object"}},
+        {"sensitive_line": -1},
+        {"sensitive_line": 99},
+        {"sensitive_line": True},
+        {"sensitive_rule_id": "UNTRUSTED_RULE"},
+        {"sensitive_rule_id": {"untrusted": "object"}},
+        {"sensitive_rule_id": "CREDENTIAL_ASSIGNMENT"},
+        {"sensitive_rule_id": "UNCLASSIFIED"},
+        {"extra_field": "not allowed"},
+    ],
+)
+def test_replay_refuses_unbounded_current_diagnostic(
+    tmp_path: Path, update: dict[str, object]
+) -> None:
+    diagnostic = _diagnostic(new=True) | update
+    store, artifacts, stopped = _sensitive_stop(
+        tmp_path, diagnostic_override=diagnostic
+    )
+
+    with pytest.raises(ValueError, match="POC_SENSITIVE_CONTENT_REPLAY_EVENT_INVALID"):
+        store.prepare_poc_sensitive_content_replay(stopped, artifacts)
 
 
 def test_replay_refuses_second_use_and_unresolved_codex_child(tmp_path: Path) -> None:
