@@ -167,6 +167,33 @@ async def test_final_chain_uses_new_primitive_pool_without_speculative_inputs(
 
 
 @pytest.mark.asyncio
+async def test_final_chain_skips_llm_when_no_directed_capabilities_match(
+    tmp_path: Path,
+) -> None:
+    client = _ChainClient()
+    stage, store, artifacts = _stage(tmp_path, client)
+    root = _identity()
+    for index in range(18):
+        _admit(
+            store,
+            artifacts,
+            root,
+            f"disjoint-{index:02d}",
+            provided=(f"provided-{index:02d}",),
+            required=(f"required-{index:02d}",),
+        )
+
+    result = await stage.finalize_chaining_for_pool(root, stage.pool_fingerprint(root))
+
+    assert len(result.output_refs) == 1
+    value = json.loads(artifacts.read(result.output_refs[0]))
+    assert value["status"] == "NO_MATERIAL_CHILD"
+    assert value["children"] == []
+    assert len(value["considered_primitive_refs"]) == 18
+    assert client.contexts == []
+
+
+@pytest.mark.asyncio
 async def test_chaining_never_silently_truncates_model_children(tmp_path: Path) -> None:
     client = _ChainClient()
     stage, store, artifacts = _stage(tmp_path, client)
@@ -199,19 +226,24 @@ async def test_final_chain_rejects_invalid_child_as_unverified_batch(
     client = _ChainClient()
     stage, store, artifacts = _stage(tmp_path, client)
     root = _identity()
-    upstream = _admit(
-        store,
-        artifacts,
-        root,
-        "valid-upstream",
-        required=(),
-        provided=() if invalid_kind == "incompatible" else ("read",),
+    upstream = _admit(store, artifacts, root, "valid-upstream", required=())
+    _admit(store, artifacts, root, "valid-downstream", provided=())
+    incompatible = (
+        _admit(
+            store,
+            artifacts,
+            root,
+            "incompatible-downstream",
+            provided=(),
+            required=("write",),
+        )
+        if invalid_kind == "incompatible"
+        else None
     )
-    downstream = _admit(store, artifacts, root, "valid-downstream", provided=())
     downstream_hash = {
         "unknown": "f" * 64,
         "self": upstream.content_hash,
-        "incompatible": downstream.content_hash,
+        "incompatible": incompatible.content_hash if incompatible else "",
     }[invalid_kind]
     client.children = [
         {
@@ -228,6 +260,48 @@ async def test_final_chain_rejects_invalid_child_as_unverified_batch(
     with pytest.raises(StageBlocked) as captured:
         await stage.finalize_chaining_for_pool(root, stage.pool_fingerprint(root))
     assert captured.value.failure.code == "CHAINING_BATCH_RESPONSE_INVALID"
+    assert len(client.contexts) == 2
+
+
+@pytest.mark.asyncio
+async def test_final_chain_retries_invalid_pair_with_semantic_feedback(
+    tmp_path: Path,
+) -> None:
+    class CorrectingClient(_ChainClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.prompts: list[bytes] = []
+
+        async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+            self.prompts.append(kwargs["prompt"])
+            self.children = [invalid if len(self.prompts) == 1 else valid]
+            return await super().call(**kwargs)
+
+    client = CorrectingClient()
+    stage, store, artifacts = _stage(tmp_path, client)
+    root = _identity()
+    upstream = _admit(store, artifacts, root, "upstream", required=())
+    downstream = _admit(store, artifacts, root, "downstream", provided=())
+    valid: dict[str, JsonValue] = {
+        "upstream_primitive_hash": upstream.content_hash,
+        "downstream_primitive_hash": downstream.content_hash,
+        "title": "Material chain",
+        "vulnerability_type": "CHAIN",
+        "summary": "One capability satisfies another requirement",
+        "rationale": "Exact read capability intersects",
+        "code_locations": ["module.py:1"],
+    }
+    invalid = {**valid, "downstream_primitive_hash": "f" * 64}
+
+    result = await stage.finalize_chaining_for_pool(root, stage.pool_fingerprint(root))
+
+    value = json.loads(artifacts.read(result.output_refs[0]))
+    assert value["status"] == "MATERIAL_CHILD"
+    assert len(value["children"]) == 1
+    assert len(client.prompts) == 2
+    feedback = b"Previous chaining response contained an invalid primitive pair"
+    assert feedback not in client.prompts[0]
+    assert feedback in client.prompts[1]
 
 
 @pytest.mark.asyncio

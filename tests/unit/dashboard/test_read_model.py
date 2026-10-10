@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -19,14 +20,15 @@ from sastsimi.storage.agent_activity import AgentActivityStore
 
 
 def _pages(count: int) -> dict[str, tuple[list[dict[str, object]], dict[str, object]]]:
-    result = {}
+    result: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {}
     for tab in INDEXED_TABS:
-        items = []
+        items: list[dict[str, object]] = []
         for index in range(count):
-            common = {
+            common: dict[str, object] = {
                 "status": "SUCCEEDED",
                 "created_at": f"2026-01-01T00:{index:02d}:00Z",
             }
+            item: dict[str, object]
             if tab == "findings":
                 item = common | {
                     "hypothesis_id": f"DEMO-H-{index:03d}",
@@ -66,6 +68,14 @@ def _pages(count: int) -> dict[str, tuple[list[dict[str, object]], dict[str, obj
     return result
 
 
+def _items(page: dict[str, object]) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], page["items"])
+
+
+def _cursor(page: dict[str, object], key: str) -> str | None:
+    return cast(str | None, page[key])
+
+
 @pytest.mark.parametrize("count", [0, 1, 10, 11, 23, 101])
 def test_read_model_pages_are_bounded_and_stable(tmp_path: Path, count: int) -> None:
     model = DashboardReadModel(tmp_path)
@@ -78,9 +88,9 @@ def test_read_model_pages_are_bounded_and_stable(tmp_path: Path, count: int) -> 
         page = model.page(
             "DEMO-ANALYSIS", "findings", offset=(page_number - 1) * 10, limit=10
         )
-        assert len(page["items"]) <= 10
+        assert len(_items(page)) <= 10
         assert page["total_items"] == count
-        collected.extend(item["hypothesis_id"] for item in page["items"])
+        collected.extend(str(item["hypothesis_id"]) for item in _items(page))
     assert len(collected) == len(set(collected)) == count
 
 
@@ -97,7 +107,7 @@ def test_read_model_search_and_filter_happen_before_limit(tmp_path: Path) -> Non
     )
     assert search["total_items"] == 11
     assert filtered["total_items"] == 11
-    assert len(search["items"]) == 10
+    assert len(_items(search)) == 10
 
 
 def test_index_not_ready_is_not_reported_as_empty(tmp_path: Path) -> None:
@@ -121,7 +131,7 @@ def test_incomplete_index_fails_closed_and_can_be_rebuilt(tmp_path: Path) -> Non
 
     assert recovered["page"] == 3
     assert recovered["total_items"] == 23
-    assert len(recovered["items"]) == 3
+    assert len(_items(recovered)) == 3
 
 
 def test_dashboard_indexed_list_does_not_read_cas(
@@ -138,7 +148,7 @@ def test_dashboard_indexed_list_does_not_read_cas(
 
     monkeypatch.setattr(query, "_get_analysis_tab_from_source", fail_source)
     page = query.get_analysis_tab("DEMO-ANALYSIS", "artifacts", offset=10, limit=10)
-    assert len(page["items"]) == 10
+    assert len(_items(page)) == 10
     assert page["page"] == 2
 
 
@@ -153,7 +163,7 @@ def test_concurrent_reads_and_rebuilds_remain_consistent(tmp_path: Path) -> None
         for offset in range(0, 125, 10):
             page = model.page("DEMO-ANALYSIS", "findings", offset=offset, limit=10)
             assert page["total_items"] == 125
-            seen.update(str(item["hypothesis_id"]) for item in page["items"])
+            seen.update(str(item["hypothesis_id"]) for item in _items(page))
         return len(seen)
 
     def rebuild(number: int) -> int:
@@ -167,7 +177,7 @@ def test_concurrent_reads_and_rebuilds_remain_consistent(tmp_path: Path) -> None
     assert results == [125] * 8
     final_page = model.page("DEMO-ANALYSIS", "findings", offset=120, limit=10)
     assert final_page["total_items"] == 125
-    assert len(final_page["items"]) == 5
+    assert len(_items(final_page)) == 5
 
 
 def _event(number: int) -> AgentActivityEvent:
@@ -199,26 +209,26 @@ def test_log_cursor_is_stable_when_new_event_is_appended(
 
     latest = query.list_log_cursor("DEMO-ANALYSIS", limit=10)
     older = query.list_log_cursor(
-        "DEMO-ANALYSIS", before=latest["next_cursor"], limit=10
+        "DEMO-ANALYSIS", before=_cursor(latest, "next_cursor"), limit=10
     )
     store.append(_event(26))
     older_again = query.list_log_cursor(
-        "DEMO-ANALYSIS", before=latest["next_cursor"], limit=10
+        "DEMO-ANALYSIS", before=_cursor(latest, "next_cursor"), limit=10
     )
     newer = query.list_log_cursor(
-        "DEMO-ANALYSIS", after=latest["latest_cursor"], limit=10
+        "DEMO-ANALYSIS", after=_cursor(latest, "latest_cursor"), limit=10
     )
 
-    assert [item["event_id"] for item in latest["items"]] == [
+    assert [item["event_id"] for item in _items(latest)] == [
         f"event-{number:03d}" for number in range(25, 15, -1)
     ]
-    assert [item["event_id"] for item in older["items"]] == [
+    assert [item["event_id"] for item in _items(older)] == [
         f"event-{number:03d}" for number in range(15, 5, -1)
     ]
     assert older_again["items"] == older["items"]
-    assert [item["event_id"] for item in newer["items"]] == ["event-026"]
-    assert not set(item["event_id"] for item in latest["items"]).intersection(
-        item["event_id"] for item in older["items"]
+    assert [item["event_id"] for item in _items(newer)] == ["event-026"]
+    assert not set(item["event_id"] for item in _items(latest)).intersection(
+        item["event_id"] for item in _items(older)
     )
 
 

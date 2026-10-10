@@ -1,0 +1,148 @@
+{
+  "version": 2,
+  "repository": "https://github.com/sgabe/DSVPWA",
+  "commit": "c98b77950bf1c54080c4113a2488ce0509b21cff",
+  "completeness": "DOCUMENTED_CASES",
+  "cases": [
+    {
+      "case_id": "dsvpwa-login-sqli",
+      "cwe": "CWE-89",
+      "kind": "FLOW",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 465,
+      "sink_line": 471,
+      "scope": "PYTHON",
+      "rationale": "The /login handler puts the request password into a concatenated SQLite authentication query. This is a separate input-to-query path from /users."
+    },
+    {
+      "case_id": "dsvpwa-users-sqli",
+      "cwe": "CWE-89",
+      "kind": "FLOW",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 103,
+      "sink_line": 105,
+      "scope": "PYTHON",
+      "rationale": "The /users id query parameter is concatenated into a SQLite query without parameter binding."
+    },
+    {
+      "case_id": "dsvpwa-reflected-xss",
+      "cwe": "CWE-79",
+      "kind": "FLOW",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 170,
+      "sink_line": 176,
+      "scope": "PYTHON",
+      "rationale": "The /post msg parameter is returned as unescaped HTML response content by Python code; browser interpretation is the impact condition."
+    },
+    {
+      "case_id": "dsvpwa-stored-xss",
+      "cwe": "CWE-79",
+      "kind": "FLOW",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 191,
+      "sink_line": 201,
+      "scope": "PYTHON",
+      "rationale": "The /guestbook comment is stored and later interpolated without HTML escaping into a table cell by Python code."
+    },
+    {
+      "case_id": "dsvpwa-command-injection",
+      "cwe": "CWE-78",
+      "kind": "FLOW",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 295,
+      "sink_line": 296,
+      "scope": "PYTHON",
+      "rationale": "The /diag domain parameter reaches subprocess.check_output with shell=True when the deliberately vulnerable server is launched at risk level 3."
+    },
+    {
+      "case_id": "dsvpwa-unsafe-deserialization",
+      "cwe": "CWE-502",
+      "kind": "FLOW",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 352,
+      "sink_line": 353,
+      "scope": "PYTHON",
+      "rationale": "The /extract object parameter is Base64-decoded and passed to pickle.loads when the deliberately vulnerable server is launched at risk level 3."
+    },
+    {
+      "case_id": "dsvpwa-path-traversal",
+      "cwe": "CWE-22",
+      "kind": "FLOW",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 363,
+      "sink_line": 365,
+      "scope": "PYTHON",
+      "rationale": "The /docs path parameter is converted to an absolute path and opened without limiting it to the documents directory. The separate URL branch is not this case."
+    },
+    {
+      "case_id": "dsvpwa-session-fixation",
+      "cwe": "CWE-384",
+      "kind": "MISSING_GUARD",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 400,
+      "sink_line": 479,
+      "scope": "PYTHON",
+      "rationale": "The /home session parameter chooses SESSIONID and /login retains that identifier after authentication instead of rotating it. Both Python operations are required for this case."
+    },
+    {
+      "case_id": "dsvpwa-csrf-settings",
+      "cwe": "CWE-352",
+      "kind": "MISSING_GUARD",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 542,
+      "sink_line": 544,
+      "scope": "PYTHON",
+      "rationale": "The /settings handler changes an authenticated user's email from a GET parameter without a request-intent/CSRF token check. A browser cross-origin request is the impact condition."
+    },
+    {
+      "case_id": "dsvpwa-execution-after-redirect",
+      "cwe": "CWE-698",
+      "kind": "MISSING_GUARD",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 263,
+      "sink_line": 273,
+      "scope": "PYTHON",
+      "rationale": "The /admin response constructs protected content before merely appending a client-side login redirect when the cookie is absent; the Python handler does not deny the response."
+    },
+    {
+      "case_id": "dsvpwa-open-redirect",
+      "cwe": "CWE-601",
+      "kind": "FLOW",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 249,
+      "sink_line": 253,
+      "scope": "PYTHON",
+      "rationale": "The /jump path parameter is inserted by Python into an emitted browser-navigation script with no destination validation."
+    },
+    {
+      "case_id": "dsvpwa-clickjacking",
+      "cwe": "CWE-1021",
+      "kind": "CONFIGURATION",
+      "path": "dsvpwa/handlers.py",
+      "source_line": null,
+      "sink_line": 280,
+      "scope": "PYTHON",
+      "rationale": "The vulnerable-mode Python response omits X-Frame-Options and frame-ancestors restrictions around the /danger account-deletion action; secure mode adds both."
+    },
+    {
+      "case_id": "dsvpwa-session-hijacking-lesson",
+      "cwe": "CWE-613",
+      "kind": "CONFIGURATION",
+      "path": "dsvpwa/attacks.py",
+      "source_line": 432,
+      "sink_line": 434,
+      "scope": "OUT_OF_SCOPE",
+      "rationale": "The lesson demonstrates replay of an already acquired bearer session token. Token theft and expiry policy are not independently specified by this Python route; do not score mere bearer-token lookup as a Python false negative."
+    },
+    {
+      "case_id": "dsvpwa-insecure-transport-lesson",
+      "cwe": "CWE-319",
+      "kind": "CONFIGURATION",
+      "path": "dsvpwa.py",
+      "source_line": null,
+      "sink_line": 23,
+      "scope": "OUT_OF_SCOPE",
+      "rationale": "The optional TLS flag defaults off but the server binds only to localhost by default; this README-level transport lesson needs a distinct network/deployment threat model and has no dedicated attack route. CWE is reviewer-assigned, not XML metadata."
+    }
+  ]
+}

@@ -438,16 +438,22 @@ async def test_repository_preparation_and_guard_accept_long_windows_workspace_pa
     if git is None:
         pytest.skip("Git is not installed")
 
+    tracked_path = f"nested/{'m' * 90}/app.py"
     source, commit_id = _source_repository(
-        tmp_path / "source", tracked={"app.py": "value = 1\n"}
+        tmp_path / "source", tracked={tracked_path: "value = 1\n"}
     )
     anticipated = tmp_path / "analysis" / "leases" / ("f" * 32)
-    padding = max(1, 210 - len(str(anticipated)))
+    # Keep Git's internal metadata paths within its Windows clone limit while
+    # exercising a checked-out file path beyond the legacy 260-char boundary.
+    padding = max(1, 180 - len(str(anticipated)))
     analysis_root = tmp_path / ("p" * padding) / "analysis"
     prepared = await _prepare(analysis_root, source, commit_id, Path(git))
 
     assert prepared.status == "READY", prepared.errors
     assert prepared.root is not None
+    assert len(str(prepared.root / tracked_path)) > 260
+    checked_out_path = Path("\\\\?\\" + str(prepared.root / tracked_path))
+    assert checked_out_path.read_text(encoding="utf-8") == "value = 1\n"
     assert _git(prepared.root, "rev-parse", "HEAD") == commit_id
 
     guard_output = analysis_root / "guard-output"

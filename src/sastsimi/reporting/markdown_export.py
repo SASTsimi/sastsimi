@@ -64,6 +64,7 @@ from sastsimi.reporting.safe_windows_directory import (
 from sastsimi.reporting.safe_windows_directory import (
     _platform_attribute as _platform_attribute,
 )
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 
 _SAFE_PATH_SEGMENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 _WINDOWS_RESERVED_STEMS = frozenset(
@@ -144,7 +145,10 @@ class ReportMarkdownService:
         """Find only the bundle of the current v2 ReportDraft just exported."""
 
         try:
-            relative = exported.resolve(strict=True).relative_to(self._data_dir)
+            resolved_exported = windows_extended_path(exported).resolve(strict=True)
+            relative = resolved_exported.relative_to(
+                windows_extended_path(self._data_dir)
+            )
         except (OSError, ValueError) as error:
             raise ReportUnavailable("REPORT_PATH_OUTSIDE_DATA_DIR") from error
         if (
@@ -164,13 +168,13 @@ class ReportMarkdownService:
             return None
         report = current[0]
         expected_identity = _report_identity(report)
-        if exported.resolve(strict=True) != self._destination(report).resolve(
-            strict=True
-        ):
+        if resolved_exported != windows_extended_path(
+            self._destination(report)
+        ).resolve(strict=True):
             raise ReportUnavailable("STALE_REPORT")
         bundle = self._data_dir / relative.parent / relative.stem
-        manifest_path = bundle / "manifest.json"
-        archive_path = bundle / "bundle.zip"
+        manifest_path = windows_extended_path(bundle / "manifest.json")
+        archive_path = windows_extended_path(bundle / "bundle.zip")
         try:
             if (
                 manifest_path.resolve(strict=True) != manifest_path
@@ -622,6 +626,7 @@ def _execution_method(command: SandboxCommandRecord) -> str:
 def _atomic_write(
     path: Path, data: bytes, assert_still_current: Callable[[], None]
 ) -> None:
+    path = windows_extended_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
@@ -645,6 +650,7 @@ def _atomic_write(
 
 
 def _read_small_regular(path: Path, limit: int) -> bytes:
+    path = windows_extended_path(path)
     before = path.lstat()
     if (
         not stat.S_ISREG(before.st_mode)

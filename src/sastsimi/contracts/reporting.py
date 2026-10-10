@@ -34,10 +34,28 @@ _HIDDEN_REASONING = re.compile(
 )
 _URL_TOKEN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _DOTTED_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){1,3}\b(?!\.\d)", re.IGNORECASE)
+_IPV4_TOKEN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)")
 _NETWORK_ENDPOINT_PREFIX = re.compile(
     r"\b(?:ip(?:v4)?(?:\s+address)?|address|host|binds?|bound|listens?|"
-    r"connects?|endpoint|loopback)\b(?:\s+(?:to|at|on|is))?\s*[:=]?\s*$",
+    r"connects?|endpoint|loopback|server\s+defaults?\s+to)\b"
+    r"(?:\s+(?:to|at|on|is))?\s*[:=]?\s*$",
     re.IGNORECASE,
+)
+_LEGACY_REPORT_ENDPOINT_FIX = re.compile(
+    r"\bserver\s+defaults?\s+to\b(?:\s+(?:to|at|on|is))?\s*[:=]?\s*$",
+    re.IGNORECASE,
+)
+_DEFAULT_LISTENER_PREFIX = re.compile(r"\bdefault\s+listener\s+is\s*$", re.IGNORECASE)
+_KOREAN_LISTENER_PREFIX = re.compile(r"(?:기본\s+)?수신\s+주소(?:는|가)\s*$")
+_APP_DEFAULT_ENDPOINT_PREFIX = re.compile(
+    r"\b(?:app|application)\s+defaults?\s+to\s*$", re.IGNORECASE
+)
+_DEFAULT_BIND_PREFIX = re.compile(r"\bdefault\s*$", re.IGNORECASE)
+_ENDPOINT_NOUN_SUFFIX = re.compile(
+    r"^\s+(?:bind|binding|host|address|endpoint)\b", re.IGNORECASE
+)
+_VERSION_ROLE_SUFFIX = re.compile(
+    r"\b(?:versions?|releases?|builds?)\b|(?:버전|릴리스|빌드)", re.IGNORECASE
 )
 _UNSUPPORTED_ADVISORY_CLAIMS = (
     re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
@@ -157,11 +175,27 @@ def _is_network_ipv4(text: str, match: re.Match[str]) -> bool:
     """Distinguish a PoC endpoint from an otherwise unsupported version token."""
 
     try:
-        ipaddress.IPv4Address(match.group())
+        address = ipaddress.IPv4Address(match.group())
     except ValueError:
         return False
     prefix = text[max(0, match.start() - 48) : match.start()]
-    return bool(_NETWORK_ENDPOINT_PREFIX.search(prefix))
+    suffix = text[match.end() : match.end() + 48]
+    same_clause_suffix = re.split(r"[;.!?]", suffix, maxsplit=1)[0]
+    if _VERSION_ROLE_SUFFIX.search(same_clause_suffix):
+        return False
+    network_prefix = _NETWORK_ENDPOINT_PREFIX.search(prefix)
+    return bool(
+        network_prefix
+        and ("default" not in network_prefix.group().lower() or address.is_loopback)
+        or _APP_DEFAULT_ENDPOINT_PREFIX.search(prefix)
+        and address.is_loopback
+        or _DEFAULT_BIND_PREFIX.search(prefix)
+        and _ENDPOINT_NOUN_SUFFIX.search(suffix)
+        or _DEFAULT_LISTENER_PREFIX.search(prefix)
+        and address.is_loopback
+        or _KOREAN_LISTENER_PREFIX.search(prefix)
+        and address.is_loopback
+    )
 
 
 def _is_bare_endpoint(path: str, port: int) -> bool:
@@ -173,6 +207,50 @@ def _is_bare_endpoint(path: str, port: int) -> bool:
         return isinstance(ipaddress.ip_address(path), ipaddress.IPv4Address)
     except ValueError:
         return False
+
+
+def has_legacy_report_ipv4_false_positive(content: BilingualReportContent) -> bool:
+    """Identify the exact server-default IPv4 claim fixed in the validator.
+
+    The caller first validates with the current contract. Older validation
+    treated this wording as an unsupported dotted version; other valid drafts
+    must not qualify for repair of a generic legacy stage error.
+    """
+
+    for prose in (content.en, content.ko):
+        for value in (
+            prose.title,
+            prose.summary,
+            prose.details,
+            prose.impact,
+            prose.recommendation,
+            *prose.limitations,
+            *prose.review_items,
+        ):
+            claim_text = _URL_TOKEN.sub(" ", value)
+            claim_text = _LOCATION.sub(
+                lambda match: (
+                    " "
+                    if _is_bare_endpoint(match.group("path"), int(match.group("line")))
+                    else match.group(0)
+                ),
+                claim_text,
+            )
+            for match in _IPV4_TOKEN.finditer(claim_text):
+                if not _is_network_ipv4(claim_text, match):
+                    continue
+                prefix = claim_text[max(0, match.start() - 48) : match.start()]
+                suffix = claim_text[match.end() : match.end() + 24]
+                if (
+                    _LEGACY_REPORT_ENDPOINT_FIX.search(prefix)
+                    or _APP_DEFAULT_ENDPOINT_PREFIX.search(prefix)
+                    or _DEFAULT_BIND_PREFIX.search(prefix)
+                    and _ENDPOINT_NOUN_SUFFIX.search(suffix)
+                    or _DEFAULT_LISTENER_PREFIX.search(prefix)
+                    or _KOREAN_LISTENER_PREFIX.search(prefix)
+                ):
+                    return True
+    return False
 
 
 def validate_report_content(

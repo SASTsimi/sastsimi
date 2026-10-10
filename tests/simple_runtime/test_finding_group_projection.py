@@ -66,7 +66,10 @@ def _checkpoint(
 
 
 def _case(
-    tmp_path: Path, *, second_final_verdict: str = "TRUE"
+    tmp_path: Path,
+    *,
+    second_final_verdict: str = "TRUE",
+    poc_source: bytes = b"print(1)",
 ) -> tuple[
     SimpleAnalysisRun, list[StageCheckpoint], dict[str, StoredDataRef], Path, Path, Path
 ]:
@@ -166,7 +169,7 @@ def _case(
             }
         )
         pro = artifacts.put_json({"kind": "simple_pro_con"})
-        content = artifacts.put_bytes(b"print(1)", "text/x-python")
+        content = artifacts.put_bytes(poc_source, "text/x-python")
         poc = artifacts.put_json(
             {
                 "kind": "simple_poc_candidate",
@@ -295,6 +298,27 @@ def test_current_verified_candidate_and_surface_findings_group_read_only(
     assert result.groups[0].members[0].candidate_origins[0].engine == "codeql"
     assert _project(case) == result
     assert {path.relative_to(data_dir) for path in data_dir.rglob("*")} == before
+
+
+def test_group_projection_excludes_old_process_local_poc_closures(
+    tmp_path: Path,
+) -> None:
+    case = _case(
+        tmp_path,
+        poc_source=b"""#!/bin/sh
+python3 - <<'PY'
+import pickle
+class LocalFixture:
+    pass
+client = app.test_client()
+payload = pickle.dumps(LocalFixture())
+client.set_cookie('value', payload)
+client.get('/cookie')
+PY
+""",
+    )
+
+    assert _project(case).raw_count == 0
 
 
 def test_non_true_or_rejected_gate_never_groups(tmp_path: Path) -> None:

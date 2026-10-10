@@ -275,6 +275,38 @@ async def test_pro_batch_lists_shared_hash_once_and_private_hashes_by_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "label"),
+    (("pro_evidence", "support"), ("con_evidence", "counter")),
+)
+async def test_pro_con_batch_prompts_request_route_context(
+    tmp_path: Path, role: str, label: str
+) -> None:
+    artifacts, shared, checkpoints = _fixture(tmp_path)
+    client = _Client({role: [[_evidence(item, label) for item in checkpoints]]})
+    stage = ProConStage(client, artifacts)
+
+    if role == "pro_evidence":
+        await stage.run_pro_batch(checkpoints, shared)
+    else:
+        await stage.run_con_batch(checkpoints, shared)
+
+    assert len(client.calls) == 1
+    guidance = (
+        client.calls[0]["prompt"].split(b"<UNTRUSTED_EXACT_INPUTS>", 1)[0].decode()
+    )
+    guidance = " ".join(guidance.split())
+    assert "requested_paths" in guidance
+    assert "HTTP reachability" in guidance
+    assert "route registration" in guidance
+    assert "handler dispatch" in guidance
+    assert "tracked handler/router files" in guidance
+    assert "referenced configuration/data files" in guidance
+    assert "bounded retrieval" in guidance
+    assert "Never infer an HTTP route from a class name alone" in guidance
+
+
+@pytest.mark.asyncio
 async def test_pro_batch_retries_only_missing_id(tmp_path: Path) -> None:
     """A partial reply cannot cause completed IDs to be regenerated."""
 

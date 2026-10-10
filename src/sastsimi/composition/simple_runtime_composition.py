@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from sastsimi.composition.local_codex_binding import build_local_codex_binding
 from sastsimi.config.local_evaluation_profile import LocalCodexSubscriptionSettings
+from sastsimi.config.model_roles import effective_agent_models
 from sastsimi.config.user_config import (
     SimpleExecutionProfile,
     UserConfig,
@@ -87,6 +88,7 @@ from sastsimi.simple_runtime.group_report_projection import (
     current_group_bundle,
     current_report_groups,
 )
+from sastsimi.simple_runtime.model_routing import ModelRoutedClient
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleAnalysisRun,
@@ -95,10 +97,13 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
 )
 from sastsimi.simple_runtime.poc_currentness import (
+    poc_source_current,
+    poc_source_revalidation_required,
     stale_poc_hypothesis_ids,
     stale_successful_poc,
 )
 from sastsimi.simple_runtime.portable_docker import (
+    AutoWheelBundleCache,
     DirectEnvironmentPreparer,
     PortableContainerFactory,
     PortableDockerRuntime,
@@ -251,6 +256,24 @@ class SimpleClientFactory:
         identity: CheckpointIdentity,
         artifacts: SimpleArtifactRepository,
     ) -> SimpleLLMClient:
+        try:
+            run = self._store.require_analysis_run(identity.analysis_id)
+        except LookupError:
+            run = None
+        if run is not None and run.model_route_version == 1:
+            if run.provider != self._profile.provider:
+                raise ValueError("MODEL_ROUTE_PROVIDER_MISMATCH")
+            if run.model is None or run.model_routes is None:
+                raise ValueError("MODEL_ROUTE_SNAPSHOT_INCOMPLETE")
+            primary_model = run.model
+            agent_models = dict(run.model_routes)
+        else:
+            primary_model = self._profile.model
+            agent_models = effective_agent_models(
+                primary_model,
+                self._profile.light_model if run is None else None,
+                self._profile.agent_models,
+            )
         if self._profile.provider == "claude":
             try:
                 tool = self._profile.tools["claude"]
@@ -261,8 +284,8 @@ class SimpleClientFactory:
             )
             return ClaudeProvider(
                 artifacts=artifacts,
-                default_model=self._profile.model,
-                agent_models=self._profile.agent_models,
+                default_model=primary_model,
+                agent_models=agent_models,
                 timeout_seconds=self._profile.llm_timeout_seconds,
                 max_retries=min(self._profile.llm_max_retries, 2),
                 semaphore=self._semaphore,
@@ -302,8 +325,8 @@ class SimpleClientFactory:
                 transport = OfficialCursorCLITransport(str(inspection.executable))
             return CursorProvider(
                 artifacts=artifacts,
-                default_model=self._profile.model,
-                agent_models=self._profile.agent_models,
+                default_model=primary_model,
+                agent_models=agent_models,
                 timeout_seconds=self._profile.llm_timeout_seconds,
                 max_retries=min(
                     self._profile.llm_max_retries,
@@ -317,22 +340,25 @@ class SimpleClientFactory:
                 use_cli_login=cli_login,
                 model_catalog=self._cursor_models,
             )
-        if self._profile.provider == "openai":
-            return self._limited(
-                SimpleOpenAIClient(
+
+        def model_client(model: str) -> RunLimitedClient:
+            inner: SimpleLLMClient
+            if self._profile.provider == "openai":
+                inner = SimpleOpenAIClient(
                     credential_ref=self._profile.credential_ref,
-                    model=self._profile.model,
+                    model=model,
                     artifacts=artifacts,
-                ),
-                identity,
-                artifacts,
-                self._profile.model,
-            )
-        return self._limited(
-            self._codex(identity, artifacts, self._profile.model),
-            identity,
-            artifacts,
-            self._profile.model,
+                )
+            else:
+                inner = self._codex(identity, artifacts, model)
+            return self._limited(inner, identity, artifacts, model)
+
+        if all(model == primary_model for model in agent_models.values()):
+            return model_client(primary_model)
+        return ModelRoutedClient(
+            primary_model=primary_model,
+            agent_models=agent_models,
+            client_factory=model_client,
         )
 
     def _codex(
@@ -414,6 +440,7 @@ def build_analysis_application(
     )
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
+    auto_bundle_cache = AutoWheelBundleCache()
 
     def recovery_factory(
         identity: CheckpointIdentity,
@@ -435,9 +462,11 @@ def build_analysis_application(
             docker=docker,
             artifacts=artifacts,
             workspace=static.workspace_path,
+            auto_bundle_cache=auto_bundle_cache,
             wheel_bundle_path=profile.poc_wheel_archive_path,
             wheel_bundle_sha256=profile.poc_wheel_archive_sha256,
             offline_base_image_digest=profile.poc_offline_base_image_digest,
+            auto_dependency_bundle=(profile.poc_dependency_bundle_mode == "AUTO"),
             git_executable=(
                 str(profile.tools["git"].executable_path)
                 if "git" in profile.tools
@@ -471,6 +500,7 @@ def build_analysis_application(
                 ),
             ),
             codex_invalid_output_resume=profile.provider == "codex",
+            redacted_anchor_resume=True,
             cleanup_artifacts=artifacts,
             offline_base_ready=environments.offline_base_ready,
             recovery=recovery_factory(identity),
@@ -526,6 +556,9 @@ def build_analysis_application(
         profile_ref=profile.provider_profile_ref,
         provider=profile.provider,
         model=profile.model,
+        model_routes=effective_agent_models(
+            profile.model, profile.light_model, profile.agent_models
+        ),
         recovery_factory=recovery_factory,
         max_parallel_hypotheses=profile.max_parallel_hypotheses,
         max_pending_candidate_children=profile.max_pending_candidate_children,
@@ -546,6 +579,7 @@ def build_analysis_application(
             if profile.poc_offline_base_image_digest is not None
             else None
         ),
+        owned_attempt_container=docker.has_owned_attempt_container,
     )
 
 
@@ -601,19 +635,37 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         analysis_id: str,
         *,
         repair_exhausted_hypothesis: str | None = None,
+        repair_legacy_import_stop_hypothesis: str | None = None,
+        repair_fallback_poc_stop_hypothesis: str | None = None,
+        repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
+        repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_report_validator_hypothesis: str | None = None,
     ) -> dict[str, object]:
         outcome = asyncio.run(
             build_analysis_application(self._config, self._profile).resume(
                 analysis_id,
                 repair_exhausted_hypothesis=repair_exhausted_hypothesis,
+                repair_legacy_import_stop_hypothesis=(
+                    repair_legacy_import_stop_hypothesis
+                ),
+                repair_fallback_poc_stop_hypothesis=(
+                    repair_fallback_poc_stop_hypothesis
+                ),
+                repair_docker_owned_list_exhaustion_hypothesis=(
+                    repair_docker_owned_list_exhaustion_hypothesis
+                ),
+                repair_poc_placeholder_exhaustion_hypothesis=(
+                    repair_poc_placeholder_exhaustion_hypothesis
+                ),
+                repair_poc_sensitive_content_hypothesis=(
+                    repair_poc_sensitive_content_hypothesis
+                ),
+                repair_report_validator_hypothesis=(repair_report_validator_hypothesis),
             )
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
-        data = self._outcome(
-            outcome.display_analysis_id,
-            run.repository,
-            run.commit_id,
-        )
+        data = self._resume_outcome(outcome, run.repository, run.commit_id)
         if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
             data["resume_skipped_reason"] = outcome.error_code
         return data
@@ -624,6 +676,12 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         callback: Callable[[ProgressSnapshot], None],
         *,
         repair_exhausted_hypothesis: str | None = None,
+        repair_legacy_import_stop_hypothesis: str | None = None,
+        repair_fallback_poc_stop_hypothesis: str | None = None,
+        repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
+        repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_report_validator_hypothesis: str | None = None,
     ) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
 
@@ -632,17 +690,31 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 build_analysis_application(self._config, self._profile).resume(
                     exact,
                     repair_exhausted_hypothesis=repair_exhausted_hypothesis,
+                    repair_legacy_import_stop_hypothesis=(
+                        repair_legacy_import_stop_hypothesis
+                    ),
+                    repair_fallback_poc_stop_hypothesis=(
+                        repair_fallback_poc_stop_hypothesis
+                    ),
+                    repair_docker_owned_list_exhaustion_hypothesis=(
+                        repair_docker_owned_list_exhaustion_hypothesis
+                    ),
+                    repair_poc_placeholder_exhaustion_hypothesis=(
+                        repair_poc_placeholder_exhaustion_hypothesis
+                    ),
+                    repair_poc_sensitive_content_hypothesis=(
+                        repair_poc_sensitive_content_hypothesis
+                    ),
+                    repair_report_validator_hypothesis=(
+                        repair_report_validator_hypothesis
+                    ),
                 )
             )
             return await self._track(task, [exact], callback)
 
         outcome = asyncio.run(run())
         stored = self._store.require_analysis_run(outcome.identity.analysis_id)
-        data = self._outcome(
-            outcome.display_analysis_id,
-            stored.repository,
-            stored.commit_id,
-        )
+        data = self._resume_outcome(outcome, stored.repository, stored.commit_id)
         if outcome.error_code == "ANALYSIS_ALREADY_RUNNING":
             data["resume_skipped_reason"] = outcome.error_code
         return data
@@ -805,13 +877,13 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
         snapshot = self._progress_snapshot(run)
-        if candidate_report_currentness_blocked(
-            run,
-            self._store.list_checkpoints(exact),
-            data_dir=self._config.data_dir,
-            store=self._store,
-        ):
-            snapshot = snapshot.model_copy(update={"finding_count": 0})
+        raw_finding_count = snapshot.finding_count
+        checkpoints = self._store.list_checkpoints(exact)
+        snapshot = snapshot.model_copy(
+            update={
+                "finding_count": len(self._current_findings(run, checkpoints)),
+            }
+        )
         lease_inactive = (
             analysis_run_lease_active(self._config.data_dir, exact) is False
         )
@@ -874,6 +946,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "deep_analysis_pending_count": snapshot.deep_analysis_pending_count,
             "hypothesis_count": snapshot.hypothesis_count,
             "finding_count": snapshot.finding_count,
+            "raw_finding_count": raw_finding_count,
             "resume_action": snapshot.resume_action,
             **self._static_coverage_status(run),
         }
@@ -1081,29 +1154,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         exact = self._display.resolve(analysis_id)
         run = self._store.require_analysis_run(exact)
         checkpoints = self._store.list_checkpoints(exact)
-        stale_hypothesis_ids = stale_poc_hypothesis_ids(checkpoints)
-        findings = (
-            []
-            if candidate_report_currentness_blocked(
-                run,
-                checkpoints,
-                data_dir=self._config.data_dir,
-                store=self._store,
-            )
-            else [
-                checkpoint
-                for checkpoint in checkpoints
-                if checkpoint.stage is SimpleStage.FINDING_DONE
-                and checkpoint.output_refs
-                and checkpoint.identity.hypothesis_id not in stale_hypothesis_ids
-                and technical_gate_accepted(
-                    self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
-                    SimpleArtifactRepository(
-                        self._config.data_dir, checkpoint.identity
-                    ),
-                )
-            ]
-        )
+        findings = self._current_findings(run, checkpoints)
         display_store = FindingDisplayIdStore(self._store.database_path)
         eligible = {
             display_store.get_or_allocate(
@@ -1150,6 +1201,50 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "finding_groups": group_rows,
         }
 
+    def _current_findings(
+        self, run: SimpleAnalysisRun, checkpoints: tuple[StageCheckpoint, ...]
+    ) -> list[StageCheckpoint]:
+        if candidate_report_currentness_blocked(
+            run,
+            checkpoints,
+            data_dir=self._config.data_dir,
+            store=self._store,
+        ):
+            return []
+        stale_hypothesis_ids = stale_poc_hypothesis_ids(checkpoints)
+        return [
+            checkpoint
+            for checkpoint in checkpoints
+            if checkpoint.stage is SimpleStage.FINDING_DONE
+            and checkpoint.output_refs
+            and checkpoint.identity.hypothesis_id not in stale_hypothesis_ids
+            and not self._poc_source_revalidation_required(checkpoint.identity)
+            and technical_gate_accepted(
+                self._store.get(checkpoint.identity, SimpleStage.TECH_GATE_DONE),
+                SimpleArtifactRepository(self._config.data_dir, checkpoint.identity),
+            )
+        ]
+
+    def _poc_source_current(self, identity: CheckpointIdentity) -> bool:
+        candidate = self._store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
+        artifacts = SimpleArtifactRepository(self._config.data_dir, identity)
+        return poc_source_current(candidate, read_content=artifacts.read_bounded)
+
+    def _poc_source_revalidation_required(self, identity: CheckpointIdentity) -> bool:
+        stages = (
+            self._store.get(identity, stage)
+            for stage in (
+                SimpleStage.POC_CANDIDATE_DONE,
+                SimpleStage.POC_EXECUTION_DONE,
+                SimpleStage.FINDING_DONE,
+            )
+        )
+        artifacts = SimpleArtifactRepository(self._config.data_dir, identity)
+        return poc_source_revalidation_required(
+            (item for item in stages if item is not None),
+            read_content=artifacts.read_bounded,
+        )
+
     def poc(self, finding_id: str) -> str:
         identity, _finding_ref = self._finding_identity(finding_id)
         candidate = self._store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
@@ -1158,6 +1253,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             stale_successful_poc(dynamic)
             or dynamic.validated_poc_ref is None
             or len(candidate.output_refs) < 2
+            or not self._poc_source_current(identity)
         ):
             raise LookupError("VALIDATED_POC_NOT_FOUND")
         return (
@@ -1169,6 +1265,8 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
     def report(self, finding_id: str) -> str:
         identity, finding_ref = self._finding_identity(finding_id)
         checkpoint = self._store.require(identity, SimpleStage.REPORT_DONE)
+        if self._poc_source_revalidation_required(identity):
+            raise LookupError("CURRENT_REPORT_NOT_FOUND")
         if stale_successful_poc(
             self._store.get(identity, SimpleStage.POC_EXECUTION_DONE)
         ):
@@ -1404,6 +1502,24 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "commit": commit,
             "dashboard_url": f"http://127.0.0.1:8765/analyses/{display_id}",
         }
+
+    def _resume_outcome(
+        self,
+        outcome: SimpleAnalysisOutcome,
+        repository: str,
+        commit: str,
+    ) -> dict[str, object]:
+        data = self._outcome(outcome.display_analysis_id, repository, commit)
+        if outcome.error_code == "MODEL_ROUTE_PROVIDER_MISMATCH":
+            # This preflight intentionally leaves the saved run unchanged. Surface the
+            # refusal from this invocation, not the previous persisted status.
+            data.update(
+                status=outcome.status,
+                current_stage=outcome.current_stage.value,
+                error_code=outcome.error_code,
+                resume_action=None,
+            )
+        return data
 
 
 def build_public_simple_runtime(

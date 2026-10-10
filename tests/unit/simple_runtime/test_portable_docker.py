@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import json
@@ -16,6 +17,7 @@ from sastsimi.config.user_config import (
     SimpleExecutionProfile,
     SimpleToolBinding,
 )
+from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -24,6 +26,7 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageResult,
     StageStatus,
     input_reference_hash,
 )
@@ -31,6 +34,12 @@ from sastsimi.simple_runtime.portable_docker import (
     DirectEnvironmentPreparer,
     PortableDockerRuntime,
     build_pinned_context,
+)
+from sastsimi.simple_runtime.recovery import (
+    RecoveryAction,
+    RecoveryCategory,
+    RecoveryDecision,
+    RecoveryResolution,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
@@ -77,6 +86,262 @@ class _BuildFailurePortableDockerRuntime(PortableDockerRuntime):
             stderr=b"uv sync: Git executable not found\n",
             timed_out=False,
         )
+
+
+class _OwnedListDocker(PortableDockerRuntime):
+    def __init__(self, outcomes: list[DockerCommandOutcome]) -> None:
+        self.outcomes = iter(outcomes)
+        self.calls: list[tuple[str, ...]] = []
+
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        assert timeout_seconds == 30
+        assert input_bytes is None
+        self.calls.append(tuple(args))
+        return next(self.outcomes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        DockerCommandOutcome(1, b"", b"daemon unavailable", False),
+        DockerCommandOutcome(-1, b"", b"", True),
+    ],
+)
+async def test_owned_container_list_retries_one_failed_read_only_call(
+    failure: DockerCommandOutcome,
+) -> None:
+    docker = _OwnedListDocker([failure, DockerCommandOutcome(0, b"", b"", False)])
+
+    assert await docker.sweep_orphans() == ()
+    assert docker.calls == [
+        ("ps", "--all", "--quiet", "--filter", "label=sastsimi.owner=simple-runtime"),
+        ("ps", "--all", "--quiet", "--filter", "label=sastsimi.owner=simple-runtime"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_owned_container_list_stops_after_three_failures() -> None:
+    failures = [
+        DockerCommandOutcome(1, b"", b"daemon unavailable", False),
+        DockerCommandOutcome(-1, b"", b"timeout", True),
+        DockerCommandOutcome(2, b"", b"still unavailable", False),
+    ]
+    docker = _OwnedListDocker(failures)
+
+    with pytest.raises(DockerOperationError) as caught:
+        await docker.sweep_orphans()
+
+    assert caught.value.code == "DOCKER_OWNED_LIST_FAILED"
+    assert caught.value.outcome == failures[-1]
+    assert len(docker.calls) == 3
+    assert set(docker.calls) == {
+        ("ps", "--all", "--quiet", "--filter", "label=sastsimi.owner=simple-runtime")
+    }
+
+
+@pytest.mark.asyncio
+async def test_owned_container_list_success_does_not_retry() -> None:
+    docker = _OwnedListDocker([DockerCommandOutcome(0, b"", b"", False)])
+
+    assert await docker.sweep_orphans() == ()
+    assert len(docker.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_timed_out_docker_command_waits_for_direct_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = PortableDockerRuntime.__new__(PortableDockerRuntime)
+    runtime._executable = Path(sys.executable)
+    spawn = asyncio.create_subprocess_exec
+    processes: list[asyncio.subprocess.Process] = []
+
+    async def capture_spawn(
+        executable: str,
+        *args: str,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        env: Mapping[str, str],
+    ) -> asyncio.subprocess.Process:
+        process = await spawn(
+            executable,
+            *args,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            env=env,
+        )
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture_spawn)
+
+    outcome = await runtime._run(
+        ("-c", "import time; time.sleep(60)"), timeout_seconds=0
+    )
+
+    assert outcome.timed_out is True
+    assert processes[0].returncode is not None
+
+
+_FULL_CONTAINER_ID = "a" * 64
+
+
+def _owned_attempt_identity() -> CheckpointIdentity:
+    return CheckpointIdentity(
+        analysis_id="analysis-owned-attempt",
+        workspace_id="workspace-owned-attempt",
+        commit_id="b" * 40,
+        hypothesis_id="hypothesis-owned-attempt",
+    )
+
+
+def _owned_attempt_state(
+    container_id: str, labels: Mapping[str, str]
+) -> DockerContainerState:
+    return DockerContainerState(
+        container_id=container_id,
+        image_digest="sha256:" + "c" * 64,
+        user="10001:10001",
+        network_mode="none",
+        privileged=False,
+        read_only_rootfs=False,
+        running=False,
+        exit_code=0,
+        health_status=None,
+        labels=labels,
+    )
+
+
+class _OwnedAttemptDocker(PortableDockerRuntime):
+    def __init__(
+        self,
+        outcome: DockerCommandOutcome,
+        states: Mapping[str, DockerContainerState],
+    ) -> None:
+        self.outcome = outcome
+        self.states = states
+        self.calls: list[tuple[str, ...]] = []
+        self.inspected: list[str] = []
+
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        assert timeout_seconds == 30
+        assert input_bytes is None
+        self.calls.append(tuple(args))
+        return self.outcome
+
+    async def inspect(self, container_id: str) -> DockerContainerState:
+        self.inspected.append(container_id)
+        return self.states[container_id]
+
+
+@pytest.mark.asyncio
+async def test_owned_attempt_absence_requires_exact_successful_list() -> None:
+    identity = _owned_attempt_identity()
+    docker = _OwnedAttemptDocker(DockerCommandOutcome(0, b"", b"", False), {})
+
+    assert await docker.has_owned_attempt_container(identity, "attempt-owned") is False
+    assert docker.calls == [
+        (
+            "ps",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "--filter",
+            "label=sastsimi.owner=simple-runtime",
+            "--filter",
+            "label=sastsimi.analysis-id=analysis-owned-attempt",
+            "--filter",
+            "label=sastsimi.workspace-id=workspace-owned-attempt",
+            "--filter",
+            "label=sastsimi.commit-id=" + "b" * 40,
+            "--filter",
+            "label=sastsimi.hypothesis-id=hypothesis-owned-attempt",
+            "--filter",
+            "label=sastsimi.attempt-id=attempt-owned",
+        )
+    ]
+    assert docker.inspected == []
+
+
+@pytest.mark.asyncio
+async def test_owned_attempt_presence_requires_inspected_matching_labels() -> None:
+    identity = _owned_attempt_identity()
+    expected = PortableDockerRuntime._owner_labels(identity, "attempt-owned")
+    docker = _OwnedAttemptDocker(
+        DockerCommandOutcome(0, (_FULL_CONTAINER_ID + "\n").encode(), b"", False),
+        {_FULL_CONTAINER_ID: _owned_attempt_state(_FULL_CONTAINER_ID, expected)},
+    )
+
+    assert await docker.has_owned_attempt_container(identity, "attempt-owned") is True
+    assert docker.inspected == [_FULL_CONTAINER_ID]
+    assert len(docker.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected_calls"),
+    [
+        (DockerCommandOutcome(1, b"", b"daemon unavailable", False), 3),
+        (DockerCommandOutcome(-1, b"", b"", True), 3),
+        (DockerCommandOutcome(0, b"z" * (1024 * 1024), b"", False), 1),
+        (DockerCommandOutcome(0, b"not-a-docker-id\n", b"", False), 1),
+    ],
+)
+async def test_owned_attempt_query_failures_never_prove_absence(
+    outcome: DockerCommandOutcome,
+    expected_calls: int,
+) -> None:
+    docker = _OwnedAttemptDocker(outcome, {})
+
+    with pytest.raises(DockerOperationError):
+        await docker.has_owned_attempt_container(
+            _owned_attempt_identity(), "attempt-owned"
+        )
+    assert len(docker.calls) == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_owned_attempt_mismatched_inspect_fails_closed() -> None:
+    identity = _owned_attempt_identity()
+    labels = {
+        **PortableDockerRuntime._owner_labels(identity, "attempt-owned"),
+        "sastsimi.attempt-id": "other-attempt",
+    }
+    docker = _OwnedAttemptDocker(
+        DockerCommandOutcome(0, (_FULL_CONTAINER_ID + "\n").encode(), b"", False),
+        {_FULL_CONTAINER_ID: _owned_attempt_state(_FULL_CONTAINER_ID, labels)},
+    )
+
+    with pytest.raises(DockerOperationError, match="DOCKER_OWNED_ATTEMPT_MISMATCH"):
+        await docker.has_owned_attempt_container(identity, "attempt-owned")
+
+
+@pytest.mark.asyncio
+async def test_owned_attempt_rejects_filter_delimiters() -> None:
+    identity = _owned_attempt_identity().model_copy(
+        update={"analysis_id": "analysis-owned-attempt,other"}
+    )
+    docker = _OwnedAttemptDocker(DockerCommandOutcome(0, b"", b"", False), {})
+
+    with pytest.raises(ValueError, match="DOCKER_OWNER_LABELS_INVALID"):
+        await docker.has_owned_attempt_container(identity, "attempt-owned")
+
+    assert docker.calls == []
 
 
 @pytest.mark.asyncio
@@ -160,6 +425,34 @@ async def test_target_tags_are_probed_inside_local_networkless_linux_image() -> 
         run.index("--network") : run.index("--network") + 2
     ]
     assert "--mount" not in run
+    assert run[run.index("--entrypoint") : run.index("--entrypoint") + 2] == (
+        "--entrypoint",
+        "python",
+    )
+
+
+@pytest.mark.asyncio
+async def test_python_version_probe_overrides_image_entrypoint() -> None:
+    class _VersionProbeDocker(PortableDockerRuntime):
+        def __init__(self) -> None:
+            self.command: tuple[str, ...] = ()
+
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del timeout_seconds, input_bytes
+            self.command = tuple(args)
+            return DockerCommandOutcome(0, b"3.6.15\n", b"", False)
+
+    docker = _VersionProbeDocker()
+    assert await docker._probe_python_version("sha256:" + "a" * 64) == "3.6.15"
+    assert docker.command[
+        docker.command.index("--entrypoint") : docker.command.index("--entrypoint") + 2
+    ] == ("--entrypoint", "python")
 
 
 def _committed_workspace(tmp_path: Path) -> tuple[Path, str]:
@@ -214,6 +507,90 @@ def test_archive_context_has_only_pinned_checkout_and_wheels(tmp_path: Path) -> 
         assert wheel_file is not None
         assert app_file.read() == b"print('pinned')\n"
         assert wheel_file.read() == wheel
+
+
+def test_root_node_manifest_does_not_hide_python_subproject(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    backend = workspace / "backend"
+    backend.mkdir()
+    (workspace / "requirements.txt").replace(backend / "requirements.txt")
+    (backend / "service.py").write_text("print('backend')\n", encoding="utf-8")
+    (workspace / "package.json").write_text('{"name":"monorepo"}\n', encoding="utf-8")
+    ui = workspace / "ui"
+    ui.mkdir()
+    (ui / "package.json").write_text('{"name":"ui"}\n', encoding="utf-8")
+    (ui / ".npmrc").write_text("token=not-for-python\n", encoding="utf-8")
+    subprocess.run(
+        ("git", "-C", str(workspace), "rm", "-q", "requirements.txt"),
+        check=True,
+    )
+    commit = _commit_fixture(workspace, "node root with python backend")
+
+    raw = build_pinned_context(
+        workspace,
+        commit,
+        b"FROM python:3.12-slim\n",
+        {},
+        target_python_manifest="backend/requirements.txt",
+    )
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = set(archive.getnames())
+    assert {"backend/requirements.txt", "backend/service.py", "package.json"} <= names
+    assert {"ui/package.json", "ui/.npmrc"}.isdisjoint(names)
+
+
+def test_node_subtree_with_python_source_stays_in_python_context(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    frontend = workspace / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text('{"name":"frontend"}\n', encoding="utf-8")
+    (frontend / "shared_auth.py").write_text(
+        "def check(): return True\n", encoding="utf-8"
+    )
+    (workspace / "app.py").write_text(
+        "from frontend.shared_auth import check\nprint(check())\n", encoding="utf-8"
+    )
+    commit = _commit_fixture(workspace, "shared Python code in Node subtree")
+
+    raw = build_pinned_context(
+        workspace,
+        commit,
+        b"FROM python:3.12-slim\n",
+        {},
+        target_python_manifest="requirements.txt",
+    )
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = set(archive.getnames())
+    assert {"app.py", "frontend/package.json", "frontend/shared_auth.py"} <= names
+
+
+def test_node_subtree_with_python_source_keeps_secret_denial(
+    tmp_path: Path,
+) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    frontend = workspace / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text('{"name":"frontend"}\n', encoding="utf-8")
+    (frontend / "shared_auth.py").write_text(
+        "def check(): return True\n", encoding="utf-8"
+    )
+    (frontend / ".npmrc").write_text("token=product-secret\n", encoding="utf-8")
+    commit = _commit_fixture(workspace, "shared Python code and registry secret")
+
+    with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
+        build_pinned_context(
+            workspace,
+            commit,
+            b"FROM python:3.12-slim\n",
+            {},
+            target_python_manifest="requirements.txt",
+        )
 
 
 def test_archive_context_rejects_source_symlink_or_changed_content(
@@ -273,6 +650,30 @@ def test_archive_context_honors_dockerignore_and_blocks_tracked_secret(
     commit = _commit_fixture(workspace, "unignore")
     with pytest.raises(ValueError, match="PINNED_CONTEXT_SECRET_FILE_DENIED"):
         build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+
+def test_archive_context_accepts_executable_dockerignore(tmp_path: Path) -> None:
+    workspace, _commit = _committed_workspace(tmp_path)
+    (workspace / ".dockerignore").write_text("ignored.py\n", encoding="utf-8")
+    (workspace / ".dockerignore").chmod(0o755)
+    (workspace / "ignored.py").write_text("print('ignore me')\n", encoding="utf-8")
+    subprocess.run(("git", "-C", str(workspace), "add", "."), check=True)
+    subprocess.run(
+        ("git", "-C", str(workspace), "update-index", "--chmod=+x", ".dockerignore"),
+        check=True,
+    )
+    commit = _commit_fixture(workspace, "executable dockerignore")
+    mode = subprocess.check_output(
+        ("git", "-C", str(workspace), "ls-tree", commit, ".dockerignore")
+    )
+    assert mode.startswith(b"100755 blob ")
+
+    raw = build_pinned_context(workspace, commit, b"FROM python:3.12-slim\n", {})
+
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        names = set(archive.getnames())
+    assert "app.py" in names
+    assert "ignored.py" not in names
 
 
 def test_archive_context_honors_dockerignore_character_class(tmp_path: Path) -> None:
@@ -715,6 +1116,43 @@ async def test_dependency_failure_uses_recorded_source_only_fallback(
 
 
 @pytest.mark.asyncio
+async def test_failed_recovery_install_keeps_build_failure_for_recovery(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-recovery-install-failure",
+        workspace_id="workspace-recovery-install-failure",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-recovery-install-failure",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    checkpoint = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN apt-get install -y libxml2-dev",
+    )
+    docker = _FailingBuildDocker([b"RUN apt-get install -y libxml2-dev: exit code 100"])
+
+    with pytest.raises(DockerOperationError, match="DOCKER_BUILD_FAILED") as failure:
+        await DirectEnvironmentPreparer(
+            docker=docker,  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(checkpoint, {}, ())
+
+    assert len(docker.dockerfiles) == 1
+    assert b"RUN apt-get install -y libxml2-dev" in docker.dockerfiles[0]
+    recipe = json.loads(artifacts.read(failure.value.recipe_ref))  # type: ignore[attr-defined]
+    assert recipe["status"] == "BLOCKED"
+    assert recipe["degraded"] is False
+    assert recipe["dockerfile_source"] == "REPOSITORY_DOCKERFILE"
+    assert len(recipe["build_attempt_refs"]) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "diagnostics", [b"syntax error near FROM", b"pull access denied"]
 )
@@ -805,6 +1243,7 @@ def _environment_checkpoint(
         status=StageStatus.RUNNING,
         input_refs=inputs,
         input_hash=input_reference_hash(inputs),
+        recovery_decision_refs=inputs,
         attempt_id="environment-attempt-2",
         attempt_number=2,
     )
@@ -926,6 +1365,24 @@ async def test_reproduction_container_keeps_baked_workspace_writable() -> None:
     assert create[create.index("--network") + 1] == "none"
     assert "no-new-privileges" in create
     assert create[create.index("--env") + 1] == "HOME=/tmp"
+
+
+@pytest.mark.asyncio
+async def test_reproduction_container_overrides_inherited_entrypoint() -> None:
+    runtime = _RecordingPortableDockerRuntime.__new__(_RecordingPortableDockerRuntime)
+    runtime._executable = Path("docker")
+    runtime._network = "none"
+    runtime._timeout = 60
+    runtime.calls = []
+
+    await runtime.create_container("sha256:" + "a" * 64, {})
+
+    create = runtime.calls[0]
+    assert create[create.index("--entrypoint") : create.index("--entrypoint") + 2] == (
+        "--entrypoint",
+        "sleep",
+    )
+    assert create[-2:] == ("sha256:" + "a" * 64, "infinity")
 
 
 @pytest.mark.asyncio
@@ -1701,7 +2158,7 @@ async def test_nested_manifest_install_failure_stays_blocked(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     "patch",
     [
-        "RUN python -m pip install -e '.[test]'",
+        "RUN python -m pip install 'pytest==8.3.0'",
         "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/sastsimi-playwright-browsers\n"
         "RUN python -m playwright install --with-deps chromium",
     ],
@@ -1792,7 +2249,7 @@ async def test_retry_after_rebuild_keeps_the_latest_rebuild_patch(
     rebuild = _environment_checkpoint(
         artifacts,
         action="REBUILD_ENVIRONMENT",
-        patch="RUN python -m pip install -e '.[test]'",
+        patch="RUN python -m pip install 'pytest==8.3.0'",
     )
     retry = _environment_checkpoint(
         artifacts,
@@ -1801,7 +2258,14 @@ async def test_retry_after_rebuild_keeps_the_latest_rebuild_patch(
     )
     inputs = rebuild.input_refs + retry.input_refs
     checkpoint = retry.model_copy(
-        update={"input_refs": inputs, "input_hash": input_reference_hash(inputs)}
+        update={
+            "input_refs": inputs,
+            "input_hash": input_reference_hash(inputs),
+            "recovery_decision_refs": (
+                *rebuild.recovery_decision_refs,
+                *retry.recovery_decision_refs,
+            ),
+        }
     )
     docker = _BuildDocker()
 
@@ -1811,7 +2275,395 @@ async def test_retry_after_rebuild_keeps_the_latest_rebuild_patch(
         workspace=workspace,
     ).prepare(checkpoint, {}, ())
 
-    assert b"RUN python -m pip install -e '.[test]'" in docker.dockerfiles[0]
+    assert b"RUN python -m pip install 'pytest==8.3.0'" in docker.dockerfiles[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_built", [False, True])
+async def test_rebuild_only_carries_prior_patch_with_built_recipe(
+    tmp_path: Path,
+    prior_built: bool,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-rebuild-correction",
+        workspace_id="workspace-rebuild-correction",
+        commit_id="d" * 40,
+        hypothesis_id="hypothesis-rebuild-correction",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    first = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install pytest",
+    )
+    first_docker = (
+        _BuildDocker() if prior_built else _FailingBuildDocker([b"pull access denied"])
+    )
+    first_preparer = DirectEnvironmentPreparer(
+        docker=first_docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    )
+    if prior_built:
+        recipe_ref = (await first_preparer.prepare(first, {}, ())).recipe_ref
+    else:
+        with pytest.raises(DockerOperationError) as failure:
+            await first_preparer.prepare(first, {}, ())
+        recipe_ref = failure.value.recipe_ref  # type: ignore[attr-defined]
+
+    second = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install PyJWT",
+    )
+    inputs = (*first.input_refs, recipe_ref, *second.input_refs)
+    checkpoint = second.model_copy(
+        update={
+            "input_refs": inputs,
+            "input_hash": input_reference_hash(inputs),
+            "recovery_decision_refs": (
+                *first.recovery_decision_refs,
+                *second.recovery_decision_refs,
+            ),
+        }
+    )
+    second_docker = _BuildDocker()
+    await DirectEnvironmentPreparer(
+        docker=second_docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    ).prepare(checkpoint, {}, ())
+
+    assert len(second_docker.dockerfiles) == 1
+    assert (b"RUN python -m pip install pytest" in second_docker.dockerfiles[0]) is (
+        prior_built
+    )
+    assert b"RUN python -m pip install PyJWT" in second_docker.dockerfiles[0]
+
+
+def test_unbound_rebuild_decision_ref_fails_closed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifacts = SimpleArtifactRepository(
+        tmp_path / "data",
+        CheckpointIdentity(
+            analysis_id="analysis-unbound-rebuild",
+            workspace_id="workspace-unbound-rebuild",
+            commit_id="d" * 40,
+            hypothesis_id="hypothesis-unbound-rebuild",
+        ),
+    )
+    checkpoint = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install pytest",
+    ).model_copy(update={"recovery_decision_refs": ()})
+
+    with pytest.raises(ValueError, match="RECOVERY_DECISION_REF_UNBOUND"):
+        DirectEnvironmentPreparer(
+            docker=_BuildDocker(),  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        )._recovery_patch(checkpoint)
+
+
+@pytest.mark.asyncio
+async def test_built_recipe_alone_does_not_authorize_unbound_rebuild_ref(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    artifacts = SimpleArtifactRepository(
+        tmp_path / "data",
+        CheckpointIdentity(
+            analysis_id="analysis-replayed-rebuild",
+            workspace_id="workspace-replayed-rebuild",
+            commit_id="d" * 40,
+            hypothesis_id="hypothesis-replayed-rebuild",
+        ),
+    )
+    first = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install pytest",
+    )
+    preparer = DirectEnvironmentPreparer(
+        docker=_BuildDocker(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    )
+    built = await preparer.prepare(first, {}, ())
+    inputs = (*first.input_refs, built.recipe_ref)
+    replay = first.model_copy(
+        update={
+            "input_refs": inputs,
+            "input_hash": input_reference_hash(inputs),
+            "recovery_decision_refs": (),
+        }
+    )
+
+    with pytest.raises(ValueError, match="RECOVERY_DECISION_REF_UNBOUND"):
+        preparer._recovery_patch(replay)
+
+
+@pytest.mark.asyncio
+async def test_completed_rebuild_survives_later_import_replan_without_unbinding(
+    tmp_path: Path,
+) -> None:
+    """The store clears recovery refs on success but retains their input lineage."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-built-then-replan",
+        workspace_id="workspace-built-then-replan",
+        commit_id="e" * 40,
+        hypothesis_id="hypothesis-built-then-replan",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    store = SimpleCheckpointStore(tmp_path / "data" / "checkpoints.sqlite3")
+    first = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install PyJWT",
+    ).model_copy(
+        update={"recovery_origin_stage": SimpleStage.VERIFICATION_INITIAL_DONE}
+    )
+    store.save_checkpoint(first)
+    docker = _BuildDocker()
+    preparer = DirectEnvironmentPreparer(
+        docker=docker,  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    )
+    environment = await preparer.prepare(first, {}, ())
+    completed = store.complete(
+        first,
+        StageResult(
+            output_refs=(environment.recipe_ref,),
+            recipe_ref=environment.recipe_ref,
+            image_digest=environment.image_digest,
+        ),
+    )
+    assert completed.recovery_decision_refs == ()
+
+    error_ref = artifacts.put_bytes(b"ModuleNotFoundError: jwt", "text/plain")
+    failed = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.BLOCKED,
+        input_refs=(environment.recipe_ref,),
+        input_hash=input_reference_hash((environment.recipe_ref,)),
+        output_refs=(error_ref,),
+        recipe_ref=environment.recipe_ref,
+        image_digest=environment.image_digest,
+        error_code="POC_RUNTIME_IMPORT_FAILED",
+        retryable=True,
+        attempt_number=2,
+    )
+    store.save_checkpoint(failed)
+    replan_ref = artifacts.put_json(
+        {
+            "kind": "simple_recovery_decision",
+            "identity": identity.model_dump(mode="json"),
+            "stage": SimpleStage.POC_EXECUTION_DONE.value,
+            "decision_origin": "RULE",
+            "original_error": {"code": "POC_RUNTIME_IMPORT_FAILED"},
+            "decision": {
+                "category": "ENVIRONMENT",
+                "action": "REPLAN_ENVIRONMENT",
+                "diagnosis": "missing runtime dependency",
+                "guidance": "replan pinned requirements",
+                "environment_patch": "",
+            },
+        }
+    )
+    pending = store.prepare_recovery(
+        failed,
+        RecoveryResolution(
+            decision=RecoveryDecision(
+                category=RecoveryCategory.ENVIRONMENT,
+                action=RecoveryAction.REPLAN_ENVIRONMENT,
+                diagnosis="missing runtime dependency",
+                guidance="replan pinned requirements",
+            ),
+            decision_ref=replan_ref,
+        ),
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+    )
+    assert first.input_refs[0] in pending.input_refs
+    assert first.input_refs[0] not in pending.recovery_decision_refs
+    assert environment.recipe_ref in pending.input_refs
+    assert replan_ref in pending.recovery_decision_refs
+    running = store.mark_running(
+        identity,
+        SimpleStage.VERIFICATION_INITIAL_DONE,
+        pending.input_refs,
+        attempt_id="replan-attempt",
+        inherit_from=pending,
+    )
+
+    rebuilt = await preparer.prepare(running, {}, ())
+
+    assert rebuilt.recipe_ref is not None
+    assert len(docker.dockerfiles) == 2
+    assert b"RUN python -m pip install PyJWT" in docker.dockerfiles[-1]
+
+
+def test_import_replan_preserves_a_prior_validated_dockerfile_patch(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    identity = CheckpointIdentity(
+        analysis_id="analysis-import-replan",
+        workspace_id="workspace-import-replan",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-import-replan",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    old = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install pytest",
+    )
+    replan_ref = artifacts.put_json(
+        {
+            "kind": "simple_recovery_decision",
+            "identity": identity.model_dump(mode="json"),
+            "stage": SimpleStage.POC_EXECUTION_DONE.value,
+            "decision_origin": "RULE",
+            "original_error": {
+                "code": "POC_RUNTIME_IMPORT_FAILED",
+                "retryable": True,
+                "safe_message": "isolated import failed",
+                "evidence_refs": [],
+            },
+            "decision": {
+                "category": "ENVIRONMENT",
+                "action": "REPLAN_ENVIRONMENT",
+                "diagnosis": "isolated import failed",
+                "guidance": "replan pinned package requirements",
+                "environment_patch": "",
+            },
+        }
+    )
+    inputs = (*old.input_refs, replan_ref)
+    checkpoint = old.model_copy(
+        update={
+            "input_refs": inputs,
+            "input_hash": input_reference_hash(inputs),
+            "recovery_decision_refs": inputs,
+        }
+    )
+
+    preparer = DirectEnvironmentPreparer(
+        docker=_BuildDocker(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    )
+    assert b"RUN python -m pip install pytest" in preparer._recovery_patch(checkpoint)
+
+
+@pytest.mark.asyncio
+async def test_multiple_rebuilds_keep_distinct_patches_once_in_order(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-patch-sequence",
+        workspace_id="workspace-patch-sequence",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-patch-sequence",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    first = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install pytest",
+    )
+    preparer = DirectEnvironmentPreparer(
+        docker=_BuildDocker(),  # type: ignore[arg-type]
+        artifacts=artifacts,
+        workspace=workspace,
+    )
+    first_recipe = (await preparer.prepare(first, {}, ())).recipe_ref
+    second = _environment_checkpoint(
+        artifacts,
+        action="REBUILD_ENVIRONMENT",
+        patch="RUN python -m pip install PyJWT",
+    )
+    inputs = (*first.input_refs, first_recipe, *second.input_refs, *first.input_refs)
+    checkpoint = second.model_copy(
+        update={
+            "input_refs": inputs,
+            "input_hash": input_reference_hash(inputs),
+            "recovery_decision_refs": (
+                *first.recovery_decision_refs,
+                *second.recovery_decision_refs,
+            ),
+        }
+    )
+
+    patch = preparer._recovery_patch(checkpoint)
+
+    assert patch.count(b"RUN python -m pip install pytest") == 1
+    assert patch.count(b"RUN python -m pip install PyJWT") == 1
+    assert patch.index(b"RUN python -m pip install pytest") < patch.index(
+        b"RUN python -m pip install PyJWT"
+    )
+
+
+def test_import_replan_from_unbound_agent_decision_fails_closed(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    identity = CheckpointIdentity(
+        analysis_id="analysis-import-replan-unbound",
+        workspace_id="workspace-import-replan-unbound",
+        commit_id="b" * 40,
+        hypothesis_id="hypothesis-import-replan-unbound",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    replan_ref = artifacts.put_json(
+        {
+            "kind": "simple_recovery_decision",
+            "identity": identity.model_dump(mode="json"),
+            "stage": SimpleStage.POC_EXECUTION_DONE.value,
+            "decision_origin": "AGENT",
+            "original_error": {"code": "POC_RUNTIME_IMPORT_FAILED"},
+            "decision": {
+                "category": "ENVIRONMENT",
+                "action": "REPLAN_ENVIRONMENT",
+                "diagnosis": "unbound",
+                "guidance": "replan",
+                "environment_patch": "",
+            },
+        }
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.VERIFICATION_INITIAL_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(replan_ref,),
+        input_hash=input_reference_hash((replan_ref,)),
+        recovery_decision_refs=(replan_ref,),
+    )
+
+    with pytest.raises(ValueError, match="RECOVERY_REPLAN_EVIDENCE_INVALID"):
+        DirectEnvironmentPreparer(
+            docker=_BuildDocker(),  # type: ignore[arg-type]
+            artifacts=artifacts,
+            workspace=workspace,
+        )._recovery_patch(checkpoint)
 
 
 @pytest.mark.asyncio

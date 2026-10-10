@@ -950,6 +950,7 @@ async def test_real_windows_process_restricts_handles_and_cancels_descendant(
         assert kernel32.WaitForSingleObject(sentinel, 0) == 0x00000102
 
         child_file = output / "child.pid"
+        child_started_ns = time.monotonic_ns()
         child_run = replace(
             inherit_check,
             invocation_id="descendant",
@@ -964,21 +965,42 @@ async def test_real_windows_process_restricts_handles_and_cancels_descendant(
                     "time.sleep(30)"
                 ),
             ),
+            deadline=MonotonicActionDeadline(
+                action_id="action",
+                started_ns=child_started_ns,
+                expires_ns=child_started_ns + 30_000_000_000,
+            ),
         )
         running = asyncio.create_task(runner.run(child_run))
-        for _ in range(100):
-            if child_file.exists():
-                break
-            await asyncio.sleep(0.02)
-        assert child_file.exists()
-        child_pid = int(child_file.read_text())
-        assert (await runner.cancel("a1")).cancelled
-        assert (await running).outcome == "CANCELLED"
-        process = kernel32.OpenProcess(0x1000, False, child_pid)
-        if process:
-            exit_code = wintypes.DWORD()
-            assert kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code))
-            kernel32.CloseHandle(process)
-            assert exit_code.value != 259
+        try:
+            ready_until = asyncio.get_running_loop().time() + 15.0
+            while not child_file.exists() and not running.done():
+                if asyncio.get_running_loop().time() >= ready_until:
+                    break
+                await asyncio.sleep(0.05)
+            if running.done() and not child_file.exists():
+                result = await running
+                pytest.fail(
+                    f"descendant exited before writing its PID: {result.outcome}, "
+                    f"stderr={result.stderr_tail!r}"
+                )
+            assert child_file.exists(), (
+                "descendant did not write its PID before readiness deadline"
+            )
+            child_pid = int(child_file.read_text())
+            assert (await runner.cancel("a1")).cancelled
+            assert (await running).outcome == "CANCELLED"
+            process = kernel32.OpenProcess(0x1000, False, child_pid)
+            if process:
+                exit_code = wintypes.DWORD()
+                assert kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code))
+                kernel32.CloseHandle(process)
+                assert exit_code.value != 259
+        finally:
+            try:
+                if not running.done():
+                    await runner.cancel("a1")
+            finally:
+                await running
     finally:
         kernel32.CloseHandle(sentinel)

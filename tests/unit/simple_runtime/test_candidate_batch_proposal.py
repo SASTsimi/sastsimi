@@ -22,7 +22,11 @@ from sastsimi.simple_runtime.candidate_batches import (
     candidate_batch_id,
     iter_candidate_batches,
 )
-from sastsimi.simple_runtime.candidates import CandidateOrigin, StaticCandidate
+from sastsimi.simple_runtime.candidates import (
+    CandidateKind,
+    CandidateOrigin,
+    StaticCandidate,
+)
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -117,6 +121,9 @@ def _fixture(
     candidate_count: int,
     responses: list[list[JsonValue]],
     source_text: str = "def route(value):\n    evaluate(value)\n",
+    candidate_line: int = 2,
+    candidate_kind: CandidateKind = "HINT",
+    context_version: int = 1,
 ) -> tuple[
     DirectHypothesisBootstrap,
     _Client,
@@ -143,10 +150,10 @@ def _fixture(
     candidates = tuple(
         StaticCandidate(
             candidate_id=f"C-{index:03d}",
-            kind="HINT",
+            kind=candidate_kind,
             path="app.py",
-            line=2,
-            end_line=2,
+            line=candidate_line,
+            end_line=candidate_line,
             evidence_ref=source_ref,
             origins=(
                 CandidateOrigin(
@@ -178,6 +185,7 @@ def _fixture(
             ast_summary=ast_summary,
             workspace=workspace,
             max_prompt_bytes=16_384,
+            context_version=context_version,
         )
     )
     client = _Client(responses)
@@ -191,6 +199,162 @@ def _fixture(
         workspace_path=workspace,
     )
     return bootstrap, client, identity, static, batch, artifacts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reflected_error", [True, False])
+async def test_batch_guidance_is_scoped_to_structurally_visible_error_response(
+    tmp_path: Path, reflected_error: bool
+) -> None:
+    """A candidate hint must guide a separate hypothesis, not assert leakage."""
+
+    error_response = "str(exc)" if reflected_error else "'invalid input'"
+    source = (
+        "@app.get('/config')\n"
+        "def config():\n"
+        "    value = request.args.get('key')\n"
+        "    try:\n"
+        "        decoded = bytes.fromhex(value)\n"
+        "        selected = decrypt(decoded)\n"
+        "    except ValueError as exc:\n"
+        f"        return {error_response}\n"
+        "    return render_template('config.html', selected=selected)\n"
+    )
+    bootstrap, client, identity, static, batch, artifacts = _fixture(
+        tmp_path,
+        candidate_count=1,
+        responses=[[_row("C-000", "NO_HYPOTHESIS")]],
+        source_text=source,
+        candidate_line=3,
+        candidate_kind="ENTRY_POINT",
+        context_version=5,
+    )
+
+    result = await bootstrap.propose_batch(identity, static, batch)
+
+    assert not isinstance(result, StageFailure)
+    assert len(client.requests) == 1
+    context = json.loads(artifacts.read(batch.shared_context_ref))
+    rows = context["candidate_call_paths"]
+    assert isinstance(rows, list)
+    hint_present = any(
+        path["kind"] == "candidate_error_response_context_v1"
+        for row in rows
+        for path in row["paths"]
+    )
+    assert hint_present is reflected_error
+    prompt = client.requests[0]["prompt"].decode("utf-8")
+    assert ("client-visible normal/error response difference" in prompt) is (
+        reflected_error
+    )
+    assert ("not proof of leakage or exploitability" in prompt) is (reflected_error)
+    if reflected_error:
+        guidance_at = prompt.index(" For candidate IDs with")
+        untrusted_at = prompt.index("<UNTRUSTED_EXACT_INPUTS>")
+        assert guidance_at < untrusted_at
+        assert prompt[untrusted_at - 1] == "\n"
+        assert prompt[untrusted_at:].startswith(
+            "<UNTRUSTED_EXACT_INPUTS>\n<SHARED_FILE_CONTEXT>\n"
+        )
+    assert (
+        client.requests[0]["schema"]["properties"]["candidate_results"]["items"][
+            "properties"
+        ]["hypotheses"]["maxItems"]
+        == 4
+    )
+    if reflected_error:
+        # The fixed guidance is part of the exact prompt budget, not free headroom.
+        request = client.requests[0]
+        exact_bytes = len(request["prompt"]) + len(canonical_bytes(request["schema"]))
+        overflow = await bootstrap.propose_batch(
+            identity,
+            static,
+            replace(batch, max_prompt_bytes=exact_bytes - 1),
+        )
+        assert isinstance(overflow, StageFailure)
+        assert overflow.code == "HYPOTHESIS_BATCH_CONTEXT_OVERFLOW"
+        assert len(client.requests) == 1
+
+
+def _with_cross_file_call_path(
+    batch: CandidateBatch,
+    artifacts: SimpleArtifactRepository,
+) -> CandidateBatch:
+    """Materialize the smallest valid v2 context with one route-to-sink path."""
+
+    context = json.loads(artifacts.read(batch.shared_context_ref))
+    context.update(
+        {
+            "kind": "simple_candidate_file_context_v2",
+            "related_source_files": [
+                {
+                    "path": "routes.py",
+                    "source_status": "AVAILABLE",
+                    "source_sha256": "c" * 64,
+                    "source_lines": [
+                        {
+                            "line": 1,
+                            "text": "app.add_url_rule('/run', view_func=route)",
+                        },
+                        {"line": 2, "text": "# not a path step"},
+                    ],
+                }
+            ],
+            "candidate_call_paths": [
+                {
+                    "candidate_id": batch.candidate_ids[0],
+                    "status": "AVAILABLE",
+                    "gaps": [],
+                    "paths": [
+                        {
+                            "kind": "call_path_v1",
+                            "provenance": "python_syntax",
+                            "assurance": "SYNTACTIC_REACHABILITY",
+                            "status": "AVAILABLE",
+                            "gaps": [],
+                            "steps": [
+                                {
+                                    "role": "ROUTE_ENTRY",
+                                    "path": "routes.py",
+                                    "line": 1,
+                                    "symbol": "route",
+                                },
+                                {
+                                    "role": "HANDLER_DEFINITION",
+                                    "path": "app.py",
+                                    "line": 1,
+                                    "symbol": "route",
+                                },
+                                {
+                                    "role": "REQUEST_CONTEXT",
+                                    "path": "app.py",
+                                    "line": 2,
+                                    "symbol": "route",
+                                },
+                                {
+                                    "role": "SINK",
+                                    "path": "app.py",
+                                    "line": 2,
+                                    "symbol": "evaluate",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    context_ref = artifacts.put_json(context)
+    return replace(
+        batch,
+        shared_context_ref=context_ref,
+        batch_id=candidate_batch_id(
+            batch.scope_fingerprint,
+            batch.path,
+            batch.candidate_ids,
+            context_ref.content_hash,
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -395,6 +559,206 @@ async def test_invalid_location_retry_points_to_visible_lines_for_only_failed_ca
     assert "HYPOTHESIS_BATCH_LOCATION_INVALID" in retry_feedback["C-001"]
     assert "SHARED_FILE_CONTEXT.source_lines" in retry_feedback["C-001"]
     assert "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS" in retry_feedback["C-001"]
+
+
+@pytest.mark.asyncio
+async def test_location_retry_v2_explains_exact_cross_file_call_path_evidence(
+    tmp_path: Path,
+) -> None:
+    unsupported = _hypothesis()
+    qualification = unsupported["qualification"]
+    assert isinstance(qualification, dict)
+    qualification["evidence_locations"] = ["routes.py:2"]
+    repaired = _hypothesis()
+    repaired_qualification = repaired["qualification"]
+    assert isinstance(repaired_qualification, dict)
+    repaired_qualification["evidence_locations"] = ["routes.py:1"]
+    bootstrap, client, identity, static, batch, artifacts = _fixture(
+        tmp_path,
+        candidate_count=1,
+        responses=[
+            [_row("C-000", "HYPOTHESES", hypotheses=[unsupported])],
+            [_row("C-000", "HYPOTHESES", hypotheses=[repaired])],
+        ],
+    )
+    batch = _with_cross_file_call_path(batch, artifacts)
+
+    result = await bootstrap.propose_batch(identity, static, batch)
+
+    assert not isinstance(result, StageFailure)
+    assert result.missing_ids == ()
+    assert len(result.results["C-000"].seeds) == 1
+    assert len(client.requests) == 2
+    prompt_bytes = client.requests[0]["prompt_bytes"]
+    assert prompt_bytes is not None
+    shared_context = json.loads(artifacts.read(batch.shared_context_ref))
+    expected_raw_source_bytes = sum(
+        len(str(item["text"]).encode("utf-8"))
+        for source_lines in (
+            shared_context["source_lines"],
+            shared_context["related_source_files"][0]["source_lines"],
+        )
+        for item in source_lines
+    )
+    assert prompt_bytes.raw_source_bytes == expected_raw_source_bytes
+    assert b"SYNTACTIC_REACHABILITY is not proof" in client.requests[0]["prompt"]
+    retry_feedback = json.loads(
+        client.requests[1]["prompt"]
+        .split(b"<VALIDATION_FEEDBACK>\n", 1)[1]
+        .split(b"\n</VALIDATION_FEEDBACK>", 1)[0]
+    )
+    message = retry_feedback["C-000"]
+    assert "candidate_call_paths" in message
+    assert "routes.py:1" in message
+    assert "routes.py:2" not in message
+
+
+def test_location_retry_prioritizes_route_entry_over_many_downstream_lines() -> None:
+    def step(path: str, line: int, role: str) -> dict[str, object]:
+        return {"path": path, "line": line, "role": role}
+
+    def call_path(steps: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "kind": "call_path_v1",
+            "provenance": "python_syntax",
+            "assurance": "SYNTACTIC_REACHABILITY",
+            "status": "AVAILABLE",
+            "gaps": [],
+            "steps": steps,
+        }
+
+    context: dict[str, object] = {
+        "kind": "simple_candidate_file_context_v2",
+        "path": "views.py",
+        "source_lines": [{"line": 55, "text": "sink(value)"}],
+        "related_source_files": [
+            {
+                "path": "dao.py",
+                "source_status": "AVAILABLE",
+                "source_lines": [
+                    {"line": number, "text": "pass"} for number in range(1, 21)
+                ],
+            },
+            {
+                "path": "routes.py",
+                "source_status": "AVAILABLE",
+                "source_lines": [
+                    {"line": 13, "text": "route(view)"},
+                    {"line": 14, "text": "pass"},
+                ],
+            },
+        ],
+        "candidate_call_paths": [
+            {
+                "candidate_id": "C-000",
+                "status": "AVAILABLE",
+                "gaps": [],
+                "paths": [
+                    call_path([step("routes.py", 13, "ROUTE_ENTRY")]),
+                    call_path(
+                        [
+                            step("dao.py", number, "CALLEE_BODY_LINE")
+                            for number in range(1, 21)
+                        ]
+                    ),
+                ],
+            }
+        ],
+    }
+
+    message = DirectHypothesisBootstrap._location_validation_feedback(
+        context, "views.py", "C-000"
+    )
+
+    assert "routes.py:13" in message
+    assert "routes.py:14" not in message
+    assert "dao.py:1" in message
+    assert "examples are not exhaustive" in message
+    assert "dao.py:20" not in message
+    _primary, allowed = DirectHypothesisBootstrap._candidate_evidence_locations(
+        context, "views.py", "C-000"
+    )
+    assert ("dao.py", 20) in allowed
+
+
+def test_location_retry_keeps_direct_callee_lines_ahead_of_unrelated_body() -> None:
+    def step(path: str, line: int, role: str) -> dict[str, object]:
+        return {"path": path, "line": line, "role": role}
+
+    def call_path(kind: str, steps: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "kind": kind,
+            "provenance": "python_syntax",
+            "assurance": "SYNTACTIC_REACHABILITY",
+            "status": "AVAILABLE",
+            "gaps": [],
+            "steps": steps,
+        }
+
+    # The decisive callee is reached by the nearer call site. Its body has
+    # higher line numbers than a longer, unrelated callee listed first.
+    context: dict[str, object] = {
+        "kind": "simple_candidate_file_context_v2",
+        "path": "handler.py",
+        "source_lines": [
+            {"line": line, "text": "call(value)"} for line in (55, 57, 59)
+        ],
+        "related_source_files": [
+            {
+                "path": "dao.py",
+                "source_status": "AVAILABLE",
+                "source_lines": [
+                    {"line": line, "text": "pass"}
+                    for line in (*range(10, 29), *range(41, 46))
+                ],
+            },
+            {
+                "path": "routes.py",
+                "source_status": "AVAILABLE",
+                "source_lines": [{"line": 13, "text": "route(handler)"}],
+            },
+        ],
+        "candidate_call_paths": [
+            {
+                "candidate_id": "C-000",
+                "status": "AVAILABLE",
+                "gaps": [],
+                "paths": [
+                    call_path("call_path_v1", [step("routes.py", 13, "ROUTE_ENTRY")]),
+                    call_path(
+                        "candidate_downstream_context_v1",
+                        [
+                            step("handler.py", 55, "CANDIDATE"),
+                            step("handler.py", 59, "CALL"),
+                            *(
+                                step("dao.py", line, "CALLEE_BODY_LINE")
+                                for line in range(10, 29)
+                            ),
+                        ],
+                    ),
+                    call_path(
+                        "candidate_downstream_context_v1",
+                        [
+                            step("handler.py", 55, "CANDIDATE"),
+                            step("handler.py", 57, "CALL"),
+                            *(
+                                step("dao.py", line, "CALLEE_BODY_LINE")
+                                for line in range(41, 46)
+                            ),
+                        ],
+                    ),
+                ],
+            }
+        ],
+    }
+
+    message = DirectHypothesisBootstrap._location_validation_feedback(
+        context, "handler.py", "C-000"
+    )
+
+    assert "routes.py:13" in message
+    assert all(f"dao.py:{line}" in message for line in range(41, 46))
+    assert message.count("dao.py:") + message.count("routes.py:") <= 12
 
 
 @pytest.mark.asyncio
@@ -669,3 +1033,96 @@ async def test_resume_subset_keeps_full_batch_identity_but_requests_only_missing
     assert owner is not None
     assert owner.candidate_ids == ("C-001",)
     assert owner.batch_id == batch.batch_id
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_subset_hides_other_candidates_cross_file_path_context(
+    tmp_path: Path,
+) -> None:
+    """A retry must not expose another candidate's off-file evidence or gaps."""
+
+    bootstrap, client, identity, static, batch, artifacts = _fixture(
+        tmp_path,
+        candidate_count=2,
+        responses=[[_row("C-001", "NO_HYPOTHESIS")]],
+    )
+    context = json.loads(artifacts.read(batch.shared_context_ref))
+
+    def path_record(candidate_id: str, path: str, marker: str) -> dict[str, JsonValue]:
+        return {
+            "candidate_id": candidate_id,
+            "status": "AVAILABLE",
+            "gaps": [],
+            "paths": [
+                {
+                    "kind": "call_path_v1",
+                    "provenance": "python_syntax",
+                    "assurance": "SYNTACTIC_REACHABILITY",
+                    "status": "AVAILABLE",
+                    "gaps": [],
+                    "steps": [
+                        {
+                            "role": "ROUTE_ENTRY",
+                            "path": path,
+                            "line": 1,
+                            "symbol": marker,
+                        },
+                        {
+                            "role": "SINK",
+                            "path": "app.py",
+                            "line": 2,
+                            "symbol": "evaluate",
+                        },
+                    ],
+                }
+            ],
+        }
+
+    context.update(
+        {
+            "kind": "simple_candidate_file_context_v2",
+            "candidate_call_paths": [
+                path_record("C-000", "route-a.py", "route_a_only"),
+                path_record("C-001", "route-b.py", "route_b_only"),
+            ],
+            "related_source_files": [
+                {
+                    "path": "route-a.py",
+                    "source_status": "AVAILABLE",
+                    "source_sha256": "a" * 64,
+                    "source_lines": [{"line": 1, "text": "route_a_only"}],
+                },
+                {
+                    "path": "route-b.py",
+                    "source_status": "AVAILABLE",
+                    "source_sha256": "b" * 64,
+                    "source_lines": [{"line": 1, "text": "route_b_only"}],
+                },
+            ],
+        }
+    )
+    context_ref = artifacts.put_json(context)
+    batch = replace(
+        batch,
+        shared_context_ref=context_ref,
+        batch_id=candidate_batch_id(
+            batch.scope_fingerprint,
+            batch.path,
+            batch.candidate_ids,
+            context_ref.content_hash,
+        ),
+    )
+
+    result = await bootstrap.propose_batch(
+        identity,
+        static,
+        batch,
+        requested_ids=("C-001",),
+    )
+
+    assert not isinstance(result, StageFailure)
+    assert tuple(result.results) == ("C-001",)
+    prompt = client.requests[0]["prompt"]
+    assert b"route_b_only" in prompt
+    assert b"route-a.py" not in prompt
+    assert b"route_a_only" not in prompt

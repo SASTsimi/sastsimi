@@ -4,7 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -36,19 +36,17 @@ HYPOTHESIS_STAGES: tuple[SimpleStage, ...] = STAGE_ORDER[2:]
 MAX_RECOVERY_ATTEMPTS = 3
 STAGE_VERSION: dict[SimpleStage, str] = {
     stage: (
-        "5"
+        "6"
         if stage is SimpleStage.VERIFICATION_INITIAL_DONE
+        else "6"
+        if stage is SimpleStage.POC_CANDIDATE_DONE
+        else "4"
+        if stage is SimpleStage.REPORT_DONE
         else "3"
         if stage
         in {SimpleStage.POC_EXECUTION_DONE, SimpleStage.VERIFICATION_FINAL_DONE}
-        else "4"
-        if stage is SimpleStage.REPORT_DONE
         else "2"
-        if stage
-        in {
-            SimpleStage.POC_CANDIDATE_DONE,
-            SimpleStage.TECH_GATE_DONE,
-        }
+        if stage is SimpleStage.TECH_GATE_DONE
         else "1"
     )
     for stage in STAGE_ORDER
@@ -101,6 +99,8 @@ class SimpleAnalysisRun(ContractModel):
     profile_ref: str | None = None
     provider: str | None = None
     model: str | None = None
+    model_route_version: Literal[1] | None = None
+    model_routes: dict[str, str] | None = None
     started_at: datetime | None = None
     llm_provider: str | None = None
     on_demand_possible: bool = False
@@ -117,6 +117,15 @@ class SimpleAnalysisRun(ContractModel):
     hypothesis_ids: tuple[str, ...] = ()
     parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     chain_depths: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_model_route_snapshot(self) -> Self:
+        if self.model_route_version is None:
+            if self.model_routes is not None:
+                raise ValueError("MODEL_ROUTE_VERSION_REQUIRED")
+        elif self.provider is None or self.model is None or self.model_routes is None:
+            raise ValueError("MODEL_ROUTE_SNAPSHOT_INCOMPLETE")
+        return self
 
 
 def input_reference_hash(refs: tuple[StoredDataRef, ...]) -> str:
@@ -139,6 +148,7 @@ class StageCheckpoint(ContractModel):
     recovery_decision_refs: tuple[StoredDataRef, ...] = ()
     poc_stop_decision_ref: StoredDataRef | None = None
     external_prerequisites_ref: StoredDataRef | None = None
+    environment_block_ref: StoredDataRef | None = None
     error_code: str | None = None
     retryable: bool = False
     recipe_ref: StoredDataRef | None = None
@@ -163,6 +173,7 @@ class StageCheckpoint(ContractModel):
 class StageResult(ContractModel):
     output_refs: tuple[StoredDataRef, ...]
     external_prerequisites_ref: StoredDataRef | None = None
+    environment_block_ref: StoredDataRef | None = None
     validated_poc_ref: StoredDataRef | None = None
     report_ref: StoredDataRef | None = None
     bundle_manifest_ref: StoredDataRef | None = None
@@ -193,9 +204,21 @@ def terminal_initial_outcome(
         checkpoint is not None
         and checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
         and checkpoint.status is StageStatus.SUCCEEDED
+        and checkpoint.stage_version
+        == STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
         and checkpoint.verdict == "HOLD"
-        and checkpoint.external_prerequisites_ref is not None
-        and checkpoint.external_prerequisites_ref in checkpoint.output_refs
+        and (
+            (
+                checkpoint.external_prerequisites_ref is not None
+                and checkpoint.environment_block_ref is None
+                and checkpoint.external_prerequisites_ref in checkpoint.output_refs
+            )
+            or (
+                checkpoint.external_prerequisites_ref is None
+                and checkpoint.environment_block_ref is not None
+                and checkpoint.environment_block_ref in checkpoint.output_refs
+            )
+        )
         and checkpoint.recipe_ref is None
         and checkpoint.validated_poc_ref is None
     ):

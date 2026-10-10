@@ -71,6 +71,7 @@ class SimpleRuntimeRunner:
         recovery: RecoveryCoordinator | None = None,
         policy_snapshot_ref: StoredDataRef | None = None,
         codex_invalid_output_resume: bool = False,
+        redacted_anchor_resume: bool = False,
         cleanup_artifacts: SimpleArtifactRepository | None = None,
         offline_base_ready: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
@@ -79,6 +80,7 @@ class SimpleRuntimeRunner:
         self.recovery = recovery
         self.policy_snapshot_ref = policy_snapshot_ref
         self.codex_invalid_output_resume = codex_invalid_output_resume
+        self.redacted_anchor_resume = redacted_anchor_resume
         self.cleanup_artifacts = cleanup_artifacts
         self.offline_base_ready = offline_base_ready
 
@@ -88,6 +90,45 @@ class SimpleRuntimeRunner:
     async def resume_hypothesis(self, identity: CheckpointIdentity) -> RunOutcome:
         if self.recovery is None:
             self._reset_incomplete_poc_attempt(identity)
+        # A stale upstream stage must not erase an already recorded terminal
+        # PoC decision before the loop reaches POC_EXECUTION_DONE. This check
+        # precedes every version-driven invalidate_from call below.
+        terminal_poc = self.store.get(identity, SimpleStage.POC_EXECUTION_DONE)
+        if terminal_poc is not None:
+            if terminal_poc_outcome(terminal_poc) is not None:
+                if self.cleanup_artifacts is None:
+                    return RunOutcome(
+                        current_stage=SimpleStage.POC_EXECUTION_DONE,
+                        status=StageStatus.BLOCKED,
+                        error_code="POC_TERMINAL_EVIDENCE_INVALID",
+                        attempt_id=terminal_poc.attempt_id,
+                    )
+                return self._verified_poc_terminal(terminal_poc)
+            if self._has_prior_poc_recovery_decision(terminal_poc):
+                promoted = self._promote_stopped_inconclusive_poc(terminal_poc)
+                if promoted is not None:
+                    return promoted
+                return RunOutcome(
+                    current_stage=SimpleStage.POC_EXECUTION_DONE,
+                    status=terminal_poc.status,
+                    error_code=terminal_poc.error_code,
+                    attempt_id=terminal_poc.attempt_id,
+                )
+            if (
+                terminal_poc.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+                and not terminal_poc.retryable
+                and not (
+                    self.codex_invalid_output_resume
+                    and terminal_poc.error_code == "INVALID_OUTPUT"
+                    and terminal_poc.attempt_number < MAX_RECOVERY_ATTEMPTS
+                )
+            ):
+                return RunOutcome(
+                    current_stage=SimpleStage.POC_EXECUTION_DONE,
+                    status=terminal_poc.status,
+                    error_code=terminal_poc.error_code,
+                    attempt_id=terminal_poc.attempt_id,
+                )
         while True:
             restart_requested = False
             for stage in HYPOTHESIS_STAGES:
@@ -170,9 +211,20 @@ class SimpleRuntimeRunner:
                     elif (
                         stage is SimpleStage.VERIFICATION_INITIAL_DONE
                         and existing.status is StageStatus.BLOCKED
-                        and existing.error_code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
+                        and existing.error_code
+                        in {
+                            "POC_OFFLINE_REQUIREMENT_UNSUPPORTED",
+                            "WHEEL_ARCHIVE_INVALID",
+                            "PINNED_CONTEXT_UNSAFE",
+                        }
                     ):
-                        if existing.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+                        if (
+                            existing.attempt_number >= MAX_RECOVERY_ATTEMPTS
+                            or self.store.unresolved_codex_call(
+                                existing.identity.analysis_id
+                            )
+                            is not None
+                        ):
                             return RunOutcome(
                                 current_stage=stage,
                                 status=existing.status,
@@ -489,6 +541,9 @@ class SimpleRuntimeRunner:
             return False
         if checkpoint.status is StageStatus.SUCCEEDED:
             return False
+        promoted_initial = self._promote_initial_environment_inconclusive(checkpoint)
+        if promoted_initial is not None:
+            return promoted_initial
         promoted = self._promote_stopped_inconclusive_poc(checkpoint)
         if promoted is not None:
             return promoted
@@ -571,18 +626,64 @@ class SimpleRuntimeRunner:
         if (
             checkpoint.stage is SimpleStage.VERIFICATION_INITIAL_DONE
             and checkpoint.status is StageStatus.BLOCKED
-            and checkpoint.error_code == "POC_OFFLINE_REQUIREMENT_UNSUPPORTED"
+            and checkpoint.error_code
+            in {
+                "POC_OFFLINE_REQUIREMENT_UNSUPPORTED",
+                "WHEEL_ARCHIVE_INVALID",
+                "PINNED_CONTEXT_UNSAFE",
+            }
         ):
-            if checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS:
+            if (
+                checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+                or self.store.unresolved_codex_call(checkpoint.identity.analysis_id)
+                is not None
+            ):
                 return RunOutcome(
                     current_stage=checkpoint.stage,
                     status=checkpoint.status,
                     error_code=checkpoint.error_code,
                     attempt_id=checkpoint.attempt_id,
                 )
-            # Earlier prompts mixed attack preconditions with installable
-            # requirements. Re-evaluate only this failed stage under the
-            # separated schema, preserving the retry count and prior agents.
+            # Re-evaluate only the failed environment stage after a corrected
+            # requirement response or wheel transfer, preserving the retry
+            # count and all completed earlier stages.
+            self.store.replace_from(
+                checkpoint.model_copy(
+                    update={
+                        "status": StageStatus.PENDING,
+                        "output_refs": (),
+                        "attempt_id": None,
+                        "error_code": None,
+                        "retryable": False,
+                    }
+                )
+            )
+            return False
+        if (
+            checkpoint.stage
+            in {
+                SimpleStage.VERIFICATION_INITIAL_DONE,
+                SimpleStage.VERIFICATION_FINAL_DONE,
+            }
+            and checkpoint.status is StageStatus.FAILED
+            and checkpoint.error_code == "HYPOTHESIS_ANCHOR_INVALID"
+            and self.redacted_anchor_resume
+        ):
+            if (
+                checkpoint.attempt_number >= MAX_RECOVERY_ATTEMPTS
+                or self.store.unresolved_codex_call(checkpoint.identity.analysis_id)
+                is not None
+            ):
+                return RunOutcome(
+                    current_stage=checkpoint.stage,
+                    status=checkpoint.status,
+                    error_code=checkpoint.error_code,
+                    attempt_id=checkpoint.attempt_id,
+                )
+            # The source hash and exact proposal remain immutable. Replay only
+            # the failed anchor projection check so the corrected
+            # redaction-aware comparison can prove the same pinned source,
+            # with the existing bounded attempt count preserved.
             self.store.replace_from(
                 checkpoint.model_copy(
                     update={
@@ -697,8 +798,11 @@ class SimpleRuntimeRunner:
             )
         resolution = await self.recovery.decide(failed, failure)
         if resolution.decision.action is RecoveryAction.STOP:
-            self.store.record_recovery_stop(failed, resolution)
-            promoted = self._promote_stopped_inconclusive_poc(failed)
+            stopped = self.store.record_recovery_stop(failed, resolution)
+            promoted_initial = self._promote_initial_environment_inconclusive(stopped)
+            if promoted_initial is not None:
+                return promoted_initial
+            promoted = self._promote_stopped_inconclusive_poc(stopped)
             if promoted is not None:
                 return promoted
             return RunOutcome(
@@ -721,6 +825,28 @@ class SimpleRuntimeRunner:
             )
         self.store.prepare_recovery(failed, resolution, restart_stage)
         return None
+
+    def _promote_initial_environment_inconclusive(
+        self, checkpoint: StageCheckpoint
+    ) -> RunOutcome | None:
+        """Safely terminalize only a receipt-proven resolver incompatibility."""
+
+        if (
+            checkpoint.stage is not SimpleStage.VERIFICATION_INITIAL_DONE
+            or checkpoint.status is not StageStatus.BLOCKED
+            or checkpoint.error_code
+            not in {"POC_AUTO_BUNDLE_DOWNLOAD_FAILED", "RECOVERY_EXHAUSTED"}
+            or self.cleanup_artifacts is None
+        ):
+            return None
+        try:
+            completed = self.store.promote_initial_environment_inconclusive(
+                checkpoint,
+                artifacts=self.cleanup_artifacts,
+            )
+        except ValueError:
+            return None
+        return self._verified_initial_terminal(completed)
 
     def _promote_stopped_inconclusive_poc(
         self, checkpoint: StageCheckpoint
@@ -768,13 +894,25 @@ class SimpleRuntimeRunner:
         failed_stage: SimpleStage,
         action: RecoveryAction,
     ) -> SimpleStage | None:
-        if action is RecoveryAction.REBUILD_ENVIRONMENT:
+        if action is RecoveryAction.RETRY_STAGE:
+            # A transient tool failure (for example, Docker's owned-container
+            # listing) has not invalidated the generated PoC.  Re-running the
+            # execution stage avoids an unnecessary LLM call and preserves the
+            # exact candidate that was already validated.
+            return failed_stage
+        if action in {
+            RecoveryAction.REBUILD_ENVIRONMENT,
+            RecoveryAction.REPLAN_ENVIRONMENT,
+        }:
             if STAGE_ORDER.index(failed_stage) < STAGE_ORDER.index(
                 SimpleStage.VERIFICATION_INITIAL_DONE
             ):
                 return None
             return SimpleStage.VERIFICATION_INITIAL_DONE
-        if failed_stage is SimpleStage.POC_EXECUTION_DONE:
+        if (
+            action is RecoveryAction.REGENERATE_INPUT
+            and failed_stage is SimpleStage.POC_EXECUTION_DONE
+        ):
             return SimpleStage.POC_CANDIDATE_DONE
         return failed_stage
 

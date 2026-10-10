@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import io
@@ -9,17 +10,31 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
+import sqlite3
 import stat
 import subprocess
 import tarfile
+import tempfile
 import tomllib
-from collections.abc import Mapping, Sequence
+import weakref
+import zipfile
+from collections import OrderedDict
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from email.parser import BytesParser
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
+from uuid import uuid4
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import (
+    InvalidWheelFilename,
+    canonicalize_name,
+    parse_wheel_filename,
+)
 
 from sastsimi.config.user_config import SimpleExecutionProfile
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -37,23 +52,33 @@ from sastsimi.static_analysis.file_scope import (
 
 from .artifacts import SimpleArtifactRepository
 from .models import CheckpointIdentity, SimpleStage, StageCheckpoint
-from .offline_wheels import import_wheel_bundle
+from .offline_wheels import build_wheel_bundle, import_wheel_bundle
 from .recovery import (
     RecoveryAction,
+    RecoveryCategory,
     RecoveryDecision,
     validate_environment_patch,
 )
 from .stages import ReproductionEnvironment
 
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_FULL_CONTAINER_ID = re.compile(r"[0-9a-f]{64}\Z")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _MAX_OUTPUT = 1024 * 1024
 _MAX_PINNED_CONTEXT_BYTES = 64 * 1024 * 1024
 _MAX_PINNED_FILES = 20_000
+_AUTO_BUNDLE_DOWNLOAD_TIMEOUT_SECONDS = 300
+_PIP_DOWNLOAD_RETRIES = "3"
+_PIP_DOWNLOAD_TIMEOUT_SECONDS = "45"
 _REPRODUCIBLE_SOURCE_MTIME = 315532800  # 1980-01-01 UTC; wheel ZIP minimum.
 _OFFLINE_BASE_IMAGE = "python:3.12-slim"
+_EXPLICIT_PYTHON_RUNTIME = re.compile(
+    r"python:([0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?)\Z", re.IGNORECASE
+)
 _OFFLINE_BROWSER_SMOKE_MARKER = "SASTSIMI_BROWSER_SMOKE_OK"
+
+
 _OFFLINE_BROWSER_COMMANDS = (
     "chromium",
     "chromium-browser",
@@ -97,6 +122,48 @@ _OFFLINE_MISSING = re.compile(
     rb"no matching distribution|package.*not found|missing build dependency|"
     rb"ModuleNotFoundError: No module named)"
 )
+_MISSING_TOP_LEVEL_IMPORT = re.compile(
+    r"(?m)^ModuleNotFoundError:\s*(?:No module named\s+)?['\"]?"
+    r"([A-Za-z_][A-Za-z0-9_]*)['\"]?\s*$"
+)
+
+
+@contextmanager
+def _wheel_download_workspace() -> Iterator[Path]:
+    """Make Docker-created wheels host-readable without changing POSIX temp ACLs."""
+
+    if os.name != "nt":
+        with tempfile.TemporaryDirectory(prefix="sastsimi-wheel-") as temporary:
+            yield Path(temporary).resolve()
+        return
+
+    # tempfile.mkdtemp uses an owner-only directory. Docker Desktop can write
+    # into that bind mount, but its downloaded wheels then deny the host read.
+    # A normal mkdir inherits the user's Temp ACL, which supports both sides.
+    parent = Path(tempfile.gettempdir()).resolve()
+    root = parent / f"sastsimi-wheel-{uuid4().hex}"
+    root.mkdir()
+    try:
+        yield root
+    finally:
+        info: os.stat_result | None
+        try:
+            info = root.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None:
+            if (
+                root.parent != parent
+                or not stat.S_ISDIR(info.st_mode)
+                or root.is_symlink()
+                or int(getattr(info, "st_file_attributes", 0)) & 0x400
+                or root.resolve() != root
+            ):
+                raise ValueError("POC_AUTO_BUNDLE_WORKSPACE_UNSAFE")
+            try:
+                shutil.rmtree(root)
+            except OSError as error:
+                raise ValueError("POC_AUTO_BUNDLE_CLEANUP_FAILED") from error
 
 
 def offline_recipe_cache_key(
@@ -133,6 +200,14 @@ class OfflineBaseSmoke:
     smoke_output_digest: str
 
 
+@dataclass(frozen=True, slots=True)
+class _AutoRuntimeObservation:
+    base_digest: str
+    requested: str | None
+    observed: str | None
+    operator_configured: bool
+
+
 _DEPENDENCY_INSTALL = re.compile(
     rb"(?:pip3? install|python -m pip install|npm (?:ci|install)|"
     rb"apt-get install|yarn install|poetry install)",
@@ -152,12 +227,100 @@ class DockerBuildAttemptsError(DockerOperationError):
         self.recipe_ref = recipe_ref
 
 
+class DependencyBundleResolutionError(DockerOperationError):
+    """A resolver failure with an immutable, redacted attempt receipt."""
+
+    def __init__(
+        self,
+        error: DockerOperationError,
+        attempt_refs: tuple[StoredDataRef, ...],
+    ) -> None:
+        super().__init__(error.code, error.outcome)
+        self.attempt_refs = attempt_refs
+
+
+class ImportSmokeCleanupUnconfirmed(ValueError):
+    """An import smoke container could not be proven absent."""
+
+
+def _foreign_runtime_paths(
+    tracked_paths: frozenset[str], target_python_manifest: str | None
+) -> frozenset[str]:
+    """Return nested Node-only paths outside the selected Python project.
+
+    A generated Python runtime never runs package-manager commands for a
+    nested Node project.  Its source and registry credentials must therefore
+    never enter the image.  A secret at the selected Python project's own
+    boundary remains fail-closed.  This deliberately does not make a mixed
+    Python/Node project safe by assumption: a directory that also declares a
+    Python manifest or tracked Python source remains in the normal context and
+    follows the normal secret-file denial path.
+    """
+
+    if target_python_manifest is None:
+        return frozenset()
+    manifest = PurePosixPath(target_python_manifest)
+    if (
+        not target_python_manifest
+        or manifest.is_absolute()
+        or ".." in manifest.parts
+        or "\\" in target_python_manifest
+        or ":" in target_python_manifest
+        or manifest.name not in {"requirements.txt", "pyproject.toml"}
+        or target_python_manifest not in tracked_paths
+    ):
+        return frozenset()
+    target_root = manifest.parent
+    # These are intentionally broader than the two manifests AUTO can resolve.
+    # Their purpose is fail-closed classification: if a nested Node project also
+    # advertises *any* conventional Python project metadata, it may be part of
+    # the product runtime and must remain subject to the normal secret checks.
+    python_project_markers = frozenset(
+        {
+            "requirements.txt",
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "Pipfile",
+            "Pipfile.lock",
+            "poetry.lock",
+            "uv.lock",
+        }
+    )
+    foreign_roots: set[PurePosixPath] = set()
+    for path in tracked_paths:
+        parsed = PurePosixPath(path)
+        if parsed.name != "package.json":
+            continue
+        root = parsed.parent
+        # A Node project that owns the selected Python manifest's directory
+        # (or an ancestor) cannot be omitted as a foreign subtree.
+        if target_root.is_relative_to(root):
+            continue
+        prefix = root.as_posix()
+        has_python_manifest = any(
+            f"{prefix}/{marker}" in tracked_paths for marker in python_project_markers
+        )
+        has_python_source = any(
+            candidate.startswith(f"{prefix}/") and candidate.casefold().endswith(".py")
+            for candidate in tracked_paths
+        )
+        if not has_python_manifest and not has_python_source:
+            foreign_roots.add(root)
+    return frozenset(
+        path
+        for path in tracked_paths
+        if any(PurePosixPath(path).is_relative_to(root) for root in foreign_roots)
+    )
+
+
 def build_pinned_context(
     workspace: Path,
     commit_id: str,
     dockerfile: bytes,
     wheels: Mapping[str, bytes],
     *,
+    target_python_manifest: str | None = None,
     git_executable: str = "git",
 ) -> bytes:
     """Build a bounded Docker context from a verified pinned Git snapshot."""
@@ -198,6 +361,13 @@ def build_pinned_context(
         raise ValueError("PINNED_CONTEXT_TOO_LARGE")
     paths = [entry.split(b"\t", 1)[1] for entry in entries if entry and b"\t" in entry]
     tracked_paths = frozenset(paths)
+    try:
+        tracked_text_paths = frozenset(path.decode("utf-8") for path in paths)
+    except UnicodeError as error:
+        raise ValueError("PINNED_CONTEXT_UNSAFE") from error
+    omitted_foreign_runtime_paths = _foreign_runtime_paths(
+        tracked_text_paths, target_python_manifest
+    )
 
     def in_nested_project(name: str) -> bool:
         for parent in PurePosixPath(name).parents:
@@ -337,7 +507,9 @@ def build_pinned_context(
                 mode, kind, object_id = header.split()
             except ValueError as error:
                 raise ValueError("PINNED_CONTEXT_UNSAFE") from error
-            if mode != b"100644" or kind != b"blob":
+            # The executable bit on a tracked ignore file does not affect its
+            # content or Docker's matching rules; Git may legitimately store it.
+            if mode not in {b"100644", b"100755"} or kind != b"blob":
                 raise ValueError("PINNED_CONTEXT_UNSAFE")
             ignored = git("cat-file", "blob", object_id.decode("ascii"))
             if ignored.returncode != 0 or len(ignored.stdout) > 1024 * 1024:
@@ -391,12 +563,17 @@ def build_pinned_context(
                 or name.startswith("wheels/")
             ):
                 raise ValueError("PINNED_CONTEXT_UNSAFE")
-            if mode not in {b"100644", b"100755"} or kind != b"blob":
-                raise ValueError("PINNED_CONTEXT_UNSAFE")
             if name in {"Dockerfile", ".dockerignore"}:
                 continue
             if EnvironmentRecipeStore._dockerignored(name, ignore_patterns):
                 continue
+            if name in omitted_foreign_runtime_paths:
+                # Nested Node-only projects cannot be part of a generated
+                # Python runtime.  Excluding the whole subtree prevents both
+                # credential leakage and unrelated symlink/build failures.
+                continue
+            if mode not in {b"100644", b"100755"} or kind != b"blob":
+                raise ValueError("PINNED_CONTEXT_UNSAFE")
             if EnvironmentRecipeStore._looks_secret(name):
                 if is_test_only_path(root, name):
                     if excluded_test_paths is None:
@@ -526,6 +703,7 @@ class PortableDockerRuntime:
         self._build_slots = asyncio.Semaphore(profile.max_parallel_builds)
         self._container_slots = asyncio.Semaphore(profile.max_parallel_containers)
         self._container_limit = profile.max_parallel_containers
+        self._offline_base_lock = asyncio.Lock()
 
     async def build_or_reuse(
         self,
@@ -676,8 +854,9 @@ class PortableDockerRuntime:
                 "--read-only",
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,size=16m",
-                image_id,
+                "--entrypoint",
                 "python",
+                image_id,
                 "-c",
                 "import json; from pip._vendor.packaging import tags; "
                 "print(json.dumps([str(tag) for tag in tags.sys_tags()]))",
@@ -699,6 +878,182 @@ class PortableDockerRuntime:
             return None
         return frozenset(parsed)
 
+    async def _probe_python_version(self, image_digest: str) -> str:
+        """Read the interpreter version from a local digest, without network/mounts."""
+
+        if _IMAGE_DIGEST.fullmatch(image_digest) is None:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+        probed = await self._run(
+            (
+                "run",
+                "--pull",
+                "never",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--user",
+                "10001:10001",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "128",
+                "--cpus",
+                "1",
+                "--memory",
+                "1g",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=16m,mode=1777",
+                "--entrypoint",
+                "python",
+                image_digest,
+                "-c",
+                "import sys; "
+                "print('.'.join(str(part) for part in sys.version_info[:3]))",
+            ),
+            timeout_seconds=30,
+        )
+        if probed.exit_code != 0 or probed.timed_out:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+        try:
+            version = probed.stdout.decode("ascii").strip()
+        except UnicodeError as error:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE") from error
+        if re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version) is None:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+        return version
+
+    async def probe_python_import(
+        self,
+        image_digest: str,
+        module: str,
+        identity: CheckpointIdentity,
+        attempt_id: str,
+    ) -> bool:
+        """Smoke one built image without network, writable root, or mounts."""
+
+        if (
+            _IMAGE_DIGEST.fullmatch(image_digest) is None
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module) is None
+        ):
+            return False
+        owner_labels = self._owner_labels(identity, attempt_id)
+        if any(
+            _RESOURCE_ID.fullmatch(value) is None for value in owner_labels.values()
+        ):
+            raise ValueError("POC_IMPORT_SMOKE_OWNER_INVALID")
+        labels = {
+            **owner_labels,
+            "sastsimi.host": socket.gethostname(),
+            "sastsimi.pid": str(os.getpid()),
+            "sastsimi.purpose": "verified-import-smoke",
+        }
+        container_name = f"sastsimi-import-smoke-{uuid4().hex}"
+        args = (
+            "run",
+            "--pull",
+            "never",
+            "--rm",
+            "--name",
+            container_name,
+            "--network",
+            "none",
+            "--read-only",
+            "--user",
+            "10001:10001",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "128",
+            "--cpus",
+            "1",
+            "--memory",
+            "1g",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=16m,mode=1777",
+            *(
+                part
+                for key, value in sorted(labels.items())
+                for part in ("--label", f"{key}={value}")
+            ),
+            "--entrypoint",
+            "python",
+            image_digest,
+            "-I",
+            "-c",
+            "import importlib; importlib.import_module(" + repr(module) + ")",
+        )
+        outcome: DockerCommandOutcome | None = None
+        cancelled = False
+        try:
+            outcome = await self._run(args, timeout_seconds=30)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            cleanup_task = asyncio.create_task(
+                self._confirm_import_probe_removed(container_name, outcome)
+            )
+            cleanup_cancelled = False
+            try:
+                while True:
+                    try:
+                        await asyncio.shield(cleanup_task)
+                        break
+                    except asyncio.CancelledError:
+                        cleanup_cancelled = True
+                        if cleanup_task.done():
+                            break
+                cleanup_task.result()
+            except ImportSmokeCleanupUnconfirmed:
+                raise
+            except Exception as cleanup_error:
+                if cancelled or cleanup_cancelled:
+                    raise asyncio.CancelledError() from cleanup_error
+                raise
+            if cleanup_cancelled:
+                raise asyncio.CancelledError()
+        assert outcome is not None
+        return outcome.exit_code == 0 and not outcome.timed_out
+
+    async def _confirm_import_probe_removed(
+        self, container_name: str, outcome: DockerCommandOutcome | None
+    ) -> None:
+        try:
+            cleanup = await self._run(
+                ("rm", "--force", container_name), timeout_seconds=30
+            )
+            if cleanup.timed_out or (
+                cleanup.exit_code != 0 and (outcome is None or outcome.timed_out)
+            ):
+                raise ImportSmokeCleanupUnconfirmed("POC_IMPORT_SMOKE_CLEANUP_FAILED")
+            inspected = await self._run(
+                ("container", "inspect", container_name), timeout_seconds=30
+            )
+            missing = re.fullmatch(
+                rb"(?:Error(?: response from daemon)?: )?"
+                rb"No such (?:container|object): "
+                + re.escape(container_name.encode("ascii")),
+                inspected.stderr.strip(),
+            )
+            if (
+                inspected.timed_out
+                or inspected.exit_code != 1
+                or inspected.stdout.strip() not in {b"", b"[]"}
+                or missing is None
+            ):
+                raise ImportSmokeCleanupUnconfirmed("POC_IMPORT_SMOKE_CLEANUP_FAILED")
+        except ImportSmokeCleanupUnconfirmed:
+            raise
+        except (Exception, asyncio.CancelledError) as error:
+            raise ImportSmokeCleanupUnconfirmed(
+                "POC_IMPORT_SMOKE_CLEANUP_FAILED"
+            ) from error
+
     async def local_base_image_digest(self, base_image: str) -> str:
         """Require an already-local Linux image; never trigger an implicit pull."""
 
@@ -715,6 +1070,40 @@ class PortableDockerRuntime:
         if os_name != "linux" or _IMAGE_DIGEST.fullmatch(image_id) is None:
             raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
         return image_id
+
+    async def resolve_offline_base(
+        self, base_image: str, *, allow_pull: bool
+    ) -> tuple[str, str]:
+        """Resolve the fixed public base locally, or pull it once in AUTO mode.
+
+        Only the built-in Python base is eligible for a networked pull.  A
+        user-supplied image digest remains an explicit, already-local input so
+        AUTO mode cannot fetch an arbitrary image named by repository content.
+        """
+
+        lock = getattr(self, "_offline_base_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._offline_base_lock = lock
+        async with lock:
+            unavailable: ValueError | None = None
+            try:
+                return await self.local_base_image_digest(base_image), "LOCAL"
+            except ValueError as error:
+                unavailable = error
+                if not allow_pull or base_image != _OFFLINE_BASE_IMAGE:
+                    raise
+            pulled = await self._run(
+                ("image", "pull", _OFFLINE_BASE_IMAGE), timeout_seconds=300
+            )
+            if pulled.exit_code != 0 or pulled.timed_out:
+                assert unavailable is not None
+                raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE") from unavailable
+            try:
+                digest = await self.local_base_image_digest(_OFFLINE_BASE_IMAGE)
+            except ValueError as error:
+                raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE") from error
+            return digest, "AUTO_PULLED"
 
     async def pin_local_base(self, image_digest: str) -> str:
         """Give the inspected local image an immutable-by-content build reference."""
@@ -739,6 +1128,139 @@ class PortableDockerRuntime:
         ):
             raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
         return tag
+
+    async def download_python_wheels(
+        self,
+        *,
+        base_image: str,
+        requirements: tuple[str, ...],
+        timeout_seconds: int,
+    ) -> bytes:
+        """Resolve safe PEP 508 requirements without mounting repository source.
+
+        This is the only network-enabled Docker operation in the portable PoC
+        path. It downloads binary dependency artifacts into a temporary host
+        directory using a digest-pinned local Python image; the resulting PoC
+        image and every executed PoC container remain fully offline.
+        """
+
+        if self._network != "none":
+            raise ValueError("POC_AUTO_BUNDLE_NETWORK_REQUIRED")
+        if not re.fullmatch(r"sastsimi-offline-base:[0-9a-f]{64}", base_image):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
+        if not requirements or timeout_seconds < 1 or timeout_seconds > 900:
+            raise ValueError("POC_AUTO_BUNDLE_REQUIREMENTS_INVALID")
+        accepted: list[str] = []
+        for raw in requirements:
+            if (
+                not raw
+                or raw != raw.strip()
+                or any(char in raw for char in "\r\n\x00\\")
+            ):
+                raise ValueError("POC_AUTO_BUNDLE_REQUIREMENTS_INVALID")
+            try:
+                requirement = Requirement(raw)
+            except InvalidRequirement as error:
+                raise ValueError("POC_AUTO_BUNDLE_REQUIREMENTS_INVALID") from error
+            if requirement.url is not None:
+                raise ValueError("POC_AUTO_BUNDLE_REQUIREMENTS_INVALID")
+            accepted.append(raw)
+        if len(accepted) > 512 or len("\n".join(accepted).encode("utf-8")) > 128 * 1024:
+            raise ValueError("POC_AUTO_BUNDLE_REQUIREMENTS_INVALID")
+        with _wheel_download_workspace() as root:
+            if any(char in str(root) for char in ",\x00"):
+                raise ValueError("POC_AUTO_BUNDLE_WORKSPACE_UNSAFE")
+            requirements_path = root / "requirements.txt"
+            output = root / "wheels"
+            output.mkdir()
+            requirements_path.write_text("\n".join(accepted) + "\n", encoding="utf-8")
+            container_name = f"sastsimi-wheel-{uuid4().hex}"
+            args = (
+                "run",
+                "--pull",
+                "never",
+                "--rm",
+                "--name",
+                container_name,
+                "--network",
+                "bridge",
+                "--read-only",
+                "--user",
+                "0:0",
+                "--security-opt",
+                "no-new-privileges",
+                "--cap-drop",
+                "ALL",
+                "--pids-limit",
+                "128",
+                "--cpus",
+                "1",
+                "--memory",
+                "1g",
+                "--tmpfs",
+                "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+                "--mount",
+                f"type=bind,source={root},target=/bundle",
+                "--env",
+                "HOME=/tmp",
+                "--env",
+                "PIP_CONFIG_FILE=/dev/null",
+                "--env",
+                "PIP_NO_INPUT=1",
+                "--env",
+                "PIP_DISABLE_PIP_VERSION_CHECK=1",
+                "--entrypoint",
+                "python",
+                base_image,
+                "-m",
+                "pip",
+                "download",
+                "--no-cache-dir",
+                "--retries",
+                _PIP_DOWNLOAD_RETRIES,
+                "--timeout",
+                _PIP_DOWNLOAD_TIMEOUT_SECONDS,
+                "--only-binary=:all:",
+                "--dest",
+                "/bundle/wheels",
+                "--requirement",
+                "/bundle/requirements.txt",
+            )
+            outcome: DockerCommandOutcome | None = None
+            try:
+                outcome = await self._run(args, timeout_seconds=timeout_seconds)
+            finally:
+                cleanup = await self._run(
+                    ("rm", "--force", container_name), timeout_seconds=30
+                )
+                if cleanup.timed_out:
+                    raise ValueError("POC_AUTO_BUNDLE_CLEANUP_FAILED")
+                if cleanup.exit_code != 0 and (outcome is None or outcome.timed_out):
+                    # A timed-out Docker client can leave a delayed container
+                    # creation request behind. An immediate absence probe is
+                    # not sufficient proof after failed removal.
+                    raise ValueError("POC_AUTO_BUNDLE_CLEANUP_FAILED")
+                inspected = await self._run(
+                    ("container", "inspect", container_name), timeout_seconds=30
+                )
+                missing = re.fullmatch(
+                    rb"(?:Error(?: response from daemon)?: )?"
+                    rb"No such (?:container|object): "
+                    + re.escape(container_name.encode("ascii")),
+                    inspected.stderr.strip(),
+                )
+                if (
+                    inspected.timed_out
+                    or inspected.exit_code != 1
+                    # Docker CLI emits an empty JSON array on stdout even when
+                    # inspect fails with "No such container" on stderr.
+                    or inspected.stdout.strip() not in {b"", b"[]"}
+                    or missing is None
+                ):
+                    raise ValueError("POC_AUTO_BUNDLE_CLEANUP_FAILED")
+            if outcome.exit_code != 0 or outcome.timed_out:
+                raise DockerOperationError("POC_AUTO_BUNDLE_DOWNLOAD_FAILED", outcome)
+            return build_wheel_bundle(output)
 
     async def create_container(
         self,
@@ -801,7 +1323,7 @@ class PortableDockerRuntime:
         ]
         for key, value in sorted(labels.items()):
             args.extend(("--label", f"{key}={value}"))
-        args.extend((image_digest, "sleep", "infinity"))
+        args.extend(("--entrypoint", "sleep", image_digest, "infinity"))
         created = await self._run(tuple(args), timeout_seconds=60)
         self._require_success("DOCKER_CREATE_FAILED", created)
         container_id = created.stdout.decode("ascii", errors="strict").strip()
@@ -916,6 +1438,53 @@ class PortableDockerRuntime:
             container_id, self._owner_labels(identity, attempt_id)
         )
 
+    async def has_owned_attempt_container(
+        self, identity: CheckpointIdentity, attempt_id: str
+    ) -> bool:
+        """Prove absence, or report presence, without modifying any container."""
+        if _RESOURCE_ID.fullmatch(attempt_id) is None:
+            raise ValueError("DOCKER_ATTEMPT_ID_INVALID")
+        expected = self._owner_labels(identity, attempt_id)
+        if any(_RESOURCE_ID.fullmatch(value) is None for value in expected.values()):
+            raise ValueError("DOCKER_OWNER_LABELS_INVALID")
+        args = (
+            "ps",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            *(
+                part
+                for key, value in expected.items()
+                for part in ("--filter", f"label={key}={value}")
+            ),
+        )
+        for attempt in range(3):
+            listed = await self._run(args, timeout_seconds=30)
+            if listed.exit_code == 0 and not listed.timed_out:
+                break
+            if attempt < 2:
+                await asyncio.sleep(0.25 * (2**attempt))
+        self._require_success("DOCKER_OWNED_ATTEMPT_LIST_FAILED", listed)
+        if len(listed.stdout) >= _MAX_OUTPUT:
+            raise DockerOperationError("DOCKER_OWNED_ATTEMPT_LIST_TRUNCATED", listed)
+        found = False
+        for raw in listed.stdout.splitlines():
+            try:
+                container_id = raw.decode("ascii", errors="strict")
+            except UnicodeDecodeError as error:
+                raise DockerOperationError(
+                    "DOCKER_OWNED_ATTEMPT_LIST_INVALID", listed
+                ) from error
+            if _FULL_CONTAINER_ID.fullmatch(container_id) is None:
+                raise DockerOperationError("DOCKER_OWNED_ATTEMPT_LIST_INVALID", listed)
+            state = await self.inspect(container_id)
+            if state.container_id != container_id or any(
+                state.labels.get(key) != value for key, value in expected.items()
+            ):
+                raise DockerOperationError("DOCKER_OWNED_ATTEMPT_MISMATCH", listed)
+            found = True
+        return found
+
     async def _remove_with_expected_labels(
         self, container_id: str, expected: Mapping[str, str]
     ) -> bool:
@@ -929,16 +1498,23 @@ class PortableDockerRuntime:
         return True
 
     async def sweep_orphans(self) -> tuple[str, ...]:
-        listed = await self._run(
-            (
-                "ps",
-                "--all",
-                "--quiet",
-                "--filter",
-                "label=sastsimi.owner=simple-runtime",
-            ),
-            timeout_seconds=30,
-        )
+        for attempt in range(3):
+            listed = await self._run(
+                (
+                    "ps",
+                    "--all",
+                    "--quiet",
+                    "--filter",
+                    "label=sastsimi.owner=simple-runtime",
+                ),
+                timeout_seconds=30,
+            )
+            if listed.exit_code == 0 and not listed.timed_out:
+                break
+            if attempt < 2:
+                # Only this read-only query is safe to repeat before ownership
+                # inspection; create/remove operations retain their own checks.
+                await asyncio.sleep(0.25 * (2**attempt))
         self._require_success("DOCKER_OWNED_LIST_FAILED", listed)
         if len(listed.stdout) >= _MAX_OUTPUT:
             raise DockerOperationError("DOCKER_OWNED_LIST_TRUNCATED")
@@ -1153,6 +1729,118 @@ class PortableContainerFactory:
         )
 
 
+class AutoWheelBundleCache:
+    """Bounded, analysis-scoped archive reuse for one application process."""
+
+    def __init__(
+        self, *, max_bytes: int = 128 * 1024 * 1024, max_entries: int = 8
+    ) -> None:
+        if max_bytes < 1 or max_entries < 1:
+            raise ValueError("POC_AUTO_BUNDLE_CACHE_LIMIT_INVALID")
+        self._max_bytes = max_bytes
+        self._max_entries = max_entries
+        self._stored_bytes = 0
+        self._entries: OrderedDict[tuple[str, str], tuple[str, bytes]] = OrderedDict()
+        # A binding is never a replacement for the exact archive/image CAS.
+        # It only carries a requirement independently proven by a pinned
+        # source import, a unique wheel provider, and an offline image smoke.
+        self._verified_imports: OrderedDict[tuple[str, ...], tuple[str, str]] = (
+            OrderedDict()
+        )
+        self._ambiguous_verified_imports: OrderedDict[tuple[str, ...], None] = (
+            OrderedDict()
+        )
+        self._max_verified_imports = max_entries * 8
+        # Waiters keep their lock alive; idle keys do not accumulate forever.
+        self._locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
+
+    def get(self, analysis_id: str, content_key: str) -> bytes | None:
+        key = (analysis_id, content_key)
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        digest, archive = entry
+        if hashlib.sha256(archive).hexdigest() != digest:
+            self._entries.pop(key)
+            self._stored_bytes -= len(archive)
+            return None
+        self._entries.move_to_end(key)
+        return archive
+
+    def put(self, analysis_id: str, content_key: str, archive: bytes) -> None:
+        if len(archive) > self._max_bytes:
+            return
+        key = (analysis_id, content_key)
+        previous = self._entries.pop(key, None)
+        if previous is not None:
+            self._stored_bytes -= len(previous[1])
+        self._entries[key] = (hashlib.sha256(archive).hexdigest(), archive)
+        self._stored_bytes += len(archive)
+        while (
+            self._stored_bytes > self._max_bytes
+            or len(self._entries) > self._max_entries
+        ):
+            _, (_, evicted) = self._entries.popitem(last=False)
+            self._stored_bytes -= len(evicted)
+
+    def lock_for(self, analysis_id: str, content_key: str) -> asyncio.Lock:
+        key = (analysis_id, content_key)
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    def verified_imports(self, scope: tuple[str, ...]) -> tuple[str, ...]:
+        requirements: list[str] = []
+        for _module, requirement, _decision_hash in self.verified_import_bindings(
+            scope
+        ):
+            if requirement not in requirements:
+                requirements.append(requirement)
+        return tuple(requirements)
+
+    def verified_import_bindings(
+        self, scope: tuple[str, ...]
+    ) -> tuple[tuple[str, str, str], ...]:
+        bindings: list[tuple[str, str, str]] = []
+        for key, (requirement, decision_hash) in tuple(self._verified_imports.items()):
+            if key[:-1] == scope:
+                self._verified_imports.move_to_end(key)
+                bindings.append((key[-1], requirement, decision_hash))
+        return tuple(bindings)
+
+    def has_verified_import_scope(self, scope: tuple[str, ...]) -> bool:
+        return any(key[: len(scope)] == scope for key in self._verified_imports)
+
+    def put_verified_import(
+        self,
+        scope: tuple[str, ...],
+        module: str,
+        requirement: str,
+        decision_hash: str,
+    ) -> None:
+        if re.fullmatch(r"[0-9a-f]{64}", decision_hash) is None:
+            return
+        key = (*scope, module)
+        if key in self._ambiguous_verified_imports:
+            return
+        existing = self._verified_imports.get(key)
+        if existing is not None and existing[0] != requirement:
+            # Do not let a later observation re-establish a conflicted binding.
+            self._verified_imports.pop(key)
+            self._ambiguous_verified_imports[key] = None
+            while len(self._ambiguous_verified_imports) > self._max_verified_imports:
+                self._ambiguous_verified_imports.popitem(last=False)
+            return
+        self._verified_imports[key] = (requirement, decision_hash)
+        self._verified_imports.move_to_end(key)
+        while len(self._verified_imports) > self._max_verified_imports:
+            self._verified_imports.popitem(last=False)
+
+
 class DirectEnvironmentPreparer:
     def __init__(
         self,
@@ -1163,13 +1851,24 @@ class DirectEnvironmentPreparer:
         wheel_bundle_path: Path | None = None,
         wheel_bundle_sha256: str | None = None,
         offline_base_image_digest: str | None = None,
+        # Keep programmatic callers on the legacy path unless the public
+        # execution profile explicitly opts them into AUTO.  The profile
+        # default is AUTO, but this constructor is also used by focused
+        # repair and test adapters that do not provide a full Docker runtime.
+        auto_dependency_bundle: bool = False,
+        bundle_source: str = "OPERATOR_SUPPLIED",
+        bundle_resolution_metadata: Mapping[str, object] | None = None,
+        pinned_target_manifest: str | None = None,
         git_executable: str = "git",
+        auto_bundle_cache: AutoWheelBundleCache | None = None,
     ) -> None:
         if (
             offline_base_image_digest is not None
             and _IMAGE_DIGEST.fullmatch(offline_base_image_digest) is None
         ):
             raise ValueError("POC_OFFLINE_BASE_IMAGE_DIGEST_INVALID")
+        if bundle_source not in {"OPERATOR_SUPPLIED", "AUTO_RESOLVED"}:
+            raise ValueError("POC_DEPENDENCY_BUNDLE_SOURCE_INVALID")
         self._docker = docker
         self._artifacts = artifacts
         self._workspace = workspace
@@ -1177,17 +1876,25 @@ class DirectEnvironmentPreparer:
         self._wheel_bundle_sha256 = wheel_bundle_sha256
         self._offline_base_image_digest = offline_base_image_digest
         self._offline_base_image = offline_base_image_digest or _OFFLINE_BASE_IMAGE
+        self._auto_dependency_bundle = auto_dependency_bundle
+        self._auto_bundle_cache = auto_bundle_cache or AutoWheelBundleCache()
+        self._bundle_source = bundle_source
+        self._bundle_resolution_metadata = dict(bundle_resolution_metadata or {})
+        self._pinned_target_manifest = pinned_target_manifest
         self._git_executable = git_executable
 
     async def offline_base_ready(self) -> bool:
-        """Probe and pin the configured offline base without pulling an image."""
+        """Probe and pin the configured offline base for the active mode."""
 
-        if self._wheel_bundle_path is None:
+        if self._wheel_bundle_path is None and not self._auto_dependency_bundle:
             return False
         try:
-            digest = await self._docker.local_base_image_digest(
-                self._offline_base_image
-            )
+            if self._auto_dependency_bundle:
+                digest, _source = await self._resolve_auto_base_digest()
+            else:
+                digest = await self._docker.local_base_image_digest(
+                    self._offline_base_image
+                )
             if (
                 self._offline_base_image_digest is not None
                 and digest != self._offline_base_image_digest
@@ -1197,6 +1904,76 @@ class DirectEnvironmentPreparer:
         except (OSError, RuntimeError, ValueError):
             return False
         return True
+
+    async def _resolve_auto_base_digest(self) -> tuple[str, str]:
+        """Use the resolver only for the public AUTO base on real Docker IO."""
+
+        if isinstance(self._docker, PortableDockerRuntime):
+            return await self._docker.resolve_offline_base(
+                self._offline_base_image,
+                allow_pull=self._offline_base_image_digest is None,
+            )
+        # Focused unit adapters deliberately provide only the local-image
+        # contract. Their behavior remains the same while production uses the
+        # explicit pull path above.
+        digest = await self._docker.local_base_image_digest(self._offline_base_image)
+        return digest, "LOCAL"
+
+    @staticmethod
+    def _requested_python_runtime(requirements: tuple[str, ...]) -> str | None:
+        requested: str | None = None
+        for raw in requirements:
+            item = raw.strip()
+            match = _EXPLICIT_PYTHON_RUNTIME.fullmatch(item)
+            version = (
+                match.group(1)
+                if match is not None
+                else "3.12"
+                if item.casefold() == "python 3.12"
+                else None
+            )
+            if version is None:
+                if re.match(r"python(?::|\s|[0-9])", item, re.IGNORECASE):
+                    raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_INVALID")
+                continue
+            if requested is not None:
+                requested_parts = requested.split(".")
+                version_parts = version.split(".")
+                common_length = min(len(requested_parts), len(version_parts))
+                if requested_parts[:common_length] != version_parts[:common_length]:
+                    raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_CONFLICT")
+            if requested is None or version.count(".") > requested.count("."):
+                requested = version
+        return requested
+
+    def _require_configured_python_runtime(self, requested: str | None) -> None:
+        if requested is not None and requested != "3.12":
+            if self._offline_base_image_digest is None:
+                raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_DIGEST_REQUIRED")
+
+    async def _verified_python_runtime_metadata(
+        self, requested: str | None, base_digest: str
+    ) -> dict[str, str]:
+        # AUTO's built-in 3.12 base remains on the existing path.  An
+        # operator-configured digest must prove even an explicit 3.12 claim.
+        if requested is None or self._offline_base_image_digest is None:
+            return {}
+        observed = await self._docker._probe_python_version(base_digest)
+        return self._observed_python_runtime_metadata(requested, observed)
+
+    @staticmethod
+    def _observed_python_runtime_metadata(
+        requested: str, observed: str
+    ) -> dict[str, str]:
+        if re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", observed) is None:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+        expected_parts = requested.split(".")
+        if observed.split(".")[: len(expected_parts)] != expected_parts:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_MISMATCH")
+        return {
+            "python_runtime_requirement": requested,
+            "python_runtime_observed_version": observed,
+        }
 
     async def preflight_offline_repair(self) -> OfflineBaseSmoke:
         """Prove the configured local image can run the offline browser PoC."""
@@ -1295,7 +2072,7 @@ class DirectEnvironmentPreparer:
 
     @property
     def offline_mode(self) -> bool:
-        return self._wheel_bundle_path is not None
+        return self._wheel_bundle_path is not None or self._auto_dependency_bundle
 
     def validate_requirements(
         self, requirements: tuple[str, ...], *, commit_id: str
@@ -1313,6 +2090,10 @@ class DirectEnvironmentPreparer:
     ) -> ReproductionEnvironment:
         if self._wheel_bundle_path is not None:
             return await self._prepare_offline(checkpoint, prior, requirements)
+        if self._auto_dependency_bundle:
+            return await self._prepare_auto_bundle(checkpoint, prior, requirements)
+        if self._requested_python_runtime(requirements) not in {None, "3.12"}:
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_BUNDLE_REQUIRED")
         target_manifest = self._target_manifest_path(prior)
         if (
             target_manifest is None
@@ -1343,7 +2124,8 @@ class DirectEnvironmentPreparer:
         else:
             dockerfile = self._generated_dockerfile(target_manifest)
             source = "GENERATED"
-        dockerfile += self._recovery_patch(checkpoint)
+        recovery_patch = self._recovery_patch(checkpoint)
+        dockerfile += recovery_patch
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
         labels = PortableDockerRuntime._owner_labels(
             checkpoint.identity, checkpoint.attempt_id or "initial"
@@ -1368,6 +2150,7 @@ class DirectEnvironmentPreparer:
                 )
                 if (
                     not degraded
+                    and not recovery_patch
                     and not target_install
                     and target_manifest in {None, "requirements.txt", "pyproject.toml"}
                     and self._dependency_install_failed(error, dockerfile)
@@ -1414,16 +2197,1203 @@ class DirectEnvironmentPreparer:
             )
             return ReproductionEnvironment(recipe_ref, image_digest)
 
-    async def _prepare_offline(
+    def _pinned_tree_paths(self, *, commit_id: str) -> frozenset[str]:
+        """Validate the checkout and list only paths from its pinned commit.
+
+        AUTO mode may use a bridge-network resolver for public wheels.  It must
+        prove that the manifest/Dockerfile selection comes from the immutable
+        analysis commit before that networked action begins.  Untracked files
+        are deliberately absent from this tree and cannot influence selection.
+        """
+
+        if _COMMIT_ID.fullmatch(commit_id) is None:
+            raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+        try:
+            root = self._workspace.resolve(strict=True)
+            diff = subprocess.run(
+                (
+                    self._git_executable,
+                    "-C",
+                    str(root),
+                    "diff",
+                    "--quiet",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    commit_id,
+                    "--",
+                ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+            if diff.returncode == 1:
+                raise ValueError("PINNED_CONTEXT_CHANGED")
+            if diff.returncode != 0:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+            listed = subprocess.run(
+                (
+                    self._git_executable,
+                    "-C",
+                    str(root),
+                    "ls-tree",
+                    "-r",
+                    "-z",
+                    commit_id,
+                ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            raise ValueError("PINNED_CONTEXT_UNAVAILABLE") from error
+        if listed.returncode != 0 or len(listed.stdout) > 16 * 1024 * 1024:
+            raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+        entries = [entry for entry in listed.stdout.split(b"\0") if entry]
+        if len(entries) > _MAX_PINNED_FILES:
+            raise ValueError("PINNED_CONTEXT_TOO_LARGE")
+        paths: set[str] = set()
+        for entry in entries:
+            try:
+                _header, raw_path = entry.split(b"\t", 1)
+                path = raw_path.decode("utf-8")
+            except (UnicodeDecodeError, ValueError) as error:
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE") from error
+            pure = PurePosixPath(path)
+            if (
+                not path
+                or pure.is_absolute()
+                or ".." in pure.parts
+                or "\\" in path
+                or "\x00" in path
+            ):
+                raise ValueError("PINNED_CONTEXT_UNAVAILABLE")
+            paths.add(path)
+        return frozenset(paths)
+
+    def _pinned_manifest_bytes(self, path: str, *, commit_id: str) -> bytes:
+        pure = PurePosixPath(path)
+        if (
+            not path
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or "\\" in path
+            or ":" in path
+            or "\x00" in path
+            or pure.name not in {"requirements.txt", "pyproject.toml"}
+            or _COMMIT_ID.fullmatch(commit_id) is None
+        ):
+            raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+        try:
+            result = subprocess.run(
+                (
+                    self._git_executable,
+                    "-C",
+                    str(self._workspace.resolve(strict=True)),
+                    "show",
+                    f"{commit_id}:{path}",
+                ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNAVAILABLE") from error
+        if result.returncode != 0 or len(result.stdout) > 1024 * 1024:
+            raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNAVAILABLE")
+        return result.stdout
+
+    def _pinned_dockerfile_bytes(self, *, commit_id: str) -> bytes:
+        """Read only the repository's committed default Dockerfile."""
+
+        if _COMMIT_ID.fullmatch(commit_id) is None:
+            raise ValueError("POC_AUTO_BUNDLE_DOCKERFILE_UNAVAILABLE")
+        try:
+            result = subprocess.run(
+                (
+                    self._git_executable,
+                    "-C",
+                    str(self._workspace.resolve(strict=True)),
+                    "show",
+                    f"{commit_id}:Dockerfile",
+                ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ValueError("POC_AUTO_BUNDLE_DOCKERFILE_UNAVAILABLE") from error
+        if result.returncode != 0 or len(result.stdout) > 1024 * 1024:
+            raise ValueError("POC_AUTO_BUNDLE_DOCKERFILE_UNAVAILABLE")
+        return result.stdout
+
+    @staticmethod
+    def _literal_dockerfile_pip_requirements(dockerfile: bytes) -> tuple[str, ...]:
+        """Accept only standalone literal pip-install declarations.
+
+        Repository Dockerfiles are untrusted build instructions.  This parser
+        never executes them: it extracts only PEP 508 package literals from a
+        small, shell-free subset and leaves OS installers, URLs, files, and
+        compound commands out of the generated Python runtime.
+        """
+
+        try:
+            lines = dockerfile.decode("utf-8").splitlines()
+        except UnicodeError:
+            return ()
+        selected: list[str] = []
+        allowed_flags = {
+            "--disable-pip-version-check",
+            "--no-cache-dir",
+            "--no-input",
+            "--prefer-binary",
+        }
+        for raw in lines:
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            match = re.fullmatch(r"(?i:RUN)\s+(.+)", stripped)
+            if match is None:
+                continue
+            command = match.group(1).strip()
+            if command.endswith("\\") or any(
+                token in command for token in ("&&", "||", ";", "|", "`", "$", ">", "<")
+            ):
+                continue
+            try:
+                words = shlex.split(command, posix=True, comments=False)
+            except ValueError:
+                continue
+            prefixes = (
+                ("pip", "install"),
+                ("pip3", "install"),
+                ("python", "-m", "pip", "install"),
+                ("python3", "-m", "pip", "install"),
+            )
+            prefix = next(
+                (value for value in prefixes if tuple(words[: len(value)]) == value),
+                None,
+            )
+            if prefix is None:
+                continue
+            values = words[len(prefix) :]
+            if not values:
+                continue
+            requirements: list[str] = []
+            safe = True
+            for value in values:
+                if value in allowed_flags:
+                    continue
+                if value.startswith("-") or any(
+                    character in value for character in "\\\r\n\x00"
+                ):
+                    safe = False
+                    break
+                try:
+                    parsed_requirement = Requirement(value)
+                except InvalidRequirement:
+                    safe = False
+                    break
+                if parsed_requirement.url is not None:
+                    safe = False
+                    break
+                requirements.append(str(parsed_requirement))
+            if not safe:
+                continue
+            for parsed_value in requirements:
+                if parsed_value not in selected:
+                    selected.append(parsed_value)
+        return tuple(selected)
+
+    @staticmethod
+    def _canonical_offline_requirements(
+        requirements: tuple[str, ...],
+        source_paths: tuple[str, ...],
+        *,
+        commit_id: str,
+    ) -> tuple[str, ...]:
+        """Translate resolved packages back into the existing offline contract."""
+
+        return (
+            *(f"pip:{requirement}" for requirement in requirements),
+            *(
+                f"Source checkout at commit {commit_id} containing {path}"
+                for path in source_paths
+            ),
+        )
+
+    def _auto_bundle_requirements(
+        self,
+        target_manifest: str,
+        manifest: bytes,
+        requirements: tuple[str, ...],
+        *,
+        commit_id: str,
+    ) -> tuple[str, ...]:
+        extra, _source_paths = self._offline_agent_requirements(
+            requirements, commit_id=commit_id
+        )
+        selected: list[str] = []
+
+        def append(value: str) -> None:
+            try:
+                parsed = Requirement(value)
+            except InvalidRequirement as error:
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED") from error
+            if parsed.url is not None:
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+            normalized = str(parsed)
+            if normalized not in selected:
+                selected.append(normalized)
+
+        if target_manifest.endswith("requirements.txt"):
+            try:
+                lines = manifest.decode("utf-8").splitlines()
+            except UnicodeError as error:
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED") from error
+            for raw in lines:
+                item = re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+                if not item or item.startswith("#"):
+                    continue
+                if item.startswith("-") or "\\" in item:
+                    raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+                append(item)
+        else:
+            try:
+                project = tomllib.loads(manifest.decode("utf-8"))
+            except (UnicodeError, tomllib.TOMLDecodeError) as error:
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED") from error
+            tool = project.get("tool")
+            if isinstance(tool, dict) and any(key in tool for key in ("uv", "poetry")):
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+            metadata = project.get("project")
+            if not isinstance(metadata, dict):
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+            dynamic = metadata.get("dynamic", [])
+            dependencies = metadata.get("dependencies", [])
+            if (
+                not isinstance(dynamic, list)
+                or "dependencies" in dynamic
+                or not isinstance(dependencies, list)
+            ):
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+            for item in dependencies:
+                if not isinstance(item, str):
+                    raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+                append(item)
+            build = project.get("build-system")
+            if isinstance(build, dict):
+                build_requires = build.get("requires", [])
+                if not isinstance(build_requires, list):
+                    raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+                for item in build_requires:
+                    if not isinstance(item, str):
+                        raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED")
+                    append(item)
+        for item in extra:
+            append(item)
+        return tuple(selected)
+
+    @staticmethod
+    def _missing_distribution_name(error: DockerOperationError) -> str | None:
+        outcome = error.outcome
+        if outcome is None or outcome.timed_out:
+            return None
+        match = re.search(
+            rb"No matching distribution found for\s+"
+            rb"([A-Za-z0-9][A-Za-z0-9_.-]*)",
+            outcome.stderr,
+            re.IGNORECASE,
+        )
+        if match is None:
+            return None
+        return canonicalize_name(match.group(1).decode("ascii"))
+
+    @staticmethod
+    def _matches_agent_requirement_name(raw: str, name: str) -> bool:
+        item = raw[4:].strip() if raw.casefold().startswith("pip:") else raw
+        try:
+            return canonicalize_name(Requirement(item).name) == name
+        except InvalidRequirement:
+            return False
+
+    def _bound_missing_import(self, checkpoint: StageCheckpoint) -> str | None:
+        """Accept only the current RULE import replan bound to execution evidence."""
+
+        if (
+            checkpoint.attempt_number < 2
+            or checkpoint.recovery_lineage_id is None
+            or not checkpoint.recovery_decision_refs
+        ):
+            return None
+        ref = checkpoint.recovery_decision_refs[-1]
+        if ref not in checkpoint.input_refs:
+            return None
+        try:
+            record = json.loads(self._artifacts.read_bounded(ref, 64 * 1024))
+            if not isinstance(record, dict):
+                return None
+            original = record.get("original_error")
+            decision = record.get("decision")
+            if not isinstance(original, dict) or not isinstance(decision, dict):
+                return None
+            evidence_refs = tuple(
+                StoredDataRef.model_validate(item)
+                for item in original.get("evidence_refs", ())
+            )
+            if (
+                record.get("kind") != "simple_recovery_decision"
+                or record.get("identity") != checkpoint.identity.model_dump(mode="json")
+                or record.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+                or record.get("decision_origin") != "RULE"
+                or record.get("attempt") != checkpoint.attempt_number - 1
+                or not isinstance(record.get("attempt_id"), str)
+                or not record["attempt_id"]
+                or record["attempt_id"] == checkpoint.attempt_id
+                or original.get("code") != "POC_RUNTIME_IMPORT_FAILED"
+                or original.get("retryable") is not True
+                or decision.get("action") != RecoveryAction.REPLAN_ENVIRONMENT.value
+                or decision.get("category") != RecoveryCategory.ENVIRONMENT.value
+                or decision.get("environment_patch")
+                or not evidence_refs
+                or len(evidence_refs) > 16
+                or any(item not in checkpoint.input_refs for item in evidence_refs)
+            ):
+                return None
+            execution_bound = False
+            for evidence_ref in evidence_refs:
+                try:
+                    evidence = json.loads(
+                        self._artifacts.read_bounded(evidence_ref, 64 * 1024)
+                    )
+                except (OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
+                    continue
+                if (
+                    isinstance(evidence, dict)
+                    and evidence.get("kind") == "simple_poc_execution"
+                    and evidence.get("attempt_id") == record["attempt_id"]
+                    and evidence.get("timed_out") is False
+                    and type(evidence.get("exit_code")) is int
+                    and evidence["exit_code"] != 0
+                ):
+                    execution_bound = True
+                    break
+            if not execution_bound:
+                return None
+            diagnostic = record.get("diagnostic_excerpt")
+            if not isinstance(diagnostic, str) or len(diagnostic) > 4096:
+                return None
+            matches = set(_MISSING_TOP_LEVEL_IMPORT.findall(diagnostic))
+            return next(iter(matches)) if len(matches) == 1 else None
+        except (OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
+            return None
+
+    def _pinned_source_imports(
+        self, module: str, pinned_paths: frozenset[str], *, commit_id: str
+    ) -> bool:
+        """Prove the missing top-level module appears in bounded pinned code."""
+
+        if _COMMIT_ID.fullmatch(commit_id) is None:
+            return False
+        try:
+            root = self._workspace.resolve(strict=True)
+        except OSError:
+            return False
+        inspected = 0
+        total_bytes = 0
+        for path in sorted(pinned_paths):
+            if not path.endswith(".py"):
+                continue
+            try:
+                if is_test_only_path(root, path):
+                    continue
+            except ValueError:
+                return False
+            inspected += 1
+            if inspected > 512:
+                return False
+            candidate = root.joinpath(*PurePosixPath(path).parts)
+            try:
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                if not candidate.resolve(strict=True).is_relative_to(root):
+                    continue
+                blob_ref = f"{commit_id}:{path}"
+                size_result = subprocess.run(
+                    (self._git_executable, "-C", str(root), "cat-file", "-s", blob_ref),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+                if size_result.returncode != 0:
+                    return False
+                raw_size = size_result.stdout.strip()
+                if len(raw_size) > 20 or not raw_size.isdigit():
+                    return False
+                blob_size = int(raw_size)
+                if blob_size > 256 * 1024 or total_bytes + blob_size > 4 * 1024 * 1024:
+                    return False
+                blob = subprocess.run(
+                    (self._git_executable, "-C", str(root), "show", blob_ref),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+                if blob.returncode != 0:
+                    return False
+                if len(blob.stdout) != blob_size:
+                    return False
+                total_bytes += blob_size
+                tree = ast.parse(blob.stdout, filename=path)
+            except (
+                OSError,
+                UnicodeError,
+                SyntaxError,
+                ValueError,
+                subprocess.TimeoutExpired,
+            ):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) and any(
+                    alias.name.split(".", 1)[0] == module for alias in node.names
+                ):
+                    return True
+                if isinstance(node, ast.ImportFrom) and (
+                    node.level == 0
+                    and node.module is not None
+                    and node.module.split(".", 1)[0] == module
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _unique_wheel_provider(
+        bundle_raw: bytes, module: str, agent_requirements: tuple[str, ...]
+    ) -> str | None:
+        """Match one explicit PEP 508 requirement to one wheel exporting module."""
+
+        candidates: list[str] = []
+        try:
+            with tarfile.open(fileobj=io.BytesIO(bundle_raw), mode="r:*") as archive:
+                for member in archive:
+                    if not member.isfile() or not member.name.endswith(".whl"):
+                        continue
+                    wheel_stream = archive.extractfile(member)
+                    if wheel_stream is None:
+                        return None
+                    wheel_bytes = wheel_stream.read()
+                    with zipfile.ZipFile(io.BytesIO(wheel_bytes)) as wheel:
+                        names = set(wheel.namelist())
+                        provides_module = False
+                        for name in names:
+                            parts = name.split("/")
+                            if len(parts) == 1:
+                                site_parts = parts
+                            elif (
+                                len(parts) >= 3
+                                and parts[0].endswith(".data")
+                                and parts[1] in {"purelib", "platlib"}
+                            ):
+                                site_parts = parts[2:]
+                            else:
+                                site_parts = parts
+                            leaf = site_parts[-1]
+                            native_extension = leaf.endswith((".so", ".pyd"))
+                            if (
+                                len(site_parts) == 1
+                                and (
+                                    leaf == f"{module}.py"
+                                    or native_extension
+                                    and leaf.startswith(f"{module}.")
+                                )
+                                or len(site_parts) >= 2
+                                and site_parts[0] == module
+                                and (leaf.endswith(".py") or native_extension)
+                            ):
+                                provides_module = True
+                                break
+                        if not provides_module:
+                            continue
+                        metadata_paths = [
+                            name
+                            for name in names
+                            if name.endswith(".dist-info/METADATA")
+                            and name.count("/") == 1
+                        ]
+                        if len(metadata_paths) != 1:
+                            return None
+                        metadata_info = wheel.getinfo(metadata_paths[0])
+                        if metadata_info.file_size > 64 * 1024:
+                            return None
+                        metadata = BytesParser().parsebytes(wheel.read(metadata_info))
+                        wheel_name, wheel_version, _build, _tags = parse_wheel_filename(
+                            member.name
+                        )
+                        if canonicalize_name(
+                            metadata.get("Name", "")
+                        ) != canonicalize_name(wheel_name) or metadata.get(
+                            "Version"
+                        ) != str(wheel_version):
+                            return None
+                        matched = []
+                        for raw in agent_requirements:
+                            parsed = Requirement(raw)
+                            if (
+                                parsed.url is None
+                                and not parsed.extras
+                                and parsed.marker is None
+                                and canonicalize_name(parsed.name) == wheel_name
+                                and parsed.specifier.contains(
+                                    wheel_version, prereleases=True
+                                )
+                            ):
+                                matched.append(raw)
+                        if len(matched) != 1:
+                            return None
+                        candidates.append(matched[0])
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            EOFError,
+            KeyError,
+            tarfile.TarError,
+            zipfile.BadZipFile,
+            InvalidWheelFilename,
+            InvalidRequirement,
+        ):
+            return None
+        return candidates[0] if len(candidates) == 1 else None
+
+    async def _prepare_auto_bundle(
         self,
         checkpoint: StageCheckpoint,
         prior: Mapping[SimpleStage, StageCheckpoint],
         requirements: tuple[str, ...],
     ) -> ReproductionEnvironment:
         if self._docker._network != "none":
+            raise ValueError("POC_AUTO_BUNDLE_NETWORK_REQUIRED")
+        requested_runtime = self._requested_python_runtime(requirements)
+        self._require_configured_python_runtime(requested_runtime)
+        pinned_paths = self._pinned_tree_paths(commit_id=checkpoint.identity.commit_id)
+        target_manifest = self._target_manifest_path(prior)
+        if target_manifest is not None and target_manifest not in pinned_paths:
+            raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNAVAILABLE")
+        if target_manifest is None:
+            for name in ("requirements.txt", "pyproject.toml"):
+                if name in pinned_paths:
+                    target_manifest = name
+                    break
+        manifest: bytes
+        input_kind: str
+        delegated_requirements = requirements
+        dockerfile_input_ref: StoredDataRef | None = None
+        protected_requirements: tuple[str, ...] = ()
+        provenance_source_path: str | None = None
+        provenance_sha256 = "NO_MANIFEST"
+        agent_requirements, _agent_source_paths = self._offline_agent_requirements(
+            requirements, commit_id=checkpoint.identity.commit_id
+        )
+        if target_manifest is None:
+            extra_requirements, source_paths = self._offline_agent_requirements(
+                requirements, commit_id=checkpoint.identity.commit_id
+            )
+            dockerfile_requirements: tuple[str, ...] = ()
+            if "Dockerfile" in pinned_paths:
+                pinned_dockerfile = self._pinned_dockerfile_bytes(
+                    commit_id=checkpoint.identity.commit_id
+                )
+                dockerfile_requirements = self._literal_dockerfile_pip_requirements(
+                    pinned_dockerfile
+                )
+                if dockerfile_requirements:
+                    dockerfile_input_ref = self._artifacts.put_bytes(
+                        pinned_dockerfile, "text/x-dockerfile"
+                    )
+            requested = tuple(
+                dict.fromkeys((*dockerfile_requirements, *extra_requirements))
+            )
+            protected_requirements = dockerfile_requirements
+            if dockerfile_requirements:
+                # A Dockerfile is an environment hint, not trusted build code.
+                # Its literal package list is resolved once, then installed into
+                # the existing offline generated image.  OS packages and service
+                # topology remain explicitly out of scope for this derived mode.
+                manifest = canonical_bytes(
+                    {
+                        "kind": "sastsimi_dockerfile_literal_pip_requirements_v1",
+                        "dockerfile_sha256": hashlib.sha256(
+                            pinned_dockerfile
+                        ).hexdigest(),
+                        "requirements": requested,
+                        "required_source_paths": source_paths,
+                    }
+                )
+                input_kind = "DOCKERFILE_LITERAL_PIP_REQUIREMENTS"
+                provenance_source_path = "Dockerfile"
+                provenance_sha256 = hashlib.sha256(pinned_dockerfile).hexdigest()
+                delegated_requirements = (
+                    *((f"python:{requested_runtime}",) if requested_runtime else ()),
+                    *self._canonical_offline_requirements(
+                        requested,
+                        source_paths,
+                        commit_id=checkpoint.identity.commit_id,
+                    ),
+                )
+            elif extra_requirements:
+                # A PoC can require a small, explicit runtime library even
+                # when the target project is intentionally un-packaged.  The
+                # canonical input document gives the resolver and cache an
+                # auditable identity without inventing a project manifest.
+                requested = extra_requirements
+                manifest = canonical_bytes(
+                    {
+                        "kind": "sastsimi_explicit_poc_requirements_v1",
+                        "requirements": requested,
+                        "required_source_paths": source_paths,
+                    }
+                )
+                input_kind = "EXPLICIT_POC_REQUIREMENTS"
+            else:
+                # A stdlib-only project has nothing to resolve. Preserve the
+                # existing offline build path rather than requiring an otherwise
+                # unnecessary packaging manifest.
+                scope_prefix = (
+                    checkpoint.identity.analysis_id,
+                    checkpoint.identity.workspace_id,
+                    checkpoint.identity.commit_id,
+                    provenance_sha256,
+                )
+                if not self._auto_bundle_cache.has_verified_import_scope(scope_prefix):
+                    return await self._prepare_without_auto_bundle(
+                        checkpoint,
+                        prior,
+                        requirements,
+                        target_manifest=target_manifest,
+                    )
+                requested = ()
+                manifest = canonical_bytes(
+                    {
+                        "kind": "sastsimi_explicit_poc_requirements_v1",
+                        "requirements": (),
+                        "required_source_paths": (),
+                    }
+                )
+                input_kind = "EXPLICIT_POC_REQUIREMENTS"
+        else:
+            manifest = self._pinned_manifest_bytes(
+                target_manifest, commit_id=checkpoint.identity.commit_id
+            )
+            requested = self._auto_bundle_requirements(
+                target_manifest,
+                manifest,
+                requirements,
+                commit_id=checkpoint.identity.commit_id,
+            )
+            protected_requirements = self._auto_bundle_requirements(
+                target_manifest,
+                manifest,
+                (),
+                commit_id=checkpoint.identity.commit_id,
+            )
+            input_kind = "TARGET_MANIFEST"
+            provenance_source_path = target_manifest
+            provenance_sha256 = hashlib.sha256(manifest).hexdigest()
+        scope_prefix = (
+            checkpoint.identity.analysis_id,
+            checkpoint.identity.workspace_id,
+            checkpoint.identity.commit_id,
+            provenance_sha256,
+        )
+        if not requested and not self._auto_bundle_cache.has_verified_import_scope(
+            scope_prefix
+        ):
+            # An empty requirements file (or a package with no declared
+            # dependencies) does not need a resolver. The normal build stays
+            # offline and still fails closed if its packaging metadata needs
+            # an unavailable build dependency.
+            return await self._prepare_without_auto_bundle(
+                checkpoint, prior, requirements, target_manifest=target_manifest
+            )
+        base_digest, base_source = await self._resolve_auto_base_digest()
+        if (
+            self._offline_base_image_digest is not None
+            and base_digest != self._offline_base_image_digest
+        ):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        runtime_metadata = await self._verified_python_runtime_metadata(
+            requested_runtime, base_digest
+        )
+        import_scope = (
+            *scope_prefix,
+            base_digest,
+            runtime_metadata.get("python_runtime_observed_version")
+            or requested_runtime
+            or "3.12",
+        )
+        verified_bindings = self._auto_bundle_cache.verified_import_bindings(
+            import_scope
+        )
+        reused_requirements = tuple(
+            dict.fromkeys(requirement for _, requirement, _ in verified_bindings)
+        )
+        if reused_requirements:
+            requested = tuple(dict.fromkeys((*requested, *reused_requirements)))
+            delegated_requirements = tuple(
+                dict.fromkeys(
+                    (
+                        *delegated_requirements,
+                        *(f"pip:{item}" for item in reused_requirements),
+                    )
+                )
+            )
+            # Synthetic AUTO documents describe the effective resolver input.
+            # Recomputing them keeps the existing exact wheel CAS truthful.
+            if input_kind == "EXPLICIT_POC_REQUIREMENTS":
+                manifest = canonical_bytes(
+                    {
+                        "kind": "sastsimi_explicit_poc_requirements_v1",
+                        "requirements": requested,
+                        "required_source_paths": source_paths,
+                    }
+                )
+            elif input_kind == "DOCKERFILE_LITERAL_PIP_REQUIREMENTS":
+                manifest = canonical_bytes(
+                    {
+                        "kind": "sastsimi_dockerfile_literal_pip_requirements_v1",
+                        "dockerfile_sha256": provenance_sha256,
+                        "requirements": requested,
+                        "required_source_paths": source_paths,
+                    }
+                )
+        if not requested:
+            return await self._prepare_without_auto_bundle(
+                checkpoint, prior, requirements, target_manifest=target_manifest
+            )
+        base_reference = await self._docker.pin_local_base(base_digest)
+        # Marker evaluation belongs to the resolver container, not this host.
+        # Keep even conditional repository pins protected from Agent omission.
+        protected_names = {
+            canonicalize_name(Requirement(item).name) for item in protected_requirements
+        }
+        agent_names = {
+            canonicalize_name(Requirement(item).name) for item in agent_requirements
+        }
+        omitted_agent_requirements: list[str] = []
+        omission_attempt_refs: list[StoredDataRef] = []
+        while True:
+            cache_key = hashlib.sha256(
+                canonical_bytes(
+                    {
+                        "kind": "simple_auto_wheel_bundle_v1",
+                        "base_image_digest": base_digest,
+                        "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
+                        "requirements": requested,
+                    }
+                )
+            ).hexdigest()
+            bundle_raw = self._auto_bundle_cache.get(
+                checkpoint.identity.analysis_id, cache_key
+            )
+            if bundle_raw is not None:
+                break
+            lock = self._auto_bundle_cache.lock_for(
+                checkpoint.identity.analysis_id, cache_key
+            )
+            async with lock:
+                bundle_raw = self._auto_bundle_cache.get(
+                    checkpoint.identity.analysis_id, cache_key
+                )
+                if bundle_raw is not None:
+                    break
+                try:
+                    bundle_raw = await self._docker.download_python_wheels(
+                        base_image=base_reference,
+                        requirements=requested,
+                        timeout_seconds=_AUTO_BUNDLE_DOWNLOAD_TIMEOUT_SECONDS,
+                    )
+                except DockerOperationError as error:
+                    attempt_ref = self._auto_bundle_attempt_ref(
+                        checkpoint,
+                        base_digest=base_digest,
+                        manifest=manifest,
+                        requirements=requested,
+                        input_kind=input_kind,
+                        provenance_source_path=provenance_source_path,
+                        protected_requirements=protected_requirements,
+                        error=error,
+                    )
+                    missing_name = self._missing_distribution_name(error)
+                    removable = tuple(
+                        item
+                        for item in requested
+                        if missing_name is not None
+                        and canonicalize_name(Requirement(item).name) == missing_name
+                        and missing_name in agent_names
+                        and missing_name not in protected_names
+                    )
+                    if not removable or len(requested) == len(removable):
+                        raise DependencyBundleResolutionError(
+                            error, (*omission_attempt_refs, attempt_ref)
+                        ) from error
+                    assert missing_name is not None
+                    omitted_agent_requirements.extend(removable)
+                    omission_attempt_refs.append(attempt_ref)
+                    requested = tuple(
+                        item
+                        for item in requested
+                        if canonicalize_name(Requirement(item).name) != missing_name
+                    )
+                    delegated_requirements = tuple(
+                        item
+                        for item in delegated_requirements
+                        if not self._matches_agent_requirement_name(item, missing_name)
+                    )
+                    continue
+                self._auto_bundle_cache.put(
+                    checkpoint.identity.analysis_id, cache_key, bundle_raw
+                )
+                break
+        assert bundle_raw is not None
+        archive_sha256 = hashlib.sha256(bundle_raw).hexdigest()
+        metadata = {
+            "dependency_bundle_source": "AUTO_RESOLVED",
+            "dependency_resolution_network": "bridge",
+            "dependency_resolution_base_image_digest": base_digest,
+            "dependency_resolution_base_image_source": base_source,
+            "dependency_resolution_manifest_sha256": hashlib.sha256(
+                manifest
+            ).hexdigest(),
+            "dependency_resolution_input_kind": input_kind,
+            "dependency_resolution_requirements_sha256": hashlib.sha256(
+                canonical_bytes(requested)
+            ).hexdigest(),
+            "dependency_resolution_requirement_count": len(requested),
+            "dependency_resolution_omitted_agent_requirements": (
+                omitted_agent_requirements
+            ),
+            "dependency_resolution_omission_attempt_refs": [
+                ref.model_dump(mode="json") for ref in omission_attempt_refs
+            ],
+        }
+        if verified_bindings:
+            metadata["dependency_resolution_verified_import_reuse"] = [
+                {
+                    "module": module,
+                    "requirement": requirement,
+                    "decision_sha256": decision_hash,
+                }
+                for module, requirement, decision_hash in verified_bindings
+            ]
+        if dockerfile_input_ref is not None:
+            metadata.update(
+                {
+                    "dependency_resolution_dockerfile_ref": (
+                        dockerfile_input_ref.model_dump(mode="json")
+                    ),
+                    "dependency_provisioning_input_kind": input_kind,
+                    "environment_fidelity": "DERIVED_PYTHON_RUNTIME",
+                    "environment_fidelity_reason": (
+                        "Only literal Python package requirements from the "
+                        "pinned repository Dockerfile were used; OS installers "
+                        "and service topology were not replayed."
+                    ),
+                }
+            )
+        with tempfile.TemporaryDirectory(prefix="sastsimi-auto-wheel-") as temporary:
+            archive_path = Path(temporary) / "bundle.tar"
+            archive_path.write_bytes(bundle_raw)
+            delegated = DirectEnvironmentPreparer(
+                docker=self._docker,
+                artifacts=self._artifacts,
+                workspace=self._workspace,
+                wheel_bundle_path=archive_path,
+                wheel_bundle_sha256=archive_sha256,
+                offline_base_image_digest=base_digest,
+                auto_dependency_bundle=False,
+                bundle_source="AUTO_RESOLVED",
+                bundle_resolution_metadata=metadata,
+                pinned_target_manifest=target_manifest,
+                git_executable=self._git_executable,
+            )
+            environment = await delegated._prepare_offline(
+                checkpoint,
+                prior,
+                delegated_requirements,
+                auto_runtime_observation=_AutoRuntimeObservation(
+                    base_digest=base_digest,
+                    requested=requested_runtime,
+                    observed=runtime_metadata.get("python_runtime_observed_version"),
+                    operator_configured=self._offline_base_image_digest is not None,
+                ),
+            )
+            missing_import = self._bound_missing_import(checkpoint)
+            if missing_import is not None and self._pinned_source_imports(
+                missing_import,
+                pinned_paths,
+                commit_id=checkpoint.identity.commit_id,
+            ):
+                provider = self._unique_wheel_provider(
+                    bundle_raw, missing_import, agent_requirements
+                )
+                if provider is not None:
+                    try:
+                        smoke_passed = await self._docker.probe_python_import(
+                            environment.image_digest,
+                            missing_import,
+                            checkpoint.identity,
+                            checkpoint.attempt_id or "initial",
+                        )
+                    except ImportSmokeCleanupUnconfirmed:
+                        raise
+                    except (DockerOperationError, OSError, RuntimeError, ValueError):
+                        smoke_passed = False
+                    if smoke_passed:
+                        self._auto_bundle_cache.put_verified_import(
+                            import_scope,
+                            missing_import,
+                            provider,
+                            checkpoint.recovery_decision_refs[-1].content_hash,
+                        )
+            return environment
+
+    async def _prepare_without_auto_bundle(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        requirements: tuple[str, ...],
+        *,
+        target_manifest: str | None,
+    ) -> ReproductionEnvironment:
+        requested_runtime = self._requested_python_runtime(requirements)
+        if requested_runtime is None or (
+            requested_runtime == "3.12" and self._offline_base_image_digest is None
+        ):
+            delegated = DirectEnvironmentPreparer(
+                docker=self._docker,
+                artifacts=self._artifacts,
+                workspace=self._workspace,
+                auto_dependency_bundle=False,
+                git_executable=self._git_executable,
+            )
+            return await delegated.prepare(checkpoint, prior, requirements)
+        if self._offline_base_image_digest is None or (
+            target_manifest is not None
+            and PurePosixPath(target_manifest).name != "requirements.txt"
+        ):
+            raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_BUNDLE_REQUIRED")
+
+        # A stdlib-only target or an empty requirements file needs no wheels.
+        if self._docker._network != "none":
+            raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
+        self._require_repair_base_digest(checkpoint)
+        if self._recovery_patch(checkpoint):
+            raise ValueError("POC_OFFLINE_RECOVERY_PATCH_UNSUPPORTED")
+        base_digest, _base_source = await self._resolve_auto_base_digest()
+        if base_digest != self._offline_base_image_digest:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        runtime_metadata = await self._verified_python_runtime_metadata(
+            requested_runtime, base_digest
+        )
+        base_reference = await self._docker.pin_local_base(base_digest)
+        if await self._docker.local_base_image_digest(base_reference) != base_digest:
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        dockerfile = (
+            f"FROM {base_reference}\n"
+            "WORKDIR /workspace\n"
+            "COPY . /workspace\n"
+            "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
+            'CMD ["sleep", "infinity"]\n'
+        ).encode("ascii")
+        context = build_pinned_context(
+            self._workspace,
+            checkpoint.identity.commit_id,
+            dockerfile,
+            {},
+            target_python_manifest=target_manifest,
+            git_executable=self._git_executable,
+        )
+        _extra_requirements, required_source_paths = self._offline_agent_requirements(
+            requirements, commit_id=checkpoint.identity.commit_id
+        )
+        if target_manifest is not None or required_source_paths:
+            with tarfile.open(fileobj=io.BytesIO(context), mode="r:") as archive:
+                context_paths = {member.name for member in archive}
+                if target_manifest is not None:
+                    try:
+                        manifest_stream = archive.extractfile(target_manifest)
+                    except KeyError as error:
+                        raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED") from error
+                    if manifest_stream is None:
+                        raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED")
+                    manifest_stream.read()
+            if any(path not in context_paths for path in required_source_paths):
+                raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
+        dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
+        context_sha256 = hashlib.sha256(context).hexdigest()
+        metadata = {
+            "base_image_digest": base_digest,
+            **runtime_metadata,
+            "build_network": "none",
+            "context_sha256": context_sha256,
+        }
+        cache_key = hashlib.sha256(
+            canonical_bytes(
+                {
+                    "kind": "simple_auto_dependency_free_image_v1",
+                    "commit_id": checkpoint.identity.commit_id,
+                    "dockerfile_sha256": dockerfile_ref.content_hash,
+                    "base_image_digest": base_digest,
+                    "context_sha256": context_sha256,
+                }
+            )
+        ).hexdigest()
+        labels = PortableDockerRuntime._owner_labels(
+            checkpoint.identity, checkpoint.attempt_id or "initial"
+        )
+        source = "GENERATED"
+        try:
+            image_digest = await self._docker.build_or_reuse(
+                workspace=self._workspace,
+                dockerfile=dockerfile,
+                cache_key=cache_key,
+                labels=labels,
+                context_archive=context,
+            )
+        except DockerOperationError as error:
+            attempt_refs = [
+                self._build_attempt_ref(
+                    checkpoint, source, dockerfile_ref, "FAILED", error
+                )
+            ]
+            recipe_ref = self._artifacts.put_json(
+                self._recipe(
+                    checkpoint,
+                    source,
+                    dockerfile_ref,
+                    target_manifest,
+                    requirements,
+                    attempt_refs,
+                    False,
+                    status="BLOCKED",
+                    offline=metadata,
+                )
+            )
+            raise DockerBuildAttemptsError(
+                error, tuple(attempt_refs), recipe_ref
+            ) from error
+        if (
+            await self._docker.local_base_image_digest(self._offline_base_image)
+            != base_digest
+            or await self._docker.local_base_image_digest(base_reference) != base_digest
+        ):
+            raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        attempt_refs = [
+            self._build_attempt_ref(checkpoint, source, dockerfile_ref, "BUILT", None)
+        ]
+        recipe_ref = self._artifacts.put_json(
+            self._recipe(
+                checkpoint,
+                source,
+                dockerfile_ref,
+                target_manifest,
+                requirements,
+                attempt_refs,
+                False,
+                status="BUILT",
+                image_digest=image_digest,
+                offline=metadata,
+            )
+        )
+        return ReproductionEnvironment(recipe_ref, image_digest)
+
+    def _auto_bundle_attempt_ref(
+        self,
+        checkpoint: StageCheckpoint,
+        *,
+        base_digest: str,
+        manifest: bytes,
+        requirements: tuple[str, ...],
+        input_kind: str,
+        provenance_source_path: str | None,
+        protected_requirements: tuple[str, ...],
+        error: DockerOperationError,
+    ) -> StoredDataRef:
+        stderr_ref = (
+            self._artifacts.put_bytes(error.outcome.stderr, "text/plain")
+            if error.outcome is not None
+            else None
+        )
+        stdout_ref = (
+            self._artifacts.put_bytes(error.outcome.stdout, "text/plain")
+            if error.outcome is not None
+            else None
+        )
+        manifest_sha256 = hashlib.sha256(manifest).hexdigest()
+        receipt: dict[str, object] = {
+            "kind": "simple_dependency_bundle_attempt",
+            "identity": checkpoint.identity.model_dump(mode="json"),
+            "attempt_id": checkpoint.attempt_id,
+            "status": "FAILED",
+            "dependency_bundle_source": "AUTO_RESOLVED",
+            "base_image_digest": base_digest,
+            "manifest_sha256": manifest_sha256,
+            "dependency_resolution_input_kind": input_kind,
+            "requirements_sha256": hashlib.sha256(
+                canonical_bytes(requirements)
+            ).hexdigest(),
+            "requirement_count": len(requirements),
+            "error_code": error.code,
+            "stderr_ref": (
+                stderr_ref.model_dump(mode="json") if stderr_ref is not None else None
+            ),
+            "stdout_ref": (
+                stdout_ref.model_dump(mode="json") if stdout_ref is not None else None
+            ),
+            "timed_out": (
+                error.outcome.timed_out if error.outcome is not None else False
+            ),
+        }
+        provenance_requirements = tuple(
+            item for item in protected_requirements if Requirement(item).marker is None
+        )
+        if (
+            input_kind in {"TARGET_MANIFEST", "DOCKERFILE_LITERAL_PIP_REQUIREMENTS"}
+            and provenance_source_path is not None
+            and provenance_requirements
+        ):
+            # This is derived from the immutable commit input before any Agent
+            # extras are appended.  It lets a later terminal gate prove that
+            # the unavailable exact pin came from the repository, not a PoC
+            # suggestion, without recording the full manifest contents.
+            receipt["pinned_requirement_provenance"] = {
+                "kind": "simple_pinned_requirement_provenance_v1",
+                "source_kind": input_kind,
+                "source_path": provenance_source_path,
+                "source_sha256": manifest_sha256,
+                "requirements": list(provenance_requirements),
+            }
+        return self._artifacts.put_json(receipt)
+
+    async def _prepare_offline(
+        self,
+        checkpoint: StageCheckpoint,
+        prior: Mapping[SimpleStage, StageCheckpoint],
+        requirements: tuple[str, ...],
+        *,
+        auto_runtime_observation: _AutoRuntimeObservation | None = None,
+    ) -> ReproductionEnvironment:
+        if self._docker._network != "none":
             raise ValueError("POC_OFFLINE_NETWORK_REQUIRED")
         if self._wheel_bundle_path is None or self._wheel_bundle_sha256 is None:
             raise ValueError("POC_WHEEL_ARCHIVE_PAIR_REQUIRED")
+        requested_runtime = self._requested_python_runtime(requirements)
+        self._require_configured_python_runtime(requested_runtime)
         self._require_repair_base_digest(checkpoint)
         if self._recovery_patch(checkpoint):
             raise ValueError("POC_OFFLINE_RECOVERY_PATCH_UNSUPPORTED")
@@ -1432,20 +3402,41 @@ class DirectEnvironmentPreparer:
                 requirements, commit_id=checkpoint.identity.commit_id
             )
         )
-        target_manifest = self._target_manifest_path(prior)
-        if target_manifest is None:
-            for name in ("requirements.txt", "pyproject.toml"):
-                if (self._workspace / name).is_file():
-                    target_manifest = name
-                    break
-        if target_manifest is None:
+        pinned_paths: frozenset[str] | None = None
+        if self._bundle_source == "AUTO_RESOLVED":
+            # AUTO selected this path (including None) from the pinned tree
+            # before the resolver ran. Do not rediscover it from the checkout.
+            target_manifest = self._pinned_target_manifest
+            pinned_paths = self._pinned_tree_paths(
+                commit_id=checkpoint.identity.commit_id
+            )
+            if target_manifest is not None and target_manifest not in pinned_paths:
+                raise ValueError("POC_AUTO_BUNDLE_MANIFEST_UNAVAILABLE")
+        else:
+            target_manifest = self._target_manifest_path(prior)
+            if target_manifest is None:
+                for name in ("requirements.txt", "pyproject.toml"):
+                    if (self._workspace / name).is_file():
+                        target_manifest = name
+                        break
+        if target_manifest is None and not extra_python_requirements:
             raise ValueError("POC_OFFLINE_MANIFEST_MISSING")
-        manifest_directory = PurePosixPath(target_manifest).parent
-        if all(
-            self._workspace.joinpath(*manifest_directory.parts, name).is_file()
-            for name in ("requirements.txt", "pyproject.toml")
-        ):
-            raise ValueError("POC_OFFLINE_MANIFEST_AMBIGUOUS")
+        if target_manifest is not None:
+            manifest_directory = PurePosixPath(target_manifest).parent
+            manifest_siblings = (
+                manifest_directory / "requirements.txt",
+                manifest_directory / "pyproject.toml",
+            )
+            ambiguous = (
+                all(path.as_posix() in pinned_paths for path in manifest_siblings)
+                if pinned_paths is not None
+                else all(
+                    self._workspace.joinpath(*manifest_directory.parts, name).is_file()
+                    for name in ("requirements.txt", "pyproject.toml")
+                )
+            )
+            if ambiguous:
+                raise ValueError("POC_OFFLINE_MANIFEST_AMBIGUOUS")
         base_digest = await self._docker.local_base_image_digest(
             self._offline_base_image
         )
@@ -1454,6 +3445,35 @@ class DirectEnvironmentPreparer:
             and base_digest != self._offline_base_image_digest
         ):
             raise ValueError("POC_OFFLINE_BASE_IMAGE_CHANGED")
+        if auto_runtime_observation is None:
+            runtime_metadata = await self._verified_python_runtime_metadata(
+                requested_runtime, base_digest
+            )
+        else:
+            if (
+                self._bundle_source != "AUTO_RESOLVED"
+                or auto_runtime_observation.base_digest != base_digest
+                or auto_runtime_observation.requested != requested_runtime
+            ):
+                raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+            if auto_runtime_observation.operator_configured:
+                if requested_runtime is None:
+                    if auto_runtime_observation.observed is not None:
+                        raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+                    runtime_metadata = {}
+                else:
+                    if auto_runtime_observation.observed is None:
+                        raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+                    runtime_metadata = self._observed_python_runtime_metadata(
+                        requested_runtime, auto_runtime_observation.observed
+                    )
+            else:
+                if (
+                    requested_runtime not in {None, "3.12"}
+                    or auto_runtime_observation.observed is not None
+                ):
+                    raise ValueError("POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE")
+                runtime_metadata = {}
         tags = await self._docker.target_wheel_tags(base_digest)
         base_reference = await self._docker.pin_local_base(base_digest)
         bundle = import_wheel_bundle(
@@ -1477,36 +3497,81 @@ class DirectEnvironmentPreparer:
         dockerfile = self._offline_dockerfile(
             target_manifest, base_reference, extra_python_requirements
         )
+        if pinned_paths is None:
+            pinned_paths = self._pinned_tree_paths(
+                commit_id=checkpoint.identity.commit_id
+            )
+        omitted_foreign_runtime_paths = _foreign_runtime_paths(
+            pinned_paths, target_manifest
+        )
         context = build_pinned_context(
             self._workspace,
             checkpoint.identity.commit_id,
             dockerfile,
             wheels,
+            target_python_manifest=target_manifest,
             git_executable=self._git_executable,
         )
         try:
             with tarfile.open(fileobj=io.BytesIO(context), mode="r:") as archive:
-                manifest_member = archive.getmember(target_manifest)
-                manifest_stream = archive.extractfile(manifest_member)
-                if manifest_stream is None:
-                    raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED")
-                manifest = manifest_stream.read()
                 paths = {member.name for member in archive}
+                if target_manifest is not None:
+                    manifest_member = archive.getmember(target_manifest)
+                    manifest_stream = archive.extractfile(manifest_member)
+                    if manifest_stream is None:
+                        raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED")
+                    manifest = manifest_stream.read()
+                else:
+                    manifest = canonical_bytes(
+                        {
+                            "kind": "sastsimi_explicit_poc_requirements_v1",
+                            "requirements": extra_python_requirements,
+                            "required_source_paths": required_source_paths,
+                        }
+                    )
         except KeyError as error:
             raise ValueError("POC_OFFLINE_MANIFEST_EXCLUDED") from error
         if any(path not in paths for path in required_source_paths):
             raise ValueError("POC_OFFLINE_REQUIREMENT_UNSUPPORTED")
-        self._validate_offline_manifest(target_manifest, manifest, paths)
+        if target_manifest is not None:
+            self._validate_offline_manifest(target_manifest, manifest, paths)
         dockerfile_ref = self._artifacts.put_bytes(dockerfile, "text/x-dockerfile")
         manifest_sha256 = hashlib.sha256(manifest).hexdigest()
         context_sha256 = hashlib.sha256(context).hexdigest()
         metadata = {
             "wheel_archive_ref": bundle.archive_ref.model_dump(mode="json"),
             "wheel_archive_sha256": bundle.archive_sha256,
+            "dependency_bundle_source": self._bundle_source,
             "manifest_sha256": manifest_sha256,
+            "dependency_provisioning_input_kind": (
+                "TARGET_MANIFEST"
+                if target_manifest is not None
+                else "EXPLICIT_POC_REQUIREMENTS"
+            ),
             "base_image_digest": base_digest,
+            **runtime_metadata,
             "build_network": "none",
             "context_sha256": context_sha256,
+            "omitted_foreign_runtime_path_count": len(omitted_foreign_runtime_paths),
+            "omitted_foreign_runtime_paths_sha256": hashlib.sha256(
+                canonical_bytes(tuple(sorted(omitted_foreign_runtime_paths)))
+            ).hexdigest(),
+            "omitted_foreign_runtime_secret_path_count": sum(
+                EnvironmentRecipeStore._looks_secret(path)
+                for path in omitted_foreign_runtime_paths
+            ),
+            "omitted_foreign_runtime_secret_paths_sha256": hashlib.sha256(
+                canonical_bytes(
+                    tuple(
+                        sorted(
+                            path
+                            for path in omitted_foreign_runtime_paths
+                            if EnvironmentRecipeStore._looks_secret(path)
+                        )
+                    )
+                )
+            ).hexdigest(),
+            **self._bundle_resolution_metadata,
         }
         cache_key = offline_recipe_cache_key(
             archive_sha256=bundle.archive_sha256,
@@ -1592,7 +3657,10 @@ class DirectEnvironmentPreparer:
         source_paths: list[str] = []
         for raw in requirements:
             item = raw.strip()
-            if item.casefold() in {"python:3.12", "python 3.12"}:
+            if (
+                _EXPLICIT_PYTHON_RUNTIME.fullmatch(item) is not None
+                or item.casefold() == "python 3.12"
+            ):
                 continue
             pinned_source = _OFFLINE_PINNED_SOURCE.fullmatch(item)
             file_first_source = _OFFLINE_PINNED_SOURCE_FILE_FIRST.fullmatch(item)
@@ -1636,29 +3704,39 @@ class DirectEnvironmentPreparer:
 
     @staticmethod
     def _offline_dockerfile(
-        target_manifest: str,
+        target_manifest: str | None,
         base_reference: str,
         extra_python_requirements: tuple[str, ...] = (),
     ) -> bytes:
-        relative = PurePosixPath(target_manifest)
-        if (
-            relative.is_absolute()
-            or ".." in relative.parts
-            or any(character in target_manifest for character in "\\\r\n\x00")
-            or relative.name not in {"requirements.txt", "pyproject.toml"}
-        ):
-            raise ValueError("POC_OFFLINE_MANIFEST_UNSUPPORTED")
+        if target_manifest is not None:
+            relative = PurePosixPath(target_manifest)
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or any(character in target_manifest for character in "\\\r\n\x00")
+                or relative.name not in {"requirements.txt", "pyproject.toml"}
+            ):
+                raise ValueError("POC_OFFLINE_MANIFEST_UNSUPPORTED")
+        elif not extra_python_requirements:
+            raise ValueError("POC_OFFLINE_MANIFEST_MISSING")
         if not base_reference.startswith("sastsimi-offline-base:") or not re.fullmatch(
             r"sastsimi-offline-base:[0-9a-f]{64}", base_reference
         ):
             raise ValueError("POC_OFFLINE_BASE_IMAGE_UNAVAILABLE")
-        if relative.name == "requirements.txt":
-            target = f"-r {shlex.quote('/workspace/' + target_manifest)}"
-        else:
-            directory = "/workspace"
-            if relative.parent != PurePosixPath("."):
-                directory += "/" + relative.parent.as_posix()
-            target = shlex.quote(directory)
+        target_install = ""
+        if target_manifest is not None:
+            if relative.name == "requirements.txt":
+                target = f"-r {shlex.quote('/workspace/' + target_manifest)}"
+            else:
+                directory = "/workspace"
+                if relative.parent != PurePosixPath("."):
+                    directory += "/" + relative.parent.as_posix()
+                target = shlex.quote(directory)
+            target_install = (
+                "RUN python -m pip install --no-cache-dir --no-index "
+                "--find-links=/opt/sastsimi-wheels --only-binary=:all: "
+                f"{target}\n"
+            )
         extra_install = (
             "RUN python -m pip install --no-cache-dir --no-index "
             "--find-links=/opt/sastsimi-wheels --only-binary=:all: "
@@ -1675,9 +3753,7 @@ class DirectEnvironmentPreparer:
             "COPY wheels/ /opt/sastsimi-wheels/\n"
             "COPY . /workspace\n"
             "RUN find /workspace -type f -exec touch -t 198001020000.00 {} +\n"
-            "RUN python -m pip install --no-cache-dir --no-index "
-            "--find-links=/opt/sastsimi-wheels --only-binary=:all: "
-            f"{target}\n"
+            f"{target_install}"
             f"{extra_install}"
             "RUN chmod -R a+rX /workspace && mkdir -p /tmp && chmod 1777 /tmp\n"
             'CMD ["sleep", "infinity"]\n'
@@ -1839,8 +3915,47 @@ class DirectEnvironmentPreparer:
             **({"image_digest": image_digest} if image_digest is not None else {}),
         }
 
+    def _built_recovery_dockerfile(
+        self, checkpoint: StageCheckpoint, recipe: dict[str, object]
+    ) -> bytes | None:
+        """Accept only a same-attempt BUILT recipe with a matching build record."""
+
+        identity = checkpoint.identity.model_dump(mode="json")
+        attempt_refs = recipe.get("build_attempt_refs")
+        if (
+            recipe.get("status") != "BUILT"
+            or any(recipe.get(key) != identity[key] for key in identity)
+            or not isinstance(recipe.get("image_digest"), str)
+            or _IMAGE_DIGEST.fullmatch(str(recipe["image_digest"])) is None
+            or not isinstance(attempt_refs, list)
+        ):
+            return None
+        try:
+            dockerfile_ref = StoredDataRef.model_validate(recipe.get("dockerfile_ref"))
+            for raw_ref in attempt_refs:
+                attempt_ref = StoredDataRef.model_validate(raw_ref)
+                attempt = json.loads(self._artifacts.read(attempt_ref))
+                if (
+                    isinstance(attempt, dict)
+                    and attempt.get("kind") == "simple_docker_build_attempt"
+                    and attempt.get("identity") == identity
+                    and attempt.get("attempt_id") == recipe.get("attempt_id")
+                    and attempt.get("dockerfile_ref")
+                    == dockerfile_ref.model_dump(mode="json")
+                    and attempt.get("status") == "BUILT"
+                    and attempt.get("error_code") is None
+                ):
+                    return self._artifacts.read(dockerfile_ref)
+        except (OSError, TypeError, ValueError):
+            return None
+        return None
+
     def _recovery_patch(self, checkpoint: StageCheckpoint) -> bytes:
-        for ref in reversed(checkpoint.input_refs):
+        decisions: list[tuple[int, StoredDataRef, str]] = []
+        seen_decisions: set[StoredDataRef] = set()
+        built_patches: set[str] = set()
+        bound_recovery_positions: list[int] = []
+        for position, ref in enumerate(checkpoint.input_refs):
             try:
                 value = json.loads(self._artifacts.read(ref))
             except (OSError, UnicodeError, json.JSONDecodeError):
@@ -1856,7 +3971,27 @@ class DirectEnvironmentPreparer:
                     != self._offline_base_image_digest
                 ):
                     raise ValueError("POC_OFFLINE_REPAIR_BASE_MISMATCH")
-                return b""
+                # A newly pinned base invalidates only patches preceding it.
+                decisions.clear()
+                seen_decisions.clear()
+                built_patches.clear()
+                bound_recovery_positions.clear()
+                continue
+            if isinstance(value, dict) and value.get("kind") == (
+                "simple_environment_recipe"
+            ):
+                dockerfile = self._built_recovery_dockerfile(checkpoint, value)
+                if dockerfile is not None:
+                    marker = b"\n# SASTSIMI validated recovery patch\n"
+                    applied = (
+                        dockerfile.split(marker, 1)[1] if marker in dockerfile else b""
+                    )
+                    built_patches.update(
+                        patch
+                        for _, _, patch in decisions
+                        if b"\n" + patch.encode("utf-8") + b"\n" in b"\n" + applied
+                    )
+                continue
             if not isinstance(value, dict) or value.get("kind") != (
                 "simple_recovery_decision"
             ):
@@ -1870,15 +4005,64 @@ class DirectEnvironmentPreparer:
             decision = RecoveryDecision.model_validate_json(
                 canonical_bytes(decision_value)
             )
+            if decision.action is RecoveryAction.REPLAN_ENVIRONMENT:
+                original_error = value.get("original_error")
+                if (
+                    ref not in checkpoint.recovery_decision_refs
+                    or value.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+                    or value.get("decision_origin") != "RULE"
+                    or not isinstance(original_error, dict)
+                    or original_error.get("code") != "POC_RUNTIME_IMPORT_FAILED"
+                    or decision.category is not RecoveryCategory.ENVIRONMENT
+                    or decision.environment_patch
+                ):
+                    raise ValueError("RECOVERY_REPLAN_EVIDENCE_INVALID")
+                # The initial-verification Agent supplies the new requirement;
+                # earlier independent Dockerfile repairs remain in effect.
+                bound_recovery_positions.append(position)
+                continue
             if decision.action is not RecoveryAction.REBUILD_ENVIRONMENT:
                 continue
             patch = validate_environment_patch(decision.environment_patch)
-            return (
-                b"\n# SASTSIMI validated recovery patch\n"
-                + patch.encode("utf-8")
-                + b"\n"
+            if ref not in seen_decisions:
+                decisions.append((position, ref, patch))
+                seen_decisions.add(ref)
+                if ref in checkpoint.recovery_decision_refs:
+                    bound_recovery_positions.append(position)
+        if not decisions:
+            return b""
+        for position, ref, patch in decisions:
+            if ref in checkpoint.recovery_decision_refs:
+                continue
+            if patch not in built_patches or not any(
+                later > position for later in bound_recovery_positions
+            ):
+                raise ValueError("RECOVERY_DECISION_REF_UNBOUND")
+        current_ref = next(
+            (
+                ref
+                for _, ref, _ in reversed(decisions)
+                if ref in checkpoint.recovery_decision_refs
+            ),
+            None,
+        )
+        patches = list(
+            dict.fromkeys(
+                patch
+                for _, ref, patch in decisions
+                if ref == current_ref or patch in built_patches
             )
-        return b""
+        )
+        if not patches:
+            return b""
+        combined = (
+            b"\n# SASTSIMI validated recovery patch\n"
+            + "\n".join(patches).encode("utf-8")
+            + b"\n"
+        )
+        if len(combined) > 32 * 1024:
+            raise ValueError("RECOVERY_ENVIRONMENT_PATCH_FORBIDDEN")
+        return combined
 
     @staticmethod
     def _portable_repository_dockerfile(dockerfile: bytes) -> bytes:

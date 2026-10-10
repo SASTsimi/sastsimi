@@ -30,7 +30,7 @@ _LOCAL_FILE_URL = re.compile(r"\bfile:(?!\s)[^\r\n]*", re.IGNORECASE)
 _SAFE_CONTAINER_TMP_PATH = re.compile(r"/tmp(?:/[A-Za-z0-9._-]+)*\Z")
 _HOST_PATH_TOKEN = re.compile(
     r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr)(?:/|\b)"
-    r"[^\s\r\n,;\"'<>]*"
+    r"[^\s\r\n,;\"'<>)]*"
 )
 _MEDIA_TYPES = {
     "report_en.md": "text/markdown; charset=utf-8",

@@ -1,0 +1,150 @@
+{
+  "version": 2,
+  "analysis_id": "4bd80ec92d344543b9e629d52242948e",
+  "oracle_sha256": "612504f9069a95491461abbd16028c69a71e4907e695bcc0d59b6ccdebd5a9e0",
+  "inventory_reviewed": true,
+  "cases": [
+    {
+      "case_id": "dsvpwa-login-sqli",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "No reviewed Finding follows the /login password-to-query path. A separate username-source hypothesis does not disprove this documented password path; incomplete attack-surface coverage prevents a final FN classification."
+    },
+    {
+      "case_id": "dsvpwa-users-sqli",
+      "candidate_ids": ["32b4fc8a7ea6935c2dee8125f8d759791598c5971a36dfcd9318172b3eb7508d"],
+      "hypothesis_ids": ["hypothesis-67bc921d2c795aa8bec0b0494125f9ef"],
+      "finding_ids": ["F-001"],
+      "rationale": "Independently reviewed /users id request input reaching a concatenated SQLite query in attacks.py:99-105; executed in-process PoC, final TRUE, Technical Gate ACCEPT, and report evidence. The PoC did not replay the HTTP route."
+    },
+    {
+      "case_id": "dsvpwa-reflected-xss",
+      "candidate_ids": [],
+      "hypothesis_ids": ["hypothesis-5edb5f4c2ee8d813ed8dbf1180d0058d"],
+      "finding_ids": [],
+      "rationale": "The /post hypothesis reached a PoC attempt but did not confirm the HTTP route; it ended HOLD without final verification, gate, or report."
+    },
+    {
+      "case_id": "dsvpwa-stored-xss",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "No reviewed Finding validates the separate /guestbook storage-and-rendering path; incomplete attack-surface coverage remains."
+    },
+    {
+      "case_id": "dsvpwa-command-injection",
+      "candidate_ids": [],
+      "hypothesis_ids": ["hypothesis-966e363c3deb7e77006cf7f5514bb9e4", "hypothesis-27b974a45ab0054cf0d99909a2132c91"],
+      "finding_ids": [],
+      "rationale": "The /diag hypotheses did not resolve their HTTP route during PoC verification and remained HOLD. Separate do_BDR command-execution Findings are not this oracle path."
+    },
+    {
+      "case_id": "dsvpwa-unsafe-deserialization",
+      "candidate_ids": [],
+      "hypothesis_ids": ["hypothesis-6f6f5adc656f282f562a4da1815a8005"],
+      "finding_ids": [],
+      "rationale": "The /extract hypothesis stopped at initial HOLD without an executed PoC or final confirmation."
+    },
+    {
+      "case_id": "dsvpwa-path-traversal",
+      "candidate_ids": [],
+      "hypothesis_ids": ["hypothesis-d6ef588526c052b76b684eea47b88546", "hypothesis-23e86f4da19733948ae762d57be8101f", "hypothesis-9ade99143517fbcade705f049f539395"],
+      "finding_ids": [],
+      "rationale": "The /docs local-file path had in-process outside-documents read evidence, but the HTTP route was not confirmed; these attempts remained HOLD. The reported URL SSRF branch is distinct."
+    },
+    {
+      "case_id": "dsvpwa-session-fixation",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "No reviewed Finding proves both attacker-selected SESSIONID and retention after /login; incomplete attack-surface coverage remains."
+    },
+    {
+      "case_id": "dsvpwa-csrf-settings",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "No reviewed Finding reproduces cross-origin authenticated /settings email modification; other CSRF paths are not this case."
+    },
+    {
+      "case_id": "dsvpwa-execution-after-redirect",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "No reviewed Finding confirms protected /admin content in the response before its client-side login redirect; other redirect paths are not this case."
+    },
+    {
+      "case_id": "dsvpwa-open-redirect",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "No reviewed Finding validates the separate /jump parameter-to-browser-navigation path; incomplete attack-surface coverage remains."
+    },
+    {
+      "case_id": "dsvpwa-clickjacking",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "No reviewed Finding demonstrates the vulnerable-mode framing of the /danger account-deletion action; incomplete attack-surface coverage remains."
+    },
+    {
+      "case_id": "dsvpwa-session-hijacking-lesson",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "Predeclared outside the Python route-level scoring scope because token acquisition and expiry threat model are not specified by this lesson."
+    },
+    {
+      "case_id": "dsvpwa-insecure-transport-lesson",
+      "candidate_ids": [],
+      "hypothesis_ids": [],
+      "finding_ids": [],
+      "rationale": "Predeclared outside the Python route-level scoring scope because this is a network deployment/TLS lesson without a dedicated attack route."
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "F-001",
+      "status": "MATCHED",
+      "case_id": "dsvpwa-users-sqli",
+      "evidence": "Executed in-process PoC and final TRUE on /users id-to-SQL in attacks.py:99-105; Technical Gate ACCEPT and report artifact exist. No HTTP route replay was shown."
+    },
+    {
+      "finding_id": "F-002",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "Static binary symlink escape in handlers.py is outside the frozen documented local /docs file-path case; shares a root with F-003, not adjudicated false positive."
+    },
+    {
+      "finding_id": "F-003",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "Static text symlink escape in handlers.py is outside the frozen documented local /docs file-path case; shares a root with F-002, not adjudicated false positive."
+    },
+    {
+      "finding_id": "F-004",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "do_BDR self.path-to-shell path in handlers.py:199-207 is distinct from the documented /diag command-injection route; same root as F-005 and F-007."
+    },
+    {
+      "finding_id": "F-005",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "do_BDR self.path-to-shell path in handlers.py:199-207 is distinct from the documented /diag command-injection route; same root as F-004 and F-007."
+    },
+    {
+      "finding_id": "F-006",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "The /docs URL-to-urlopen SSRF branch is distinct from the frozen /docs local-file path-traversal case; not adjudicated false positive."
+    },
+    {
+      "finding_id": "F-007",
+      "status": "UNMATCHED_REVIEWED",
+      "case_id": null,
+      "evidence": "do_BDR self.path-to-shell path in handlers.py:203-207 is distinct from the documented /diag command-injection route; same root as F-004 and F-005."
+    }
+  ]
+}

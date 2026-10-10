@@ -1,0 +1,59 @@
+{
+  "version": 2,
+  "repository": "https://github.com/dev-abhrajit/VulnShop",
+  "commit": "f201193cbd3987b62050ba32357071aec0f61c18",
+  "completeness": "DOCUMENTED_CASES",
+  "cases": [
+    {
+      "case_id": "vulnshop-reflected-xss-template",
+      "cwe": "CWE-79",
+      "kind": "FLOW",
+      "path": "app.py",
+      "source_line": 30,
+      "sink_path": "templates/search.html",
+      "sink_line": 18,
+      "scope": "OUT_OF_SCOPE",
+      "rationale": "The /search input is passed through Python, but the essential unescaped output sink is Jinja |safe in the HTML template, outside the Python-only product-code scan."
+    },
+    {
+      "case_id": "vulnshop-products-sqli",
+      "cwe": "CWE-89",
+      "kind": "FLOW",
+      "path": "app.py",
+      "source_line": 42,
+      "sink_line": 47,
+      "scope": "PYTHON",
+      "rationale": "The /products id query value is interpolated into SQL before sqlite3 execution; this is distinct from the login authentication query."
+    },
+    {
+      "case_id": "vulnshop-login-sqli",
+      "cwe": "CWE-89",
+      "kind": "FLOW",
+      "path": "app.py",
+      "source_line": 61,
+      "sink_line": 65,
+      "scope": "PYTHON",
+      "rationale": "The /login username and password form values are interpolated into an authentication SQL query before sqlite3 execution."
+    },
+    {
+      "case_id": "vulnshop-admin-role-bypass",
+      "cwe": "CWE-863",
+      "kind": "MISSING_GUARD",
+      "path": "app.py",
+      "source_line": 103,
+      "sink_line": 107,
+      "scope": "PYTHON",
+      "rationale": "The /admin route checks only for an authenticated session and then reads all users without checking the admin role. CWE-863 is reviewer-assigned."
+    },
+    {
+      "case_id": "vulnshop-profile-csrf",
+      "cwe": "CWE-352",
+      "kind": "MISSING_GUARD",
+      "path": "app.py",
+      "source_line": 121,
+      "sink_line": 125,
+      "scope": "PYTHON",
+      "rationale": "The /profile POST update takes an email form value and updates the authenticated user with no anti-CSRF token check."
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -79,6 +80,11 @@ _AUTH_FAILURE_MARKERS = (
     b"invalid authentication",
     b"login required",
     b"401",
+)
+_UNSUPPORTED_MODEL_LINE = re.compile(
+    rb"\s*error:\s*(?:the\s+)?model\s+['\"`][^'\"`\r\n]{1,128}['\"`]"
+    rb"\s+is\s+not\s+supported\.?\s*",
+    re.IGNORECASE,
 )
 
 
@@ -503,8 +509,15 @@ class CodexCliProcessRunner:
                         phase="EXEC",
                     )
                 if execution.returncode != 0:
+                    status = _classify_child_failure(execution)
                     return CodexProcessResult(
-                        _classify_child_failure(execution), None, None
+                        status,
+                        None,
+                        None,
+                        model_unavailable=(
+                            status == "FAILED"
+                            and _is_unsupported_model_failure(execution)
+                        ),
                     )
                 try:
                     session_id, input_tokens, output_tokens = _validated_completion(
@@ -1501,6 +1514,32 @@ def _classify_child_failure(
     if any(marker in diagnostic for marker in _AUTH_FAILURE_MARKERS):
         return "AUTH_REQUIRED"
     return "FAILED"
+
+
+def _is_unsupported_model_failure(result: _ChildResult) -> bool:
+    """Recognize only explicit CLI model errors; never retain diagnostic text."""
+
+    if result.returncode == 0:
+        return False
+    for stream in (result.stdout, result.stderr):
+        for line in stream.splitlines():
+            try:
+                event = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(event, dict) or event.get("type") not in {
+                "error",
+                "turn.failed",
+            }:
+                continue
+            detail = event.get("error")
+            code = detail.get("code") if isinstance(detail, dict) else event.get("code")
+            if code == "model_not_found":
+                return True
+    return any(
+        _UNSUPPORTED_MODEL_LINE.fullmatch(line) is not None
+        for line in result.stderr.splitlines()
+    )
 
 
 def _validated_session_id(event_stream: bytes) -> str:

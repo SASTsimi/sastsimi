@@ -13,27 +13,11 @@ from typing import Annotated, Literal, Self
 from platformdirs import user_config_dir
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from sastsimi.config.model_roles import ALL_AGENT_NAMES
+
 _ENV_REFERENCE = re.compile(r"^env:[A-Z][A-Z0-9_]{1,127}$")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _TOOL_NAMES = ("AST", "OPENGREP", "CODEQL", "DOCKER")
-_AGENT_NAMES = frozenset(
-    {
-        "hypothesis",
-        "pro_evidence",
-        "con_evidence",
-        "initial_verification",
-        "poc_candidate",
-        "poc_interpretation",
-        "verification_result",
-        "cwe_label",
-        "technical_gate",
-        "rule_scope_gate",
-        "chaining",
-        "report_draft",
-        "recovery",
-    }
-)
-
 ElapsedLimit = Annotated[int, Field(gt=0)] | Literal["unlimited"]
 TokenLimit = Annotated[int, Field(gt=0)] | Literal["unlimited"]
 
@@ -128,6 +112,7 @@ class UserConfig(BaseModel):
     auth_mode: Literal["API_KEY", "SUBSCRIPTION_LOGIN"]
     provider: str
     model: str
+    light_model: str | None = None
     credential_ref: str
     execution_profile: Literal["FULL", "LIGHTWEIGHT"]
     max_cost_minor_units: int = Field(gt=0)
@@ -171,11 +156,18 @@ class UserConfig(BaseModel):
             raise ValueError("USER_CONFIG_MODEL_INVALID")
         return value
 
+    @field_validator("light_model")
+    @classmethod
+    def safe_light_model(cls, value: str | None) -> str | None:
+        if value is not None and not _safe_model_id(value):
+            raise ValueError("USER_CONFIG_LIGHT_MODEL_INVALID")
+        return value
+
     @field_validator("agent_models")
     @classmethod
     def safe_agent_models(cls, values: dict[str, str]) -> dict[str, str]:
         if any(
-            name not in _AGENT_NAMES or not _safe_model_id(model)
+            name not in ALL_AGENT_NAMES or not _safe_model_id(model)
             for name, model in values.items()
         ):
             raise ValueError("USER_CONFIG_AGENT_MODEL_INVALID")
@@ -234,6 +226,11 @@ class UserConfig(BaseModel):
             f"auth_mode = {_quoted(self.auth_mode)}",
             f"provider = {_quoted(self.provider)}",
             f"model = {_quoted(self.model)}",
+            *(
+                [f"light_model = {_quoted(self.light_model)}"]
+                if self.light_model is not None
+                else []
+            ),
             f"credential_ref = {_quoted(self.credential_ref)}",
             f"execution_profile = {_quoted(self.execution_profile)}",
             f"max_cost_minor_units = {self.max_cost_minor_units}",
@@ -302,6 +299,7 @@ class SimpleExecutionProfile(BaseModel):
     provider_profile_ref: str
     provider: str
     model: str
+    light_model: str | None = None
     auth_mode: Literal["API_KEY", "SUBSCRIPTION_LOGIN"]
     credential_ref: str
     data_dir: Path
@@ -314,6 +312,7 @@ class SimpleExecutionProfile(BaseModel):
     poc_wheel_archive_path: Path | None = None
     poc_wheel_archive_sha256: str | None = None
     poc_offline_base_image_digest: str | None = None
+    poc_dependency_bundle_mode: Literal["AUTO", "OFFLINE_ONLY"] = "AUTO"
     tools: dict[str, SimpleToolBinding]
     agent_models: dict[str, str] = Field(default_factory=dict)
     llm_timeout_seconds: int = Field(default=180, gt=0, le=3600)
@@ -360,6 +359,13 @@ class SimpleExecutionProfile(BaseModel):
             raise ValueError("SIMPLE_PROFILE_MODEL_INVALID")
         return value
 
+    @field_validator("light_model")
+    @classmethod
+    def safe_light_model(cls, value: str | None) -> str | None:
+        if value is not None and not _safe_model_id(value):
+            raise ValueError("SIMPLE_PROFILE_LIGHT_MODEL_INVALID")
+        return value
+
     @model_validator(mode="after")
     def validate_credential(self) -> Self:
         if (self.poc_wheel_archive_path is None) != (
@@ -396,6 +402,11 @@ class SimpleExecutionProfile(BaseModel):
             f"provider_profile_ref = {_quoted(self.provider_profile_ref)}",
             f"provider = {_quoted(self.provider)}",
             f"model = {_quoted(self.model)}",
+            *(
+                [f"light_model = {_quoted(self.light_model)}"]
+                if self.light_model is not None
+                else []
+            ),
             f"auth_mode = {_quoted(self.auth_mode)}",
             f"credential_ref = {_quoted(self.credential_ref)}",
             f"data_dir = {_quoted(self.data_dir.as_posix())}",
@@ -422,6 +433,7 @@ class SimpleExecutionProfile(BaseModel):
                 if self.poc_offline_base_image_digest is not None
                 else []
             ),
+            f"poc_dependency_bundle_mode = {_quoted(self.poc_dependency_bundle_mode)}",
             f"llm_timeout_seconds = {self.llm_timeout_seconds}",
             f"llm_max_retries = {self.llm_max_retries}",
             f"llm_max_concurrency = {self.llm_max_concurrency}",

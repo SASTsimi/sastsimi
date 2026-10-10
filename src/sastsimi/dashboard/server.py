@@ -93,6 +93,12 @@ def create_server(
                         "text/css; charset=utf-8",
                         send_body,
                     )
+                elif parts == ("static", "favicon.svg"):
+                    self._file(
+                        _STATIC / "favicon.svg",
+                        "image/svg+xml",
+                        send_body,
+                    )
                 elif parts == ("static", "app.js"):
                     self._file(
                         _STATIC / "app.js",

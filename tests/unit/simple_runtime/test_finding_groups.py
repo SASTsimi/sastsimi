@@ -97,6 +97,38 @@ def test_same_verified_flow_groups_cross_engine_and_keeps_original_evidence() ->
     assert group.members[2].candidate_ids == ()
 
 
+def test_one_codeql_trace_and_an_untraced_flow_remain_separate() -> None:
+    traced = replace(_anchor(), trace_nodes=("app.py:7:5", "app.py:8:5"))
+    result = group_verified_findings(
+        (
+            _member("F-001", traced, engine="codeql"),
+            _member("F-002", _anchor(), engine="opengrep"),
+        )
+    )
+
+    assert result.raw_count == 2
+    assert result.visible_group_count == 2
+    assert tuple(group.member_ids for group in result.groups) == (
+        ("F-001",),
+        ("F-002",),
+    )
+
+
+def test_untraced_flow_does_not_bridge_distinct_codeql_trace_paths() -> None:
+    first = replace(_anchor(), trace_nodes=("app.py:7:5", "app.py:8:5"))
+    second = replace(_anchor(), trace_nodes=("app.py:7:5", "app.py:9:5"))
+    result = group_verified_findings(
+        (
+            _member("F-001", first),
+            _member("F-002", second),
+            _member("F-003", _anchor(), engine="opengrep"),
+        )
+    )
+
+    assert result.raw_count == result.visible_group_count == 3
+    assert all(len(group.member_ids) == 1 for group in result.groups)
+
+
 def test_distinct_path_and_undetermined_stay_separate() -> None:
     entries = (
         _member("F-001", _anchor()),

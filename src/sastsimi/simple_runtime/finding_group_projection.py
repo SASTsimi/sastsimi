@@ -31,6 +31,7 @@ from .models import (
     StageCheckpoint,
     StageStatus,
 )
+from .poc_currentness import poc_source_current
 from .scope_policy import project_scope_review
 
 _MAX_EVIDENCE_BYTES = 4 * 1024 * 1024
@@ -170,6 +171,8 @@ def _verified_closure(
         or validated_poc.get("attempt_id") != dynamic.attempt_id
     ):
         raise ValueError("FINDING_GROUP_REQUIRED_EVIDENCE_INVALID")
+    if not poc_source_current(candidate, read_content=artifacts.read_bounded):
+        return None
     verification_proven = False
     if len(final.output_refs) == 1:
         verification = _json(artifacts, final.output_refs[0])
@@ -259,6 +262,22 @@ def _trace_endpoint(
     return endpoint
 
 
+def _is_codeql_import_member(location: object) -> bool:
+    """Recognize the synthetic import node that precedes a CodeQL flow."""
+
+    if not isinstance(location, dict):
+        return False
+    nested = location.get("location")
+    if not isinstance(nested, dict):
+        return False
+    message = nested.get("message")
+    return (
+        isinstance(message, dict)
+        and isinstance(message.get("text"), str)
+        and "ImportMember" in message["text"]
+    )
+
+
 def _normalized_trace(
     trace: Mapping[str, object] | None, path: str, workspace: Path
 ) -> Mapping[str, object] | None:
@@ -281,6 +300,24 @@ def _normalized_trace(
         return {"source": {}, "sink": {}}
     steps = [_trace_endpoint(location, path, workspace) for location in locations]
     if any(step is None for step in steps):
+        return {"source": {}, "sink": {}}
+    # CodeQL commonly prepends its import-member node (and the same-line alias
+    # node) before the real request access. They describe module binding, not a
+    # source-to-sink step, so retain neither in the identity trace. Restrict
+    # this to an explicit CodeQL ImportMember marker and its exact same-line
+    # companions; a different request input is still preserved and causes the
+    # strict anchor validator to abstain.
+    if _is_codeql_import_member(locations[0]):
+        first = steps[0]
+        assert first is not None
+        while (
+            steps
+            and steps[0] is not None
+            and steps[0].get("path") == first.get("path")
+            and steps[0].get("line") == first.get("line")
+        ):
+            steps.pop(0)
+    if len(steps) < 2 or any(step is None for step in steps):
         return {"source": {}, "sink": {}}
     return {"sarif_steps": steps}
 

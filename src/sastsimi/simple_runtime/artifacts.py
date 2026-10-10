@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
 from collections.abc import Callable, Mapping
@@ -10,6 +11,9 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -32,6 +36,7 @@ from sastsimi.reporting.bundle_files import (
     read_bundle_archive,
     read_bundle_file,
 )
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 from sastsimi.storage.artifact_store import LocalArtifactStore
 
 from .models import (
@@ -43,8 +48,23 @@ from .models import (
     terminal_initial_outcome,
     terminal_poc_outcome,
 )
+from .poc_currentness import poc_source_current
 
 _MAX_CONTEXT_BYTES = 256 * 1024
+_INITIAL_ENVIRONMENT_BLOCK_KIND = "simple_initial_environment_block_v1"
+_PINNED_BINARY_DISTRIBUTION_UNAVAILABLE = "PINNED_BINARY_DISTRIBUTION_UNAVAILABLE"
+_PINNED_REQUIREMENT_PROVENANCE_KIND = "simple_pinned_requirement_provenance_v1"
+_PINNED_REQUIREMENT_PROVENANCE_SOURCES = frozenset(
+    {"TARGET_MANIFEST", "DOCKERFILE_LITERAL_PIP_REQUIREMENTS"}
+)
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_PINNED_DISTRIBUTION_UNAVAILABLE = re.compile(
+    rb"No matching distribution found for\s+"
+    rb"(?P<name>[A-Za-z0-9][A-Za-z0-9_.+\-\[\]]{0,127})"
+    rb"\s*==\s*"
+    rb"(?P<version>[A-Za-z0-9][A-Za-z0-9_.+\-!]{0,127})",
+    re.IGNORECASE,
+)
 
 # Exact pre-origin provider fallback decisions; they were never Agent STOPs.
 LEGACY_RECOVERY_FALLBACK_STOPS = frozenset(
@@ -64,7 +84,13 @@ LEGACY_RECOVERY_FALLBACK_STOPS = frozenset(
 class SimpleArtifactRepository:
     """Exact record reader plus content-addressed output writer."""
 
-    def __init__(self, data_dir: str | Path, identity: CheckpointIdentity) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        identity: CheckpointIdentity,
+        *,
+        create_dirs: bool = True,
+    ) -> None:
         self.data_dir = Path(data_dir)
         self.identity = identity
         self.paths = RuntimePaths(self.data_dir)
@@ -72,6 +98,7 @@ class SimpleArtifactRepository:
             self.paths.artifacts,
             WorkspaceId(identity.workspace_id),
             CommitId(identity.commit_id),
+            create_dirs=create_dirs,
         )
 
     def put_bytes(self, value: bytes, media_type: str) -> StoredDataRef:
@@ -213,6 +240,84 @@ class SimpleArtifactRepository:
         with self.artifacts.open_verified_bounded(ref, max_bytes) as stream:
             return stream.read()
 
+    def build_initial_environment_block(
+        self,
+        checkpoint: StageCheckpoint,
+        *,
+        initial_verification_ref: StoredDataRef,
+        dependency_bundle_attempt_ref: StoredDataRef,
+    ) -> StoredDataRef | None:
+        """Record only a deterministic, receipt-backed initial environment block.
+
+        This intentionally derives a runtime record from the original Agent result
+        and the Docker resolver receipt.  It never edits or synthesizes the Agent
+        result itself.
+        """
+
+        if (
+            self._verified_pinned_binary_environment_block(
+                checkpoint,
+                initial_verification_ref=initial_verification_ref,
+                dependency_bundle_attempt_ref=dependency_bundle_attempt_ref,
+            )
+            is None
+        ):
+            return None
+        return self.put_json(
+            {
+                "kind": _INITIAL_ENVIRONMENT_BLOCK_KIND,
+                "identity": checkpoint.identity.model_dump(mode="json"),
+                "attempt_id": checkpoint.attempt_id,
+                "classification": _PINNED_BINARY_DISTRIBUTION_UNAVAILABLE,
+                "initial_verification_ref": initial_verification_ref.model_dump(
+                    mode="json"
+                ),
+                "dependency_bundle_attempt_ref": (
+                    dependency_bundle_attempt_ref.model_dump(mode="json")
+                ),
+            }
+        )
+
+    def build_initial_environment_block_from_attempt_refs(
+        self,
+        checkpoint: StageCheckpoint,
+        *,
+        initial_verification_ref: StoredDataRef,
+        attempt_refs: tuple[StoredDataRef, ...],
+    ) -> StoredDataRef | None:
+        """Use only the final matching immutable resolver receipt, if present."""
+
+        for attempt_ref in reversed(attempt_refs):
+            block_ref = self.build_initial_environment_block(
+                checkpoint,
+                initial_verification_ref=initial_verification_ref,
+                dependency_bundle_attempt_ref=attempt_ref,
+            )
+            if block_ref is not None:
+                return block_ref
+        return None
+
+    def build_initial_environment_block_from_checkpoint(
+        self, checkpoint: StageCheckpoint
+    ) -> StoredDataRef | None:
+        """Recover only evidence already attached to this failed initial stage."""
+
+        if (
+            checkpoint.identity != self.identity
+            or checkpoint.stage is not SimpleStage.VERIFICATION_INITIAL_DONE
+            or checkpoint.attempt_id is None
+        ):
+            return None
+        for initial_ref in checkpoint.output_refs:
+            block_ref = self.build_initial_environment_block_from_attempt_refs(
+                checkpoint,
+                initial_verification_ref=initial_ref,
+                attempt_refs=checkpoint.output_refs,
+            )
+            if block_ref is not None:
+                return block_ref
+        return None
+
     def verified_terminal_initial_outcome(
         self, checkpoint: StageCheckpoint | None
     ) -> Literal["INCONCLUSIVE"] | None:
@@ -227,8 +332,9 @@ class SimpleArtifactRepository:
             != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
         ):
             raise ValueError("INITIAL_VERIFICATION_EVIDENCE_INVALID")
+        if checkpoint.external_prerequisites_ref is None:
+            return self._verified_initial_environment_block(checkpoint)
         ref = checkpoint.external_prerequisites_ref
-        assert ref is not None
         try:
             payload = json.loads(self.read_bounded(ref, 1024 * 1024))
             result = payload.get("result") if isinstance(payload, dict) else None
@@ -252,6 +358,182 @@ class SimpleArtifactRepository:
         except (OSError, ValueError, TypeError, UnicodeError) as error:
             raise ValueError("INITIAL_VERIFICATION_EVIDENCE_INVALID") from error
         return "INCONCLUSIVE"
+
+    def _verified_initial_environment_block(
+        self, checkpoint: StageCheckpoint
+    ) -> Literal["INCONCLUSIVE"]:
+        """Accept a HOLD only when its system receipt proves this exact block."""
+
+        ref = checkpoint.environment_block_ref
+        assert ref is not None
+        try:
+            payload = json.loads(self.read_bounded(ref, 1024 * 1024))
+            initial_ref = StoredDataRef.model_validate(
+                payload.get("initial_verification_ref")
+                if isinstance(payload, dict)
+                else None
+            )
+            receipt_ref = StoredDataRef.model_validate(
+                payload.get("dependency_bundle_attempt_ref")
+                if isinstance(payload, dict)
+                else None
+            )
+            if (
+                not isinstance(payload, dict)
+                or payload.get("kind") != _INITIAL_ENVIRONMENT_BLOCK_KIND
+                or payload.get("identity")
+                != checkpoint.identity.model_dump(mode="json")
+                or payload.get("attempt_id") != checkpoint.attempt_id
+                or payload.get("classification")
+                != _PINNED_BINARY_DISTRIBUTION_UNAVAILABLE
+                or initial_ref not in checkpoint.output_refs
+                or receipt_ref not in checkpoint.output_refs
+                or self._verified_pinned_binary_environment_block(
+                    checkpoint,
+                    initial_verification_ref=initial_ref,
+                    dependency_bundle_attempt_ref=receipt_ref,
+                )
+                is None
+            ):
+                raise ValueError("INITIAL_VERIFICATION_EVIDENCE_INVALID")
+        except (OSError, ValueError, TypeError, UnicodeError) as error:
+            raise ValueError("INITIAL_VERIFICATION_EVIDENCE_INVALID") from error
+        return "INCONCLUSIVE"
+
+    def _verified_pinned_binary_environment_block(
+        self,
+        checkpoint: StageCheckpoint,
+        *,
+        initial_verification_ref: StoredDataRef,
+        dependency_bundle_attempt_ref: StoredDataRef,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Return linked immutable evidence for one non-retryable resolver failure."""
+
+        if (
+            checkpoint.identity != self.identity
+            or checkpoint.stage is not SimpleStage.VERIFICATION_INITIAL_DONE
+            or checkpoint.stage_version
+            != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+            or checkpoint.attempt_id is None
+        ):
+            return None
+        try:
+            initial = json.loads(
+                self.read_bounded(initial_verification_ref, 1024 * 1024)
+            )
+            receipt = json.loads(
+                self.read_bounded(dependency_bundle_attempt_ref, 256 * 1024)
+            )
+            if not isinstance(initial, dict) or not isinstance(receipt, dict):
+                return None
+            result = initial.get("result")
+            stderr_ref = StoredDataRef.model_validate(receipt.get("stderr_ref"))
+            stderr = self.read_bounded(stderr_ref, 256 * 1024)
+        except (OSError, ValueError, TypeError, UnicodeError):
+            return None
+        if (
+            initial.get("kind") != "simple_initial_verification"
+            or initial.get("attempt_id") != checkpoint.attempt_id
+            or not isinstance(result, dict)
+            or result.get("initial_assessment") not in {"TRUE", "HOLD"}
+            or result.get("unmet_external_prerequisites") != []
+            or receipt.get("kind") != "simple_dependency_bundle_attempt"
+            or receipt.get("identity") != checkpoint.identity.model_dump(mode="json")
+            or receipt.get("attempt_id") != checkpoint.attempt_id
+            or receipt.get("status") != "FAILED"
+            or receipt.get("dependency_bundle_source") != "AUTO_RESOLVED"
+            or receipt.get("error_code") != "POC_AUTO_BUNDLE_DOWNLOAD_FAILED"
+            or receipt.get("timed_out") is not False
+            or not self._has_verified_pinned_requirement_origin(receipt, stderr)
+        ):
+            return None
+        return initial, receipt
+
+    @staticmethod
+    def _has_verified_pinned_requirement_origin(
+        receipt: Mapping[str, Any], stderr: bytes
+    ) -> bool:
+        """Prove the unavailable exact pin came from a repository input.
+
+        The resolver's stderr alone proves only that *some* requested package
+        was unavailable.  A terminal result is safe only when the immutable
+        receipt also binds that exact pin to the selected target manifest or
+        literal Dockerfile input, before any Agent-provided extras were added.
+        """
+
+        match = _PINNED_DISTRIBUTION_UNAVAILABLE.search(stderr)
+        provenance = receipt.get("pinned_requirement_provenance")
+        manifest_sha256 = receipt.get("manifest_sha256")
+        if (
+            match is None
+            or not isinstance(provenance, dict)
+            or set(provenance)
+            != {
+                "kind",
+                "source_kind",
+                "source_path",
+                "source_sha256",
+                "requirements",
+            }
+            or provenance.get("kind") != _PINNED_REQUIREMENT_PROVENANCE_KIND
+            or provenance.get("source_kind")
+            not in _PINNED_REQUIREMENT_PROVENANCE_SOURCES
+            or provenance.get("source_kind")
+            != receipt.get("dependency_resolution_input_kind")
+            or not isinstance(manifest_sha256, str)
+            or _SHA256_HEX.fullmatch(manifest_sha256) is None
+            or provenance.get("source_sha256") != manifest_sha256
+        ):
+            return False
+        source_path = provenance.get("source_path")
+        source_kind = provenance["source_kind"]
+        if not isinstance(source_path, str):
+            return False
+        if source_kind == "TARGET_MANIFEST":
+            if (
+                not source_path.endswith(("requirements.txt", "pyproject.toml"))
+                or source_path.startswith(("/", "\\"))
+                or "\\" in source_path
+            ):
+                return False
+        elif source_path != "Dockerfile":
+            return False
+        requirements = provenance.get("requirements")
+        if (
+            not isinstance(requirements, list)
+            or not requirements
+            or len(requirements) > 10_000
+            or any(
+                not isinstance(item, str) or not item or len(item) > 4_096
+                for item in requirements
+            )
+        ):
+            return False
+        try:
+            missing = Requirement(
+                "{}=={}".format(
+                    match.group("name").decode("ascii"),
+                    match.group("version").decode("ascii"),
+                )
+            )
+            expected_specifier = str(missing.specifier)
+            if missing.url is not None or expected_specifier.count("==") != 1:
+                return False
+            for raw in requirements:
+                candidate = Requirement(raw)
+                if candidate.url is not None:
+                    return False
+                if (
+                    canonicalize_name(candidate.name) == canonicalize_name(missing.name)
+                    and str(candidate.specifier) == expected_specifier
+                    # The resolver image's marker environment is not present
+                    # in this receipt. A conditional pin proves no active pin.
+                    and candidate.marker is None
+                ):
+                    return True
+        except (InvalidRequirement, UnicodeDecodeError):
+            return False
+        return False
 
     def verified_terminal_poc_outcome(
         self, checkpoint: StageCheckpoint | None
@@ -458,6 +740,8 @@ class SimpleArtifactRepository:
         finding = required(SimpleStage.FINDING_DONE)
         report = required(SimpleStage.REPORT_DONE)
         candidate = required(SimpleStage.POC_CANDIDATE_DONE)
+        if not poc_source_current(candidate, read_content=self.read_bounded):
+            raise ValueError("BUNDLE_POC_SOURCE_UNVERIFIED")
         dynamic = required(SimpleStage.POC_EXECUTION_DONE)
         technical = required(SimpleStage.TECH_GATE_DONE)
         scope = required(SimpleStage.SCOPE_GATE_DONE)
@@ -523,7 +807,6 @@ class SimpleArtifactRepository:
             self.read_bounded(report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES),
             finding_ref=finding_ref,
         )
-        bundle_dir = self._verified_report_directory(report, manifest)
         if (
             manifest.analysis_id != self.identity.analysis_id
             or manifest.display_id != display_id
@@ -580,7 +863,19 @@ class SimpleArtifactRepository:
             report.bundle_archive_ref,
             lambda ref: self.read_bounded(ref, MAX_BUNDLE_ARCHIVE_BYTES),
         )
-        path = bundle_dir / "bundle.zip"
+        self.require_published_report_bundle(report, manifest, archive)
+        return manifest, archive
+
+    def require_published_report_bundle(
+        self,
+        report: StageCheckpoint,
+        manifest: ReportBundleManifest,
+        archive: bytes,
+    ) -> None:
+        """Require published manifest and ZIP bytes to match their CAS evidence."""
+
+        bundle_dir = self._verified_report_directory(report, manifest)
+        path = windows_extended_path(bundle_dir / "bundle.zip")
         if path.resolve(strict=True) != path:
             raise ValueError("BUNDLE_PATH_UNSAFE")
         before = path.lstat()
@@ -600,7 +895,6 @@ class SimpleArtifactRepository:
             disk = stream.read(MAX_BUNDLE_ARCHIVE_BYTES + 1)
         if disk != archive:
             raise ValueError("BUNDLE_ARCHIVE_CHANGED")
-        return manifest, archive
 
     def published_report_coverage(
         self, report: StageCheckpoint, finding_ref: StoredDataRef
@@ -684,7 +978,7 @@ class SimpleArtifactRepository:
         if path.parent != expected_parent or path.name not in allowed_names:
             raise ValueError("BUNDLE_PATH_UNSAFE")
         bundle_dir = path.with_suffix("")
-        manifest_path = bundle_dir / "manifest.json"
+        manifest_path = windows_extended_path(bundle_dir / "manifest.json")
         if manifest_path.resolve(strict=True) != manifest_path:
             raise ValueError("BUNDLE_PATH_UNSAFE")
         info = manifest_path.lstat()
@@ -946,7 +1240,9 @@ def verified_terminal_projection(
         try:
             if data_dir is None:
                 raise ValueError(error_code)
-            artifacts = SimpleArtifactRepository(data_dir, checkpoint.identity)
+            artifacts = SimpleArtifactRepository(
+                data_dir, checkpoint.identity, create_dirs=False
+            )
             if initial:
                 artifacts.verified_terminal_initial_outcome(checkpoint)
             else:

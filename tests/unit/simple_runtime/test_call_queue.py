@@ -982,16 +982,20 @@ async def test_codex_runner_reports_unconfirmed_cleanup_after_its_own_timeout(
     class CleanupAfterTimeoutRunner:
         calls = 0
         requested_timeout_ms = 0
+        own_timeout_fired = False
         cancelled_during_cleanup = False
 
         async def execute(self, request: CodexProcessRequest) -> CodexProcessResult:
             self.calls += 1
             self.requested_timeout_ms = request.timeout_ms
+            # Codex performs preflight work before its own request timer starts.
+            # A busy Windows CI worker may spend over one second here.
+            await asyncio.sleep(1.05)
             try:
                 async with asyncio.timeout(request.timeout_ms / 1000):
                     await asyncio.Event().wait()
             except TimeoutError:
-                pass
+                self.own_timeout_fired = True
             try:
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
@@ -1011,7 +1015,9 @@ async def test_codex_runner_reports_unconfirmed_cleanup_after_its_own_timeout(
         _wrapper(tmp_path, inner, asyncio.Semaphore(1), max_tokens="unlimited").call(
             prompt=b"safe", output_schema={}, timeout_ms=100
         ),
-        timeout=1,
+        # This is only a hang guard; the Codex runner owns the request
+        # timeout and the queue reserves 15 seconds for cleanup confirmation.
+        timeout=20,
     )
 
     assert isinstance(result, StageFailure)
@@ -1019,6 +1025,7 @@ async def test_codex_runner_reports_unconfirmed_cleanup_after_its_own_timeout(
     assert not result.retryable
     assert runner.calls == 1
     assert 1 <= runner.requested_timeout_ms <= 100
+    assert runner.own_timeout_fired
     assert not runner.cancelled_during_cleanup
 
 

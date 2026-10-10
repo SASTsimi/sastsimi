@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,7 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
+from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, StageBlocked
 from sastsimi.simple_runtime.scope_policy import validate_scope_decision
 from sastsimi.simple_runtime.stages import ReporterStage
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -74,6 +75,54 @@ class _ReporterClient:
             prompt_digest=hashlib.sha256(b"prompt").hexdigest(),
             output_digest=hashlib.sha256(b"output").hexdigest(),
         )
+
+
+@pytest.mark.asyncio
+async def test_invalid_report_prose_has_specific_retryable_failure(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    finding_ref = artifacts.put_json({"kind": "simple_finding"})
+    poc_ref = artifacts.put_json({"kind": "simple_poc_execution"})
+
+    class _InvalidReporterClient(_ReporterClient):
+        async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+            result = await super().call(**kwargs)
+            value = dict(result.value)
+            en = dict(value["en"])
+            en["limitations"] = ["Affected version 1.2.3 was not verified."]
+            value["en"] = en
+            return result.model_copy(update={"value": value})
+
+    prior = {
+        SimpleStage.FINDING_DONE: _checkpoint(
+            identity, SimpleStage.FINDING_DONE, outputs=(finding_ref,), verdict="TRUE"
+        ),
+        SimpleStage.POC_EXECUTION_DONE: _checkpoint(
+            identity, SimpleStage.POC_EXECUTION_DONE, outputs=(poc_ref,)
+        ),
+    }
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.REPORT_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(finding_ref,),
+        input_hash=input_reference_hash((finding_ref,)),
+        attempt_id="report-attempt",
+    )
+
+    with pytest.raises(StageBlocked) as caught:
+        await ReporterStage(_InvalidReporterClient(), artifacts)._draft(
+            current, prior, finding_ref
+        )
+    assert caught.value.failure.code == "REPORT_CONTENT_INVALID"
+    assert caught.value.failure.retryable is True
 
 
 def test_policy_lookup_is_empty_for_a_simple_runtime_database(tmp_path: Path) -> None:
@@ -424,17 +473,46 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
     assert DashboardQuery(tmp_path).report_path(identity.analysis_id, "F-001") == Path(
         refreshed_report.markdown_path
     )
-    verified, _ = artifacts.verified_report_bundle(
-        checkpoints={
-            stage: resumed_store.require(identity, stage) for stage in HYPOTHESIS_STAGES
-        },
-        finding_ref=finding_ref,
-        display_id="F-001",
-        scope_status=json.loads(
-            (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
-        )["scope_status"],
-        public_projection=lambda body: body,
-    )
+    if os.name == "nt":
+        # Simulate Windows installations where regular Win32 paths cannot be
+        # resolved past the legacy limit. Both manifest and archive reads must
+        # use the extended path, just as publication does.
+        original_resolve = Path.resolve
+
+        def require_extended_report_path(path: Path, *args: Any, **kwargs: Any) -> Path:
+            if path.name in {"manifest.json", "bundle.zip"} and not str(
+                path
+            ).startswith("\\\\?\\"):
+                raise OSError(206, "legacy report path limit")
+            return original_resolve(path, *args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(Path, "resolve", require_extended_report_path)
+            verified, _ = artifacts.verified_report_bundle(
+                checkpoints={
+                    stage: resumed_store.require(identity, stage)
+                    for stage in HYPOTHESIS_STAGES
+                },
+                finding_ref=finding_ref,
+                display_id="F-001",
+                scope_status=json.loads(
+                    (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
+                )["scope_status"],
+                public_projection=lambda body: body,
+            )
+    else:
+        verified, _ = artifacts.verified_report_bundle(
+            checkpoints={
+                stage: resumed_store.require(identity, stage)
+                for stage in HYPOTHESIS_STAGES
+            },
+            finding_ref=finding_ref,
+            display_id="F-001",
+            scope_status=json.loads(
+                (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
+            )["scope_status"],
+            public_projection=lambda body: body,
+        )
     assert verified.display_id == "F-001"
     public_config = UserConfig(
         data_dir=tmp_path,

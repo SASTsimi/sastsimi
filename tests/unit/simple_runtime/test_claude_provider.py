@@ -185,6 +185,60 @@ async def test_nonzero_exit_after_success_is_not_retried(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_nonzero_unknown_model_result_has_terminal_safe_error(
+    tmp_path: Path,
+) -> None:
+    model = "unavailable-model"
+    events = [json.loads(line) for line in _stream(model).splitlines()]
+    events[-1].update(
+        {
+            "is_error": True,
+            "subtype": "success",
+            "errors": [],
+            "api_error_status": 404,
+            "result": (
+                f"There's an issue with the selected model ({model}). "
+                "It may not exist or you may not have access to it."
+            ),
+        }
+    )
+    del events[-1]["structured_output"]
+    raw = b"\n".join(json.dumps(event).encode() for event in events) + b"\n"
+
+    async def fake_runner(
+        argv: tuple[str, ...],
+        *,
+        stdin: bytes | None,
+        cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+    ) -> tuple[int, bytes, bytes]:
+        if "--version" in argv:
+            return 0, b"2.1.280 (Claude Code)\n", b""
+        if "auth" in argv:
+            return (
+                0,
+                b'{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}',
+                b"",
+            )
+        return 1, raw, b"secret from stderr"
+
+    transport = OfficialClaudeCLITransport(
+        _binding(tmp_path), tmp_path / "config", runner=fake_runner
+    )
+    with pytest.raises(ClaudeTransportError) as failure:
+        await transport.invoke(
+            prompt=b"secret prompt",
+            output_schema={"type": "object"},
+            model=model,
+            timeout=10,
+        )
+    assert failure.value.code == "CLAUDE_MODEL_UNSUPPORTED"
+    assert failure.value.retryable is False
+    assert str(failure.value) == "CLAUDE_MODEL_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
 async def test_broken_stdin_terminates_child_and_becomes_typed_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

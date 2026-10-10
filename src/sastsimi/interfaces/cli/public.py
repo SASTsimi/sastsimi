@@ -230,6 +230,12 @@ def emit_public(
             )
         return
     if data.get("status") in {"BLOCKED", "FAILED"}:
+        if data.get("error_code") == "MODEL_ROUTE_PROVIDER_MISMATCH":
+            stream.write(
+                "분석에 저장된 공급자와 현재 설정된 공급자가 다릅니다. "
+                "원래 공급자로 설정을 되돌린 뒤 재개하세요.\n"
+            )
+            return
         if data.get("error_code") in {
             "CODEX_CALL_IN_FLIGHT_UNRESOLVED",
             "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
