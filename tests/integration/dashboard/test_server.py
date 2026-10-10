@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import threading
 import urllib.error
 import urllib.request
 import zipfile
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
 import pytest
 
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.dashboard.projection import project_after_source_write, rebuild_analysis
+from sastsimi.dashboard.read_model import DashboardReadModel
 from sastsimi.dashboard.server import create_server
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -306,6 +309,9 @@ def test_server_is_local_read_only_and_serves_current_state(tmp_path) -> None:
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert request(f"{base}/api/analyses", method="POST").status == 405
         assert request(f"{base}/analyses/A-001").status == 200
+        favicon = request(f"{base}/static/favicon.svg")
+        assert favicon.status == 200
+        assert favicon.headers["Content-Type"] == "image/svg+xml"
         assert (
             json.loads(request(f"{base}/api/analyses/A-001").read())["analysis_id"]
             == "analysis-1"
@@ -797,3 +803,206 @@ def test_event_cursor_keeps_late_written_event(tmp_path) -> None:
 
 
 # mypy: disable-error-code="no-untyped-def"
+
+
+def test_repository_history_is_server_paginated_in_stable_order(tmp_path) -> None:
+    seed(tmp_path)
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    with sqlite3.connect(database) as connection:
+        source = json.loads(
+            connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                ("analysis-1",),
+            ).fetchone()[0]
+        )
+        for index in range(2, 14):
+            run = {
+                **source,
+                "analysis_id": f"analysis-{index:02d}",
+                "display_analysis_id": f"A-{index:03d}",
+                "started_at": f"2026-01-{index:02d}T00:00:00+00:00",
+            }
+            connection.execute(
+                "INSERT INTO simple_analysis_runs (analysis_id, run_json) "
+                "VALUES (?, ?)",
+                (run["analysis_id"], json.dumps(run)),
+            )
+
+    with running_server(tmp_path) as base:
+        repositories = json.loads(request(f"{base}/api/repositories").read())
+        assert len(repositories) == 1
+        assert repositories[0]["analysis_id"] == "analysis-13"
+        assert repositories[0]["history_count"] == 12
+
+        first = json.loads(
+            request(
+                f"{base}/api/repository-history?analysis_id=analysis-13"
+                "&page=1&page_size=10"
+            ).read()
+        )
+        second = json.loads(
+            request(
+                f"{base}/api/repository-history?analysis_id=analysis-13"
+                "&page=2&page_size=10"
+            ).read()
+        )
+
+    assert first["page"] == 1
+    assert first["page_size"] == 10
+    assert first["total_items"] == 12
+    assert first["total_pages"] == 2
+    assert first["has_previous"] is False
+    assert first["has_next"] is True
+    assert len(first["items"]) == 10
+    assert [item["analysis_id"] for item in first["items"][:2]] == [
+        "analysis-12",
+        "analysis-11",
+    ]
+    assert second["page"] == 2
+    assert second["has_previous"] is True
+    assert second["has_next"] is False
+    assert [item["analysis_id"] for item in second["items"]] == [
+        "analysis-02",
+        "analysis-1",
+    ]
+    assert not (
+        {item["analysis_id"] for item in first["items"]}
+        & {item["analysis_id"] for item in second["items"]}
+    )
+
+
+def test_tab_page_contract_defaults_to_ten_and_rejects_mixed_paging(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SASTSIMI_DASHBOARD_INDEX_MODE", raising=False)
+    seed(tmp_path)
+    rebuild_analysis(tmp_path, "analysis-1")
+    with running_server(tmp_path) as base:
+        page = json.loads(
+            request(
+                f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=10"
+            ).read()
+        )
+        mixed = request(f"{base}/api/analyses/A-001/tabs/findings?page=1&limit=10")
+        invalid = request(
+            f"{base}/api/analyses/A-001/tabs/findings?page=0&page_size=10"
+        )
+
+    assert page["page"] == 1
+    assert page["page_size"] == 10
+    assert page["total_items"] == 1
+    assert page["total_pages"] == 1
+    assert page["has_previous"] is False
+    assert page["has_next"] is False
+    assert len(page["items"]) <= 10
+    assert mixed.code == 400
+    assert invalid.code == 400
+
+
+def test_unbuilt_read_model_returns_index_not_ready(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SASTSIMI_DASHBOARD_INDEX_MODE", raising=False)
+    seed(tmp_path)
+    with running_server(tmp_path) as base:
+        response = request(
+            f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=10"
+        )
+        payload = json.loads(response.read())
+        oversized = request(
+            f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=201"
+        )
+
+    assert oversized.status == 400
+    assert response.status == 409
+    assert payload == {
+        "error": "index_not_ready",
+        "action": "dashboard-index rebuild",
+    }
+
+
+def test_log_cursor_route_returns_latest_then_older_without_duplicates(
+    tmp_path,
+) -> None:
+    seed(tmp_path)
+    store = AgentActivityStore(tmp_path / "db" / "sastsimi.sqlite3")
+    for number in range(2, 26):
+        store.append(
+            AgentActivityEvent(
+                event_id=f"event-{number:03d}",
+                analysis_id="analysis-1",
+                workspace_id="workspace-1",
+                commit_id="commit-1",
+                hypothesis_id="hypothesis-1",
+                stage="POC_CANDIDATE_DONE",
+                agent_role="PoC Agent",
+                attempt_id=f"attempt-{number:03d}",
+                sequence=number,
+                kind=ActivityKind.STAGE_COMPLETED,
+                status="SUCCEEDED",
+                summary_ko=f"커서 로그 {number}",
+                started_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=number),
+            )
+        )
+
+    with running_server(tmp_path) as base:
+        latest = json.loads(request(f"{base}/api/analyses/A-001/logs?limit=10").read())
+        older = json.loads(
+            request(
+                f"{base}/api/analyses/A-001/logs?before={latest['next_cursor']}&limit=10"
+            ).read()
+        )
+        oldest = json.loads(
+            request(
+                f"{base}/api/analyses/A-001/logs?before={older['next_cursor']}&limit=10"
+            ).read()
+        )
+
+    all_ids = [
+        item["event_id"] for page in (latest, older, oldest) for item in page["items"]
+    ]
+    assert [len(latest["items"]), len(older["items"]), len(oldest["items"])] == [
+        10,
+        10,
+        5,
+    ]
+    assert len(all_ids) == len(set(all_ids)) == 25
+    assert latest["has_more"] is True
+    assert older["has_more"] is True
+    assert oldest["has_more"] is False
+
+
+def test_source_commit_rebuilds_incomplete_read_model_without_duplicates(
+    tmp_path,
+) -> None:
+    seed(tmp_path)
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    initial = rebuild_analysis(tmp_path, "analysis-1")
+    assert initial.status == "READY"
+    model.mark_incomplete("analysis-1", "injected", "INDEX_WRITE_INTERRUPTED")
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    store = SimpleCheckpointStore(
+        tmp_path / "db" / "sastsimi.sqlite3",
+        artifact_data_dir=tmp_path,
+        post_commit_projection=project_after_source_write,
+    )
+    checkpoint = store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
+    assert checkpoint is not None
+    store.save_success(checkpoint, outputs=checkpoint.output_refs)
+
+    page = model.page("analysis-1", "artifacts", offset=0, limit=10)
+    with sqlite3.connect(model.database) as connection:
+        count, distinct_count = connection.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT item_id) FROM dashboard_list_items "
+            "WHERE analysis_id=? AND list_kind='artifacts'",
+            ("analysis-1",),
+        ).fetchone()
+    assert page["total_items"] == initial.source_counts["artifacts"]
+    assert count == distinct_count == initial.source_counts["artifacts"]

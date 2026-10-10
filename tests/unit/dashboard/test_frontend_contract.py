@@ -190,11 +190,22 @@ def test_dashboard_has_agreed_tabs_summary_and_llm_detail_views() -> None:
 
 def test_dashboard_fetches_tabs_and_long_llm_content_on_demand() -> None:
     source = (_STATIC / "app.js").read_text(encoding="utf-8")
-    assert "/tabs/${tab}?offset=${offset}&limit=${PAGE_SIZE}" in source
+    assert "page: String(page), page_size: String(PAGE_SIZE)" in source
+    assert "/tabs/${tab}?${parameters}" in source
     assert "/llm/${encodeURIComponent(item.invocation_id)}" in source
-    assert "/event-page?offset=${offset}&limit=${PAGE_SIZE}" in source
+    assert "/logs?before=${encodeURIComponent(before)}&limit=${LOG_PAGE_SIZE}" in source
+    assert "/logs?after=${encodeURIComponent(after)}&limit=100" in source
+    assert "const PAGE_SIZE = 10" in source
+    assert "const LOG_PAGE_SIZE = 10" in source
+    assert "이전 로그 10개 불러오기" in source
+    assert 'aria-current", "page"' in source
+    assert "requestController" in source
     assert "state.tabCache" in source
     assert "version !== state.requestVersion" in source
+    assert "const MAX_LOG_EVENTS = 500" in source
+    assert "const seen = new Set()" in source
+    assert "요청 시간이 초과되었습니다." in source
+    assert "다시 시도" in source
 
 
 def test_tab_navigation_is_sticky_and_mobile_analysis_list_is_a_drawer() -> None:
@@ -205,6 +216,9 @@ def test_tab_navigation_is_sticky_and_mobile_analysis_list_is_a_drawer() -> None
     assert ".header-kpi:hover::after" in css
     assert ".header-kpi:focus-visible::after" in css
     assert ".drawer-open #analysis-sidebar" in css
+    source = (_STATIC / "app.js").read_text(encoding="utf-8")
+    assert "function syncDrawerAccessibility()" in source
+    assert 'sidebar.setAttribute("inert", "")' in source
 
 
 def test_dense_console_uses_tab_summaries_donut_and_master_detail() -> None:
@@ -505,3 +519,23 @@ assert.equal(unknownDonut.style.values['--progress'], '0');
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_tab_hashes_do_not_collide_with_content_element_ids() -> None:
+    html = (_STATIC / "index.html").read_text(encoding="utf-8")
+    for tab in (
+        "overview",
+        "progress",
+        "findings",
+        "coverage",
+        "artifacts",
+        "llm",
+        "outputs",
+        "logs",
+    ):
+        assert f'id="{tab}"' not in html
+
+
+def test_reserved_demo_repository_keeps_demo_banner_contract() -> None:
+    source = (_STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'includes("example.invalid")' in source

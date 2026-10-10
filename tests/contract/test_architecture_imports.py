@@ -65,6 +65,7 @@ RULES: dict[str, frozenset[str]] = {
             "contracts",
             "ports",
             "config",
+            "dashboard",
             "security",
             "prompts",
             "agents",
@@ -113,6 +114,7 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
             "sastsimi.composition.local_codex_binding",
             "sastsimi.config.local_evaluation_profile",
             "sastsimi.contracts.ids",
+            "sastsimi.dashboard.projection",
             "sastsimi.contracts.refs",
             "sastsimi.providers.codex_subscription",
             "sastsimi.simple_runtime.artifacts",
@@ -132,6 +134,9 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     # HTTPS boundary without broadening dependencies for the entire package.
     "sastsimi.simple_runtime.github_policy": frozenset(
         {"sastsimi.policy.adapters.official_http"}
+    ),
+    "sastsimi.interfaces.cli.dashboard_index": frozenset(
+        {"sastsimi.dashboard.projection"}
     ),
     "sastsimi.interfaces.cli.dashboard": frozenset(
         {

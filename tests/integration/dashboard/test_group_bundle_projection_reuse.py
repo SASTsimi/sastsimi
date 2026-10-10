@@ -27,6 +27,7 @@ from tests.simple_runtime.test_group_report_projection import _reported_case
 def test_outputs_reuses_request_projection_but_download_rechecks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("SASTSIMI_DASHBOARD_INDEX_MODE", "source")
     run, _checkpoints, group, data_dir, _database, _store = _reported_case(tmp_path)
     query = DashboardQuery(data_dir)
     counts = {"refs": 0, "groups": 0}

@@ -18,6 +18,7 @@ from .query import (
     DashboardNotFound,
     DashboardQuery,
 )
+from .read_model import DashboardIndexNotReady
 
 _STATIC = Path(__file__).with_name("static")
 _CSP = (
@@ -92,6 +93,12 @@ def create_server(
                         "text/css; charset=utf-8",
                         send_body,
                     )
+                elif parts == ("static", "favicon.svg"):
+                    self._file(
+                        _STATIC / "favicon.svg",
+                        "image/svg+xml",
+                        send_body,
+                    )
                 elif parts == ("static", "app.js"):
                     self._file(
                         _STATIC / "app.js",
@@ -100,6 +107,23 @@ def create_server(
                     )
                 elif parts == ("api", "meta"):
                     self._json({"demo": False}, send_body)
+                elif parts == ("api", "repositories"):
+                    self._json(query.list_repository_heads(), send_body)
+                elif parts == ("api", "repository-history"):
+                    parameters = parse_qs(parsed.query)
+                    analysis_id = parameters.get("analysis_id", [None])[0]
+                    if analysis_id is None:
+                        raise DashboardBadRequest("DASHBOARD_ANALYSIS_REQUIRED")
+                    offset, limit = self._page(parsed.query, default_limit=10)
+                    self._json(
+                        query.list_repository_history(
+                            analysis_id,
+                            offset=offset,
+                            limit=limit,
+                            selected_id=parameters.get("selected_id", [None])[0],
+                        ),
+                        send_body,
+                    )
                 elif parts == ("api", "analyses"):
                     self._json(query.list_analyses(), send_body)
                 elif (
@@ -123,10 +147,16 @@ def create_server(
                     and parts[:2] == ("api", "analyses")
                     and parts[3] == "tabs"
                 ):
-                    offset, limit = self._page(parsed.query, default_limit=50)
+                    offset, limit = self._page(parsed.query, default_limit=10)
+                    parameters = parse_qs(parsed.query)
                     self._json(
                         query.get_analysis_tab(
-                            parts[2], parts[4], offset=offset, limit=limit
+                            parts[2],
+                            parts[4],
+                            offset=offset,
+                            limit=limit,
+                            query=parameters.get("query", [""])[0],
+                            artifact_type=parameters.get("type", [None])[0],
                         ),
                         send_body,
                     )
@@ -179,6 +209,25 @@ def create_server(
                         query.report_markdown(parts[2], parts[4]).encode("utf-8"),
                         "text/markdown; charset=utf-8",
                         f"{parts[4]}.md",
+                        send_body,
+                    )
+                elif (
+                    len(parts) == 4
+                    and parts[:2] == ("api", "analyses")
+                    and parts[3] == "logs"
+                ):
+                    parameters = parse_qs(parsed.query)
+                    try:
+                        limit = int(parameters.get("limit", ["10"])[0])
+                    except ValueError as error:
+                        raise DashboardBadRequest("DASHBOARD_PAGE_INVALID") from error
+                    self._json(
+                        query.list_log_cursor(
+                            parts[2],
+                            before=parameters.get("before", [None])[0],
+                            after=parameters.get("after", [None])[0],
+                            limit=limit,
+                        ),
                         send_body,
                     )
                 elif (
@@ -265,12 +314,11 @@ def create_server(
                     parameters = parse_qs(parsed.query)
                     try:
                         kind = parameters.get("kind", ["gaps"])[0]
-                        offset = int(parameters.get("offset", ["0"])[0])
-                        limit = int(parameters.get("limit", ["100"])[0])
+                        offset, limit = self._page(parsed.query, default_limit=10)
                         page = query.get_static_coverage_page(
                             parts[2], kind=kind, offset=offset, limit=limit
                         )
-                    except ValueError:
+                    except (DashboardBadRequest, ValueError):
                         self._response(
                             HTTPStatus.BAD_REQUEST,
                             b'{"error":"invalid_page"}',
@@ -337,6 +385,13 @@ def create_server(
                     )
                 else:
                     raise DashboardNotFound("DASHBOARD_ROUTE_NOT_FOUND")
+            except DashboardIndexNotReady:
+                self._response(
+                    HTTPStatus.CONFLICT,
+                    b'{"error":"index_not_ready","action":"dashboard-index rebuild"}',
+                    "application/json; charset=utf-8",
+                    send_body,
+                )
             except DashboardBadRequest:
                 self._response(
                     HTTPStatus.BAD_REQUEST,
@@ -394,13 +449,26 @@ def create_server(
         @staticmethod
         def _page(query_string: str, *, default_limit: int) -> tuple[int, int]:
             parameters = parse_qs(query_string, keep_blank_values=True)
+            page_names = ("page", "page_size", "offset", "limit")
             if any(
                 len(parameters.get(name, ())) != 1
-                for name in ("offset", "limit")
+                for name in page_names
                 if name in parameters
             ):
                 raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+            uses_page = "page" in parameters or "page_size" in parameters
+            uses_offset = "offset" in parameters or "limit" in parameters
+            if uses_page and uses_offset:
+                raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
             try:
+                if uses_page:
+                    page = int(parameters.get("page", ["1"])[0])
+                    page_size = int(
+                        parameters.get("page_size", [str(default_limit)])[0]
+                    )
+                    if page < 1 or page_size < 1:
+                        raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+                    return (page - 1) * page_size, page_size
                 return (
                     int(parameters.get("offset", ["0"])[0]),
                     int(parameters.get("limit", [str(default_limit)])[0]),

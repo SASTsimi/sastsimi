@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from collections import Counter, defaultdict
@@ -104,6 +105,34 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 1024 * 1024
 _MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACTS = 512
+_DEFAULT_PAGE_SIZE = 10
+
+
+def _page_payload(
+    items: list[dict[str, object]],
+    *,
+    total: int,
+    offset: int,
+    limit: int,
+    **extra: object,
+) -> dict[str, object]:
+    """Return the page contract while retaining legacy offset fields."""
+
+    page = offset // limit + 1
+    total_pages = (total + limit - 1) // limit if total else 0
+    return {
+        "items": items,
+        "page": page,
+        "page_size": limit,
+        "total_items": total,
+        "total_pages": total_pages,
+        "has_previous": page > 1,
+        "has_next": page < total_pages,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        **extra,
+    }
 
 
 def _default_report_export_selection(
@@ -285,6 +314,183 @@ class DashboardQuery:
                 summaries.append(summary)
         return tuple(sorted(summaries, key=lambda item: item.analysis_id))
 
+    @staticmethod
+    def _run_only_summary(run: SimpleAnalysisRun) -> AnalysisSummaryView:
+        """Represent a durable run before its first checkpoint is recorded."""
+
+        return AnalysisSummaryView(
+            analysis_id=run.analysis_id,
+            display_analysis_id=run.display_analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            current_stage="SETUP",
+            status="PENDING",
+            static_disposition=run.static_disposition,
+            completed_count=0,
+            stage_count=0,
+            hypothesis_count=len(run.hypothesis_ids),
+            finding_count=0,
+            confirmed_finding_count=None,
+            progress_percent=0,
+            repository=run.repository,
+            profile_ref=run.profile_ref,
+            provider=run.provider,
+            model=run.model,
+            started_at=run.started_at,
+            updated_at=run.started_at,
+            last_updated_at=run.started_at,
+        )
+
+    def _summary_for_analysis(self, analysis_id: str) -> AnalysisSummaryView:
+        values = list(self._checkpoints(analysis_id))
+        if values:
+            return self._project_analysis(analysis_id, values)
+        summary = next(
+            (
+                item
+                for item in self._full_runtime_summaries()
+                if item.analysis_id == analysis_id
+            ),
+            None,
+        )
+        if summary is not None:
+            return summary
+        run = self._simple_run(analysis_id)
+        if run is not None:
+            return self._run_only_summary(run)
+        raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
+
+    def list_repository_heads(self) -> tuple[dict[str, object], ...]:
+        """Return one latest analysis per repository using a SQL window."""
+
+        with self._connect() as connection:
+            if not self._table_exists(connection, "simple_analysis_runs"):
+                return tuple(
+                    {**item.model_dump(mode="json"), "history_count": 0}
+                    for item in self.list_analyses()
+                )
+            rows = connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT
+                        analysis_id,
+                        json_extract(run_json, '$.repository') AS repository,
+                        json_extract(run_json, '$.started_at') AS started_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY COALESCE(
+                                json_extract(run_json, '$.repository'), analysis_id
+                            )
+                            ORDER BY
+                                json_extract(run_json, '$.started_at') IS NULL,
+                                json_extract(run_json, '$.started_at') DESC,
+                                analysis_id DESC
+                        ) AS repository_rank,
+                        COUNT(*) OVER (
+                            PARTITION BY COALESCE(
+                                json_extract(run_json, '$.repository'), analysis_id
+                            )
+                        ) AS repository_count
+                    FROM simple_analysis_runs
+                )
+                SELECT analysis_id, repository_count - 1 AS history_count
+                FROM ranked
+                WHERE repository_rank = 1
+                ORDER BY started_at IS NULL, started_at DESC, analysis_id DESC
+                """
+            ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                summary = self._summary_for_analysis(str(row["analysis_id"]))
+            except DashboardNotFound:
+                continue
+            result.append(
+                {
+                    **summary.model_dump(mode="json"),
+                    "history_count": int(row["history_count"]),
+                }
+            )
+        return tuple(result)
+
+    def list_repository_history(
+        self,
+        analysis_id: str,
+        *,
+        offset: int = 0,
+        limit: int = _DEFAULT_PAGE_SIZE,
+        selected_id: str | None = None,
+    ) -> dict[str, object]:
+        """Page older executions for the selected analysis repository in SQL."""
+
+        if offset < 0 or not 1 <= limit <= 100:
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        exact = self._resolved(analysis_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT json_extract(run_json, '$.repository') AS repository "
+                "FROM simple_analysis_runs WHERE analysis_id = ?",
+                (exact,),
+            ).fetchone()
+            if row is None:
+                raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
+            repository = row["repository"]
+            scope = (
+                "json_extract(run_json, '$.repository') IS NULL AND analysis_id = ?"
+                if repository is None
+                else "json_extract(run_json, '$.repository') = ?"
+            )
+            scope_value = exact if repository is None else repository
+            ordered_sql = f"""
+                WITH ordered AS (
+                    SELECT
+                        analysis_id,
+                        ROW_NUMBER() OVER (
+                            ORDER BY
+                                json_extract(run_json, '$.started_at') IS NULL,
+                                json_extract(run_json, '$.started_at') DESC,
+                                analysis_id DESC
+                        ) AS position
+                    FROM simple_analysis_runs
+                    WHERE {scope}
+                )
+            """  # noqa: S608
+            total = int(
+                connection.execute(
+                    ordered_sql + " SELECT COUNT(*) FROM ordered WHERE position > 1",
+                    (scope_value,),
+                ).fetchone()[0]
+            )
+            if selected_id is not None:
+                try:
+                    selected_exact = self._resolved(selected_id)
+                except DashboardNotFound:
+                    selected_exact = selected_id
+                selected_row = connection.execute(
+                    ordered_sql + " SELECT position FROM ordered "
+                    "WHERE position > 1 AND analysis_id = ?",
+                    (scope_value, selected_exact),
+                ).fetchone()
+                if selected_row is not None:
+                    history_index = int(selected_row["position"]) - 2
+                    offset = (history_index // limit) * limit
+            rows = connection.execute(
+                ordered_sql + " SELECT analysis_id FROM ordered WHERE position > 1 "
+                "ORDER BY position LIMIT ? OFFSET ?",
+                (scope_value, limit, offset),
+            ).fetchall()
+        selected = [str(item["analysis_id"]) for item in rows]
+        items = [
+            self._summary_for_analysis(item).model_dump(mode="json")
+            for item in selected
+        ]
+        return _page_payload(
+            items,
+            total=total,
+            offset=offset,
+            limit=limit,
+            repository=repository,
+        )
+
     def get_analysis(self, analysis_id: str) -> AnalysisDetailView:
         try:
             analysis_id = self._resolve_analysis_id(analysis_id)
@@ -293,17 +499,9 @@ class DashboardQuery:
         self._validate_analysis_id(analysis_id)
         values = self._checkpoints(analysis_id)
         if not values:
-            summary = next(
-                (
-                    item
-                    for item in self._full_runtime_summaries()
-                    if item.analysis_id == analysis_id
-                ),
-                None,
+            return AnalysisDetailView(
+                **self._summary_for_analysis(analysis_id).model_dump()
             )
-            if summary is None:
-                raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
-            return AnalysisDetailView(**summary.model_dump())
         return self._project_analysis(analysis_id, list(values), detail=True)
 
     def get_analysis_shell(self, analysis_id: str) -> DashboardShellView:
@@ -311,17 +509,7 @@ class DashboardQuery:
         exact = self._resolved(analysis_id)
         values = list(self._checkpoints(exact))
         if not values:
-            summary = next(
-                (
-                    item
-                    for item in self._full_runtime_summaries()
-                    if item.analysis_id == exact
-                ),
-                None,
-            )
-            if summary is None:
-                raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
-            return DashboardShellView(**summary.model_dump())
+            return DashboardShellView(**self._summary_for_analysis(exact).model_dump())
         summary = self._project_analysis(exact, values)
         run = self._simple_run(exact)
         groups = self._hypothesis_groups(values)
@@ -364,8 +552,53 @@ class DashboardQuery:
         analysis_id: str,
         tab: str,
         *,
+        offset: int = _DEFAULT_PAGE_SIZE - _DEFAULT_PAGE_SIZE,
+        limit: int = _DEFAULT_PAGE_SIZE,
+        query: str = "",
+        artifact_type: str | None = None,
+    ) -> dict[str, object]:
+        """Read indexed lists from SQLite; source projection is an explicit fallback."""
+        if (
+            type(offset) is not int
+            or type(limit) is not int
+            or offset < 0
+            or not 1 <= limit <= 200
+        ):
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        if tab in {"findings", "coverage", "artifacts", "llm", "outputs"}:
+            if (
+                os.environ.get("SASTSIMI_DASHBOARD_INDEX_MODE", "database").lower()
+                != "source"
+            ):
+                from .read_model import DashboardReadModel
+
+                exact = self._resolved(analysis_id)
+                return DashboardReadModel(self._data_dir).page(
+                    exact,
+                    tab,
+                    offset=offset,
+                    limit=limit,
+                    query=query,
+                    artifact_type=artifact_type,
+                )
+        return self._get_analysis_tab_from_source(
+            analysis_id,
+            tab,
+            offset=offset,
+            limit=limit,
+            query=query,
+            artifact_type=artifact_type,
+        )
+
+    def _get_analysis_tab_from_source(
+        self,
+        analysis_id: str,
+        tab: str,
+        *,
         offset: int = 0,
-        limit: int = 50,
+        limit: int = _DEFAULT_PAGE_SIZE,
+        query: str = "",
+        artifact_type: str | None = None,
     ) -> dict[str, object]:
         """Build only the selected tab's projection."""
         if tab not in {
@@ -392,18 +625,24 @@ class DashboardQuery:
         if not values and run is None:
             raise DashboardNotFound("DASHBOARD_ANALYSIS_NOT_FOUND")
         if not values:
-            return {
-                "tab": tab,
-                "items": [],
-                "total": 0,
-                "offset": offset,
-                "limit": limit,
-            }
+            return _page_payload([], total=0, offset=offset, limit=limit, tab=tab)
 
         groups = self._hypothesis_groups(values)
         hypotheses = tuple(
             self._project_hypothesis(exact, hypothesis_id, checkpoints, run)
             for hypothesis_id, checkpoints in sorted(groups.items())
+        )
+        # Stable pages: latest updates first, then hypothesis ID.
+        hypotheses = tuple(
+            sorted(
+                sorted(hypotheses, key=lambda item: item.hypothesis_id),
+                key=lambda item: (
+                    item.updated_at.timestamp()
+                    if item.updated_at is not None
+                    else float("-inf")
+                ),
+                reverse=True,
+            )
         )
         reports = self._reports(exact)
         coverage = self._static_coverage_projection(values)
@@ -459,40 +698,112 @@ class DashboardQuery:
 
         if tab == "findings":
             finding_page = hypotheses[offset : offset + limit]
-            return {
-                "tab": tab,
-                "items": [item.model_dump(mode="json") for item in finding_page],
-                "total": len(hypotheses),
-                "offset": offset,
-                "limit": limit,
-                "finding_traces": [item.model_dump(mode="json") for item in traces],
-            }
+            page_hypothesis_ids = {item.hypothesis_id for item in finding_page}
+            return _page_payload(
+                [item.model_dump(mode="json") for item in finding_page],
+                total=len(hypotheses),
+                offset=offset,
+                limit=limit,
+                tab=tab,
+                finding_traces=[
+                    item.model_dump(mode="json")
+                    for item in traces
+                    if item.hypothesis_id in page_hypothesis_ids
+                ],
+                summary={
+                    "verdict_counts": dict(
+                        Counter(item.verdict or item.status for item in hypotheses)
+                    )
+                },
+            )
         if tab == "coverage":
             static_tools = self._static_tools(run, values, coverage) if run else ()
-            return {
-                "tab": tab,
+            static_findings = tuple(
+                sorted(
+                    self._static_tool_findings(contents),
+                    key=lambda item: (item.location, item.rule_ids, item.tools),
+                )
+            )
+            static_finding_page = static_findings[offset : offset + limit]
+            return _page_payload(
+                [item.model_dump(mode="json") for item in static_finding_page],
+                total=len(static_findings),
+                offset=offset,
+                limit=limit,
+                tab=tab,
                 **coverage,
-                "static_tools": [item.model_dump(mode="json") for item in static_tools],
-                "static_tool_findings": [
-                    item.model_dump(mode="json")
-                    for item in self._static_tool_findings(contents)
+                static_tools=[item.model_dump(mode="json") for item in static_tools],
+                static_tool_findings=[
+                    item.model_dump(mode="json") for item in static_finding_page
                 ],
-            }
+                summary={"result_count": len(static_findings)},
+            )
         if tab == "artifacts":
-            artifact_page = artifacts[offset : offset + limit]
-            return {
-                "tab": tab,
-                "items": [item.model_dump(mode="json") for item in artifact_page],
-                "total": len(artifacts),
-                "offset": offset,
-                "limit": limit,
-                "omitted_count": omitted,
-                "projection_complete": omitted == 0,
-                "relations": [
+            search = query.strip().casefold()
+            filtered_artifacts = tuple(
+                item
+                for item in artifacts
+                if (
+                    not artifact_type
+                    or artifact_type == item.kind
+                    or artifact_type == item.data_kind
+                )
+                and (
+                    not search
+                    or search
+                    in " ".join(
+                        (
+                            item.artifact_id,
+                            item.label_ko or "",
+                            item.kind,
+                            item.purpose_ko or "",
+                            *item.stages,
+                            *item.agent_roles,
+                            *item.hypothesis_ids,
+                        )
+                    ).casefold()
+                )
+            )
+            filtered_artifacts = tuple(
+                sorted(
+                    sorted(filtered_artifacts, key=lambda item: item.artifact_id),
+                    key=lambda item: (
+                        item.created_at.timestamp()
+                        if item.created_at is not None
+                        else float("-inf")
+                    ),
+                    reverse=True,
+                )
+            )
+            artifact_page = filtered_artifacts[offset : offset + limit]
+            page_artifact_ids = {item.artifact_id for item in artifact_page}
+            return _page_payload(
+                [item.model_dump(mode="json") for item in artifact_page],
+                total=len(filtered_artifacts),
+                offset=offset,
+                limit=limit,
+                tab=tab,
+                omitted_count=omitted,
+                projection_complete=omitted == 0,
+                relations=[
                     item.model_dump(mode="json")
                     for item in self._artifact_relations(contents)
+                    if item.source_artifact_id in page_artifact_ids
+                    or item.target_artifact_id in page_artifact_ids
                 ],
-            }
+                summary={
+                    "kind_counts": dict(
+                        Counter(item.kind for item in filtered_artifacts)
+                    ),
+                    "stage_counts": dict(
+                        Counter(
+                            stage
+                            for item in filtered_artifacts
+                            for stage in item.stages
+                        )
+                    ),
+                },
+            )
         if tab == "llm":
             by_hypothesis: dict[str, tuple[str, ...]] = {
                 item.hypothesis_id: (item.display_id,)
@@ -507,14 +818,39 @@ class DashboardQuery:
                 )
                 for item in invocations
             )
+            enriched = tuple(
+                sorted(
+                    sorted(enriched, key=lambda item: item.invocation_id),
+                    key=lambda item: (
+                        item.started_at.timestamp()
+                        if item.started_at is not None
+                        else float("-inf")
+                    ),
+                    reverse=True,
+                )
+            )
             invocation_page = enriched[offset : offset + limit]
-            return {
-                "tab": tab,
-                "items": [item.model_dump(mode="json") for item in invocation_page],
-                "total": len(enriched),
-                "offset": offset,
-                "limit": limit,
-            }
+            return _page_payload(
+                [item.model_dump(mode="json") for item in invocation_page],
+                total=len(enriched),
+                offset=offset,
+                limit=limit,
+                tab=tab,
+                summary={
+                    "status_counts": dict(Counter(item.status for item in enriched)),
+                    "input_tokens": (
+                        sum(item.input_tokens or 0 for item in enriched)
+                        if all(item.input_tokens is not None for item in enriched)
+                        else None
+                    ),
+                    "output_tokens": (
+                        sum(item.output_tokens or 0 for item in enriched)
+                        if all(item.output_tokens is not None for item in enriched)
+                        else None
+                    ),
+                    "retry_count": sum(item.retry_count for item in enriched),
+                },
+            )
         output_artifact_ids = set(poc_ids) | set(evidence_ids)
         output_artifacts = tuple(
             item for item in artifacts if item.artifact_id in output_artifact_ids
@@ -556,15 +892,73 @@ class DashboardQuery:
                         )
             except (OSError, ValueError, sqlite3.Error, LookupError):
                 pass
-        return {
-            "tab": tab,
-            "reports": [item.model_dump(mode="json") for item in reports],
-            "finding_groups": group_rows,
-            "finding_traces": [item.model_dump(mode="json") for item in traces],
-            "artifacts": [item.model_dump(mode="json") for item in output_artifacts],
-            "poc_artifact_ids": list(poc_ids),
-            "evidence_artifact_ids": list(evidence_ids),
+        output_items: list[dict[str, object]] = [
+            {
+                "output_type": "artifact",
+                "artifact": item.model_dump(mode="json"),
+                "report": None,
+            }
+            for item in output_artifacts
+        ] + [
+            {
+                "output_type": "report",
+                "artifact": None,
+                "report": item.model_dump(mode="json"),
+            }
+            for item in reports
+        ]
+        selected_outputs = output_items[offset : offset + limit]
+        selected_artifacts = [
+            item["artifact"]
+            for item in selected_outputs
+            if item["output_type"] == "artifact"
+        ]
+        selected_reports = [
+            item["report"]
+            for item in selected_outputs
+            if item["output_type"] == "report"
+        ]
+        page_artifact_ids = {
+            str(item["artifact_id"])
+            for item in selected_artifacts
+            if isinstance(item, dict) and "artifact_id" in item
         }
+        page_report_ids = {
+            str(item["display_id"])
+            for item in selected_reports
+            if isinstance(item, dict) and "display_id" in item
+        }
+        page_traces = [
+            item.model_dump(mode="json")
+            for item in traces
+            if item.display_id in page_report_ids
+            or bool(page_artifact_ids.intersection(item.artifact_ids))
+        ]
+        page_groups = [
+            row
+            for row in group_rows
+            if set(cast(list[str], row.get("member_ids", []))) <= page_report_ids
+        ]
+        return _page_payload(
+            selected_outputs,
+            total=len(output_items),
+            offset=offset,
+            limit=limit,
+            tab=tab,
+            reports=selected_reports,
+            finding_groups=page_groups,
+            finding_traces=page_traces,
+            artifacts=selected_artifacts,
+            poc_artifact_ids=[item for item in poc_ids if item in page_artifact_ids],
+            evidence_artifact_ids=[
+                item for item in evidence_ids if item in page_artifact_ids
+            ],
+            summary={
+                "poc_count": len(poc_ids),
+                "evidence_count": len(evidence_ids),
+                "report_count": len(reports),
+            },
+        )
 
     def get_llm_invocation(
         self, analysis_id: str, invocation_id: str
@@ -758,6 +1152,73 @@ class DashboardQuery:
             "total": total,
             "offset": offset,
             "limit": limit,
+        }
+
+    def list_log_cursor(
+        self,
+        analysis_id: str,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, object]:
+        """Return stable rowid-keyset pages without OFFSET drift."""
+        if before is not None and after is not None:
+            raise DashboardBadRequest("DASHBOARD_LOG_CURSOR_AMBIGUOUS")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
+        cursor_text = before if before is not None else after
+        if cursor_text is not None and (
+            not cursor_text.isascii()
+            or not cursor_text.isdigit()
+            or int(cursor_text) < 1
+        ):
+            raise DashboardBadRequest("DASHBOARD_LOG_CURSOR_INVALID")
+        exact = self._resolved(analysis_id)
+        with self._connect() as connection:
+            if not self._table_exists(connection, "agent_activity_events"):
+                return {
+                    "items": [],
+                    "next_cursor": None,
+                    "latest_cursor": None,
+                    "has_more": False,
+                    "page_size": limit,
+                }
+            values: list[object] = [exact]
+            predicate = "analysis_id = ?"
+            order = "rowid DESC"
+            if before is not None:
+                predicate += " AND rowid < ?"
+                values.append(int(before))
+            elif after is not None:
+                predicate += " AND rowid > ?"
+                values.append(int(after))
+                order = "rowid ASC"
+            rows = connection.execute(
+                f"SELECT rowid,event_json FROM agent_activity_events "
+                f"WHERE {predicate} ORDER BY {order} LIMIT ?",
+                [*values, limit + 1],
+            ).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items: list[dict[str, object]] = []
+        rowids: list[int] = []
+        for row in rows:
+            try:
+                event = AgentActivityEvent.model_validate_json(row["event_json"])
+            except ValueError:
+                continue
+            value = self._activity_view(event).model_dump(mode="json")
+            value["cursor"] = str(row["rowid"])
+            items.append(value)
+            rowids.append(int(row["rowid"]))
+        return {
+            "items": items,
+            "next_cursor": str(min(rowids)) if rowids else before,
+            "latest_cursor": str(max(rowids)) if rowids else after,
+            "has_more": has_more,
+            "page_size": limit,
+            "direction": "newer" if after is not None else "older",
         }
 
     @staticmethod
@@ -2446,13 +2907,22 @@ class DashboardQuery:
         coverage, digest = loaded
         items = coverage.get(kinds[kind], [])
         assert isinstance(items, list)
+        total = len(items)
+        page = offset // limit + 1
+        total_pages = (total + limit - 1) // limit if total else 0
         return StaticCoveragePageView(
             kind=kind,
-            total=len(items),
+            items=tuple(items[offset : offset + limit]),
+            page=page,
+            page_size=limit,
+            total_items=total,
+            total_pages=total_pages,
+            has_previous=page > 1,
+            has_next=page < total_pages,
+            coverage_digest=digest,
+            total=total,
             offset=offset,
             limit=limit,
-            coverage_digest=digest,
-            items=tuple(items[offset : offset + limit]),
         )
 
     def _validated_static_coverage(

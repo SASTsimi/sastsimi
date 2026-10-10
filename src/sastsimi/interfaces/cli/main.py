@@ -18,6 +18,7 @@ from sastsimi.interfaces.cli import capability as capability_command
 from sastsimi.interfaces.cli import codeql as codeql_command
 from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import dashboard as dashboard_command
+from sastsimi.interfaces.cli import dashboard_index as dashboard_index_command
 from sastsimi.interfaces.cli import local_evaluation as local_evaluation_command
 from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli import public as public_command
@@ -247,6 +248,24 @@ def main(
     )
     dashboard_parser.add_argument("--host", default="127.0.0.1")
     dashboard_parser.add_argument("--port", type=int, default=8765)
+    dashboard_index_parser = subparsers.add_parser(
+        "dashboard-index",
+        help="explicitly rebuild the dashboard list read model",
+        allow_abbrev=False,
+    )
+    dashboard_index_commands = dashboard_index_parser.add_subparsers(
+        dest="dashboard_index_command", required=True
+    )
+    dashboard_index_rebuild = dashboard_index_commands.add_parser(
+        "rebuild", allow_abbrev=False
+    )
+    dashboard_index_scope = dashboard_index_rebuild.add_mutually_exclusive_group(
+        required=True
+    )
+    dashboard_index_scope.add_argument("--analysis-id")
+    dashboard_index_scope.add_argument("--all", action="store_true")
+    dashboard_index_rebuild.add_argument("--dry-run", action="store_true")
+    dashboard_index_rebuild.add_argument("--format", choices=["text", "json"])
     analyze_parser = subparsers.add_parser(
         "analyze", help="run a production repository analysis", allow_abbrev=False
     )
@@ -577,6 +596,23 @@ def main(
                 revision=revision,
             )
             return int(ExitCode.OK)
+        if args.command == "dashboard-index":
+            command_name = "dashboard-index rebuild"
+            data = dashboard_index_command.run(
+                config.data_dir,
+                analysis_id=args.analysis_id,
+                rebuild_all_analyses=args.all,
+                dry_run=args.dry_run,
+            )
+            code = ExitCode.OK if data["status"] != "PARTIAL" else ExitCode.RUN_FAILED
+            emit_data(
+                output_format,
+                sys.stdout if code == ExitCode.OK else sys.stderr,
+                command=command_name,
+                data=data,
+                code=code,
+            )
+            return int(code)
         if args.command == "dashboard":
             command_name = "dashboard"
             dashboard_command.run(config.data_dir, args.host, args.port)
