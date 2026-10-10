@@ -49,6 +49,7 @@ from .models import (
     terminal_poc_outcome,
 )
 from .poc_currentness import poc_source_current
+from .poc_observation import exit_one_claim_interpreted_inconclusive
 
 _MAX_CONTEXT_BYTES = 256 * 1024
 _INITIAL_ENVIRONMENT_BLOCK_KIND = "simple_initial_environment_block_v1"
@@ -667,6 +668,20 @@ class SimpleArtifactRepository:
                 if isinstance(interpretation, dict)
                 else None
             )
+            exit_one_claim = False
+            if (
+                isinstance(execution, dict)
+                and type(execution.get("exit_code")) is int
+                and execution["exit_code"] == 1
+            ):
+                if len(checkpoint.output_refs) != 3:
+                    raise ValueError("POC_TERMINAL_EVIDENCE_INVALID")
+                stdout_ref = StoredDataRef.model_validate(execution.get("stdout_ref"))
+                stderr_ref = StoredDataRef.model_validate(execution.get("stderr_ref"))
+                exit_one_claim = exit_one_claim_interpreted_inconclusive(
+                    self.read_bounded(stdout_ref, 4096),
+                    self.read_bounded(stderr_ref, 4096),
+                )
             if (
                 not isinstance(execution, dict)
                 or not isinstance(interpretation, dict)
@@ -677,6 +692,7 @@ class SimpleArtifactRepository:
                 or execution.get("timed_out") is not False
                 or type(execution.get("exit_code")) is not int
                 or execution.get("exit_code") != 0
+                and not exit_one_claim
                 or interpretation.get("kind") != "simple_dynamic_interpretation"
                 or interpretation.get("execution_ref")
                 != execution_ref.model_dump(mode="json")
@@ -689,6 +705,8 @@ class SimpleArtifactRepository:
                     or cleanup.get("attempt_id") != checkpoint.attempt_id
                     or cleanup.get("container_id") != checkpoint.container_id
                     or cleanup.get("status") != "REMOVED"
+                    or exit_one_claim
+                    and cleanup.get("container_id") != execution.get("container_id")
                 )
             ):
                 raise ValueError("POC_TERMINAL_EVIDENCE_INVALID")

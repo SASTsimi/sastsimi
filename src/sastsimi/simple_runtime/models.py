@@ -114,6 +114,7 @@ class SimpleAnalysisRun(ContractModel):
     candidate_pipeline_version: int | None = None
     candidate_scope_fingerprint: str | None = None
     candidate_terminal: CandidateTerminal | None = None
+    surface_supplement_plan_ref: StoredDataRef | None = None
     hypothesis_ids: tuple[str, ...] = ()
     parent_hypothesis_ids: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     chain_depths: dict[str, int] = Field(default_factory=dict)

@@ -314,6 +314,11 @@ function renderOverview(shell) {
       else legacyMetrics.push(["보안 surface", "coverage 확인 불가"]);
     } else legacyMetrics.push(["보안 surface", "coverage 확인 불가"]);
     box.append(el("div", "현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
+    if (shell.status === "PARTIAL") {
+      const countsKnown = Number.isInteger(surface?.total) && ["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key])) && surface.covered + surface.uncovered + surface.insufficient === surface.total;
+      const scope = countsKnown ? ` · 보안 표면 근거 충족 ${surface.covered}/${surface.total} · 근거 부족 ${surface.insufficient}${surface.uncovered ? ` · 미검토 ${surface.uncovered}` : ""}` : " · 보안 표면 근거 미확인";
+      box.append(el("div", `실행 종료${scope} · 전체 분석은 PARTIAL`, "warning"));
+    }
     if ((shell.phase_counts?.surface?.uncovered || 0) > 0 || (shell.phase_counts?.surface?.insufficient || 0) > 0) box.append(el("div", "부분 분석: 보안 surface 검토 범위가 남아 있습니다.", "warning"));
   }
   legacyMetrics.forEach(([label, value]) => { const metric = el("div", undefined, "metric"); metric.append(el("span", label, "meta"), el("strong", value)); metrics.append(metric); });

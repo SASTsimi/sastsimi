@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -47,6 +48,7 @@ class _PublicApplication:
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
+        **_kwargs: Any,
     ) -> dict[str, object]:
         del (
             repair_exhausted_hypothesis,
@@ -139,6 +141,7 @@ class _BusyPublicApplication(_PublicApplication):
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
+        **_kwargs: object,
     ) -> dict[str, object]:
         del (
             repair_exhausted_hypothesis,
@@ -183,6 +186,7 @@ class _RepairPublicApplication(_PublicApplication):
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
+        **_kwargs: object,
     ) -> dict[str, object]:
         del (
             repair_fallback_poc_stop_hypothesis,
@@ -250,6 +254,180 @@ def test_repair_flag_reaches_json_and_progress_resume(
     ]
 
 
+def test_initial_environment_replay_flag_routes_json_and_progress(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _InitialReplayApplication(_PublicApplication):
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str | None]] = []
+
+        def resume(
+            self,
+            analysis_id: str,
+            *,
+            repair_initial_environment_exhaustion_hypothesis: str | None = None,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            self.calls.append(
+                (
+                    "plain",
+                    analysis_id,
+                    repair_initial_environment_exhaustion_hypothesis,
+                )
+            )
+            return super().resume(analysis_id)
+
+        def resume_with_progress(
+            self,
+            analysis_id: str,
+            _callback: Callable[[ProgressSnapshot], None],
+            *,
+            repair_initial_environment_exhaustion_hypothesis: str | None = None,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            self.calls.append(
+                (
+                    "progress",
+                    analysis_id,
+                    repair_initial_environment_exhaustion_hypothesis,
+                )
+            )
+            return super().resume(analysis_id)
+
+    application = _InitialReplayApplication()
+    arguments = [
+        "resume",
+        "A-001",
+        "--repair-initial-environment-exhaustion",
+        "hypothesis-1",
+    ]
+    assert (
+        main(
+            [*arguments, "--format", "json"],
+            public_application=application,
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "COMPLETE"
+    assert (
+        main(
+            arguments,
+            public_application=application,
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert application.calls == [
+        ("plain", "A-001", "hypothesis-1"),
+        ("progress", "A-001", "hypothesis-1"),
+    ]
+
+
+def test_initial_environment_replay_integrity_failure_is_clear(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _InvalidInitialReplay(_PublicApplication):
+        def resume(
+            self,
+            analysis_id: str,
+            *,
+            repair_initial_environment_exhaustion_hypothesis: str | None = None,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            del analysis_id, repair_initial_environment_exhaustion_hypothesis
+            raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_ROOT_BOUND_INVALID")
+
+    code = main(
+        [
+            "resume",
+            "A-001",
+            "--repair-initial-environment-exhaustion",
+            "hypothesis-1",
+            "--format",
+            "json",
+        ],
+        public_application=_InvalidInitialReplay(),
+        user_config_store=_config(tmp_path),
+    )
+    assert code == int(ExitCode.INTEGRITY_ERROR)
+    assert (
+        "INITIAL_ENVIRONMENT_EXHAUSTION_ROOT_BOUND_INVALID" in capsys.readouterr().err
+    )
+
+
+def test_interrupted_initial_replay_flag_routes_json_and_progress(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _InterruptedReplayApplication(_PublicApplication):
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str | None]] = []
+
+        def resume(
+            self,
+            analysis_id: str,
+            *,
+            repair_interrupted_initial_exhaustion_hypothesis: str | None = None,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            self.calls.append(
+                (
+                    "plain",
+                    analysis_id,
+                    repair_interrupted_initial_exhaustion_hypothesis,
+                )
+            )
+            return super().resume(analysis_id)
+
+        def resume_with_progress(
+            self,
+            analysis_id: str,
+            _callback: Callable[[ProgressSnapshot], None],
+            *,
+            repair_interrupted_initial_exhaustion_hypothesis: str | None = None,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            self.calls.append(
+                (
+                    "progress",
+                    analysis_id,
+                    repair_interrupted_initial_exhaustion_hypothesis,
+                )
+            )
+            return super().resume(analysis_id)
+
+    application = _InterruptedReplayApplication()
+    arguments = [
+        "resume",
+        "A-002",
+        "--repair-interrupted-initial-exhaustion",
+        "hypothesis-1",
+    ]
+    assert (
+        main(
+            [*arguments, "--format", "json"],
+            public_application=application,
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "COMPLETE"
+    assert (
+        main(
+            arguments,
+            public_application=application,
+            user_config_store=_config(tmp_path),
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert application.calls == [
+        ("plain", "A-002", "hypothesis-1"),
+        ("progress", "A-002", "hypothesis-1"),
+    ]
+
+
 def test_legacy_import_stop_flag_reaches_json_and_progress_resume(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -295,6 +473,7 @@ def test_legacy_import_stop_integrity_failure_is_clear(
             repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
             repair_poc_sensitive_content_hypothesis: str | None = None,
             repair_report_validator_hypothesis: str | None = None,
+            **_kwargs: object,
         ) -> dict[str, object]:
             del (
                 analysis_id,

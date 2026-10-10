@@ -35,6 +35,16 @@ _HIDDEN_REASONING = re.compile(
 _URL_TOKEN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _DOTTED_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+){1,3}\b(?!\.\d)", re.IGNORECASE)
 _IPV4_TOKEN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)")
+_PUBLIC_DISCLOSURE = re.compile(r"\bpublic\s+disclosure\b", re.IGNORECASE)
+_DENIED_PUBLIC_DISCLOSURE = re.compile(
+    r"\bdoes\s+not\s+establish\s+permission\s+for\s+"
+    r"(?P<direct>public\s+disclosure)"
+    r"(?:\s+or\s+live-host\s+testing)?\s*\.?\s*\Z"
+    r"|\bno\s+permission\s+for\s+"
+    r"(?:(?:[a-z-]+\s+){1,4}or\s+)?"
+    r"(?P<indirect>public\s+disclosure)\s+is\s+established\s*\.?\s*\Z",
+    re.IGNORECASE,
+)
 _NETWORK_ENDPOINT_PREFIX = re.compile(
     r"\b(?:ip(?:v4)?(?:\s+address)?|address|host|binds?|bound|listens?|"
     r"connects?|endpoint|loopback|server\s+defaults?\s+to)\b"
@@ -57,11 +67,17 @@ _ENDPOINT_NOUN_SUFFIX = re.compile(
 _VERSION_ROLE_SUFFIX = re.compile(
     r"\b(?:versions?|releases?|builds?)\b|(?:버전|릴리스|빌드)", re.IGNORECASE
 )
+_TESTED_RISK_SETTING = re.compile(
+    r"\b(?:same|identical)\s+payload\s+at\s+"
+    r"(?P<risk>low\s+risk)\s+did\s+not\b",
+    re.IGNORECASE,
+)
 _UNSUPPORTED_ADVISORY_CLAIMS = (
     re.compile(r"\bcvss\b[^\n]{0,32}?\d+(?:\.\d+)?", re.IGNORECASE),
     re.compile(
         r"\b(?:critical|high|moderate|medium|low)[ -]?"
-        r"(?:severity|risk|vulnerability)\b",
+        r"(?:severity|vulnerability|"
+        r"risk(?!\s+(?:payload|control|vulnerable-mode\s+route)\b))\b",
         re.IGNORECASE,
     ),
     re.compile(r"(?<![\w./:-])v\d+(?:\.\d+){1,3}\b", re.IGNORECASE),
@@ -101,7 +117,6 @@ _UNSUPPORTED_ADVISORY_CLAIMS = (
     ),
     re.compile(
         r"\b(?:safe|ready)\s+to\s+(?:publish|disclose|submit)\b"
-        r"|\bpublic\s+disclosure\b"
         r"|(?:공개\s*)?(?:제보|공개)(?:가|이)?\s*가능"
         r"(?:합니다|하다|함|하다고|해졌)",
         re.IGNORECASE,
@@ -162,11 +177,30 @@ def _reject_unverified_advisory_claims(content: BilingualReportContent) -> None:
                 ),
                 claim_text,
             )
-            if any(
-                pattern.search(claim_text) for pattern in _UNSUPPORTED_ADVISORY_CLAIMS
-            ) or any(
-                not _is_network_ipv4(claim_text, match)
-                for match in _DOTTED_VERSION_TOKEN.finditer(claim_text)
+            denied_disclosures = {
+                match.start(group)
+                for match in _DENIED_PUBLIC_DISCLOSURE.finditer(claim_text)
+                for group in ("direct", "indirect")
+                if match.start(group) >= 0
+            }
+            tested_risk_spans = {
+                match.span("risk")
+                for match in _TESTED_RISK_SETTING.finditer(claim_text)
+            }
+            if (
+                any(
+                    match.span() not in tested_risk_spans
+                    for pattern in _UNSUPPORTED_ADVISORY_CLAIMS
+                    for match in pattern.finditer(claim_text)
+                )
+                or any(
+                    match.start() not in denied_disclosures
+                    for match in _PUBLIC_DISCLOSURE.finditer(claim_text)
+                )
+                or any(
+                    not _is_network_ipv4(claim_text, match)
+                    for match in _DOTTED_VERSION_TOKEN.finditer(claim_text)
+                )
             ):
                 raise ValueError("REPORT_UNSUPPORTED_METADATA_CLAIM")
 
@@ -250,6 +284,27 @@ def has_legacy_report_ipv4_false_positive(content: BilingualReportContent) -> bo
                     or _KOREAN_LISTENER_PREFIX.search(prefix)
                 ):
                     return True
+    return False
+
+
+def has_report_validator_false_positive(content: BilingualReportContent) -> bool:
+    """Identify narrowly proven historical false alarms in valid report prose."""
+
+    for prose in (content.en, content.ko):
+        for value in (
+            prose.title,
+            prose.summary,
+            prose.details,
+            prose.impact,
+            prose.recommendation,
+            *prose.limitations,
+            *prose.review_items,
+        ):
+            claim_text = _URL_TOKEN.sub(" ", value)
+            if _DENIED_PUBLIC_DISCLOSURE.search(
+                claim_text
+            ) or _TESTED_RISK_SETTING.search(claim_text):
+                return True
     return False
 
 

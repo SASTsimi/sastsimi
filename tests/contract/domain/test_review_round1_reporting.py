@@ -1,5 +1,6 @@
 import pytest
 
+from sastsimi.contracts import reporting
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
@@ -174,6 +175,77 @@ def test_report_v2_rejects_paraphrased_advisory_claims() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "experimental_observation",
+    [
+        "We tested the high-risk vulnerable-mode route in isolation.",
+        (
+            "The high-risk payload created an isolated marker; "
+            "the low-risk control did not."
+        ),
+        "A local GET /extract request at risk 3 used the low-risk control.",
+        (
+            "A crafted payload wrote an isolated marker, while the same payload "
+            "at low risk did not."
+        ),
+    ],
+)
+def test_report_v2_keeps_tested_risk_conditions_without_severity_claim(
+    experimental_observation: str,
+) -> None:
+    value = _bilingual_report()
+    prose = value["en"]
+    assert isinstance(prose, dict)
+    prose["details"] = experimental_observation
+
+    content = parse_validated_report_content(
+        canonical_bytes(value), allowed_locations=(_report_location(),)
+    )
+
+    assert isinstance(content, BilingualReportContent)
+    assert content.en.details == experimental_observation
+
+
+def test_report_v2_identifies_tested_risk_setting_as_false_positive() -> None:
+    value = _bilingual_report()
+    prose = value["en"]
+    assert isinstance(prose, dict)
+    prose["details"] = (
+        "A crafted payload wrote an isolated marker, while the same payload "
+        "at low risk did not."
+    )
+    content = BilingualReportContent.model_validate_json(canonical_bytes(value))
+
+    assert reporting.has_report_validator_false_positive(content)
+
+
+@pytest.mark.parametrize(
+    "unsupported_claim",
+    [
+        "This is a high-risk vulnerability.",
+        "This is a high-severity vulnerability.",
+        "The high-risk payload was tested; this is a high-risk vulnerability.",
+        "Users at high risk did not receive an alert.",
+        "The same payload at low risk remains vulnerable.",
+        "The CVSS score is 9.8.",
+        "Affected versions 1.2.3 remain vulnerable.",
+        "Public disclosure has been approved.",
+    ],
+)
+def test_report_v2_rejects_metadata_claim_even_with_risk_context(
+    unsupported_claim: str,
+) -> None:
+    value = _bilingual_report()
+    prose = value["en"]
+    assert isinstance(prose, dict)
+    prose["details"] = unsupported_claim
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        parse_validated_report_content(
+            canonical_bytes(value), allowed_locations=(_report_location(),)
+        )
+
+
 def test_report_v2_keeps_uncertain_disclosure_wording() -> None:
     value = _bilingual_report()
     prose = value["ko"]
@@ -186,6 +258,124 @@ def test_report_v2_keeps_uncertain_disclosure_wording() -> None:
 
     assert isinstance(content, BilingualReportContent)
     assert content.ko.review_items == ("공개 가능 여부는 확인되지 않았습니다.",)
+
+
+@pytest.mark.parametrize(
+    "limitation",
+    [
+        "This finding does not establish permission for public disclosure.",
+        "No permission for live-host testing or public disclosure is established.",
+    ],
+)
+def test_report_v2_keeps_explicit_denials_of_public_disclosure(
+    limitation: str,
+) -> None:
+    value = _bilingual_report()
+    prose = value["en"]
+    assert isinstance(prose, dict)
+    prose["limitations"] = [limitation]
+
+    content = parse_validated_report_content(
+        canonical_bytes(value), allowed_locations=(_report_location(),)
+    )
+
+    assert isinstance(content, BilingualReportContent)
+    assert content.en.limitations == (limitation,)
+
+
+def test_report_v2_rejects_affirmative_public_disclosure_claim() -> None:
+    value = _bilingual_report()
+    prose = value["en"]
+    assert isinstance(prose, dict)
+    prose["limitations"] = ["Public disclosure has been approved."]
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        parse_validated_report_content(
+            canonical_bytes(value), allowed_locations=(_report_location(),)
+        )
+
+
+def test_report_v2_rejects_approval_after_disclosure_denial() -> None:
+    value = _bilingual_report()
+    prose = value["en"]
+    assert isinstance(prose, dict)
+    prose["limitations"] = [
+        "No permission for public disclosure is established. "
+        "Public disclosure has been approved."
+    ]
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        parse_validated_report_content(
+            canonical_bytes(value), allowed_locations=(_report_location(),)
+        )
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        (
+            "This does not establish permission for public disclosure, "
+            "which is now permitted."
+        ),
+        "No permission for live-host testing; public disclosure is established.",
+    ],
+)
+def test_report_v2_rejects_permission_claim_after_denial(claim: str) -> None:
+    value = _bilingual_report()
+    prose = value["en"]
+    assert isinstance(prose, dict)
+    prose["limitations"] = [claim]
+
+    with pytest.raises(ValueError, match="REPORT_UNSUPPORTED_METADATA_CLAIM"):
+        parse_validated_report_content(
+            canonical_bytes(value), allowed_locations=(_report_location(),)
+        )
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "This finding does not establish permission for public disclosure.",
+        "No permission for live-host testing or public disclosure is established.",
+    ],
+)
+def test_report_v2_identifies_validator_false_positive_prose(prose: str) -> None:
+    value = _bilingual_report()
+    en = value["en"]
+    assert isinstance(en, dict)
+    en["limitations"] = [prose]
+    content = parse_validated_report_content(
+        canonical_bytes(value), allowed_locations=(_report_location(),)
+    )
+
+    predicate = getattr(reporting, "has_report_validator_false_positive", None)
+    assert callable(predicate)
+    assert predicate(content)
+
+
+def test_report_v2_does_not_mark_neutral_prose_as_validator_false_positive() -> None:
+    content = parse_validated_report_content(
+        canonical_bytes(_bilingual_report()),
+        allowed_locations=(_report_location(),),
+    )
+
+    predicate = getattr(reporting, "has_report_validator_false_positive", None)
+    assert callable(predicate)
+    assert not predicate(content)
+
+
+def test_report_v2_does_not_mark_authorization_prose_as_replayable() -> None:
+    value = _bilingual_report()
+    en = value["en"]
+    assert isinstance(en, dict)
+    en["summary"] = (
+        "Missing authorization: with delegated access enabled, requests proceed."
+    )
+    content = BilingualReportContent.model_validate_json(canonical_bytes(value))
+
+    predicate = getattr(reporting, "has_report_validator_false_positive", None)
+    assert callable(predicate)
+    assert not predicate(content)
 
 
 @pytest.mark.parametrize(

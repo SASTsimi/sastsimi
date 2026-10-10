@@ -231,7 +231,8 @@ def coverage_report_lines(
     unsupported = reason_summary(coverage.unsupported_reasons)
     lines = [
         f"- {'정적 분석 상태' if korean else 'Static scan status'}: "
-        f"`{'PARTIAL' if coverage.partial else 'FULL'}`",
+        f"`{'PARTIAL' if coverage.partial else 'FULL'}` "
+        f"({'Python 범위' if korean else 'Python scope'})",
         f"- {'검증된 파일/규칙 쌍' if korean else 'Verified file/rule pairs'}: "
         f"{coverage.verified_count} / {coverage.expected_count}",
         f"- {'검증되지 않은 쌍' if korean else 'Unverified pairs'}: "
@@ -501,6 +502,7 @@ def render_bundle_files(
             {
                 "ref": facts.coverage.ref.model_dump(mode="json"),
                 "disposition": "PARTIAL" if facts.coverage.partial else "FULL",
+                "scope": "python_only",
                 "fingerprint": facts.coverage.fingerprint,
                 "expected_count": facts.coverage.expected_count,
                 "verified_count": facts.coverage.verified_count,

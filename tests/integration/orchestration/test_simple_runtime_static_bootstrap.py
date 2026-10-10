@@ -886,7 +886,7 @@ async def test_non_python_product_file_is_outside_python_coverage(
     )
     identity = _identity("unsupported-product")
     result = await bootstrap.run(_request(profile), identity)
-    assert result.static_disposition == "PARTIAL"
+    assert result.static_disposition == "FULL"
     coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
     assert coverage["verified_count"] == coverage["expected_count"] == 1
     assert coverage["unsupported_files"] == []
@@ -935,7 +935,7 @@ async def test_mixed_python_typescript_scope_keeps_out_of_scope_reason(
     ).run(_request(profile), identity)
 
     coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
-    assert result.static_disposition == "PARTIAL"
+    assert result.static_disposition == "FULL"
     assert coverage["out_of_scope_product_files"] == [
         {"path": "ui/main.ts", "reason": "non_python_product_source"}
     ]

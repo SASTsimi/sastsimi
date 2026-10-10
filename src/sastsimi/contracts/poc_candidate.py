@@ -7,7 +7,10 @@ import re
 from urllib.parse import urlsplit
 
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.prompt_redaction import inspect_poc_candidate_json
+from sastsimi.contracts.prompt_redaction import (
+    inspect_poc_candidate_json,
+    poc_candidate_sensitive_rule_id,
+)
 
 _SHELL_VARIABLE = re.compile(
     rb"\$(?:\{#?(?P<braced>[A-Za-z_][A-Za-z0-9_]*)|"
@@ -94,6 +97,7 @@ def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str |
         # A location/category is enough for one bounded LLM repair attempt.
         diagnostic["sensitive_category"] = "UNCLASSIFIED"
         diagnostic["sensitive_line"] = 0
+        diagnostic["sensitive_rule_id"] = "UNCLASSIFIED"
         try:
             source = content.decode("utf-8")
             inspected = inspect_poc_candidate_json(canonical_bytes({"content": source}))
@@ -118,6 +122,9 @@ def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str |
                 diagnostic["sensitive_line"] = (
                     source.count("\n", 0, first_difference) + 1
                 )
+                diagnostic["sensitive_rule_id"] = poc_candidate_sensitive_rule_id(
+                    source, first_difference
+                )
                 diagnostic["sensitive_category"] = (
                     next(iter(categories))
                     if len(categories) == 1
@@ -130,7 +137,7 @@ def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str |
     return diagnostic
 
 
-def _heredocs_on_line(
+def heredocs_on_line(
     line: bytes,
 ) -> tuple[list[tuple[bytes, bool, bool]], bool] | None:
     """Find simple here-doc redirections outside quotes and comments."""
@@ -253,7 +260,7 @@ def _shell_scan_sources(content: bytes) -> tuple[bytes, bytes, tuple[bytes, ...]
             continue
         shell.extend(line)
         expanding.extend(line)
-        new = _heredocs_on_line(line)
+        new = heredocs_on_line(line)
         if new is None:
             raise PoCCandidateRejected("POC_UNDECLARED_INPUT")
         heredocs, direct_python = new

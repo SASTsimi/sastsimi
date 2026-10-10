@@ -11,6 +11,7 @@ from pydantic import JsonValue
 
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.simple_runtime import recovery as simple_recovery
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.models import (
@@ -30,6 +31,8 @@ from sastsimi.simple_runtime.recovery import (
     RecoveryDecision,
     RecoveryResolution,
     SimpleRecoveryCoordinator,
+    django_poc_fixture_failure,
+    django_poc_fixture_recovery_decision,
     has_python_import_failure,
     validate_environment_patch,
 )
@@ -114,11 +117,11 @@ def _complete_poc_receipt(
     *,
     stderr: bytes = b"TypeError: invalid test input",
     stdout: bytes = b"",
+    content: bytes = b"print('test')",
     candidate_override: dict[str, object] | None = None,
     execution_override: dict[str, object] | None = None,
     cleanup_override: dict[str, object] | None = None,
 ) -> tuple[StageCheckpoint, tuple[StoredDataRef, ...]]:
-    content = b"print('test')"
     content_ref = artifacts.put_bytes(content, "text/x-shellscript")
     candidate: dict[str, Any] = {
         "kind": "simple_poc_candidate",
@@ -1002,6 +1005,102 @@ def _foreign_ref() -> StoredDataRef:
         commit_id=CommitId("commit-1"),
         record_id=RecordId("foreign-record"),
     )
+
+
+def test_saved_http_server_constructor_failure_uses_exact_bound_evidence() -> None:
+    fixture = Path(__file__).parents[2] / "fixtures/simple_runtime"
+    candidate = (fixture / "a001_attempt4_poc.sh").read_bytes().removesuffix(b"\n")
+    pinned_source = (fixture / "a001_server.py").read_bytes().removesuffix(b"\n")
+    assert hashlib.sha256(candidate).hexdigest() == (
+        "db74ad8ef5d3527d781c7448a7cf8cd101b5c47e0714e863a50a5b31ee354c91"
+    )
+    assert hashlib.sha256(pinned_source).hexdigest() == (
+        "00dbcdff9be0e5e5ae19c347dd3e4dec007f5b996fcba4bea91e606dc0532b05"
+    )
+    stderr = (
+        b"TypeError: runtime_failure\n"
+        b"Traceback (function names only): <module> -> main -> __init__\n"
+    )
+
+    assert (
+        simple_recovery.http_server_constructor_source_path(candidate)
+        == "dsvpwa/server.py"
+    )
+    assert simple_recovery.http_server_constructor_failure(
+        stderr, b"", candidate, pinned_source
+    )
+    assert not simple_recovery.http_server_constructor_failure(
+        stderr, b"observed", candidate, pinned_source
+    )
+    assert not simple_recovery.http_server_constructor_failure(
+        stderr + b"extra\n", b"", candidate, pinned_source
+    )
+    assert not simple_recovery.http_server_constructor_failure(
+        stderr,
+        b"",
+        candidate.replace(
+            b"server = server_class(*arguments[0], **arguments[1])",
+            b"server = server_class(('127.0.0.1', 0), handlers[0])",
+        ),
+        pinned_source,
+    )
+    assert not simple_recovery.http_server_constructor_failure(
+        stderr,
+        b"",
+        candidate,
+        pinned_source.replace(
+            b"def __init__(self, *args, **kwargs):",
+            b"def __init__(self, address, handler):",
+        ),
+    )
+
+
+def test_http_server_constructor_source_path_is_generic_and_unambiguous() -> None:
+    fixture = Path(__file__).parents[2] / "fixtures/simple_runtime"
+    candidate = (fixture / "a001_attempt4_poc.sh").read_bytes().removesuffix(b"\n")
+    generic = candidate.replace(b"'dsvpwa' / 'server.py'", b"'app' / 'server.py'")
+    assert (
+        simple_recovery.http_server_constructor_source_path(generic) == "app/server.py"
+    )
+    ambiguous = generic.replace(
+        b"server_source = root / 'app' / 'server.py'",
+        b"server_source = root / 'app' / 'server.py'\n"
+        b"    server_source = root / 'other' / 'server.py'",
+    )
+    assert simple_recovery.http_server_constructor_source_path(ambiguous) is None
+
+
+def test_http_server_constructor_recovery_is_generated_input_only() -> None:
+    decision = simple_recovery.http_server_constructor_recovery_decision()
+    assert decision.category is RecoveryCategory.GENERATED_INPUT
+    assert decision.action is RecoveryAction.REGENERATE_INPUT
+    assert "HTTPServer" in decision.guidance
+    assert "not vulnerability counterevidence" in decision.guidance
+
+
+def test_http_server_constructor_stage_failure_never_calls_recovery_llm(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _running_checkpoint()
+    client = DecisionClient({})
+    artifacts = SimpleArtifactRepository(tmp_path, checkpoint.identity)
+    pending = SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_SERVER_CONSTRUCTOR_UNBOUND",
+            retryable=True,
+            safe_message="Generated server constructor is unbound",
+        ),
+    )
+    try:
+        pending.send(None)
+    except StopIteration as done:
+        result = done.value
+    else:
+        pytest.fail("fixed constructor recovery unexpectedly awaited external work")
+    assert result.decision.category is RecoveryCategory.GENERATED_INPUT
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert client.calls == 0
 
 
 @pytest.mark.asyncio
@@ -1932,6 +2031,121 @@ async def test_poc_import_time_database_write_error_regenerates_input(
     assert "multiple or dynamic" in result.decision.guidance
     assert "os.chdir" not in result.decision.guidance
     assert client.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_diagnosis"),
+    [
+        (
+            b"NodeNotFoundError during schema\n"
+            b"Traceback: handle > build_graph > validate_consistency > raise_error\n",
+            "migration graph",
+        ),
+        (
+            b"ValueError during schema\n"
+            b"Traceback: foreign_related_fields > related_fields > "
+            b"resolve_related_fields\n",
+            "model relation",
+        ),
+        (
+            b"OperationalError: writable_storage\n"
+            b"Traceback: execute > _execute_with_wrappers > _execute\n",
+            "fixture database",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_bound_django_schema_failure_gives_specific_generated_input_guidance(
+    tmp_path: Path, stderr: bytes, expected_diagnosis: str
+) -> None:
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts,
+        stderr=stderr,
+        content=(
+            b"django.setup()\n"
+            b"call_command('migrate', interactive=False)\n"
+            b"with connection.schema_editor() as editor: editor.create_model(Ticket)\n"
+        ),
+    )
+    client = DecisionClient({})
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert result.decision.category is RecoveryCategory.GENERATED_INPUT
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert expected_diagnosis in result.decision.diagnosis
+    assert "Django" in result.decision.guidance
+    assert "migration dependencies" in result.decision.guidance
+    assert "fixture" in result.decision.guidance
+    assert "signal" in result.decision.guidance
+    assert "vulnerability" in result.decision.guidance
+    assert "pinax_teams" not in result.decision.guidance
+    assert result.decision.environment_patch == ""
+    assert client.calls == 0
+
+
+def test_redacted_harness_runtime_relation_error_has_fixed_setup_guidance() -> None:
+    stderr = (
+        b"ValueError: harness_runtime\n"
+        b"Traceback (function names only):\n"
+        b"  in db_parameters\n"
+        b"  in target_field\n"
+        b"  in __get__\n"
+        b"  in foreign_related_fields\n"
+        b"  in __get__\n"
+        b"  in related_fields\n"
+        b"  in resolve_related_fields\n"
+        b"  in resolve_related_fields\n"
+    )
+    candidate = (
+        b"django.setup()\n"
+        b"with connection.schema_editor() as editor: editor.create_model(Ticket)\n"
+    )
+
+    assert django_poc_fixture_failure(stderr, candidate) == "model relation"
+    assert django_poc_fixture_failure(stderr[:-2], candidate) is None
+    assert django_poc_fixture_failure(stderr, b"django.setup()") is None
+    guidance = django_poc_fixture_recovery_decision("model relation").guidance
+    assert "project URL" in guidance
+    assert "namespace" in guidance
+    assert "template apps" in guidance
+
+
+@pytest.mark.asyncio
+async def test_django_error_text_without_schema_setup_keeps_generic_rule(
+    tmp_path: Path,
+) -> None:
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts,
+        stderr=(
+            b"ValueError\nTraceback: foreign_related_fields > resolve_related_fields"
+        ),
+    )
+
+    result = await SimpleRecoveryCoordinator(
+        client=DecisionClient({}), artifacts=artifacts
+    ).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC execution failed",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert "Django" not in result.decision.guidance
 
 
 @pytest.mark.asyncio

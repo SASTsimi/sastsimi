@@ -123,10 +123,12 @@ class _SecondLookHypotheses:
         *,
         second_status: str = "NO_HYPOTHESIS",
         fail_second_once: bool = False,
+        partial_no_hypothesis_first: bool = False,
     ) -> None:
         self.data_dir = data_dir
         self.second_status = second_status
         self.fail_second_once = fail_second_once
+        self.partial_no_hypothesis_first = partial_no_hypothesis_first
         self.context_kinds: list[str] = []
         self.primary_surface_id: str | None = None
 
@@ -186,12 +188,19 @@ class _SecondLookHypotheses:
         status = (
             self.second_status
             if kind == "simple_surface_context_v2"
+            else "NO_HYPOTHESIS"
+            if self.partial_no_hypothesis_first
+            and context.surface_id == self.primary_surface_id
             else "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
             if context.surface_id == self.primary_surface_id
             else "NO_HYPOTHESIS"
         )
         parts: frozenset[ReviewPart] = (
-            frozenset({"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"})
+            frozenset({"SENSITIVE_OPERATION", "TRUST_BOUNDARY"})
+            if self.partial_no_hypothesis_first
+            and kind == "simple_surface_context_v1"
+            and context.surface_id == self.primary_surface_id
+            else frozenset({"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"})
             if status == "NO_HYPOTHESIS"
             else frozenset()
         )
@@ -2752,6 +2761,54 @@ async def test_second_look_only_after_omitted_insufficient_evidence(
             first.error_code,
             second.error_code,
         )
+
+
+@pytest.mark.parametrize(
+    ("source_padding", "expected_calls", "expected_v2", "expected_status"),
+    [
+        (0, 3, 0, "PARTIAL"),
+        (20, 4, 1, "COMPLETE"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_partial_no_hypothesis_gets_one_saved_second_look(
+    tmp_path: Path,
+    source_padding: int,
+    expected_calls: int,
+    expected_v2: int,
+    expected_status: str,
+) -> None:
+    app, store, _client, _ = _setup(
+        tmp_path,
+        decision="EXCLUDE",
+        with_ast_summary=True,
+        pipeline_version=2,
+        source_padding=source_padding,
+    )
+    proposer = _SecondLookHypotheses(
+        tmp_path / "data", partial_no_hypothesis_first=True
+    )
+    app._candidate_hypotheses = cast(HypothesisBootstrap, proposer)
+    _enable_chaining_pool(app, store, tmp_path / "data")
+
+    first = await app.analyze(
+        SimpleAnalysisRequest(
+            data_dir=tmp_path / "data",
+            repository="https://github.com/example/repo",
+            commit="a" * 40,
+        )
+    )
+    calls_after_first = tuple(proposer.context_kinds)
+    progress_before = store.list_surface_exploration_progress(first.identity, "scope-1")
+    resumed = await app.resume("analysis-1")
+    progress_after = store.list_surface_exploration_progress(first.identity, "scope-1")
+
+    assert first.status == resumed.status == expected_status
+    assert len(calls_after_first) == expected_calls
+    assert calls_after_first.count("simple_surface_context_v2") == expected_v2
+    assert proposer.context_kinds == list(calls_after_first)
+    assert progress_after == progress_before
+    assert len(progress_after) == expected_calls
 
 
 @pytest.mark.asyncio

@@ -104,6 +104,7 @@ def _checkpoint(
 def _seed(
     tmp_path: Path,
     *,
+    commit_id: str = "a" * 40,
     decision_origin: str = "FALLBACK",
     stopped_code: str = "POC_EXECUTION_FAILED",
     stderr: bytes = b"ModuleNotFoundError: jwt\nTraceback: frame -> exec_module",
@@ -118,7 +119,7 @@ def _seed(
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",
-        commit_id="a" * 40,
+        commit_id=commit_id,
         hypothesis_id="hypothesis-1",
     )
     store.save_analysis_run(
@@ -134,7 +135,7 @@ def _seed(
     )
     artifacts = SimpleArtifactRepository(data_dir, identity)
     workspace = data_dir / "workspaces" / identity.workspace_id
-    workspace.mkdir(parents=True)
+    workspace.mkdir(parents=True, exist_ok=True)
     (workspace / ".sastsimi-ready.json").write_text(
         json.dumps({"repository": "example/vulnerable", "commit": identity.commit_id}),
         encoding="utf-8",

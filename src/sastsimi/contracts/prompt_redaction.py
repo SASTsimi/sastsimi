@@ -33,6 +33,10 @@ _TOKEN_ASSIGNMENT = re.compile(
     r"(?i)\b(?:access[_-]?tokens?|refresh[_-]?tokens?|tokens?)\b\s*[:=]\s*"
     r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
 )
+_AUTHORIZATION_ASSIGNMENT = re.compile(
+    r"(?i)\bauthorization\b\s*[:=]\s*"
+    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\r\n"\']+)'
+)
 _CREDENTIAL_ASSIGNMENT = re.compile(
     r"(?i)\b(?:api[_-]?keys?|client[_-]?secrets?|passwords?|passwd|pwd|"
     r"secrets?|authorization|auth|credentials?|private[_-]?keys?|"
@@ -69,6 +73,24 @@ _POC_SANDBOX_ABSOLUTE_PATH = re.compile(
     r"[^\s\r\n,;\"'<>]*"
 )
 _LINE_BREAK = re.compile(r"\r\n|[\r\n]")
+_POC_SENSITIVE_RULE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    ("COOKIE_ASSIGNMENT", _COOKIE_ASSIGNMENT, "COOKIE"),
+    ("TOKEN_ASSIGNMENT", _TOKEN_ASSIGNMENT, "TOKEN"),
+    ("AUTHORIZATION_ASSIGNMENT", _AUTHORIZATION_ASSIGNMENT, "CREDENTIAL"),
+    ("CREDENTIAL_ASSIGNMENT", _CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
+    ("ENV_CREDENTIAL_ASSIGNMENT", _ENV_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
+    ("CREDENTIAL_URI", _CREDENTIAL_URI, "CREDENTIAL"),
+    ("OPAQUE_TOKEN", _OPAQUE_TOKEN, "TOKEN"),
+    ("WINDOWS_HOST_PATH", _WINDOWS_PATH, "HOST_ABSOLUTE_PATH"),
+    ("POSIX_HOST_PATH", _POSIX_HOST_PATH, "HOST_ABSOLUTE_PATH"),
+)
+POC_SENSITIVE_RULE_CATEGORY = {
+    rule_id: category for rule_id, _, category in _POC_SENSITIVE_RULE_PATTERNS
+} | {"PRIVATE_KEY_HEADER": "CREDENTIAL"}
+POC_SENSITIVE_RULE_IDS = frozenset(
+    {"UNCLASSIFIED", "REDACTION_MISMATCH", "PRIVATE_KEY_HEADER"}
+    | {rule_id for rule_id, _, _ in _POC_SENSITIVE_RULE_PATTERNS}
+)
 
 
 def _protect_safe_sandbox_paths(value: str) -> str:
@@ -115,6 +137,7 @@ def _replace_string(
     for pattern, category in (
         (_COOKIE_ASSIGNMENT, "COOKIE"),
         (_TOKEN_ASSIGNMENT, "TOKEN"),
+        (_AUTHORIZATION_ASSIGNMENT, "CREDENTIAL"),
         (_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
         (_ENV_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
         (_CREDENTIAL_URI, "CREDENTIAL"),
@@ -190,6 +213,7 @@ def _has_sensitive_string(value: object) -> bool:
             _OPAQUE_TOKEN.search(value)
             or _COOKIE_ASSIGNMENT.search(value)
             or _TOKEN_ASSIGNMENT.search(value)
+            or _AUTHORIZATION_ASSIGNMENT.search(value)
             or _CREDENTIAL_ASSIGNMENT.search(value)
             or _CREDENTIAL_URI.search(value)
             or _PRIVATE_KEY.search(value)
@@ -230,11 +254,29 @@ def inspect_poc_candidate_json(data: bytes) -> RedactionResult:
         or not isinstance(value["content"], str)
     ):
         raise ValueError("PROMPT_REDACTION_FAILED")
+    # Check the complete script before masking any path. A credential value
+    # can extend past the path matcher (for example, ``/workspace/token= x``).
+    # In that case the ordinary redactor must see the whole assignment.
+    if any(
+        pattern.search(value["content"])
+        for pattern in (
+            _OPAQUE_TOKEN,
+            _COOKIE_ASSIGNMENT,
+            _TOKEN_ASSIGNMENT,
+            _AUTHORIZATION_ASSIGNMENT,
+            _CREDENTIAL_ASSIGNMENT,
+            _ENV_CREDENTIAL_ASSIGNMENT,
+            _CREDENTIAL_URI,
+            _PRIVATE_KEY_HEADER,
+        )
+    ):
+        return redact_projected_json(data)
     protected_paths: list[tuple[bytes, bytes]] = []
 
     def protect_path(match: re.Match[str]) -> str:
+        path = match.group(0)
         marker = f"SASTSIMI_SANDBOX_ABSOLUTE_PATH_{len(protected_paths)}"
-        protected_paths.append((marker.encode("utf-8"), match.group(0).encode("utf-8")))
+        protected_paths.append((marker.encode("utf-8"), path.encode("utf-8")))
         return marker
 
     protected = {
@@ -242,9 +284,29 @@ def inspect_poc_candidate_json(data: bytes) -> RedactionResult:
     }
     inspected = redact_projected_json(canonical_bytes(protected))
     restored = inspected.data
-    for marker, path in protected_paths:
+    # Restore later indexes first so _1 cannot corrupt _10 and beyond.
+    for marker, path in reversed(protected_paths):
         restored = restored.replace(marker, path)
     return RedactionResult(restored, inspected.categories)
+
+
+def poc_candidate_sensitive_rule_id(source: str, first_difference: int) -> str:
+    """Name only the first matched rule; never return source text or values."""
+
+    if _PRIVATE_KEY_HEADER.search(source):
+        return "PRIVATE_KEY_HEADER"
+    for rule_id, pattern, _ in _POC_SENSITIVE_RULE_PATTERNS:
+        if any(match.start() == first_difference for match in pattern.finditer(source)):
+            return rule_id
+    # A projected redaction may start inside a matched span after earlier
+    # substitutions. Keep this fallback bounded to the same closed rule IDs.
+    for rule_id, pattern, _ in _POC_SENSITIVE_RULE_PATTERNS:
+        if any(
+            match.start() <= first_difference < match.end()
+            for match in pattern.finditer(source)
+        ):
+            return rule_id
+    return "REDACTION_MISMATCH"
 
 
 def redact_untrusted_text(data: bytes) -> RedactionResult:

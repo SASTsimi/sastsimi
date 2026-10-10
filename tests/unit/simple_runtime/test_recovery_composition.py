@@ -272,10 +272,23 @@ async def test_composition_wires_local_only_offline_base_preflight(
 
 
 @pytest.mark.parametrize("with_progress", [False, True])
-def test_public_resume_forwards_explicit_offline_repair_scope(
+@pytest.mark.parametrize(
+    "repair_kind",
+    [
+        "offline",
+        "auth_required",
+        "candidate_app",
+        "urlconf",
+        "generated_input",
+        "django_settings",
+        "django_relation_settings",
+    ],
+)
+def test_public_resume_forwards_explicit_repair_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     with_progress: bool,
+    repair_kind: str,
 ) -> None:
     public = composition.PublicSimpleRuntimeApplication(
         _config(tmp_path), _profile(tmp_path)
@@ -292,7 +305,19 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
         status="BLOCKED",
         current_stage=SimpleStage.POC_EXECUTION_DONE,
     )
-    calls: list[tuple[str, str | None, str | None]] = []
+    calls: list[
+        tuple[
+            str,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+        ]
+    ] = []
 
     class _Application:
         async def resume(
@@ -306,6 +331,15 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
             repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
             repair_poc_sensitive_content_hypothesis: str | None = None,
             repair_report_validator_hypothesis: str | None = None,
+            repair_auth_required_hypothesis: str | None = None,
+            repair_poc_candidate_app_exhaustion_hypothesis: str | None = None,
+            repair_poc_urlconf_exhaustion_hypothesis: str | None = None,
+            repair_poc_generated_input_hypothesis: str | None = None,
+            repair_poc_django_settings_exhaustion_hypothesis: str | None = None,
+            repair_poc_django_relation_settings_exhaustion_hypothesis: str
+            | None = None,
+            supplement_saved_v2_ast_orphans: bool = False,
+            **other_repair_hypotheses: str | None,
         ) -> SimpleAnalysisOutcome:
             del (
                 repair_fallback_poc_stop_hypothesis,
@@ -314,11 +348,21 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
                 repair_poc_sensitive_content_hypothesis,
                 repair_report_validator_hypothesis,
             )
+            assert all(value is None for value in other_repair_hypotheses.values()), (
+                other_repair_hypotheses
+            )
+            assert supplement_saved_v2_ast_orphans is False
             calls.append(
                 (
                     analysis_id,
                     repair_exhausted_hypothesis,
                     repair_legacy_import_stop_hypothesis,
+                    repair_auth_required_hypothesis,
+                    repair_poc_candidate_app_exhaustion_hypothesis,
+                    repair_poc_urlconf_exhaustion_hypothesis,
+                    repair_poc_generated_input_hypothesis,
+                    repair_poc_django_settings_exhaustion_hypothesis,
+                    repair_poc_django_relation_settings_exhaustion_hypothesis,
                 )
             )
             return outcome
@@ -347,15 +391,89 @@ def test_public_resume_forwards_explicit_offline_repair_scope(
     monkeypatch.setattr(public, "_track", track)
 
     if with_progress:
-        public.resume_with_progress(
-            "A-001",
-            lambda _snapshot: None,
-            repair_exhausted_hypothesis="hypothesis-1",
-        )
+        if repair_kind == "auth_required":
+            public.resume_with_progress(
+                "A-001",
+                lambda _snapshot: None,
+                repair_auth_required_hypothesis="hypothesis-1",
+            )
+        elif repair_kind == "candidate_app":
+            public.resume_with_progress(
+                "A-001",
+                lambda _snapshot: None,
+                repair_poc_candidate_app_exhaustion_hypothesis="hypothesis-1",
+            )
+        elif repair_kind == "urlconf":
+            public.resume_with_progress(
+                "A-001",
+                lambda _snapshot: None,
+                repair_poc_urlconf_exhaustion_hypothesis="hypothesis-1",
+            )
+        elif repair_kind == "generated_input":
+            public.resume_with_progress(
+                "A-001",
+                lambda _snapshot: None,
+                repair_poc_generated_input_hypothesis="hypothesis-1",
+            )
+        elif repair_kind == "django_settings":
+            public.resume_with_progress(
+                "A-001",
+                lambda _snapshot: None,
+                repair_poc_django_settings_exhaustion_hypothesis="hypothesis-1",
+            )
+        elif repair_kind == "django_relation_settings":
+            public.resume_with_progress(
+                "A-001",
+                lambda _snapshot: None,
+                repair_poc_django_relation_settings_exhaustion_hypothesis="hypothesis-1",
+            )
+        else:
+            public.resume_with_progress(
+                "A-001",
+                lambda _snapshot: None,
+                repair_exhausted_hypothesis="hypothesis-1",
+            )
     else:
-        public.resume("A-001", repair_exhausted_hypothesis="hypothesis-1")
+        if repair_kind == "auth_required":
+            public.resume("A-001", repair_auth_required_hypothesis="hypothesis-1")
+        elif repair_kind == "candidate_app":
+            public.resume(
+                "A-001",
+                repair_poc_candidate_app_exhaustion_hypothesis="hypothesis-1",
+            )
+        elif repair_kind == "urlconf":
+            public.resume(
+                "A-001",
+                repair_poc_urlconf_exhaustion_hypothesis="hypothesis-1",
+            )
+        elif repair_kind == "generated_input":
+            public.resume("A-001", repair_poc_generated_input_hypothesis="hypothesis-1")
+        elif repair_kind == "django_settings":
+            public.resume(
+                "A-001",
+                repair_poc_django_settings_exhaustion_hypothesis="hypothesis-1",
+            )
+        elif repair_kind == "django_relation_settings":
+            public.resume(
+                "A-001",
+                repair_poc_django_relation_settings_exhaustion_hypothesis="hypothesis-1",
+            )
+        else:
+            public.resume("A-001", repair_exhausted_hypothesis="hypothesis-1")
 
-    assert calls == [("analysis-1" if with_progress else "A-001", "hypothesis-1", None)]
+    assert calls == [
+        (
+            "analysis-1" if with_progress else "A-001",
+            "hypothesis-1" if repair_kind == "offline" else None,
+            None,
+            "hypothesis-1" if repair_kind == "auth_required" else None,
+            "hypothesis-1" if repair_kind == "candidate_app" else None,
+            "hypothesis-1" if repair_kind == "urlconf" else None,
+            "hypothesis-1" if repair_kind == "generated_input" else None,
+            "hypothesis-1" if repair_kind == "django_settings" else None,
+            "hypothesis-1" if repair_kind == "django_relation_settings" else None,
+        )
+    ]
 
 
 def test_public_candidate_status_marks_unleased_running_stage_interrupted(

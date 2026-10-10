@@ -133,6 +133,33 @@ for (const expected of [
 }
 const listText = text(vm.runInContext("analysisButton(state.detail)", context));
 assert.ok(listText.includes("현재 알려진 checkpoint 비율"), listText);
+const previousSurface = detail.phase_counts.surface;
+detail.status = "PARTIAL";
+detail.progress_percent = 96;
+detail.phase_counts.surface = {
+  recorded_contexts: 127, recorded_surfaces: 56,
+  completed: 23, total: 56, covered: 23, uncovered: 0, insufficient: 33,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "부분 분석", "96%", "실행 종료", "보안 표면 근거 충족 23/56", "근거 부족 33",
+]) {
+  assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+}
+detail.status = "RUNNING";
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+assert.ok(!shown.includes("실행 종료"), shown);
+detail.status = "PARTIAL";
+detail.percentage_kind = null;
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+assert.ok(!shown.includes("실행 종료"), shown);
+detail.status = "PAUSED";
+detail.progress_percent = 65;
+detail.percentage_kind = "known_checkpoint_fraction";
+detail.phase_counts.surface = previousSurface;
 detail.llm_unrecorded_in_flight_codex_calls = 1;
 vm.runInContext("renderOverview(state.detail)", context);
 shown = text(nodes.get("overview"));

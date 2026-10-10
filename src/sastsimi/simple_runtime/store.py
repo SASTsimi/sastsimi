@@ -5,22 +5,29 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import sqlite3
+import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 from uuid import uuid4
 
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.poc_candidate import POC_CANDIDATE_VALIDATOR_REVISION
-from sastsimi.contracts.prompt_redaction import redact_untrusted_text
+from sastsimi.contracts.prompt_redaction import (
+    POC_SENSITIVE_RULE_CATEGORY,
+    POC_SENSITIVE_RULE_IDS,
+    redact_untrusted_text,
+)
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.reporting import (
     BilingualReportContent,
     has_legacy_report_ipv4_false_positive,
+    has_report_validator_false_positive,
     validate_report_content,
 )
 from sastsimi.observability.agent_activity import (
@@ -32,6 +39,15 @@ from sastsimi.storage.agent_activity import AgentActivityStore
 from .artifacts import LEGACY_RECOVERY_FALLBACK_STOPS, SimpleArtifactRepository
 from .attempt_owner import AttemptOwner, PromptByteCounts
 from .candidates import StaticCandidate
+from .django_migration_graph_omission import (
+    django_migration_graph_project_scan_root,
+    django_migration_graph_settings_omission,
+)
+from .django_relation_settings_omission import (
+    django_relation_project_settings_paths,
+    django_relation_setting_mismatch,
+)
+from .facts import safe_tracked_file
 from .models import (
     HYPOTHESIS_STAGES,
     STAGE_ORDER,
@@ -48,20 +64,72 @@ from .models import (
     terminal_initial_outcome,
     terminal_poc_outcome,
 )
+from .poc_layout import (
+    literal_required_python_path,
+    pinned_layout_correction,
+    pinned_layout_replay_binding,
+)
+from .poc_observation import exit_one_claim_interpreted_inconclusive
 from .recovery import (
     ALLOWED_ACTIONS,
+    DJANGO_CANDIDATE_APP_RECOVERY_REVISION,
+    DJANGO_MIGRATION_GRAPH_SETTINGS_SOURCE_BOUND_REVISION,
+    DJANGO_POC_FIXTURE_DEPENDENCY_RECOVERY_REVISION,
+    DJANGO_POC_FIXTURE_RECOVERY_REVISION,
+    DJANGO_POC_SCHEMA_RECOVERY_REVISION,
+    DJANGO_POC_SOURCE_GAP_RECOVERY_REVISION,
+    DJANGO_RELATION_SETTINGS_SOURCE_BOUND_REVISION,
+    DJANGO_SETTINGS_MISMATCH_RECOVERY_REVISION,
+    DJANGO_URLCONF_RECOVERY_REVISION,
+    HTTP_SERVER_CONSTRUCTOR_RECOVERY_REVISION,
     MAX_RECOVERY_ATTEMPTS,
+    POC_REPLAY_GUARD_REVISION,
     SANITIZED_EXTRACT_RECOVERY_REVISION,
+    SQLITE_IN_MEMORY_STORAGE_RECOVERY_REVISION,
     RecoveryAction,
     RecoveryCategory,
     RecoveryDecision,
     RecoveryResolution,
+    _django_literal_configuration,
     _python_import_traceback_spans,
+    candidate_app_replay_unsupported_app,
+    django_candidate_app_import_failure,
+    django_candidate_app_recovery_decision,
+    django_migration_setting_mismatch,
+    django_poc_fixture_dependency_failure,
+    django_poc_fixture_dependency_recovery_decision,
+    django_poc_fixture_failure,
+    django_poc_fixture_recovery_decision,
+    django_poc_schema_exhaustion_decision,
+    django_poc_schema_exhaustion_failure,
+    django_poc_source_gap_recovery_decision,
+    django_urlconf_reverse_failure,
     has_python_import_failure,
+    http_server_constructor_failure,
+    http_server_constructor_recovery_decision,
+    http_server_constructor_source_path,
+    migration_settings_blocked_replay_binding,
     sanitized_extract_failure,
     sanitized_extract_recovery_decision,
+    sqlite_in_memory_storage_failure,
+    sqlite_in_memory_storage_recovery_decision,
+    sqlite_in_memory_target_paths,
+    urlconf_replay_binding,
+    validator_correction_replay_previous,
 )
+from .retrieval import _read_pinned_blob
 from .run_lease import AnalysisRunBusy, analysis_run_lease
+
+_SettingsProof = tuple[str, tuple[str, str, str], tuple[bytes, bytes, bytes]]
+_RelationSettingsProof = tuple[
+    str,
+    tuple[str, str, str],
+    tuple[bytes, bytes, bytes],
+    str,
+    tuple[tuple[str, bytes], ...],
+    StoredDataRef,
+    tuple[tuple[str, bytes], ...],
+]
 
 ROLE_BY_STAGE: dict[SimpleStage, str] = {
     SimpleStage.STATIC_DONE: "Static Analysis Runtime",
@@ -178,6 +246,173 @@ def _pinned_local_import_diagnostic(
     except (OSError, UnicodeError, ValueError, RuntimeError):
         return None
     return None
+
+
+def _static_installed_apps(
+    tree: ast.Module,
+) -> tuple[tuple[str, ...], tuple[str, ...], bool] | None:
+    """Accept only literal Django app declarations and literal app additions."""
+
+    apps: list[str] = []
+    optional_imports: list[str] = []
+    reexports_settings = False
+    declarations = 0
+    recognized_names: set[ast.Name] = set()
+    parents = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+    }
+
+    def names(value: ast.AST, *, one: bool = False) -> list[str] | None:
+        try:
+            literal = ast.literal_eval(value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            return None
+        if one:
+            return [literal] if isinstance(literal, str) else None
+        if not isinstance(literal, (list, tuple)) or not all(
+            isinstance(item, str) for item in literal
+        ):
+            return None
+        return list(literal)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(
+            alias.name == "INSTALLED_APPS" for alias in node.names
+        ):
+            return None
+        if isinstance(node, ast.ImportFrom) and any(
+            alias.name == "*" for alias in node.names
+        ):
+            parent = parents.get(node)
+            if (
+                node.level == 1
+                and node.module == "settings"
+                and parent is tree
+                and all(
+                    item is node
+                    or (
+                        isinstance(item, ast.Expr)
+                        and isinstance(item.value, ast.Constant)
+                        and isinstance(item.value.value, str)
+                    )
+                    for item in tree.body
+                )
+            ):
+                reexports_settings = True
+                continue
+            if (
+                node.level != 1
+                or node.module is None
+                or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", node.module) is None
+                or len(node.names) != 1
+                or not isinstance(parent, ast.Try)
+                or parent.body != [node]
+                or len(parent.handlers) != 1
+                or not isinstance(parent.handlers[0].type, ast.Name)
+                or parent.handlers[0].type.id != "ImportError"
+                or len(parent.handlers[0].body) != 1
+                or not isinstance(parent.handlers[0].body[0], ast.Pass)
+                or parent.orelse
+                or parent.finalbody
+            ):
+                return None
+            optional_imports.append(node.module)
+        if isinstance(node, ast.Constant) and node.value == "INSTALLED_APPS":
+            return None
+        if isinstance(node, ast.Attribute) and node.attr in {
+            "INSTALLED_APPS",
+            "__dict__",
+            "__getattribute__",
+        }:
+            return None
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "INSTALLED_APPS"
+            for target in node.targets
+        ):
+            if (
+                len(node.targets) != 1
+                or not isinstance(node.targets[0], ast.Name)
+                or parents.get(node) is not tree
+                or declarations
+                or (literal := names(node.value)) is None
+            ):
+                return None
+            declarations += 1
+            recognized_names.add(node.targets[0])
+            apps.extend(literal)
+        if (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "INSTALLED_APPS"
+        ):
+            if (
+                not isinstance(node.op, ast.Add)
+                or (literal := names(node.value)) is None
+            ):
+                return None
+            recognized_names.add(node.target)
+            apps.extend(literal)
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in {
+                "eval",
+                "exec",
+                "globals",
+                "locals",
+                "vars",
+                "setattr",
+                "__import__",
+                "compile",
+                "dir",
+            }:
+                return None
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and (
+                    len(node.args) < 2
+                    or not isinstance(node.args[1], ast.Constant)
+                    or not isinstance(node.args[1].value, str)
+                    or node.args[1].value == "INSTALLED_APPS"
+                )
+            ):
+                return None
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "INSTALLED_APPS"
+            ):
+                if (
+                    node.func.attr not in {"append", "extend"}
+                    or len(node.args) != 1
+                    or node.keywords
+                    or (literal := names(node.args[0], one=node.func.attr == "append"))
+                    is None
+                ):
+                    return None
+                recognized_names.add(node.func.value)
+                apps.extend(literal)
+            for keyword in node.keywords:
+                if keyword.arg != "INSTALLED_APPS":
+                    continue
+                if (
+                    not isinstance(node.func, ast.Attribute)
+                    or not isinstance(node.func.value, ast.Name)
+                    or node.func.value.id != "settings"
+                    or node.func.attr != "configure"
+                    or declarations
+                    or (literal := names(keyword.value)) is None
+                ):
+                    return None
+                declarations += 1
+                apps.extend(literal)
+    if any(
+        isinstance(node, ast.Name)
+        and node.id == "INSTALLED_APPS"
+        and node not in recognized_names
+        for node in ast.walk(tree)
+    ):
+        return None
+    return tuple(apps), tuple(optional_imports), reexports_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -1573,7 +1808,7 @@ class SimpleCheckpointStore:
                 "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
             }
             or (status == "HYPOTHESES") != bool(registrations)
-            or proposal_version not in {1, 2}
+            or proposal_version not in {1, 2, 3}
         ):
             raise ValueError("SURFACE_EXPLORATION_INVALID")
         if len({item[0] for item in registrations}) != len(registrations):
@@ -3252,6 +3487,375 @@ class SimpleCheckpointStore:
                 ):
                     raise ValueError("REPORT_DRAFT_CONFLICT")
 
+    def prepare_interrupted_initial_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reuse an empty interrupted third attempt once, without extra budget."""
+
+        return self.prepare_initial_environment_exhaustion_replay(
+            exhausted,
+            artifacts,
+            fail_before_commit=fail_before_commit,
+            _interrupted_budget_reuse=True,
+        )
+
+    def prepare_initial_environment_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+        _interrupted_budget_reuse: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one exact attempt-3 initial environment failure, once.
+
+        The caller holds the analysis lease. The old attempt and failure events
+        remain append-only; a decision event is the durable one-shot marker.
+        """
+
+        identity = exhausted.identity
+        stage = SimpleStage.VERIFICATION_INITIAL_DONE
+        if (
+            identity.hypothesis_id is None
+            or exhausted.stage is not stage
+            or exhausted.stage_version != STAGE_VERSION[stage]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.retryable
+            or exhausted.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or not exhausted.attempt_id
+            or exhausted.recipe_ref is not None
+            or exhausted.image_digest is not None
+            or exhausted.container_id is not None
+            or exhausted.validated_poc_ref is not None
+            or exhausted.report_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(
+                checkpoint_identity: CheckpointIdentity, checkpoint_stage: SimpleStage
+            ) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (
+                        checkpoint_identity.analysis_id,
+                        self._hypothesis_key(checkpoint_identity),
+                        checkpoint_stage.value,
+                    ),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            if checkpoint_at(identity, stage) != exhausted:
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.analysis_id != identity.analysis_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_RUN_INVALID")
+            if _interrupted_budget_reuse and (
+                run.provider != "codex" or run.llm_provider not in {None, "codex"}
+            ):
+                raise ValueError("INTERRUPTED_INITIAL_EXHAUSTION_RUN_INVALID")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            static = checkpoint_at(root_identity, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+                or any(
+                    str(ref.workspace_id) != identity.workspace_id
+                    or str(ref.commit_id) != identity.commit_id
+                    for ref in (
+                        run.repository_profile_ref,
+                        run.static_bundle_ref,
+                        run.static_coverage_ref,
+                    )
+                )
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_STATIC_INVALID")
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.PENDING, StageStatus.RUNNING}
+                for row in rows
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_RUN_ACTIVE")
+            root = checkpoint_at(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{exhausted.attempt_id}"
+            )
+            if (
+                root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.status is not StageStatus.BLOCKED
+                or root.retryable
+                or not root.attempt_id
+                or root.error_code != root_code
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_ROOT_BOUND_INVALID")
+            activity_rows = connection.execute(
+                "SELECT event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? ORDER BY rowid",
+                (identity.analysis_id,),
+            ).fetchall()
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in activity_rows
+            )
+            if not any(
+                event.kind is ActivityKind.STAGE_BLOCKED
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.error_code == root_code
+                and event.input_refs == root.input_refs
+                and event.output_refs == root.output_refs
+                for event in events
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_ROOT_BOUND_INVALID")
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code
+                in {
+                    "INITIAL_ENVIRONMENT_EXHAUSTION_REPLAYED",
+                    "INTERRUPTED_INITIAL_EXHAUSTION_REPLAYED",
+                }
+                for event in events
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_ALREADY_REPLAYED")
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stage.value
+                and event.attempt_id == exhausted.attempt_id
+            )
+            interrupted_sequence = (
+                (ActivityKind.STAGE_STARTED, None),
+                (ActivityKind.STAGE_BLOCKED, "STAGE_INTERRUPTED"),
+                (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+            )
+            pinned_environment_sequence = (
+                (ActivityKind.STAGE_STARTED, None),
+                (ActivityKind.STAGE_BLOCKED, "PINNED_CONTEXT_UNAVAILABLE"),
+                (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+            )
+            allowed_sequences = (
+                {interrupted_sequence}
+                if _interrupted_budget_reuse
+                else {pinned_environment_sequence}
+            )
+            if (
+                len(stage_events) != 3
+                or tuple((event.kind, event.error_code) for event in stage_events)
+                not in allowed_sequences
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.input_refs != exhausted.input_refs
+                    for event in stage_events
+                )
+                or stage_events[0].output_refs
+                or any(
+                    event.output_refs != exhausted.output_refs
+                    for event in stage_events[1:]
+                )
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_EVENT_INVALID")
+            if _interrupted_budget_reuse:
+                if (
+                    exhausted.output_refs
+                    or exhausted.recovery_decision_refs
+                    or exhausted.poc_stop_decision_ref is not None
+                    or exhausted.external_prerequisites_ref is not None
+                    or exhausted.environment_block_ref is not None
+                    or exhausted.bundle_manifest_ref is not None
+                    or exhausted.bundle_archive_ref is not None
+                    or any(
+                        event.tool_result_refs
+                        or event.tool_name is not None
+                        or event.prompt_digest is not None
+                        or event.output_digest is not None
+                        or event.provider is not None
+                        or event.model is not None
+                        for event in stage_events
+                    )
+                    or not (
+                        stage_events[0].started_at
+                        <= stage_events[1].started_at
+                        <= stage_events[2].started_at
+                    )
+                ):
+                    raise ValueError("INTERRUPTED_INITIAL_EXHAUSTION_OUTPUT_INVALID")
+                overlapping_call = connection.execute(
+                    "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                    "AND started_at <= ? AND "
+                    "(resolved_at IS NULL OR resolved_at >= ?) LIMIT 1",
+                    (
+                        identity.analysis_id,
+                        stage_events[2].started_at.isoformat(),
+                        stage_events[0].started_at.isoformat(),
+                    ),
+                ).fetchone()
+                attributed_llm = connection.execute(
+                    "SELECT 1 FROM simple_llm_attempt_metadata "
+                    "WHERE checkpoint_attempt_id = ? LIMIT 1",
+                    (exhausted.attempt_id,),
+                ).fetchone()
+                same_attempt_llm = connection.execute(
+                    "SELECT 1 FROM simple_llm_attempts "
+                    "WHERE analysis_id = ? AND attempt_id = ? LIMIT 1",
+                    (identity.analysis_id, exhausted.attempt_id),
+                ).fetchone()
+                if (
+                    overlapping_call is not None
+                    or attributed_llm is not None
+                    or same_attempt_llm is not None
+                ):
+                    raise ValueError("INTERRUPTED_INITIAL_EXHAUSTION_CALL_INVALID")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_CODEX_UNRESOLVED")
+            pro_con = checkpoint_at(identity, SimpleStage.PRO_CON_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or not any(ref in exhausted.input_refs for ref in pro_con.output_refs)
+                or any(
+                    checkpoint_at(identity, downstream) is not None
+                    for downstream in STAGE_ORDER[STAGE_ORDER.index(stage) + 1 :]
+                )
+            ):
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_LINEAGE_INVALID")
+            pending = exhausted.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "attempt_number": (
+                        exhausted.attempt_number - 1
+                        if _interrupted_budget_reuse
+                        else exhausted.attempt_number
+                    ),
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            updated = connection.execute(
+                "UPDATE simple_runtime_checkpoints SET checkpoint_json = ?, "
+                "input_hash = ?, updated_at = ? WHERE analysis_id = ? "
+                "AND hypothesis_key = ? AND stage = ? AND checkpoint_json = ?",
+                (
+                    pending.model_dump_json(),
+                    pending.input_hash,
+                    pending.updated_at.isoformat(),
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    stage.value,
+                    exhausted.model_dump_json(),
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("INITIAL_ENVIRONMENT_EXHAUSTION_STALE")
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    exhausted,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stage, 102),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "실행 전 중단된 초기 검증 시도의 단일 재개를 기록했습니다."
+                        if _interrupted_budget_reuse
+                        else "초기 검증 환경 실패의 단일 명시적 재시도를 기록했습니다."
+                    ),
+                    output_refs=exhausted.output_refs,
+                    error_code=(
+                        "INTERRUPTED_INITIAL_EXHAUSTION_REPLAYED"
+                        if _interrupted_budget_reuse
+                        else "INITIAL_ENVIRONMENT_EXHAUSTION_REPLAYED"
+                    ),
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def prepare_report_validator_replay(
         self,
         stopped: StageCheckpoint,
@@ -3305,7 +3909,7 @@ class SimpleCheckpointStore:
             raise ValueError("REPORT_VALIDATOR_REPLAY_INVALID")
 
         def validated_draft(
-            ref: StoredDataRef, attempt_id: str
+            ref: StoredDataRef, attempt_id: str, *, require_valid: bool = True
         ) -> tuple[dict[str, object], BilingualReportContent]:
             try:
                 envelope = json.loads(artifacts.read_bounded(ref, 4 * 1024 * 1024))
@@ -3324,25 +3928,48 @@ class SimpleCheckpointStore:
                 content = BilingualReportContent.model_validate_json(
                     canonical_bytes(envelope["result"])
                 )
-                validate_report_content(
-                    content.model_dump(mode="json"), allowed_locations=()
-                )
+                if require_valid:
+                    validate_report_content(
+                        content.model_dump(mode="json"), allowed_locations=()
+                    )
             except (OSError, TypeError, ValueError) as error:
                 raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_INVALID") from error
             return envelope, content
 
         assert stopped.attempt_id is not None
-        envelope, content = validated_draft(draft_ref, stopped.attempt_id)
+        envelope, content = validated_draft(
+            draft_ref, stopped.attempt_id, require_valid=not exhausted_report
+        )
+        final_envelope = envelope
+        historical_replay = False
+        if exhausted_report:
+            try:
+                validate_report_content(
+                    content.model_dump(mode="json"), allowed_locations=()
+                )
+            except ValueError:
+                historical_replay = True
         if (
-            stopped.error_code == "STAGE_UNEXPECTED_ERROR"
-            or exhausted_report
-            or stopped_second_report
-        ) and not has_legacy_report_ipv4_false_positive(content):
+            not historical_replay
+            and (
+                stopped.error_code == "STAGE_UNEXPECTED_ERROR"
+                or exhausted_report
+                or stopped_second_report
+            )
+            and not (
+                has_legacy_report_ipv4_false_positive(content)
+                or has_report_validator_false_positive(content)
+            )
+        ):
             raise ValueError("REPORT_VALIDATOR_REPLAY_LEGACY_CAUSE_UNPROVEN")
         first_draft_ref: StoredDataRef | None = None
         first_attempt_id: str | None = None
         retry_ref: StoredDataRef | None = None
         first_envelope: dict[str, object] | None = None
+        historical_attempts: list[tuple[str, StoredDataRef, StoredDataRef]] = []
+        historical_candidates: list[
+            tuple[StoredDataRef, dict[str, object], BilingualReportContent]
+        ] = []
         if stopped_second_report:
             retry_ref = stopped.recovery_decision_refs[0]
             try:
@@ -3385,7 +4012,10 @@ class SimpleCheckpointStore:
             first_envelope, first_content = validated_draft(
                 first_draft_ref, first_attempt_id
             )
-            if not has_legacy_report_ipv4_false_positive(first_content):
+            if not (
+                has_legacy_report_ipv4_false_positive(first_content)
+                or has_report_validator_false_positive(first_content)
+            ):
                 raise ValueError("REPORT_VALIDATOR_REPLAY_LEGACY_CAUSE_UNPROVEN")
         if exhausted_report:
             try:
@@ -3404,8 +4034,73 @@ class SimpleCheckpointStore:
                         != "REPORT_CONTENT_INVALID"
                     ):
                         raise ValueError("recovery decision is not report validation")
+                    if historical_replay:
+                        original = StageFailure.model_validate_json(
+                            canonical_bytes(decision["original_error"])
+                        )
+                        resolution = RecoveryDecision.model_validate_json(
+                            canonical_bytes(decision.get("decision"))
+                        )
+                        attempt_id = decision["attempt_id"]
+                        if (
+                            decision.get("decision_origin") != "AGENT"
+                            or original.code != "REPORT_CONTENT_INVALID"
+                            or not original.retryable
+                            or len(original.evidence_refs) != 1
+                            or resolution.category
+                            is not RecoveryCategory.GENERATED_INPUT
+                            or resolution.action is not RecoveryAction.REGENERATE_INPUT
+                            or resolution.environment_patch != ""
+                            or ref not in stopped.input_refs
+                            or attempt_id == stopped.attempt_id
+                            or any(
+                                attempt_id == previous[0]
+                                for previous in historical_attempts
+                            )
+                        ):
+                            raise ValueError("recovery decision is not a bound retry")
+                        historical_ref = original.evidence_refs[0]
+                        if (
+                            historical_ref not in stopped.input_refs
+                            or historical_ref == draft_ref
+                            or any(
+                                historical_ref == previous[1]
+                                for previous in historical_attempts
+                            )
+                        ):
+                            raise ValueError("recovery draft is not carried forward")
+                        historical_attempts.append((attempt_id, historical_ref, ref))
             except (OSError, TypeError, ValueError) as error:
                 raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN") from error
+        if historical_replay:
+            for attempt_id, historical_ref, _decision_ref in historical_attempts:
+                candidate_envelope, candidate_content = validated_draft(
+                    historical_ref, attempt_id, require_valid=False
+                )
+                historical_candidates.append(
+                    (historical_ref, candidate_envelope, candidate_content)
+                )
+            for historical_ref, candidate_envelope, candidate_content in reversed(
+                historical_candidates
+            ):
+                try:
+                    validate_report_content(
+                        candidate_content.model_dump(mode="json"),
+                        allowed_locations=(),
+                    )
+                except ValueError:
+                    continue
+                if not (
+                    has_legacy_report_ipv4_false_positive(candidate_content)
+                    or has_report_validator_false_positive(candidate_content)
+                ):
+                    continue
+                draft_ref = historical_ref
+                envelope = candidate_envelope
+                content = candidate_content
+                break
+            else:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_DRAFT_INVALID")
 
         connection = self._connect()
         try:
@@ -3585,17 +4280,175 @@ class SimpleCheckpointStore:
                     raise ValueError(
                         "REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"
                     ) from error
-                if not any(
-                    event.kind is ActivityKind.STAGE_BLOCKED
+                report_failures = tuple(
+                    event
+                    for event in failure_events
+                    if event.kind is ActivityKind.STAGE_BLOCKED
                     and event.stage == SimpleStage.REPORT_DONE.value
                     and event.error_code == "REPORT_CONTENT_INVALID"
-                    and event.status == StageStatus.BLOCKED.value
-                    and event.workspace_id == identity.workspace_id
-                    and event.commit_id == identity.commit_id
-                    and event.output_refs == (draft_ref,)
-                    for event in failure_events
+                )
+                if (
+                    not report_failures
+                    or historical_replay
+                    and len(report_failures) != 1
+                    or not any(
+                        event.status == StageStatus.BLOCKED.value
+                        and event.analysis_id == identity.analysis_id
+                        and event.workspace_id == identity.workspace_id
+                        and event.commit_id == identity.commit_id
+                        and event.hypothesis_id == identity.hypothesis_id
+                        and event.attempt_id == stopped.attempt_id
+                        and event.output_refs == stopped.output_refs
+                        for event in report_failures
+                    )
                 ):
                     raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
+                if historical_replay:
+                    started_events = tuple(
+                        event
+                        for event in failure_events
+                        if event.stage == SimpleStage.REPORT_DONE.value
+                        and event.kind is ActivityKind.STAGE_STARTED
+                    )
+                    exhausted_events = tuple(
+                        event
+                        for event in failure_events
+                        if event.stage == SimpleStage.REPORT_DONE.value
+                        and event.kind is ActivityKind.STAGE_BLOCKED
+                        and event.error_code == "RECOVERY_EXHAUSTED"
+                    )
+                    if (
+                        len(started_events) != 1
+                        or started_events[0].analysis_id != identity.analysis_id
+                        or started_events[0].workspace_id != identity.workspace_id
+                        or started_events[0].commit_id != identity.commit_id
+                        or started_events[0].hypothesis_id != identity.hypothesis_id
+                        or started_events[0].attempt_id != stopped.attempt_id
+                        or started_events[0].input_refs != stopped.input_refs
+                        or report_failures[0].input_refs != stopped.input_refs
+                        or len(exhausted_events) != 1
+                        or exhausted_events[0].analysis_id != identity.analysis_id
+                        or exhausted_events[0].workspace_id != identity.workspace_id
+                        or exhausted_events[0].commit_id != identity.commit_id
+                        or exhausted_events[0].hypothesis_id != identity.hypothesis_id
+                        or exhausted_events[0].attempt_id != stopped.attempt_id
+                        or exhausted_events[0].status != StageStatus.BLOCKED.value
+                        or exhausted_events[0].input_refs != stopped.input_refs
+                        or exhausted_events[0].output_refs != stopped.output_refs
+                    ):
+                        raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
+                    if any(
+                        event.stage == SimpleStage.REPORT_DONE.value
+                        and event.kind
+                        in {ActivityKind.STAGE_COMPLETED, ActivityKind.STAGE_FAILED}
+                        for event in failure_events
+                    ):
+                        raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
+                    expected_inputs: tuple[StoredDataRef, ...] | None = None
+                    for attempt_id, historical_ref, decision_ref in historical_attempts:
+                        rows = connection.execute(
+                            "SELECT event_json FROM agent_activity_events "
+                            "WHERE analysis_id = ? AND hypothesis_key = ? "
+                            "AND attempt_id = ?",
+                            (identity.analysis_id, identity.hypothesis_id, attempt_id),
+                        ).fetchall()
+                        try:
+                            events = tuple(
+                                AgentActivityEvent.model_validate_json(
+                                    row["event_json"]
+                                )
+                                for row in rows
+                            )
+                        except ValueError as error:
+                            raise ValueError(
+                                "REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"
+                            ) from error
+
+                        def unique_event(
+                            events: tuple[AgentActivityEvent, ...],
+                            attempt_id: str,
+                            kind: ActivityKind,
+                            output: StoredDataRef,
+                        ) -> AgentActivityEvent:
+                            matches = tuple(
+                                event
+                                for event in events
+                                if event.stage == SimpleStage.REPORT_DONE.value
+                                and event.kind is kind
+                            )
+                            if len(matches) != 1:
+                                raise ValueError(
+                                    "REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"
+                                )
+                            event = matches[0]
+                            if (
+                                event.analysis_id != identity.analysis_id
+                                or event.workspace_id != identity.workspace_id
+                                or event.commit_id != identity.commit_id
+                                or event.hypothesis_id != identity.hypothesis_id
+                                or event.attempt_id != attempt_id
+                                or event.status != StageStatus.BLOCKED.value
+                                or event.error_code != "REPORT_CONTENT_INVALID"
+                                or event.output_refs != (output,)
+                            ):
+                                raise ValueError(
+                                    "REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"
+                                )
+                            return event
+
+                        blocked_event = unique_event(
+                            events,
+                            attempt_id,
+                            ActivityKind.STAGE_BLOCKED,
+                            historical_ref,
+                        )
+                        decision_event = unique_event(
+                            events,
+                            attempt_id,
+                            ActivityKind.DECISION_RECORDED,
+                            decision_ref,
+                        )
+                        if (
+                            blocked_event.input_refs != decision_event.input_refs
+                            or expected_inputs is not None
+                            and blocked_event.input_refs != expected_inputs
+                            or any(
+                                event.stage == SimpleStage.REPORT_DONE.value
+                                and event.kind
+                                in {
+                                    ActivityKind.STAGE_COMPLETED,
+                                    ActivityKind.STAGE_FAILED,
+                                }
+                                for event in events
+                            )
+                        ):
+                            raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
+                        if expected_inputs is None:
+                            expected_lineage = hashlib.sha256(
+                                canonical_bytes(
+                                    {
+                                        "identity": identity,
+                                        "stage": SimpleStage.REPORT_DONE.value,
+                                        "stage_version": stopped.stage_version,
+                                        "input_hash": input_reference_hash(
+                                            blocked_event.input_refs
+                                        ),
+                                        "error_code": "REPORT_CONTENT_INVALID",
+                                    }
+                                )
+                            ).hexdigest()
+                            if stopped.recovery_lineage_id != expected_lineage:
+                                raise ValueError(
+                                    "REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"
+                                )
+                        expected_inputs = tuple(
+                            dict.fromkeys(
+                                blocked_event.input_refs
+                                + (historical_ref, decision_ref)
+                            )
+                        )
+                    if stopped.input_refs != expected_inputs:
+                        raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
             root_identity = identity.model_copy(update={"hypothesis_id": None})
             root = checkpoint_at(root_identity, SimpleStage.HYPOTHESIS_DONE)
             expected_root_error = (
@@ -3604,6 +4457,10 @@ class SimpleCheckpointStore:
             )
             if (
                 root is None
+                or root.identity != root_identity
+                or root.stage is not SimpleStage.HYPOTHESIS_DONE
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.input_hash != input_reference_hash(root.input_refs)
                 or root.status is not StageStatus.BLOCKED
                 or root.error_code != expected_root_error
             ):
@@ -3670,7 +4527,16 @@ class SimpleCheckpointStore:
                     for ref in checkpoint.output_refs
                 )
             )
-            if envelope["source_refs"] != [ref.model_dump(mode="json") for ref in refs]:
+            expected_sources = [ref.model_dump(mode="json") for ref in refs]
+            if envelope["source_refs"] != expected_sources:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_SOURCE_MISMATCH")
+            if historical_replay and (
+                final_envelope["source_refs"] != expected_sources
+                or any(
+                    candidate_envelope["source_refs"] != expected_sources
+                    for _, candidate_envelope, _ in historical_candidates
+                )
+            ):
                 raise ValueError("REPORT_VALIDATOR_REPLAY_SOURCE_MISMATCH")
             if stopped_second_report and (
                 first_envelope is None
@@ -4773,6 +5639,187 @@ class SimpleCheckpointStore:
         except AnalysisRunBusy as error:
             raise ValueError("CODEX_CLEANUP_CONFIRMATION_ACTIVE_RUN") from error
 
+    def reconcile_confirmed_codex_children(
+        self, analysis_id: str, call_id: str, data_dir: Path
+    ) -> int:
+        """Settle historical captured children only from their audited confirmation.
+
+        Older cleanup confirmations resolved the call without settling the
+        separately recorded child-spawn rows. This operation does not infer
+        cleanup from a missing PID: it requires the original, content-verified
+        process-tree inventory and its exact durable confirmation event.
+        """
+
+        if (
+            not analysis_id
+            or not call_id
+            or (Path(data_dir) / "db" / "sastsimi.sqlite3").resolve()
+            != self._database_path.resolve()
+        ):
+            raise ValueError("CODEX_CONFIRMED_CHILD_RECONCILIATION_INVALID")
+        try:
+            with analysis_run_lease(data_dir, analysis_id):
+                with self._connect() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    call = connection.execute(
+                        "SELECT status, started_at, resolved_at, "
+                        "confirmation_ref_json FROM simple_codex_calls "
+                        "WHERE call_id = ? AND analysis_id = ?",
+                        (call_id, analysis_id),
+                    ).fetchone()
+                    run_row = connection.execute(
+                        "SELECT run_json FROM simple_analysis_runs "
+                        "WHERE analysis_id = ?",
+                        (analysis_id,),
+                    ).fetchone()
+                    children = connection.execute(
+                        "SELECT phase, status, pid, start_identity "
+                        "FROM simple_codex_child_spawns "
+                        "WHERE call_id = ? AND analysis_id = ? ORDER BY phase",
+                        (call_id, analysis_id),
+                    ).fetchall()
+                    version = connection.execute(
+                        "SELECT candidate_pipeline_version "
+                        "FROM simple_codex_call_versions "
+                        "WHERE call_id = ? AND analysis_id = ?",
+                        (call_id, analysis_id),
+                    ).fetchone()
+                    if (
+                        call is None
+                        or call["status"] != "CONFIRMED"
+                        or not call["resolved_at"]
+                        or not call["confirmation_ref_json"]
+                        or run_row is None
+                        or version is None
+                        or int(version["candidate_pipeline_version"]) < 2
+                        or not children
+                        or any(
+                            child["status"] not in {"CAPTURED", "EXITED"}
+                            or type(child["pid"]) is not int
+                            or not child["start_identity"]
+                            for child in children
+                        )
+                    ):
+                        raise ValueError("CODEX_CONFIRMED_CHILD_RECONCILIATION_INVALID")
+                    run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+                    ref = StoredDataRef.model_validate_json(
+                        call["confirmation_ref_json"]
+                    )
+                    if (
+                        run.candidate_pipeline_version != 2
+                        or str(ref.workspace_id) != run.workspace_id
+                        or str(ref.commit_id) != run.commit_id
+                    ):
+                        raise ValueError("CODEX_CONFIRMED_CHILD_RECONCILIATION_INVALID")
+                    artifacts = SimpleArtifactRepository(
+                        data_dir,
+                        CheckpointIdentity(
+                            analysis_id=analysis_id,
+                            workspace_id=run.workspace_id,
+                            commit_id=run.commit_id,
+                            hypothesis_id=None,
+                        ),
+                        create_dirs=False,
+                    )
+                    marker = json.loads(artifacts.read(ref))
+                    expected_children = [
+                        {
+                            "phase": child["phase"],
+                            "pid": child["pid"],
+                            "start_identity": child["start_identity"],
+                        }
+                        for child in children
+                    ]
+                    observed_children = marker.get("observed_children")
+                    try:
+                        observed_at = datetime.fromisoformat(marker["observed_at"])
+                        started_at = datetime.fromisoformat(call["started_at"])
+                        resolved_at = datetime.fromisoformat(call["resolved_at"])
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise ValueError(
+                            "CODEX_CONFIRMED_CHILD_RECONCILIATION_INVALID"
+                        ) from error
+                    events = connection.execute(
+                        "SELECT event_json FROM agent_activity_events "
+                        "WHERE analysis_id = ? AND attempt_id = ?",
+                        (analysis_id, marker.get("attempt_id")),
+                    ).fetchall()
+                    confirmations = [
+                        event
+                        for row in events
+                        if (
+                            event := AgentActivityEvent.model_validate_json(
+                                row["event_json"]
+                            )
+                        ).kind
+                        is ActivityKind.DECISION_RECORDED
+                        and event.error_code == "CODEX_PROCESS_CLEANUP_CONFIRMED"
+                        and event.output_refs == (ref,)
+                        and event.stage == marker.get("stage")
+                        and event.workspace_id == run.workspace_id
+                        and event.commit_id == run.commit_id
+                    ]
+                    if (
+                        marker.get("kind") != "simple_codex_cleanup_confirmation"
+                        or marker.get("analysis_id") != analysis_id
+                        or marker.get("call_id") != call_id
+                        or marker.get("process_tree_stopped") is not True
+                        or marker.get("verification_method")
+                        not in {"windows_process_inventory", "posix_process_inventory"}
+                        or type(marker.get("observed_matching_process_count"))
+                        is not int
+                        or marker["observed_matching_process_count"] != 0
+                        or type(marker.get("former_parent_pid")) is not int
+                        or marker["former_parent_pid"]
+                        not in {child["pid"] for child in expected_children}
+                        or not isinstance(observed_children, list)
+                        or sorted(
+                            observed_children,
+                            key=lambda child: (
+                                str(child.get("phase"))
+                                if isinstance(child, dict)
+                                else ""
+                            ),
+                        )
+                        != expected_children
+                        or not isinstance(marker.get("checkpoint_sha256"), str)
+                        or re.fullmatch(r"[0-9a-f]{64}", marker["checkpoint_sha256"])
+                        is None
+                        or any(
+                            time.tzinfo is None
+                            for time in (observed_at, started_at, resolved_at)
+                        )
+                        or not started_at <= observed_at <= resolved_at
+                        or len(confirmations) != 1
+                        or confirmations[0].attempt_id != marker.get("attempt_id")
+                    ):
+                        raise ValueError("CODEX_CONFIRMED_CHILD_RECONCILIATION_INVALID")
+                    from sastsimi.providers.codex_subscription import (
+                        child_identity_matches,
+                    )
+
+                    if any(
+                        child_identity_matches(child["pid"], child["start_identity"])
+                        is not False
+                        for child in expected_children
+                    ):
+                        raise ValueError("CODEX_CONFIRMED_CHILD_RECONCILIATION_UNSAFE")
+                    captured = sum(
+                        1 for child in children if child["status"] == "CAPTURED"
+                    )
+                    updated = connection.execute(
+                        "UPDATE simple_codex_child_spawns SET status = 'EXITED' "
+                        "WHERE call_id = ? AND analysis_id = ? AND status = 'CAPTURED'",
+                        (call_id, analysis_id),
+                    )
+                    if updated.rowcount != captured:
+                        raise ValueError("CODEX_CONFIRMED_CHILD_RECONCILIATION_STALE")
+                    return captured
+        except AnalysisRunBusy as error:
+            raise ValueError(
+                "CODEX_CONFIRMED_CHILD_RECONCILIATION_ACTIVE_RUN"
+            ) from error
+
     def _confirm_codex_cleanup_with_lease(
         self,
         checkpoint: StageCheckpoint,
@@ -4901,6 +5948,15 @@ class SimpleCheckpointStore:
                 )
                 if updated.rowcount != 1:
                     raise ValueError("CODEX_CLEANUP_CONFIRMATION_STALE")
+                # The audited inventory covers every captured child identity.
+                # Settle those rows in the same transaction as the call so a
+                # later replay does not mistake this confirmed call for a live
+                # process after its parent has been recovered.
+                connection.execute(
+                    "UPDATE simple_codex_child_spawns SET status = 'EXITED' "
+                    "WHERE call_id = ? AND analysis_id = ? AND status = 'CAPTURED'",
+                    (call_id, checkpoint.identity.analysis_id),
+                )
             connection.commit()
 
     def reusable(
@@ -5855,6 +6911,2925 @@ class SimpleCheckpointStore:
                 ) from error
             raise
 
+    def prepare_poc_fixture_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Explicitly replay one exhausted, CAS-bound Django setup PoC."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _fixture=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_", "POC_FIXTURE_EXHAUSTION_", 1
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_fixture_dependency_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """One explicit attempt-4 replay after an attested fixture-setup replay."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _fixture_dependency=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_FIXTURE_DEPENDENCY_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_candidate_app_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay a fourth PoC that added an app absent from pinned source."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _candidate_app=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_CANDIDATE_APP_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_urlconf_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay one PoC with a proven candidate-only Django URLConf mistake."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _urlconf=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_URLCONF_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_generated_input_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay a pinned layout failure or its corrected validator stop."""
+
+        try:
+            if exhausted.stage is SimpleStage.POC_CANDIDATE_DONE:
+                return self.prepare_poc_validator_correction_replay(
+                    exhausted, artifacts, fail_before_commit=fail_before_commit
+                )
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _pinned_layout=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_GENERATED_INPUT_REPLAY_",
+                        1,
+                    )
+                ) from error
+            if message.startswith("POC_VALIDATOR_CORRECTION_REPLAY_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_VALIDATOR_CORRECTION_REPLAY_",
+                        "POC_GENERATED_INPUT_REPLAY_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_validator_correction_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one ninth candidate rejected by the corrected replay guards."""
+
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or stopped.stage_version != STAGE_VERSION[stopped.stage]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.error_code != "RECOVERY_EXHAUSTED"
+            or stopped.retryable
+            or stopped.attempt_number != MAX_RECOVERY_ATTEMPTS + 6
+            or not stopped.attempt_id
+            or len(stopped.output_refs) != 1
+            or stopped.input_hash != input_reference_hash(stopped.input_refs)
+            or stopped.recipe_ref is None
+            or stopped.image_digest is None
+            or stopped.container_id is not None
+            or stopped.validated_poc_ref is not None
+            or stopped.recovery_origin_stage is not SimpleStage.POC_EXECUTION_DONE
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_INVALID")
+        try:
+            if (
+                pinned_layout_replay_binding(
+                    stopped, artifacts, _historical_validator_stop=True
+                )
+                is None
+                or urlconf_replay_binding(
+                    stopped, artifacts, _historical_validator_stop=True
+                )
+                is None
+                or candidate_app_replay_unsupported_app(stopped, artifacts) is None
+            ):
+                raise ValueError("missing prior replay binding")
+            diagnostic = json.loads(
+                artifacts.read_bounded(stopped.output_refs[0], 64 * 1024)
+            )
+            numeric = (
+                "line_count",
+                "branch_count",
+                "inconclusive_line_count",
+                "exit_two_line_count",
+                "exit_zero_line_count",
+            )
+            if (
+                not isinstance(diagnostic, dict)
+                or set(diagnostic) != {"kind", "reason", *numeric}
+                or diagnostic.get("kind") != "simple_poc_candidate_rejection_diagnostic"
+                or diagnostic.get("reason") != "OTHER_VALIDATOR_REJECTION"
+                or any(
+                    type(diagnostic.get(field)) is not int or diagnostic[field] < 0
+                    for field in numeric
+                )
+            ):
+                raise ValueError("invalid candidate diagnostic")
+        except (OSError, TypeError, ValueError, sqlite3.Error) as error:
+            raise ValueError(
+                "POC_VALIDATOR_CORRECTION_REPLAY_EVIDENCE_INVALID"
+            ) from error
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(
+                hypothesis_key: str, stage: SimpleStage
+            ) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, hypothesis_key, stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            child_key = self._hypothesis_key(identity)
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            root_key = self._hypothesis_key(root_identity)
+            if checkpoint_at(child_key, stopped.stage) != stopped:
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_RUN_INVALID")
+            static = checkpoint_at(root_key, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.identity != root_identity
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+            ):
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_STATIC_INVALID")
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in rows
+            ):
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_RUN_ACTIVE")
+            root = checkpoint_at(root_key, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if (
+                root is None
+                or root.identity != root_identity
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.status is not StageStatus.BLOCKED
+                or root.error_code != root_code
+                or root.retryable
+                or not root.attempt_id
+                or root.input_hash != input_reference_hash(root.input_refs)
+            ):
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_ROOT_INVALID")
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                )
+            )
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stopped.stage.value
+                and event.attempt_id == stopped.attempt_id
+            )
+            layout_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "POC_GENERATED_INPUT_REPLAYED"
+            )
+            root_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.kind is ActivityKind.STAGE_BLOCKED
+                and event.error_code == root_code
+            )
+            if (
+                len(stage_events) != 3
+                or tuple((event.kind, event.error_code) for event in stage_events)
+                != (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED, "POC_URLCONF_REPLAY_UNSUPPORTED"),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.input_refs != stopped.input_refs
+                    for event in stage_events
+                )
+                or stage_events[0].output_refs
+                or any(
+                    event.output_refs != stopped.output_refs
+                    for event in stage_events[1:]
+                )
+                or len(layout_events) != 1
+                or layout_events[0].stage != SimpleStage.POC_EXECUTION_DONE.value
+                or layout_events[0].output_refs != (stopped.recovery_decision_refs[-1],)
+                or events.index(layout_events[0]) >= events.index(stage_events[0])
+                or len(root_events) != 1
+                or root_events[0].input_refs != root.input_refs
+                or root_events[0].output_refs != root.output_refs
+                or events.index(root_events[0]) < events.index(stage_events[-1])
+                or any(
+                    event.hypothesis_id == identity.hypothesis_id
+                    and event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code == "POC_VALIDATOR_CORRECTION_REPLAYED"
+                    for event in events
+                )
+            ):
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_EVENT_INVALID")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_CODEX_UNRESOLVED")
+            claimed = connection.execute(
+                "SELECT 1 FROM simple_candidate_child_claims "
+                "WHERE analysis_id = ? LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if claimed is not None:
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_CHILD_CLAIM_ACTIVE")
+            pro_con = checkpoint_at(child_key, SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(child_key, SimpleStage.VERIFICATION_INITIAL_DONE)
+            if (
+                pro_con is None
+                or pro_con.identity != identity
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or initial is None
+                or initial.identity != identity
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version
+                != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                or initial.recipe_ref != stopped.recipe_ref
+                or initial.image_digest != stopped.image_digest
+                or any(
+                    checkpoint_at(child_key, stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("POC_VALIDATOR_CORRECTION_REPLAY_LINEAGE_INVALID")
+            old_ref = artifacts.put_json(stopped.model_dump(mode="json"))
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": "simple_poc_validator_correction_replay",
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": stopped.attempt_id,
+                    "old_attempt_number": stopped.attempt_number,
+                    "old_checkpoint_ref": old_ref.model_dump(mode="json"),
+                    "old_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(stopped.model_dump(mode="json"))
+                    ).hexdigest(),
+                    "diagnostic_ref": stopped.output_refs[0].model_dump(mode="json"),
+                    "failure_event_id": stage_events[1].event_id,
+                    "exhaustion_event_id": stage_events[2].event_id,
+                    "root_failure_event_id": root_events[0].event_id,
+                    "layout_replay_event_id": layout_events[0].event_id,
+                    "validator_revision": POC_REPLAY_GUARD_REVISION,
+                }
+            )
+            inputs = tuple(
+                dict.fromkeys(
+                    (*stopped.input_refs, *stopped.output_refs, old_ref, marker_ref)
+                )
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=SimpleStage.POC_CANDIDATE_DONE,
+                stage_version=STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE],
+                status=StageStatus.PENDING,
+                input_refs=inputs,
+                input_hash=input_reference_hash(inputs),
+                attempt_number=stopped.attempt_number,
+                gate_revision_count=stopped.gate_revision_count,
+                recovery_lineage_id=stopped.recovery_lineage_id,
+                recovery_origin_stage=stopped.recovery_origin_stage,
+                recovery_decision_refs=(*stopped.recovery_decision_refs, marker_ref),
+                recipe_ref=stopped.recipe_ref,
+                image_digest=stopped.image_digest,
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 102),
+                    status=StageStatus.BLOCKED,
+                    summary_ko="검증기 수정 후 PoC 후보를 한 번 다시 생성합니다.",
+                    output_refs=(marker_ref,),
+                    error_code="POC_VALIDATOR_CORRECTION_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def prepare_poc_candidate_constraint_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+        _urlconf_candidate: bool = False,
+    ) -> StageCheckpoint:
+        """Retry one candidate rejected for reintroducing a proven absent app.
+
+        This is a new, explicit attempt, not a reset of the automatic limit.
+        The previous URLConf replay and all failed candidate events stay intact.
+        """
+
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or stopped.stage_version != STAGE_VERSION[stopped.stage]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.error_code != "RECOVERY_EXHAUSTED"
+            or stopped.retryable
+            or stopped.attempt_number
+            != MAX_RECOVERY_ATTEMPTS + (4 if _urlconf_candidate else 3)
+            or not stopped.attempt_id
+            or len(stopped.output_refs) != 1
+            or stopped.input_hash != input_reference_hash(stopped.input_refs)
+            or stopped.recipe_ref is None
+            or stopped.image_digest is None
+            or stopped.container_id is not None
+            or stopped.validated_poc_ref is not None
+            or stopped.recovery_origin_stage is not SimpleStage.POC_EXECUTION_DONE
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_INVALID")
+        try:
+            if (
+                urlconf_replay_binding(stopped, artifacts) is None
+                or candidate_app_replay_unsupported_app(stopped, artifacts) is None
+            ):
+                raise ValueError("missing prior replay evidence")
+            diagnostic = json.loads(
+                artifacts.read_bounded(stopped.output_refs[0], 64 * 1024)
+            )
+            numeric = (
+                "line_count",
+                "branch_count",
+                "inconclusive_line_count",
+                "exit_two_line_count",
+                "exit_zero_line_count",
+            )
+            if (
+                not isinstance(diagnostic, dict)
+                or set(diagnostic) != {"kind", "reason", *numeric}
+                or diagnostic.get("kind") != "simple_poc_candidate_rejection_diagnostic"
+                or diagnostic.get("reason") != "OTHER_VALIDATOR_REJECTION"
+                or any(
+                    type(diagnostic.get(key)) is not int or diagnostic[key] < 0
+                    for key in numeric
+                )
+            ):
+                raise ValueError("invalid candidate diagnostic")
+        except (OSError, TypeError, ValueError, sqlite3.Error) as error:
+            raise ValueError(
+                "POC_CANDIDATE_CONSTRAINT_REPLAY_EVIDENCE_INVALID"
+            ) from error
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    stopped.stage.value,
+                ),
+            ).fetchone()
+            if row is None or StageCheckpoint.model_validate_json(row[0]) != stopped:
+                raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row[0])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses WHERE analysis_id = ? "
+                    "AND workspace_id = ? AND commit_id = ? AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or not registered
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+            ):
+                raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_RUN_INVALID")
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row[0]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in rows
+            ):
+                raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_RUN_ACTIVE")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            root = self.get(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            bound_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if (
+                root is None
+                or root.status is not StageStatus.BLOCKED
+                or root.error_code != bound_code
+                or root.retryable
+                or not root.attempt_id
+            ):
+                raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_ROOT_INVALID")
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row[0])
+                for row in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                ).fetchall()
+            )
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stopped.stage.value
+                and event.attempt_id == stopped.attempt_id
+            )
+            prior_replays = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "POC_CANDIDATE_CONSTRAINT_REPLAYED"
+            )
+            root_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.kind is ActivityKind.STAGE_BLOCKED
+                and event.error_code == bound_code
+            )
+            if (
+                len(stage_events) != 3
+                or tuple((event.kind, event.error_code) for event in stage_events)
+                != (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (
+                        ActivityKind.STAGE_BLOCKED,
+                        "POC_URLCONF_REPLAY_UNSUPPORTED"
+                        if _urlconf_candidate
+                        else "POC_CANDIDATE_APP_REPLAY_UNSUPPORTED",
+                    ),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.input_refs != stopped.input_refs
+                    for event in stage_events
+                )
+                or stage_events[0].output_refs
+                or any(
+                    event.output_refs != stopped.output_refs
+                    for event in stage_events[1:]
+                )
+                or len(root_events) != 1
+                or root_events[0].input_refs != root.input_refs
+                or root_events[0].output_refs != root.output_refs
+                or events.index(root_events[0]) < events.index(stage_events[-1])
+                or (
+                    _urlconf_candidate
+                    and (
+                        len(prior_replays) != 1
+                        or len(prior_replays[0].output_refs) != 1
+                        or prior_replays[0].output_refs[0]
+                        not in stopped.recovery_decision_refs
+                        or events.index(prior_replays[0])
+                        >= events.index(stage_events[0])
+                    )
+                )
+                or any(
+                    event.hypothesis_id == identity.hypothesis_id
+                    and event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code
+                    == (
+                        "POC_URLCONF_CANDIDATE_REPLAYED"
+                        if _urlconf_candidate
+                        else "POC_CANDIDATE_CONSTRAINT_REPLAYED"
+                    )
+                    for event in events
+                )
+            ):
+                raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_EVENT_INVALID")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_CODEX_UNRESOLVED")
+            prior = self.get(identity, SimpleStage.VERIFICATION_INITIAL_DONE)
+            static = self.get(root_identity, SimpleStage.STATIC_DONE)
+            if (
+                prior is None
+                or prior.status is not StageStatus.SUCCEEDED
+                or prior.recipe_ref != stopped.recipe_ref
+                or prior.image_digest != stopped.image_digest
+                or static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+                or self.get(identity, SimpleStage.POC_EXECUTION_DONE) is not None
+                or any(
+                    self.get(identity, stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("POC_CANDIDATE_CONSTRAINT_REPLAY_LINEAGE_INVALID")
+            old_ref = artifacts.put_json(stopped.model_dump(mode="json"))
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": (
+                        "simple_poc_urlconf_candidate_replay"
+                        if _urlconf_candidate
+                        else "simple_poc_candidate_constraint_replay"
+                    ),
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": stopped.attempt_id,
+                    "old_attempt_number": stopped.attempt_number,
+                    "old_checkpoint_ref": old_ref.model_dump(mode="json"),
+                    "old_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(stopped.model_dump(mode="json"))
+                    ).hexdigest(),
+                    (
+                        "urlconf_failure_event_id"
+                        if _urlconf_candidate
+                        else "app_failure_event_id"
+                    ): stage_events[1].event_id,
+                    "exhaustion_event_id": stage_events[2].event_id,
+                    "root_failure_event_id": root_events[0].event_id,
+                    "diagnostic_ref": stopped.output_refs[0].model_dump(mode="json"),
+                }
+            )
+            refs = tuple(
+                dict.fromkeys(
+                    (*stopped.input_refs, *stopped.output_refs, old_ref, marker_ref)
+                )
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=stopped.stage,
+                stage_version=STAGE_VERSION[stopped.stage],
+                status=StageStatus.PENDING,
+                input_refs=refs,
+                input_hash=input_reference_hash(refs),
+                attempt_number=stopped.attempt_number,
+                gate_revision_count=stopped.gate_revision_count,
+                recovery_lineage_id=stopped.recovery_lineage_id,
+                recovery_origin_stage=SimpleStage.POC_EXECUTION_DONE,
+                recovery_decision_refs=tuple(
+                    dict.fromkeys((*stopped.recovery_decision_refs, marker_ref))
+                ),
+                recipe_ref=stopped.recipe_ref,
+                image_digest=stopped.image_digest,
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 102),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "검증된 URLConf 제약을 위반한 후보를 보존하고 "
+                        "한 번 재생성합니다."
+                        if _urlconf_candidate
+                        else (
+                            "고정 소스에 없는 앱을 재도입한 후보를 보존하고 "
+                            "한 번 재생성합니다."
+                        )
+                    ),
+                    output_refs=(marker_ref,),
+                    error_code=(
+                        "POC_URLCONF_CANDIDATE_REPLAYED"
+                        if _urlconf_candidate
+                        else "POC_CANDIDATE_CONSTRAINT_REPLAYED"
+                    ),
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def prepare_poc_urlconf_candidate_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay one exact candidate that ignored a pinned URLConf binding."""
+
+        try:
+            return self.prepare_poc_candidate_constraint_replay(
+                stopped,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _urlconf_candidate=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_CANDIDATE_CONSTRAINT_REPLAY_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_CANDIDATE_CONSTRAINT_REPLAY_",
+                        "POC_URLCONF_CANDIDATE_REPLAY_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    @staticmethod
+    def _pinned_candidate_app_absent(
+        *,
+        artifacts: SimpleArtifactRepository,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        recipe_ref: StoredDataRef,
+        image_digest: str | None,
+        app_name: str,
+    ) -> bool:
+        """Require a complete negative lookup at the saved Git commit.
+
+        Search all tracked text, including settings and dependency manifests,
+        and the exact built recipe. Any unavailable source proof fails closed.
+        """
+
+        workspace = run.workspace_path
+        git = shutil.which("git")
+        if (
+            workspace is None
+            or git is None
+            or re.fullmatch(r"[0-9a-f]{40}", identity.commit_id) is None
+        ):
+            return False
+        try:
+            root = workspace.resolve(strict=True)
+            if workspace.is_symlink() or not root.is_dir():
+                return False
+            recipe = json.loads(artifacts.read_bounded(recipe_ref, 256 * 1024))
+            if (
+                not isinstance(recipe, dict)
+                or recipe.get("kind") != "simple_environment_recipe"
+                or recipe.get("analysis_id") != identity.analysis_id
+                or recipe.get("workspace_id") != identity.workspace_id
+                or recipe.get("commit_id") != identity.commit_id
+                or recipe.get("hypothesis_id") != identity.hypothesis_id
+                or not isinstance(recipe.get("attempt_id"), str)
+                or not recipe["attempt_id"]
+                or recipe.get("status") != "BUILT"
+                or recipe.get("degraded") is not False
+                or image_digest is None
+                or recipe.get("image_digest") != image_digest
+                or recipe.get("dockerfile_source")
+                not in {
+                    "REPOSITORY_DOCKERFILE",
+                    "GENERATED",
+                    "GENERATED_OFFLINE_WHEELS",
+                }
+            ):
+                return False
+            patterns = {
+                app_name.lower(),
+                app_name.lower().replace("_", "-"),
+                app_name.lower().replace(".", "-"),
+                app_name.lower().replace(".", "_"),
+            }
+            recipe_text = json.dumps(recipe, ensure_ascii=True).lower()
+            if any(pattern in recipe_text for pattern in patterns):
+                return False
+
+            def run_git(*args: str) -> subprocess.CompletedProcess[bytes]:
+                return subprocess.run(
+                    (git, "-C", str(root), *args),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+
+            top = run_git("rev-parse", "--show-toplevel")
+            if (
+                top.returncode != 0
+                or Path(top.stdout.decode("utf-8").strip()).resolve(strict=True) != root
+            ):
+                return False
+            commit = run_git("cat-file", "-t", identity.commit_id)
+            if commit.returncode != 0 or commit.stdout.strip() != b"commit":
+                return False
+            tree = run_git("ls-tree", "-r", "-z", identity.commit_id)
+            if tree.returncode != 0 or any(
+                entry.startswith(b"160000 commit ")
+                for entry in tree.stdout.split(b"\0")
+            ):
+                return False
+            grep = run_git(
+                "grep",
+                "-q",
+                "-I",
+                "-i",
+                "-F",
+                *(part for pattern in sorted(patterns) for part in ("-e", pattern)),
+                identity.commit_id,
+                "--",
+                ".",
+            )
+            if grep.returncode != 1:
+                return False
+            paths: set[str] = set()
+            tracked_paths: set[str] = set()
+            for entry in tree.stdout.split(b"\0"):
+                if not entry:
+                    continue
+                _, separator, raw_path = entry.partition(b"\t")
+                if not separator:
+                    return False
+                path = raw_path.decode("utf-8")
+                tracked_paths.add(path)
+                name = PurePosixPath(path).name.lower()
+                if path.endswith(".py") and "settings" in name:
+                    paths.add(path)
+            mentions = run_git(
+                "grep",
+                "-l",
+                "-z",
+                "-I",
+                "-F",
+                "INSTALLED_APPS",
+                identity.commit_id,
+                "--",
+                "*.py",
+            )
+            if mentions.returncode not in {0, 1}:
+                return False
+            prefix = identity.commit_id.encode("ascii") + b":"
+            for match in mentions.stdout.split(b"\0"):
+                if not match:
+                    continue
+                if not match.startswith(prefix):
+                    return False
+                paths.add(match.removeprefix(prefix).decode("utf-8"))
+            if not paths or len(paths) > 64:
+                return False
+            pinned_apps: list[str] = []
+            for path in sorted(paths):
+                source, error = _read_pinned_blob(
+                    root,
+                    path,
+                    commit=identity.commit_id,
+                    git_executable=git,
+                    remaining=256 * 1024,
+                )
+                if error is not None or source is None:
+                    return False
+                try:
+                    source_tree = ast.parse(source.decode("utf-8"))
+                except (UnicodeError, SyntaxError, ValueError):
+                    return False
+                literal_apps = _static_installed_apps(source_tree)
+                if literal_apps is None:
+                    return False
+                apps, optional_imports, reexports_settings = literal_apps
+
+                def tracked_local_module(
+                    module: str, level: int = 0, source_path: str = path
+                ) -> bool:
+                    relative = PurePosixPath(*module.split("."))
+                    if level:
+                        parent = PurePosixPath(source_path).parent
+                        for _ in range(level - 1):
+                            parent = parent.parent
+                        candidates = (
+                            str(parent / relative) + ".py",
+                            str(parent / relative / "__init__.py"),
+                        )
+                        return any(
+                            candidate in tracked_paths for candidate in candidates
+                        )
+                    candidates = (
+                        str(relative) + ".py",
+                        str(relative / "__init__.py"),
+                    )
+                    return any(
+                        tracked == candidate or tracked.endswith("/" + candidate)
+                        for tracked in tracked_paths
+                        for candidate in candidates
+                    )
+
+                if not reexports_settings and (
+                    apps or PurePosixPath(path).name.lower() == "settings.py"
+                ):
+                    for imported in ast.walk(source_tree):
+                        if isinstance(imported, ast.Import) and any(
+                            tracked_local_module(alias.name) for alias in imported.names
+                        ):
+                            return False
+                        if isinstance(imported, ast.ImportFrom) and any(
+                            tracked_local_module(
+                                imported.module or alias.name, imported.level
+                            )
+                            for alias in imported.names
+                        ):
+                            return False
+                pinned_apps.extend(apps)
+                if reexports_settings:
+                    target = str(PurePosixPath(path).parent / "settings.py")
+                    if target == path or target not in paths:
+                        return False
+                for module in optional_imports:
+                    relative = PurePosixPath(path).parent / module
+                    candidates = (
+                        str(relative) + ".py",
+                        str(relative) + ".pyc",
+                        str(relative / "__init__.py"),
+                        str(relative / "__init__.pyc"),
+                    )
+                    if any(
+                        candidate in tracked_paths
+                        or (root / candidate).exists()
+                        or (root / candidate).is_symlink()
+                        for candidate in candidates
+                    ):
+                        return False
+            return bool(pinned_apps) and all(
+                app != app_name and not app.startswith(app_name + ".")
+                for app in pinned_apps
+            )
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            subprocess.TimeoutExpired,
+        ):
+            return False
+
+    @staticmethod
+    def _pinned_django_urlconf_route(
+        *,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        candidate_content: bytes,
+        signature: tuple[str, str, str, int],
+    ) -> tuple[str, ...] | None:
+        """Prove the namespaced route exists at the saved Git commit.
+
+        This accepts literal, unambiguous URL declarations only. A conditional
+        route additionally needs a pinned settings default that enables it.
+        """
+
+        module, namespace, route, arity = signature
+        git = shutil.which("git")
+        if (
+            git is None
+            or run.workspace_path is None
+            or re.fullmatch(r"[0-9a-f]{40}", identity.commit_id) is None
+            or module != f"{namespace}.urls"
+        ):
+            return None
+        try:
+            root = run.workspace_path.resolve(strict=True)
+            if run.workspace_path.is_symlink() or not root.is_dir():
+                return None
+
+            def run_git(*args: str) -> subprocess.CompletedProcess[bytes]:
+                return subprocess.run(
+                    (git, "-C", str(root), *args),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+
+            top = run_git("rev-parse", "--show-toplevel")
+            commit = run_git("cat-file", "-t", identity.commit_id)
+            entries = run_git("ls-tree", "-r", "-z", identity.commit_id)
+            if (
+                top.returncode != 0
+                or Path(top.stdout.decode("utf-8").strip()).resolve(strict=True) != root
+                or commit.returncode != 0
+                or commit.stdout.strip() != b"commit"
+                or entries.returncode != 0
+                or len(entries.stdout) > 4 * 1024 * 1024
+            ):
+                return None
+            tracked: set[str] = set()
+            for entry in entries.stdout.split(b"\0"):
+                if not entry:
+                    continue
+                meta, tab, raw_path = entry.partition(b"\t")
+                if not tab or not meta.startswith((b"100644 blob ", b"100755 blob ")):
+                    return None
+                tracked.add(raw_path.decode("utf-8"))
+            app_suffix = module.replace(".", "/") + ".py"
+            app_paths = [
+                path for path in tracked if path in {app_suffix, "src/" + app_suffix}
+            ]
+            if len(app_paths) != 1:
+                return None
+            app_path = app_paths[0]
+
+            def read_tree(path: str) -> ast.Module | None:
+                source, error = _read_pinned_blob(
+                    root,
+                    path,
+                    commit=identity.commit_id,
+                    git_executable=git,
+                    remaining=256 * 1024,
+                )
+                if error is not None or source is None:
+                    return None
+                return ast.parse(source.decode("utf-8"))
+
+            app_tree = read_tree(app_path)
+            if app_tree is None:
+                return None
+            app_names = [
+                stmt.value.value
+                for stmt in app_tree.body
+                if isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and stmt.targets[0].id == "app_name"
+                and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str)
+            ]
+            if app_names != [namespace]:
+                return None
+            if not any(
+                isinstance(stmt, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "urlpatterns"
+                    for target in stmt.targets
+                )
+                for stmt in app_tree.body
+            ):
+                return None
+
+            def matching_paths(stmt: ast.stmt) -> list[ast.Call]:
+                if not isinstance(stmt, (ast.Assign, ast.AugAssign)):
+                    return []
+                targets = (
+                    stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                )
+                if not any(
+                    isinstance(target, ast.Name) and target.id == "urlpatterns"
+                    for target in targets
+                ):
+                    return []
+                if not isinstance(stmt.value, (ast.List, ast.Tuple)):
+                    return []
+                return [
+                    node
+                    for node in stmt.value.elts
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "path"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                    and any(
+                        keyword.arg == "name"
+                        and isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value == route
+                        for keyword in node.keywords
+                    )
+                ]
+
+            route_hits: list[tuple[ast.Call, ast.If | None]] = []
+            for stmt in app_tree.body:
+                route_hits.extend((call, None) for call in matching_paths(stmt))
+                if isinstance(stmt, ast.If):
+                    route_hits.extend(
+                        (call, stmt)
+                        for child in stmt.body
+                        for call in matching_paths(child)
+                    )
+            if len(route_hits) != 1:
+                return None
+            call, condition = route_hits[0]
+
+            def unsafe_urlpattern_mutation(tree: ast.Module, line: int) -> bool:
+                for node in ast.walk(tree):
+                    if (
+                        isinstance(node, ast.Assign)
+                        and node.lineno > line
+                        and any(
+                            isinstance(target, ast.Name) and target.id == "urlpatterns"
+                            for target in node.targets
+                        )
+                    ):
+                        return True
+                    if (
+                        isinstance(node, ast.AugAssign)
+                        and isinstance(node.target, ast.Name)
+                        and node.target.id == "urlpatterns"
+                        and not isinstance(node.op, ast.Add)
+                    ):
+                        return True
+                    if isinstance(node, ast.Delete) and any(
+                        isinstance(target, ast.Name) and target.id == "urlpatterns"
+                        for target in node.targets
+                    ):
+                        return True
+                    if isinstance(node, ast.Call) and (
+                        isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "urlpatterns"
+                        or isinstance(node.func, ast.Name)
+                        and node.func.id
+                        in {"exec", "globals", "locals", "setattr", "delattr"}
+                    ):
+                        return True
+                return False
+
+            if unsafe_urlpattern_mutation(app_tree, call.lineno):
+                return None
+            route_pattern = call.args[0]
+            if not isinstance(route_pattern, ast.Constant) or not isinstance(
+                route_pattern.value, str
+            ):
+                return None
+            placeholders = re.findall(
+                r"<(?:(?:str|int|slug|uuid|path):)?[A-Za-z_]\w*>",
+                route_pattern.value,
+            )
+            if len(placeholders) != arity:
+                return None
+            if any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "include"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == module
+                and any(
+                    kw.arg == "namespace"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value == namespace
+                    for kw in node.keywords
+                )
+                for node in ast.walk(app_tree)
+            ):
+                return None
+            if condition is not None:
+                test = condition.test
+                if (
+                    condition.orelse
+                    or not isinstance(test, ast.Attribute)
+                    or not isinstance(test.value, ast.Name)
+                    or test.value.id == "settings"
+                    or test.attr.encode("ascii") in candidate_content
+                ):
+                    return None
+                imported = any(
+                    isinstance(stmt, ast.ImportFrom)
+                    and stmt.module == namespace
+                    and any(
+                        alias.name == "settings" and alias.asname == test.value.id
+                        for alias in stmt.names
+                    )
+                    for stmt in app_tree.body
+                )
+                settings_path = str(PurePosixPath(app_path).parent / "settings.py")
+                if not imported or settings_path not in tracked:
+                    return None
+                settings_tree = read_tree(settings_path)
+                if settings_tree is None or not any(
+                    isinstance(stmt, ast.Assign)
+                    and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)
+                    and stmt.targets[0].id == test.attr
+                    and isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Name)
+                    and stmt.value.func.id == "getattr"
+                    and len(stmt.value.args) == 3
+                    and isinstance(stmt.value.args[0], ast.Name)
+                    and stmt.value.args[0].id == "settings"
+                    and isinstance(stmt.value.args[1], ast.Constant)
+                    and stmt.value.args[1].value == test.attr
+                    and isinstance(stmt.value.args[2], ast.Constant)
+                    and stmt.value.args[2].value is True
+                    for stmt in settings_tree.body
+                ):
+                    return None
+            project_roots: list[str] = []
+            url_files = sorted(path for path in tracked if path.endswith("/urls.py"))
+            if len(url_files) > 128:
+                return None
+            for path in url_files:
+                parts = PurePosixPath(path).parts
+                if path == app_path or "test" in parts or "tests" in parts:
+                    continue
+                project_tree = read_tree(path)
+                if project_tree is None:
+                    return None
+                assignments = [
+                    stmt
+                    for stmt in project_tree.body
+                    if isinstance(stmt, ast.Assign)
+                    and any(
+                        isinstance(target, ast.Name) and target.id == "urlpatterns"
+                        for target in stmt.targets
+                    )
+                ]
+                imported_static = any(
+                    isinstance(stmt, ast.ImportFrom)
+                    and stmt.module == "django.conf.urls.static"
+                    and any(
+                        alias.name == "static" and alias.asname is None
+                        for alias in stmt.names
+                    )
+                    for stmt in project_tree.body
+                ) and not any(
+                    isinstance(node, ast.Name)
+                    and node.id == "static"
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                    for node in ast.walk(project_tree)
+                )
+
+                def direct_project_items(
+                    value: ast.expr, can_add_static: bool = imported_static
+                ) -> list[ast.expr]:
+                    if isinstance(value, (ast.List, ast.Tuple)):
+                        return value.elts
+                    if (
+                        isinstance(value, ast.BinOp)
+                        and isinstance(value.op, ast.Add)
+                        and isinstance(value.left, (ast.List, ast.Tuple))
+                        and can_add_static
+                        and isinstance(value.right, ast.Call)
+                        and isinstance(value.right.func, ast.Name)
+                        and value.right.func.id == "static"
+                    ):
+                        return value.left.elts
+                    return []
+
+                direct_includes = [
+                    (stmt, route_call, included)
+                    for stmt in assignments
+                    for route_call in direct_project_items(stmt.value)
+                    if isinstance(route_call, ast.Call)
+                    and isinstance(route_call.func, ast.Name)
+                    and route_call.func.id == "path"
+                    for included in route_call.args[1:]
+                    if isinstance(included, ast.Call)
+                    and isinstance(included.func, ast.Name)
+                    and included.func.id == "include"
+                    and included.args
+                    and isinstance(included.args[0], ast.Constant)
+                    and included.args[0].value == module
+                    and any(
+                        keyword.arg == "namespace"
+                        and isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value == namespace
+                        for keyword in included.keywords
+                    )
+                ]
+                if len(direct_includes) != 1 or unsafe_urlpattern_mutation(
+                    project_tree, direct_includes[0][0].lineno
+                ):
+                    continue
+                if len(project_roots) >= 16:
+                    return None
+                module_path = path.removeprefix("src/").removesuffix(".py")
+                module_name = module_path.replace("/", ".")
+                if (
+                    len(module_name) > 128
+                    or re.fullmatch(
+                        r"[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*",
+                        module_name,
+                    )
+                    is None
+                ):
+                    return None
+                project_roots.append(module_name)
+            return tuple(project_roots) or None
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            TypeError,
+            SyntaxError,
+            subprocess.TimeoutExpired,
+        ):
+            return None
+
+    def prepare_poc_source_gap_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """One explicit attempt-5 replay after a pinned model-source omission."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _source_gap=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_SOURCE_GAP_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    @staticmethod
+    def _pinned_django_settings_mismatch(
+        *,
+        artifacts: SimpleArtifactRepository,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        stderr: bytes,
+        stdout: bytes,
+        candidate_content: bytes,
+    ) -> tuple[str, tuple[str, str, str], tuple[bytes, bytes, bytes]] | None:
+        """Attest the omitted migration switch against three tracked Git blobs."""
+
+        config = _django_literal_configuration(candidate_content)
+        git = shutil.which("git")
+        if (
+            config is None
+            or git is None
+            or run.workspace_path is None
+            or run.static_bundle_ref is None
+            or re.fullmatch(r"[0-9a-f]{40}", identity.commit_id) is None
+        ):
+            return None
+        root_module = config["ROOT_URLCONF"]
+        apps = config["INSTALLED_APPS"]
+        if not isinstance(root_module, str) or not isinstance(apps, (tuple, list)):
+            return None
+        project_module = root_module.removesuffix(".urls")
+        project_suffix = project_module.replace(".", "/") + "/settings.py"
+        try:
+            workspace = run.workspace_path.resolve(strict=True)
+            if run.workspace_path.is_symlink() or not workspace.is_dir():
+                return None
+            head = subprocess.run(
+                (git, "-C", str(workspace), "rev-parse", "HEAD"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+            if (
+                head.returncode != 0
+                or head.stdout.decode("ascii").strip() != identity.commit_id
+            ):
+                return None
+            bundle = json.loads(
+                artifacts.read_bounded(run.static_bundle_ref, 1024 * 1024)
+            )
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("analysis_id") != identity.analysis_id
+                or bundle.get("workspace_id") != identity.workspace_id
+                or bundle.get("commit_id") != identity.commit_id
+            ):
+                return None
+            manifest_ref = StoredDataRef.model_validate(
+                bundle.get("poc_source_manifest_ref")
+                or bundle.get("source_manifest_ref")
+            )
+            manifest = json.loads(artifacts.read_bounded(manifest_ref, 8 * 1024 * 1024))
+            paths = manifest.get("paths") if isinstance(manifest, dict) else None
+            if (
+                manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(paths, list)
+                or len(paths) > 100_000
+                or not all(isinstance(path, str) for path in paths)
+            ):
+                return None
+            tracked = set(paths)
+            project_paths = [
+                path
+                for path in (project_suffix, "src/" + project_suffix)
+                if path in tracked
+            ]
+            if len(project_paths) != 1:
+                return None
+
+            def pinned(path: str) -> bytes | None:
+                local = safe_tracked_file(workspace, path)
+                if local is None:
+                    return None
+                source, error = _read_pinned_blob(
+                    workspace,
+                    path,
+                    commit=identity.commit_id,
+                    git_executable=git,
+                    remaining=128 * 1024,
+                )
+                if error is not None or source is None:
+                    return None
+                local_bytes = local.read_bytes()
+                if (
+                    local_bytes != source
+                    and local_bytes.replace(b"\r\n", b"\n") != source
+                ):
+                    return None
+                return source
+
+            project_settings = pinned(project_paths[0])
+            if project_settings is None:
+                return None
+            matches: list[
+                tuple[str, tuple[str, str, str], tuple[bytes, bytes, bytes]]
+            ] = []
+            for app in apps:
+                if not isinstance(app, str) or app.startswith("django."):
+                    continue
+                app_suffix = app.replace(".", "/")
+                app_paths = [
+                    path
+                    for path in (
+                        app_suffix + "/settings.py",
+                        "src/" + app_suffix + "/settings.py",
+                    )
+                    if path in tracked
+                ]
+                if len(app_paths) != 1:
+                    continue
+                app_path = app_paths[0]
+                app_settings = pinned(app_path)
+                if app_settings is None:
+                    continue
+                migration_paths = sorted(
+                    path
+                    for path in tracked
+                    if path.startswith(
+                        app_path.removesuffix("settings.py") + "migrations/"
+                    )
+                    and path.endswith(".py")
+                )
+                if len(migration_paths) > 128:
+                    return None
+                for migration_path in migration_paths:
+                    migration = pinned(migration_path)
+                    if migration is None:
+                        return None
+                    flag = django_migration_setting_mismatch(
+                        stderr,
+                        stdout,
+                        candidate_content,
+                        project_settings,
+                        app_settings,
+                        migration,
+                        app_name=app,
+                    )
+                    if flag is not None:
+                        matches.append(
+                            (
+                                flag,
+                                (project_paths[0], app_path, migration_path),
+                                (project_settings, app_settings, migration),
+                            )
+                        )
+            return matches[0] if len(matches) == 1 else None
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+            sqlite3.Error,
+            subprocess.TimeoutExpired,
+        ):
+            return None
+
+    @staticmethod
+    def _pinned_django_relation_settings_mismatch(
+        *,
+        artifacts: SimpleArtifactRepository,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        stderr: bytes,
+        stdout: bytes,
+        candidate_content: bytes,
+    ) -> _RelationSettingsProof | None:
+        """Attest a model-relation setting against tracked, unchanged Git blobs."""
+
+        git = shutil.which("git")
+        if (
+            git is None
+            or run.workspace_path is None
+            or run.static_bundle_ref is None
+            or re.fullmatch(r"[0-9a-f]{40}", identity.commit_id) is None
+        ):
+            return None
+        try:
+            workspace = run.workspace_path.resolve(strict=True)
+            if run.workspace_path.is_symlink() or not workspace.is_dir():
+                return None
+            head = subprocess.run(
+                (git, "-C", str(workspace), "rev-parse", "HEAD"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+            if (
+                head.returncode != 0
+                or head.stdout.decode("ascii").strip() != identity.commit_id
+            ):
+                return None
+            bundle = json.loads(
+                artifacts.read_bounded(run.static_bundle_ref, 1024 * 1024)
+            )
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("analysis_id") != identity.analysis_id
+                or bundle.get("workspace_id") != identity.workspace_id
+                or bundle.get("commit_id") != identity.commit_id
+            ):
+                return None
+            manifest_ref = StoredDataRef.model_validate(
+                bundle.get("poc_source_manifest_ref")
+                or bundle.get("source_manifest_ref")
+            )
+            manifest = json.loads(artifacts.read_bounded(manifest_ref, 8 * 1024 * 1024))
+            paths = manifest.get("paths") if isinstance(manifest, dict) else None
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(paths, list)
+                or len(paths) > 100_000
+                or not all(isinstance(path, str) for path in paths)
+            ):
+                return None
+            tracked = set(paths)
+
+            def pinned(path: str) -> bytes | None:
+                local = safe_tracked_file(workspace, path)
+                if local is None:
+                    return None
+                source, error = _read_pinned_blob(
+                    workspace,
+                    path,
+                    commit=identity.commit_id,
+                    git_executable=git,
+                    remaining=128 * 1024,
+                )
+                if error is not None or source is None:
+                    return None
+                local_bytes = local.read_bytes()
+                if (
+                    local_bytes != source
+                    and local_bytes.replace(b"\r\n", b"\n") != source
+                ):
+                    return None
+                return source
+
+            imported_apps = set(
+                item.decode("ascii")
+                for item in re.findall(
+                    rb"\bfrom[ \t]+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
+                    rb"\.models[ \t]+import\b",
+                    candidate_content,
+                )
+            )
+            if not imported_apps or len(imported_apps) > 16:
+                return None
+            matches: list[
+                tuple[
+                    str,
+                    tuple[str, str, str],
+                    tuple[bytes, bytes, bytes],
+                    str,
+                    tuple[tuple[str, bytes], ...],
+                    StoredDataRef,
+                    tuple[tuple[str, bytes], ...],
+                ]
+            ] = []
+            for app_name in sorted(imported_apps):
+                suffix = app_name.replace(".", "/")
+                app_pairs = [
+                    (settings_path, model_path)
+                    for settings_path, model_path in (
+                        (suffix + "/settings.py", suffix + "/models.py"),
+                        (
+                            "src/" + suffix + "/settings.py",
+                            "src/" + suffix + "/models.py",
+                        ),
+                    )
+                    if settings_path in tracked and model_path in tracked
+                ]
+                if len(app_pairs) != 1:
+                    continue
+                app_path, model_path = app_pairs[0]
+                app_source = pinned(app_path)
+                model_source = pinned(model_path)
+                if app_source is None or model_source is None:
+                    return None
+                selection = django_relation_project_settings_paths(
+                    candidate_content,
+                    tracked,
+                    app_name=app_name,
+                )
+                if selection is None:
+                    continue
+                mode, reachable_paths, scan_root = selection
+                if len(reachable_paths) > 128:
+                    return None
+                if mode == "DYNAMIC":
+                    if scan_root is None:
+                        return None
+                    scan_base = (
+                        workspace / PurePosixPath(scan_root) if scan_root else workspace
+                    )
+                    if scan_base.is_symlink() or not scan_base.is_dir():
+                        return None
+                    actual_settings = {
+                        path.relative_to(workspace).as_posix()
+                        for path in scan_base.rglob("settings.py")
+                        if path.is_file() or path.is_symlink()
+                    }
+                    if actual_settings != set(reachable_paths):
+                        return None
+                projects: list[tuple[str, bytes]] = []
+                reachable_sources: list[tuple[str, bytes]] = []
+                for path in sorted(
+                    reachable_paths,
+                    key=lambda path: (len(PurePosixPath(path).parts), path),
+                ):
+                    source = pinned(path)
+                    if source is None:
+                        return None
+                    reachable_sources.append((path, source))
+                    if path == app_path:
+                        continue
+                    try:
+                        tree = ast.parse(source.decode("utf-8"))
+                    except (UnicodeError, SyntaxError):
+                        return None
+                    installed = [
+                        node.value
+                        for node in tree.body
+                        if isinstance(node, ast.Assign)
+                        and any(
+                            isinstance(target, ast.Name)
+                            and target.id == "INSTALLED_APPS"
+                            for target in node.targets
+                        )
+                    ]
+                    if not installed:
+                        continue
+                    if len(installed) != 1:
+                        return None
+                    try:
+                        apps = ast.literal_eval(installed[0])
+                    except (ValueError, TypeError):
+                        return None
+                    if not isinstance(apps, (list, tuple)) or app_name not in apps:
+                        return None
+                    if len(projects) >= 16:
+                        return None
+                    projects.append((path, source))
+                if not projects:
+                    continue
+                project_path, project_source = projects[0]
+                flags = [
+                    django_relation_setting_mismatch(
+                        stderr,
+                        stdout,
+                        candidate_content,
+                        source,
+                        app_source,
+                        model_source,
+                        app_name=app_name,
+                    )
+                    for _, source in projects
+                ]
+                if flags[0] is not None and all(flag == flags[0] for flag in flags):
+                    matches.append(
+                        (
+                            flags[0],
+                            (project_path, app_path, model_path),
+                            (project_source, app_source, model_source),
+                            mode,
+                            tuple(projects),
+                            manifest_ref,
+                            tuple(reachable_sources),
+                        )
+                    )
+            return matches[0] if len(matches) == 1 else None
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+            sqlite3.Error,
+            subprocess.TimeoutExpired,
+        ):
+            return None
+
+    @staticmethod
+    def _pinned_django_migration_graph_omission(
+        *,
+        artifacts: SimpleArtifactRepository,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        stderr: bytes,
+        stdout: bytes,
+        candidate_content: bytes,
+    ) -> _RelationSettingsProof | None:
+        """Prove one omitted migration flag against every reachable pinned setting."""
+
+        git = shutil.which("git")
+        if (
+            git is None
+            or run.workspace_path is None
+            or run.static_bundle_ref is None
+            or re.fullmatch(r"[0-9a-f]{40}", identity.commit_id) is None
+            or django_migration_graph_project_scan_root(candidate_content)
+            != "/workspace"
+        ):
+            return None
+        try:
+            workspace = run.workspace_path.resolve(strict=True)
+            if run.workspace_path.is_symlink() or not workspace.is_dir():
+                return None
+            head = subprocess.run(
+                (git, "-C", str(workspace), "rev-parse", "HEAD"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+            if (
+                head.returncode != 0
+                or head.stdout.decode("ascii").strip() != identity.commit_id
+            ):
+                return None
+            bundle = json.loads(
+                artifacts.read_bounded(run.static_bundle_ref, 1024 * 1024)
+            )
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("analysis_id") != identity.analysis_id
+                or bundle.get("workspace_id") != identity.workspace_id
+                or bundle.get("commit_id") != identity.commit_id
+            ):
+                return None
+            manifest_ref = StoredDataRef.model_validate(
+                bundle.get("poc_source_manifest_ref")
+                or bundle.get("source_manifest_ref")
+            )
+            manifest = json.loads(artifacts.read_bounded(manifest_ref, 8 * 1024 * 1024))
+            paths = manifest.get("paths") if isinstance(manifest, dict) else None
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(paths, list)
+                or len(paths) > 100_000
+                or not all(isinstance(path, str) for path in paths)
+            ):
+                return None
+            tracked = set(paths)
+            reachable_paths = tuple(
+                sorted(
+                    path
+                    for path in tracked
+                    if PurePosixPath(path).name == "settings.py"
+                )
+            )
+            if not 2 <= len(reachable_paths) <= 128:
+                return None
+            actual_paths = {
+                path.relative_to(workspace).as_posix()
+                for path in workspace.rglob("settings.py")
+                if path.is_file() or path.is_symlink()
+            }
+            if actual_paths != set(reachable_paths):
+                return None
+
+            def pinned(path: str) -> bytes | None:
+                local = safe_tracked_file(workspace, path)
+                if local is None:
+                    return None
+                source, error = _read_pinned_blob(
+                    workspace,
+                    path,
+                    commit=identity.commit_id,
+                    git_executable=git,
+                    remaining=128 * 1024,
+                )
+                if error is not None or source is None:
+                    return None
+                local_bytes = local.read_bytes()
+                if (
+                    local_bytes != source
+                    and local_bytes.replace(b"\r\n", b"\n") != source
+                ):
+                    return None
+                return source
+
+            reachable_sources: list[tuple[str, bytes]] = []
+            for path in reachable_paths:
+                source = pinned(path)
+                if source is None:
+                    return None
+                reachable_sources.append((path, source))
+            matches: list[_RelationSettingsProof] = []
+            for app_path, app_source in reachable_sources:
+                app_match = re.fullmatch(
+                    r"(?:src/)?([A-Za-z_]\w*(?:/[A-Za-z_]\w*)*)/settings\.py",
+                    app_path,
+                )
+                if app_match is None:
+                    continue
+                app_name = app_match.group(1).replace("/", ".")
+                prefix = app_path.removesuffix("settings.py")
+                migration_paths = tuple(
+                    sorted(
+                        path
+                        for path in tracked
+                        if path.startswith(prefix + "migrations/")
+                        and path.endswith(".py")
+                        and PurePosixPath(path).name != "__init__.py"
+                    )
+                )
+                if not 1 <= len(migration_paths) <= 128:
+                    continue
+                projects = tuple(
+                    sorted(
+                        (
+                            (path, source)
+                            for path, source in reachable_sources
+                            if path != app_path
+                        ),
+                        key=lambda item: (len(PurePosixPath(item[0]).parts), item[0]),
+                    )
+                )
+                if not 1 <= len(projects) <= 16:
+                    continue
+                for migration_path in migration_paths:
+                    migration = pinned(migration_path)
+                    if migration is None:
+                        return None
+                    flag = django_migration_graph_settings_omission(
+                        stderr,
+                        stdout,
+                        candidate_content,
+                        tuple(source for _, source in projects),
+                        app_source,
+                        migration,
+                        app_name=app_name,
+                    )
+                    if flag is None:
+                        continue
+                    matches.append(
+                        (
+                            flag,
+                            (projects[0][0], app_path, migration_path),
+                            (projects[0][1], app_source, migration),
+                            "DYNAMIC",
+                            projects,
+                            manifest_ref,
+                            tuple(reachable_sources),
+                        )
+                    )
+            return matches[0] if len(matches) == 1 else None
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+            sqlite3.Error,
+            subprocess.TimeoutExpired,
+        ):
+            return None
+
+    def prepare_poc_django_settings_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay one pinned Django migration setting mismatch after attempt 10."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _django_settings=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_DJANGO_SETTINGS_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_django_relation_settings_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay one pinned relation-settings omission after attempt three."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _relation_settings=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_DJANGO_RELATION_SETTINGS_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_django_migration_settings_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay one pinned Django migration-graph setting omission."""
+
+        if exhausted.stage is SimpleStage.POC_CANDIDATE_DONE:
+            return self._prepare_poc_django_migration_settings_candidate_replay(
+                exhausted, artifacts, fail_before_commit=fail_before_commit
+            )
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _migration_settings=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_DJANGO_MIGRATION_SETTINGS_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def _prepare_poc_django_migration_settings_candidate_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """One source-bound retry after the first migration repair was rejected."""
+
+        prefix = "POC_DJANGO_MIGRATION_SETTINGS_EXHAUSTION_"
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or stopped.stage_version != STAGE_VERSION[stopped.stage]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.error_code != "RECOVERY_EXHAUSTED"
+            or stopped.retryable
+            or stopped.attempt_number != MAX_RECOVERY_ATTEMPTS + 1
+            or not stopped.attempt_id
+            or len(stopped.output_refs) != 1
+            or stopped.input_hash != input_reference_hash(stopped.input_refs)
+            or stopped.recipe_ref is None
+            or stopped.image_digest is None
+            or stopped.container_id is not None
+            or stopped.validated_poc_ref is not None
+            or stopped.recovery_origin_stage is not SimpleStage.POC_EXECUTION_DONE
+            or not stopped.recovery_decision_refs
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError(prefix + "INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    stopped.stage.value,
+                ),
+            ).fetchone()
+            if row is None or StageCheckpoint.model_validate_json(row[0]) != stopped:
+                raise ValueError(prefix + "STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError(prefix + "RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row[0])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses WHERE analysis_id = ? "
+                    "AND workspace_id = ? AND commit_id = ? AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or not registered
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+            ):
+                raise ValueError(prefix + "RUN_INVALID")
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(other[0]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for other in rows
+            ):
+                raise ValueError(prefix + "RUN_ACTIVE")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            root = self.get(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            bound_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if (
+                root is None
+                or root.identity != root_identity
+                or root.stage is not SimpleStage.HYPOTHESIS_DONE
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.input_hash != input_reference_hash(root.input_refs)
+                or root.status is not StageStatus.BLOCKED
+                or root.error_code != bound_code
+                or root.retryable
+                or not root.attempt_id
+            ):
+                raise ValueError(prefix + "ROOT_INVALID")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError(prefix + "CODEX_UNRESOLVED")
+            prior = self.get(identity, SimpleStage.VERIFICATION_INITIAL_DONE)
+            static = self.get(root_identity, SimpleStage.STATIC_DONE)
+            if (
+                prior is None
+                or prior.status is not StageStatus.SUCCEEDED
+                or prior.recipe_ref != stopped.recipe_ref
+                or prior.image_digest != stopped.image_digest
+                or static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+                or self.get(identity, SimpleStage.POC_EXECUTION_DONE) is not None
+                or any(
+                    self.get(identity, stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError(prefix + "LINEAGE_INVALID")
+            try:
+                bound = migration_settings_blocked_replay_binding(stopped, artifacts)
+                if bound is None:
+                    raise ValueError("missing migration source binding")
+                flag, original_candidate = bound
+                original_rule_ref = stopped.recovery_decision_refs[-1]
+                rule = json.loads(artifacts.read_bounded(original_rule_ref, 64 * 1024))
+                if not isinstance(rule, dict):
+                    raise ValueError("invalid original migration rule")
+                original_execution_ref = StoredDataRef.model_validate(
+                    rule["settings_execution_checkpoint_ref"]
+                )
+                original_execution = StageCheckpoint.model_validate_json(
+                    artifacts.read_bounded(original_execution_ref, 256 * 1024)
+                )
+                content = artifacts.read_bounded(
+                    original_candidate.output_refs[1], 1024 * 1024
+                )
+                stdout = artifacts.read_bounded(
+                    original_execution.output_refs[1], 1024 * 1024
+                )
+                stderr = artifacts.read_bounded(
+                    original_execution.output_refs[2], 1024 * 1024
+                )
+                proof = self._pinned_django_migration_graph_omission(
+                    artifacts=artifacts,
+                    run=run,
+                    identity=identity,
+                    stderr=stderr,
+                    stdout=stdout,
+                    candidate_content=content,
+                )
+                source_refs = tuple(
+                    StoredDataRef.model_validate(value)
+                    for value in rule["settings_source_refs"]
+                )
+                source_blobs = tuple(
+                    artifacts.read_bounded(ref, 128 * 1024) for ref in source_refs
+                )
+                project_entries = rule["settings_project_candidates"]
+                reachable_entries = rule["settings_reachable_sources"]
+                saved_projects = tuple(
+                    (
+                        entry["path"],
+                        artifacts.read_bounded(
+                            StoredDataRef.model_validate(entry["ref"]), 128 * 1024
+                        ),
+                    )
+                    for entry in project_entries
+                )
+                saved_reachable = tuple(
+                    (
+                        entry["path"],
+                        artifacts.read_bounded(
+                            StoredDataRef.model_validate(entry["ref"]), 128 * 1024
+                        ),
+                    )
+                    for entry in reachable_entries
+                )
+                if (
+                    proof is None
+                    or proof[0] != flag
+                    or tuple(rule["settings_source_paths"]) != proof[1]
+                    or source_blobs != proof[2]
+                    or rule["settings_project_selection"] != proof[3]
+                    or saved_projects != proof[4]
+                    or StoredDataRef.model_validate(
+                        rule["settings_tracked_manifest_ref"]
+                    )
+                    != proof[5]
+                    or saved_reachable != proof[6]
+                    or original_rule_ref not in stopped.input_refs
+                ):
+                    raise ValueError("migration source changed")
+                diagnostic = json.loads(
+                    artifacts.read_bounded(stopped.output_refs[0], 64 * 1024)
+                )
+                numeric = (
+                    "line_count",
+                    "branch_count",
+                    "inconclusive_line_count",
+                    "exit_two_line_count",
+                    "exit_zero_line_count",
+                )
+                if (
+                    not isinstance(diagnostic, dict)
+                    or set(diagnostic) != {"kind", "reason", *numeric}
+                    or diagnostic.get("kind")
+                    != "simple_poc_candidate_rejection_diagnostic"
+                    or diagnostic.get("reason") != "OTHER_VALIDATOR_REJECTION"
+                    or any(
+                        type(diagnostic.get(key)) is not int or diagnostic[key] < 0
+                        for key in numeric
+                    )
+                ):
+                    raise ValueError("invalid candidate diagnostic")
+            except (
+                KeyError,
+                IndexError,
+                OSError,
+                TypeError,
+                ValueError,
+                sqlite3.Error,
+            ) as error:
+                raise ValueError(prefix + "EVIDENCE_INVALID") from error
+            events = tuple(
+                AgentActivityEvent.model_validate_json(event[0])
+                for event in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                ).fetchall()
+            )
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stopped.stage.value
+                and event.attempt_id == stopped.attempt_id
+            )
+            prior_replays = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "POC_EXTRACT_EXHAUSTION_REPLAYED"
+                and event.output_refs == (original_rule_ref,)
+            )
+            root_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.kind is ActivityKind.STAGE_BLOCKED
+                and event.error_code == bound_code
+            )
+            if (
+                len(stage_events) != 3
+                or tuple((event.kind, event.error_code) for event in stage_events)
+                != (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (
+                        ActivityKind.STAGE_BLOCKED,
+                        "POC_DJANGO_MIGRATION_SETTINGS_REPLAY_UNSUPPORTED",
+                    ),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.input_refs != stopped.input_refs
+                    for event in stage_events
+                )
+                or stage_events[0].output_refs
+                or any(
+                    event.output_refs != stopped.output_refs
+                    for event in stage_events[1:]
+                )
+                or len(prior_replays) != 1
+                or prior_replays[0].analysis_id != identity.analysis_id
+                or prior_replays[0].workspace_id != identity.workspace_id
+                or prior_replays[0].commit_id != identity.commit_id
+                or prior_replays[0].stage != SimpleStage.POC_EXECUTION_DONE.value
+                or prior_replays[0].attempt_id != original_execution.attempt_id
+                or prior_replays[0].input_refs != original_execution.input_refs
+                or events.index(prior_replays[0]) >= events.index(stage_events[0])
+                or len(root_events) != 1
+                or root_events[0].analysis_id != identity.analysis_id
+                or root_events[0].workspace_id != identity.workspace_id
+                or root_events[0].commit_id != identity.commit_id
+                or root_events[0].input_refs != root.input_refs
+                or root_events[0].output_refs != root.output_refs
+                or events.index(root_events[0]) < events.index(stage_events[-1])
+                or any(
+                    event.hypothesis_id == identity.hypothesis_id
+                    and event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code
+                    == "POC_DJANGO_MIGRATION_SETTINGS_CANDIDATE_REPLAYED"
+                    for event in events
+                )
+            ):
+                raise ValueError(prefix + "EVENT_INVALID")
+            old_ref = artifacts.put_json(stopped.model_dump(mode="json"))
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": "simple_poc_django_migration_settings_candidate_replay",
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": stopped.attempt_id,
+                    "old_attempt_number": stopped.attempt_number,
+                    "old_checkpoint_ref": old_ref.model_dump(mode="json"),
+                    "old_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(stopped.model_dump(mode="json"))
+                    ).hexdigest(),
+                    "original_migration_rule_ref": original_rule_ref.model_dump(
+                        mode="json"
+                    ),
+                    "candidate_failure_event_id": stage_events[1].event_id,
+                    "exhaustion_event_id": stage_events[2].event_id,
+                    "root_failure_event_id": root_events[0].event_id,
+                    "diagnostic_ref": stopped.output_refs[0].model_dump(mode="json"),
+                }
+            )
+            refs = tuple(
+                dict.fromkeys(
+                    (*stopped.input_refs, *stopped.output_refs, old_ref, marker_ref)
+                )
+            )
+            pending = StageCheckpoint(
+                identity=identity,
+                stage=stopped.stage,
+                stage_version=STAGE_VERSION[stopped.stage],
+                status=StageStatus.PENDING,
+                input_refs=refs,
+                input_hash=input_reference_hash(refs),
+                attempt_number=stopped.attempt_number,
+                gate_revision_count=stopped.gate_revision_count,
+                recovery_lineage_id=stopped.recovery_lineage_id,
+                recovery_origin_stage=SimpleStage.POC_EXECUTION_DONE,
+                recovery_decision_refs=tuple(
+                    dict.fromkeys((*stopped.recovery_decision_refs, marker_ref))
+                ),
+                recipe_ref=stopped.recipe_ref,
+                image_digest=stopped.image_digest,
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 102),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "고정 소스의 Django migration 설정 제약을 위반한 후보를 "
+                        "보존하고 한 번 재생성합니다."
+                    ),
+                    output_refs=(marker_ref,),
+                    error_code="POC_DJANGO_MIGRATION_SETTINGS_CANDIDATE_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def prepare_poc_django_schema_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """One explicit replay of a sixth, lineage-bound Django fixture error."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _django_schema=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_DJANGO_SCHEMA_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_in_memory_storage_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """One explicit candidate replay for a proven in-memory SQLite target."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _in_memory_storage=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_IN_MEMORY_STORAGE_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_server_constructor_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """One explicit replay after a pinned variadic HTTP constructor failure."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _server_constructor=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_SERVER_CONSTRUCTOR_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    @staticmethod
+    def _poc_source_gap_fixture_failure(
+        stderr: bytes, stdout: bytes, candidate: bytes
+    ) -> str | None:
+        """Recognize the bounded attempt-5 fixture phase, not a target verdict."""
+
+        if stdout or not candidate or len(candidate) > 256 * 1024:
+            return None
+        setup = re.search(
+            rb"(?m)^\s*stage\s*=\s*(['\"])database_setup\1\s*$", candidate
+        )
+        if setup is None or b"django.setup(" not in candidate[: setup.start()]:
+            return None
+        schema = candidate.find(b"schema_editor(", setup.end())
+        model = candidate.find(b"create_model(", schema)
+        fixture = candidate.find(b"objects.create(", model)
+        if schema < 0 or model <= schema or fixture <= model:
+            return None
+        if stderr.replace(b"\r\n", b"\n").strip() != (
+            b"OperationalError: fixture_setup\n"
+            b"Traceback (function names only):\n"
+            b"  in _insert\n"
+            b"  in execute_sql\n"
+            b"  in execute\n"
+            b"  in _execute_with_wrappers\n"
+            b"  in _execute\n"
+            b"  in __exit__\n"
+            b"  in _execute\n"
+            b"  in execute"
+        ):
+            return None
+        return "fixture setup"
+
+    @staticmethod
+    def _pinned_in_memory_sqlite_target(
+        *,
+        artifacts: SimpleArtifactRepository,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        stderr: bytes,
+        stdout: bytes,
+        candidate_content: bytes,
+    ) -> bool:
+        """Attest the PoC's explicit Python paths against the pinned Git tree.
+
+        All claimed source files must be tracked and byte-identical to their
+        pinned blobs. Exactly one may contain the in-memory SQLite connection;
+        any other direct SQLite connection is ambiguous and fails closed.
+        """
+
+        paths = sqlite_in_memory_target_paths(candidate_content)
+        git = shutil.which("git")
+        if (
+            not paths
+            or git is None
+            or run.workspace_path is None
+            or run.static_bundle_ref is None
+            or re.fullmatch(r"[0-9a-f]{40}", identity.commit_id) is None
+        ):
+            return False
+        try:
+            bundle = json.loads(
+                artifacts.read_bounded(run.static_bundle_ref, 1024 * 1024)
+            )
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("analysis_id") != identity.analysis_id
+                or bundle.get("workspace_id") != identity.workspace_id
+                or bundle.get("commit_id") != identity.commit_id
+            ):
+                return False
+            manifest_ref = StoredDataRef.model_validate(
+                bundle.get("poc_source_manifest_ref")
+                or bundle.get("source_manifest_ref")
+            )
+            manifest = json.loads(artifacts.read_bounded(manifest_ref, 8 * 1024 * 1024))
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(manifest.get("paths"), list)
+                or len(manifest["paths"]) > 100_000
+                or not all(isinstance(path, str) for path in manifest["paths"])
+            ):
+                return False
+            tracked = set(manifest["paths"])
+            in_memory_matches = 0
+            for path in paths:
+                if path not in tracked:
+                    return False
+                checkout_file = safe_tracked_file(run.workspace_path, path)
+                if checkout_file is None:
+                    return False
+                pinned, error = _read_pinned_blob(
+                    run.workspace_path,
+                    path,
+                    commit=identity.commit_id,
+                    git_executable=git,
+                    remaining=128 * 1024,
+                )
+                if error is not None or pinned is None:
+                    return False
+                if checkout_file.stat().st_size != len(pinned):
+                    return False
+                if checkout_file.read_bytes() != pinned:
+                    return False
+                try:
+                    pinned_tree = ast.parse(pinned.decode("utf-8"))
+                except (UnicodeError, SyntaxError, ValueError):
+                    return False
+                has_direct_sqlite = any(
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "connect"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "sqlite3"
+                    for node in ast.walk(pinned_tree)
+                )
+                if has_direct_sqlite:
+                    if not sqlite_in_memory_storage_failure(
+                        stderr, stdout, candidate_content, pinned
+                    ):
+                        return False
+                    in_memory_matches += 1
+            return in_memory_matches == 1
+        except (OSError, TypeError, ValueError, sqlite3.Error):
+            return False
+
+    @staticmethod
+    def _pinned_http_server_constructor(
+        *,
+        artifacts: SimpleArtifactRepository,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        stderr: bytes,
+        stdout: bytes,
+        candidate_content: bytes,
+    ) -> bool:
+        """Require the claimed constructor source to match a tracked Git blob."""
+
+        path = http_server_constructor_source_path(candidate_content)
+        git = shutil.which("git")
+        if (
+            path is None
+            or git is None
+            or run.workspace_path is None
+            or run.static_bundle_ref is None
+            or re.fullmatch(r"[0-9a-f]{40}", identity.commit_id) is None
+        ):
+            return False
+        try:
+            bundle = json.loads(
+                artifacts.read_bounded(run.static_bundle_ref, 1024 * 1024)
+            )
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("analysis_id") != identity.analysis_id
+                or bundle.get("workspace_id") != identity.workspace_id
+                or bundle.get("commit_id") != identity.commit_id
+            ):
+                return False
+            manifest_ref = StoredDataRef.model_validate(
+                bundle.get("poc_source_manifest_ref")
+                or bundle.get("source_manifest_ref")
+            )
+            manifest = json.loads(artifacts.read_bounded(manifest_ref, 8 * 1024 * 1024))
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(manifest.get("paths"), list)
+                or len(manifest["paths"]) > 100_000
+                or path not in manifest["paths"]
+            ):
+                return False
+            checkout_file = safe_tracked_file(run.workspace_path, path)
+            if checkout_file is None:
+                return False
+            pinned, error = _read_pinned_blob(
+                run.workspace_path,
+                path,
+                commit=identity.commit_id,
+                git_executable=git,
+                remaining=128 * 1024,
+            )
+            return (
+                error is None
+                and pinned is not None
+                and checkout_file.stat().st_size == len(pinned)
+                and checkout_file.read_bytes() == pinned
+                and http_server_constructor_failure(
+                    stderr, stdout, candidate_content, pinned
+                )
+            )
+        except (OSError, TypeError, ValueError, sqlite3.Error):
+            return False
+
+    @staticmethod
+    def _pinned_poc_model_source_gap(
+        *,
+        artifacts: SimpleArtifactRepository,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        candidate_record: dict[str, object],
+        pro_con: StageCheckpoint,
+        candidate_content: bytes,
+    ) -> bool:
+        """Attest a requested tracked model omitted from the exact PoC prompt.
+
+        A refusal alone is not evidence: the source ref must belong to the
+        generated candidate, match the pro/con request, and be in the pinned
+        tracked-source manifest. No repository content is copied to the rule.
+        """
+
+        if (
+            run.static_bundle_ref is None
+            or b"django.setup(" not in candidate_content
+            or b"schema_editor(" not in candidate_content
+            or b"create_model(" not in candidate_content
+        ):
+            return False
+        try:
+            bundle = json.loads(
+                artifacts.read_bounded(run.static_bundle_ref, 1024 * 1024)
+            )
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("kind") != "simple_static_fact_bundle"
+                or bundle.get("analysis_id") != identity.analysis_id
+                or bundle.get("workspace_id") != identity.workspace_id
+                or bundle.get("commit_id") != identity.commit_id
+            ):
+                return False
+            manifest_ref = StoredDataRef.model_validate(
+                bundle.get("poc_source_manifest_ref")
+                or bundle.get("source_manifest_ref")
+            )
+            manifest = json.loads(artifacts.read_bounded(manifest_ref, 8 * 1024 * 1024))
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("kind") != "simple_tracked_sources"
+                or not isinstance(manifest.get("paths"), list)
+                or not all(isinstance(path, str) for path in manifest["paths"])
+            ):
+                return False
+            tracked = set(manifest["paths"])
+            requested: set[str] = set()
+            for ref in pro_con.output_refs:
+                record = json.loads(artifacts.read_bounded(ref, 256 * 1024))
+                if not isinstance(record, dict) or record.get("kind") not in {
+                    "simple_pro_evidence",
+                    "simple_con_evidence",
+                }:
+                    continue
+                result = record.get("result")
+                paths = (
+                    result.get("requested_paths") if isinstance(result, dict) else None
+                )
+                if isinstance(paths, list):
+                    requested.update(path for path in paths if isinstance(path, str))
+            source_refs = candidate_record.get("source_refs")
+            if not isinstance(source_refs, list) or len(source_refs) > 64:
+                return False
+            valid_gap = False
+            for raw_ref in source_refs:
+                source_ref = StoredDataRef.model_validate(raw_ref)
+                source_bytes = artifacts.read_bounded(source_ref, 256 * 1024)
+                try:
+                    record = json.loads(source_bytes)
+                except (UnicodeError, json.JSONDecodeError):
+                    # Exact PoC inputs may also include shell output and other
+                    # non-JSON artifacts; they are not requested-source claims.
+                    continue
+                if (
+                    not isinstance(record, dict)
+                    or record.get("kind") != "simple_requested_sources"
+                ):
+                    continue
+                refused = record.get("refused")
+                served = record.get("served")
+                if (
+                    not isinstance(refused, list)
+                    or not isinstance(served, list)
+                    or len(refused) > 64
+                    or record.get("omitted_refusals")
+                ):
+                    return False
+                served_paths: set[str] = set()
+                for served_item in served:
+                    if not isinstance(served_item, dict):
+                        return False
+                    served_path = served_item.get("path")
+                    if not isinstance(served_path, str) or not isinstance(
+                        served_item.get("content"), str
+                    ):
+                        return False
+                    served_paths.add(served_path)
+                for item in refused:
+                    if (
+                        not isinstance(item, dict)
+                        or not isinstance(item.get("path"), str)
+                        or not isinstance(item.get("reason"), str)
+                    ):
+                        return False
+                    if item.get("reason") != "PROMPT_BUDGET_EXHAUSTED":
+                        continue
+                    path = item.get("path")
+                    if not isinstance(path, str):
+                        continue
+                    parts = PurePosixPath(path).parts
+                    if (
+                        path not in tracked
+                        or path not in requested
+                        or path in served_paths
+                        or any(
+                            served_path.startswith(path + "#")
+                            for served_path in served_paths
+                        )
+                        or not parts
+                        or PurePosixPath(path).is_absolute()
+                        or ".." in parts
+                        or "\\" in path
+                        or ":" in path
+                        or parts[-1] != "models.py"
+                    ):
+                        continue
+                    valid_gap = True
+            return valid_gap
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+            return False
+        return False
+
     def prepare_poc_extract_exhaustion_replay(
         self,
         exhausted: StageCheckpoint,
@@ -5862,6 +9837,18 @@ class SimpleCheckpointStore:
         *,
         fail_before_commit: bool = False,
         _local_import: bool = False,
+        _fixture: bool = False,
+        _fixture_dependency: bool = False,
+        _candidate_app: bool = False,
+        _urlconf: bool = False,
+        _source_gap: bool = False,
+        _django_schema: bool = False,
+        _server_constructor: bool = False,
+        _in_memory_storage: bool = False,
+        _pinned_layout: bool = False,
+        _django_settings: bool = False,
+        _relation_settings: bool = False,
+        _migration_settings: bool = False,
     ) -> StageCheckpoint:
         """Explicitly regenerate one PoC after a bound sanitized extract failure.
 
@@ -5870,6 +9857,27 @@ class SimpleCheckpointStore:
         automatic three-attempt recovery ceiling.
         """
 
+        if (
+            sum(
+                (
+                    _local_import,
+                    _fixture,
+                    _fixture_dependency,
+                    _candidate_app,
+                    _urlconf,
+                    _source_gap,
+                    _django_schema,
+                    _server_constructor,
+                    _in_memory_storage,
+                    _pinned_layout,
+                    _django_settings,
+                    _relation_settings,
+                    _migration_settings,
+                )
+            )
+            > 1
+        ):
+            raise ValueError("POC_EXTRACT_EXHAUSTION_INVALID")
         identity = exhausted.identity
         if (
             identity.hypothesis_id is None
@@ -5878,7 +9886,31 @@ class SimpleCheckpointStore:
             or exhausted.status is not StageStatus.BLOCKED
             or exhausted.error_code != "RECOVERY_EXHAUSTED"
             or exhausted.retryable
-            or exhausted.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or exhausted.attempt_number
+            != MAX_RECOVERY_ATTEMPTS
+            + (
+                7
+                if _django_settings
+                else (
+                    5
+                    if _pinned_layout
+                    else (
+                        3
+                        if _django_schema
+                        else (
+                            2
+                            if _source_gap or _urlconf
+                            else (
+                                1
+                                if _fixture_dependency
+                                or _candidate_app
+                                or _server_constructor
+                                else 0
+                            )
+                        )
+                    )
+                )
+            )
             or not exhausted.attempt_id
             or len(exhausted.output_refs) != 4
             or exhausted.input_hash != input_reference_hash(exhausted.input_refs)
@@ -6016,10 +10048,55 @@ class SimpleCheckpointStore:
             )
             if not any(root_events):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_ROOT_BOUND_INVALID")
+            extract_replay_code = "POC_EXTRACT_EXHAUSTION_REPLAYED"
             replay_code = (
-                "POC_LOCAL_IMPORT_EXHAUSTION_REPLAYED"
-                if _local_import
-                else "POC_EXTRACT_EXHAUSTION_REPLAYED"
+                "POC_DJANGO_RELATION_SETTINGS_EXHAUSTION_REPLAYED"
+                if _relation_settings
+                else (
+                    "POC_DJANGO_SETTINGS_EXHAUSTION_REPLAYED"
+                    if _django_settings
+                    else (
+                        "POC_LOCAL_IMPORT_EXHAUSTION_REPLAYED"
+                        if _local_import
+                        else (
+                            "POC_GENERATED_INPUT_REPLAYED"
+                            if _pinned_layout
+                            else (
+                                "POC_URLCONF_EXHAUSTION_REPLAYED"
+                                if _urlconf
+                                else (
+                                    "POC_CANDIDATE_APP_EXHAUSTION_REPLAYED"
+                                    if _candidate_app
+                                    else (
+                                        "POC_DJANGO_SCHEMA_EXHAUSTION_REPLAYED"
+                                        if _django_schema
+                                        else (
+                                            "POC_SERVER_CONSTRUCTOR_EXHAUSTION_REPLAYED"
+                                            if _server_constructor
+                                            else (
+                                                "POC_IN_MEMORY_STORAGE_EXHAUSTION_REPLAYED"
+                                                if _in_memory_storage
+                                                else (
+                                                    "POC_SOURCE_GAP_EXHAUSTION_REPLAYED"
+                                                    if _source_gap
+                                                    else (
+                                                        "POC_FIXTURE_DEPENDENCY_EXHAUSTION_REPLAYED"
+                                                        if _fixture_dependency
+                                                        else (
+                                                            "POC_FIXTURE_EXHAUSTION_REPLAYED"
+                                                            if _fixture
+                                                            else extract_replay_code
+                                                        )
+                                                    )
+                                                )
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
             )
             if any(
                 event.hypothesis_id == identity.hypothesis_id
@@ -6043,7 +10120,7 @@ class SimpleCheckpointStore:
                     (
                         ActivityKind.STAGE_BLOCKED,
                         "POC_RUNTIME_IMPORT_FAILED"
-                        if _local_import
+                        if _local_import or _candidate_app
                         else "POC_EXECUTION_FAILED",
                     ),
                     (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
@@ -6074,6 +10151,450 @@ class SimpleCheckpointStore:
                 )
             ):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_EVENT_INVALID")
+            prior_marker = None
+            if (
+                _fixture_dependency
+                or _candidate_app
+                or _urlconf
+                or _source_gap
+                or _django_schema
+            ):
+                prior_markers = tuple(
+                    event
+                    for event in events
+                    if event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code == "POC_FIXTURE_EXHAUSTION_REPLAYED"
+                    and event.analysis_id == identity.analysis_id
+                    and event.workspace_id == identity.workspace_id
+                    and event.commit_id == identity.commit_id
+                    and event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                )
+                if len(prior_markers) != 1:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                prior_marker = prior_markers[0]
+                prior_events = tuple(
+                    event
+                    for event in events
+                    if event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                    and event.attempt_id == prior_marker.attempt_id
+                )
+                if (
+                    prior_marker.attempt_id is None
+                    or prior_marker.attempt_id == exhausted.attempt_id
+                    or len(prior_marker.output_refs) != 1
+                    or prior_marker.output_refs[0]
+                    not in exhausted.recovery_decision_refs
+                    or len(prior_events) != 4
+                    or prior_events[-1] != prior_marker
+                    or tuple(
+                        (event.kind, event.error_code) for event in prior_events[:3]
+                    )
+                    != (
+                        (ActivityKind.STAGE_STARTED, None),
+                        (ActivityKind.STAGE_BLOCKED, "POC_EXECUTION_FAILED"),
+                        (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                    )
+                    or prior_events[0].output_refs
+                    or len(prior_events[1].output_refs) != 4
+                    or prior_events[1].output_refs != prior_events[2].output_refs
+                    or any(
+                        event.input_refs != prior_marker.input_refs
+                        for event in prior_events[:3]
+                    )
+                    or events.index(prior_marker) >= events.index(stage_events[0])
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+            candidate_app_marker = None
+            if _urlconf:
+                markers = tuple(
+                    event
+                    for event in events
+                    if event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code == "POC_CANDIDATE_APP_EXHAUSTION_REPLAYED"
+                    and event.analysis_id == identity.analysis_id
+                    and event.workspace_id == identity.workspace_id
+                    and event.commit_id == identity.commit_id
+                    and event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                )
+                if len(markers) != 1:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                candidate_app_marker = markers[0]
+                marker_events = tuple(
+                    event
+                    for event in events
+                    if event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                    and event.attempt_id == candidate_app_marker.attempt_id
+                )
+                if (
+                    prior_marker is None
+                    or candidate_app_marker.attempt_id is None
+                    or candidate_app_marker.attempt_id
+                    in {prior_marker.attempt_id, exhausted.attempt_id}
+                    or len(candidate_app_marker.output_refs) != 1
+                    or candidate_app_marker.output_refs[0]
+                    not in exhausted.recovery_decision_refs
+                    or len(marker_events) != 4
+                    or marker_events[-1] != candidate_app_marker
+                    or tuple(
+                        (event.kind, event.error_code) for event in marker_events[:3]
+                    )
+                    != (
+                        (ActivityKind.STAGE_STARTED, None),
+                        (ActivityKind.STAGE_BLOCKED, "POC_RUNTIME_IMPORT_FAILED"),
+                        (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                    )
+                    or marker_events[0].output_refs
+                    or len(marker_events[1].output_refs) != 4
+                    or marker_events[1].output_refs != marker_events[2].output_refs
+                    or any(
+                        event.input_refs != candidate_app_marker.input_refs
+                        for event in marker_events[:3]
+                    )
+                    or events.index(prior_marker) >= events.index(candidate_app_marker)
+                    or events.index(candidate_app_marker)
+                    >= events.index(stage_events[0])
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                try:
+                    marker_rule = json.loads(
+                        artifacts.read_bounded(
+                            candidate_app_marker.output_refs[0], 64 * 1024
+                        )
+                    )
+                except (OSError, TypeError, ValueError) as error:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID") from error
+                if (
+                    not isinstance(marker_rule, dict)
+                    or marker_rule.get("kind") != "simple_recovery_decision"
+                    or marker_rule.get("identity") != identity.model_dump(mode="json")
+                    or marker_rule.get("stage") != exhausted.stage.value
+                    or marker_rule.get("attempt") != MAX_RECOVERY_ATTEMPTS + 1
+                    or marker_rule.get("attempt_id") != candidate_app_marker.attempt_id
+                    or marker_rule.get("decision_origin") != "RULE"
+                    or marker_rule.get("explicit_exhaustion_replay") is not True
+                    or marker_rule.get("candidate_app_replay") is not True
+                    or marker_rule.get("recovery_revision")
+                    != DJANGO_CANDIDATE_APP_RECOVERY_REVISION
+                    or not isinstance(marker_rule.get("decision"), dict)
+                    or marker_rule["decision"].get("category") != "GENERATED_INPUT"
+                    or marker_rule["decision"].get("action") != "REGENERATE_INPUT"
+                    or not isinstance(marker_rule.get("original_error"), dict)
+                    or marker_rule["original_error"].get("code")
+                    != "POC_RUNTIME_IMPORT_FAILED"
+                    or marker_rule["original_error"].get("evidence_refs")
+                    != [
+                        ref.model_dump(mode="json")
+                        for ref in marker_events[1].output_refs
+                    ]
+                    or marker_rule.get("failure_event_id") != marker_events[1].event_id
+                    or marker_rule.get("exhaustion_event_id")
+                    != marker_events[2].event_id
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+            dependency_marker = None
+            if _source_gap or _django_schema:
+                dependency_markers = tuple(
+                    event
+                    for event in events
+                    if event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code == "POC_FIXTURE_DEPENDENCY_EXHAUSTION_REPLAYED"
+                    and event.analysis_id == identity.analysis_id
+                    and event.workspace_id == identity.workspace_id
+                    and event.commit_id == identity.commit_id
+                    and event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                )
+                if len(dependency_markers) != 1:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                dependency_marker = dependency_markers[0]
+                dependency_events = tuple(
+                    event
+                    for event in events
+                    if event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                    and event.attempt_id == dependency_marker.attempt_id
+                )
+                if (
+                    prior_marker is None
+                    or dependency_marker.attempt_id is None
+                    or dependency_marker.attempt_id
+                    in {
+                        prior_marker.attempt_id,
+                        exhausted.attempt_id,
+                    }
+                    or len(dependency_marker.output_refs) != 1
+                    or dependency_marker.output_refs[0]
+                    not in exhausted.recovery_decision_refs
+                    or len(dependency_events) != 4
+                    or dependency_events[-1] != dependency_marker
+                    or tuple(
+                        (event.kind, event.error_code)
+                        for event in dependency_events[:3]
+                    )
+                    != (
+                        (ActivityKind.STAGE_STARTED, None),
+                        (ActivityKind.STAGE_BLOCKED, "POC_EXECUTION_FAILED"),
+                        (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                    )
+                    or dependency_events[0].output_refs
+                    or len(dependency_events[1].output_refs) != 4
+                    or dependency_events[1].output_refs
+                    != dependency_events[2].output_refs
+                    or any(
+                        event.input_refs != dependency_marker.input_refs
+                        for event in dependency_events[:3]
+                    )
+                    or events.index(prior_marker) >= events.index(dependency_marker)
+                    or events.index(dependency_marker) >= events.index(stage_events[0])
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                try:
+                    dependency_rule = json.loads(
+                        artifacts.read_bounded(
+                            dependency_marker.output_refs[0], 64 * 1024
+                        )
+                    )
+                except (OSError, TypeError, ValueError) as error:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID") from error
+                if (
+                    not isinstance(dependency_rule, dict)
+                    or dependency_rule.get("kind") != "simple_recovery_decision"
+                    or dependency_rule.get("identity")
+                    != identity.model_dump(mode="json")
+                    or dependency_rule.get("stage") != exhausted.stage.value
+                    or dependency_rule.get("attempt") != MAX_RECOVERY_ATTEMPTS + 1
+                    or dependency_rule.get("attempt_id") != dependency_marker.attempt_id
+                    or dependency_rule.get("decision_origin") != "RULE"
+                    or dependency_rule.get("explicit_exhaustion_replay") is not True
+                    or dependency_rule.get("recovery_revision")
+                    != DJANGO_POC_FIXTURE_DEPENDENCY_RECOVERY_REVISION
+                    or not isinstance(dependency_rule.get("decision"), dict)
+                    or dependency_rule["decision"].get("category") != "GENERATED_INPUT"
+                    or dependency_rule["decision"].get("action") != "REGENERATE_INPUT"
+                    or not isinstance(dependency_rule.get("original_error"), dict)
+                    or dependency_rule["original_error"].get("code")
+                    != "POC_EXECUTION_FAILED"
+                    or dependency_rule["original_error"].get("evidence_refs")
+                    != [
+                        ref.model_dump(mode="json")
+                        for ref in dependency_events[1].output_refs
+                    ]
+                    or dependency_rule.get("failure_event_id")
+                    != dependency_events[1].event_id
+                    or dependency_rule.get("exhaustion_event_id")
+                    != dependency_events[2].event_id
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                try:
+                    prior_rule = json.loads(
+                        artifacts.read_bounded(prior_marker.output_refs[0], 64 * 1024)
+                    )
+                except (OSError, TypeError, ValueError) as error:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID") from error
+                if (
+                    not isinstance(prior_rule, dict)
+                    or prior_rule.get("kind") != "simple_recovery_decision"
+                    or prior_rule.get("identity") != identity.model_dump(mode="json")
+                    or prior_rule.get("stage") != exhausted.stage.value
+                    or prior_rule.get("attempt") != MAX_RECOVERY_ATTEMPTS
+                    or prior_rule.get("attempt_id") != prior_marker.attempt_id
+                    or prior_rule.get("decision_origin") != "RULE"
+                    or prior_rule.get("explicit_exhaustion_replay") is not True
+                    or prior_rule.get("recovery_revision")
+                    != DJANGO_POC_FIXTURE_RECOVERY_REVISION
+                    or prior_rule.get("diagnostic_excerpt")
+                    not in {"migration graph", "model relation", "fixture database"}
+                    or not isinstance(prior_rule.get("decision"), dict)
+                    or prior_rule["decision"].get("category") != "GENERATED_INPUT"
+                    or prior_rule["decision"].get("action") != "REGENERATE_INPUT"
+                    or not isinstance(prior_rule.get("original_error"), dict)
+                    or prior_rule["original_error"].get("code")
+                    != "POC_EXECUTION_FAILED"
+                    or prior_rule["original_error"].get("evidence_refs")
+                    != [
+                        ref.model_dump(mode="json")
+                        for ref in prior_events[1].output_refs
+                    ]
+                    or prior_rule.get("failure_event_id") != prior_events[1].event_id
+                    or prior_rule.get("exhaustion_event_id") != prior_events[2].event_id
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+            source_marker = None
+            if _django_schema:
+                source_markers = tuple(
+                    event
+                    for event in events
+                    if event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code == "POC_SOURCE_GAP_EXHAUSTION_REPLAYED"
+                    and event.analysis_id == identity.analysis_id
+                    and event.workspace_id == identity.workspace_id
+                    and event.commit_id == identity.commit_id
+                    and event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                )
+                if len(source_markers) != 1:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                source_marker = source_markers[0]
+                source_events = tuple(
+                    event
+                    for event in events
+                    if event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                    and event.attempt_id == source_marker.attempt_id
+                )
+                if (
+                    prior_marker is None
+                    or dependency_marker is None
+                    or source_marker.attempt_id is None
+                    or source_marker.attempt_id
+                    in {
+                        prior_marker.attempt_id,
+                        dependency_marker.attempt_id,
+                        exhausted.attempt_id,
+                    }
+                    or len(source_marker.output_refs) != 1
+                    or source_marker.output_refs[0]
+                    not in exhausted.recovery_decision_refs
+                    or len(source_events) != 4
+                    or source_events[-1] != source_marker
+                    or tuple(
+                        (event.kind, event.error_code) for event in source_events[:3]
+                    )
+                    != (
+                        (ActivityKind.STAGE_STARTED, None),
+                        (ActivityKind.STAGE_BLOCKED, "POC_EXECUTION_FAILED"),
+                        (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                    )
+                    or source_events[0].output_refs
+                    or len(source_events[1].output_refs) != 4
+                    or source_events[1].output_refs != source_events[2].output_refs
+                    or any(
+                        event.input_refs != source_marker.input_refs
+                        for event in source_events[:3]
+                    )
+                    or events.index(dependency_marker) >= events.index(source_marker)
+                    or events.index(source_marker) >= events.index(stage_events[0])
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                try:
+                    source_rule = json.loads(
+                        artifacts.read_bounded(source_marker.output_refs[0], 64 * 1024)
+                    )
+                except (OSError, TypeError, ValueError) as error:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID") from error
+                if (
+                    not isinstance(source_rule, dict)
+                    or source_rule.get("kind") != "simple_recovery_decision"
+                    or source_rule.get("identity") != identity.model_dump(mode="json")
+                    or source_rule.get("stage") != exhausted.stage.value
+                    or source_rule.get("attempt") != MAX_RECOVERY_ATTEMPTS + 2
+                    or source_rule.get("attempt_id") != source_marker.attempt_id
+                    or source_rule.get("decision_origin") != "RULE"
+                    or source_rule.get("explicit_exhaustion_replay") is not True
+                    or source_rule.get("recovery_revision")
+                    != DJANGO_POC_SOURCE_GAP_RECOVERY_REVISION
+                    or not isinstance(source_rule.get("decision"), dict)
+                    or source_rule["decision"].get("category") != "GENERATED_INPUT"
+                    or source_rule["decision"].get("action") != "REGENERATE_INPUT"
+                    or not isinstance(source_rule.get("original_error"), dict)
+                    or source_rule["original_error"].get("code")
+                    != "POC_EXECUTION_FAILED"
+                    or source_rule["original_error"].get("evidence_refs")
+                    != [
+                        ref.model_dump(mode="json")
+                        for ref in source_events[1].output_refs
+                    ]
+                    or source_rule.get("failure_event_id") != source_events[1].event_id
+                    or source_rule.get("exhaustion_event_id")
+                    != source_events[2].event_id
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+            if _server_constructor:
+                storage_markers = tuple(
+                    event
+                    for event in events
+                    if event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code == "POC_IN_MEMORY_STORAGE_EXHAUSTION_REPLAYED"
+                    and event.analysis_id == identity.analysis_id
+                    and event.workspace_id == identity.workspace_id
+                    and event.commit_id == identity.commit_id
+                    and event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                )
+                if len(storage_markers) != 1:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                storage_marker = storage_markers[0]
+                storage_events = tuple(
+                    event
+                    for event in events
+                    if event.hypothesis_id == identity.hypothesis_id
+                    and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                    and event.attempt_id == storage_marker.attempt_id
+                )
+                if (
+                    storage_marker.attempt_id is None
+                    or storage_marker.attempt_id == exhausted.attempt_id
+                    or len(storage_marker.output_refs) != 1
+                    or storage_marker.output_refs[0]
+                    not in exhausted.recovery_decision_refs
+                    or len(storage_events) != 4
+                    or storage_events[-1] != storage_marker
+                    or tuple(
+                        (event.kind, event.error_code) for event in storage_events[:3]
+                    )
+                    != (
+                        (ActivityKind.STAGE_STARTED, None),
+                        (ActivityKind.STAGE_BLOCKED, "POC_EXECUTION_FAILED"),
+                        (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                    )
+                    or storage_events[0].output_refs
+                    or len(storage_events[1].output_refs) != 4
+                    or storage_events[1].output_refs != storage_events[2].output_refs
+                    or any(
+                        event.input_refs != storage_marker.input_refs
+                        for event in storage_events[:3]
+                    )
+                    or events.index(storage_marker) >= events.index(stage_events[0])
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
+                try:
+                    storage_rule = json.loads(
+                        artifacts.read_bounded(storage_marker.output_refs[0], 64 * 1024)
+                    )
+                except (OSError, TypeError, ValueError) as error:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID") from error
+                if (
+                    not isinstance(storage_rule, dict)
+                    or storage_rule.get("kind") != "simple_recovery_decision"
+                    or storage_rule.get("identity") != identity.model_dump(mode="json")
+                    or storage_rule.get("stage") != exhausted.stage.value
+                    or storage_rule.get("attempt") != MAX_RECOVERY_ATTEMPTS
+                    or storage_rule.get("attempt_id") != storage_marker.attempt_id
+                    or storage_rule.get("decision_origin") != "RULE"
+                    or storage_rule.get("explicit_exhaustion_replay") is not True
+                    or storage_rule.get("recovery_revision")
+                    != SQLITE_IN_MEMORY_STORAGE_RECOVERY_REVISION
+                    or not isinstance(storage_rule.get("decision"), dict)
+                    or storage_rule["decision"].get("category") != "GENERATED_INPUT"
+                    or storage_rule["decision"].get("action") != "REGENERATE_INPUT"
+                    or not isinstance(storage_rule.get("original_error"), dict)
+                    or storage_rule["original_error"].get("code")
+                    != "POC_EXECUTION_FAILED"
+                    or storage_rule["original_error"].get("evidence_refs")
+                    != [
+                        ref.model_dump(mode="json")
+                        for ref in storage_events[1].output_refs
+                    ]
+                    or storage_rule.get("failure_event_id")
+                    != storage_events[1].event_id
+                    or storage_rule.get("exhaustion_event_id")
+                    != storage_events[2].event_id
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
             if budget_root and (
                 len(events) < 2 or events[-2] != stage_events[-1] or not root_events[-1]
             ):
@@ -6109,6 +10630,51 @@ class SimpleCheckpointStore:
                 or candidate.stage_version != STAGE_VERSION[candidate.stage]
                 or candidate.attempt_id != exhausted.attempt_id
                 or candidate.attempt_number != exhausted.attempt_number
+                or (
+                    _pinned_layout
+                    and (
+                        urlconf_replay_binding(candidate, artifacts) is None
+                        or candidate_app_replay_unsupported_app(candidate, artifacts)
+                        is None
+                    )
+                )
+                or (
+                    (_fixture_dependency or _candidate_app or _urlconf or _source_gap)
+                    and (
+                        prior_marker is None
+                        or prior_marker.output_refs[0]
+                        not in candidate.recovery_decision_refs
+                    )
+                )
+                or (
+                    _urlconf
+                    and (
+                        candidate_app_marker is None
+                        or candidate_app_marker.output_refs[0]
+                        not in candidate.recovery_decision_refs
+                    )
+                )
+                or (
+                    _source_gap
+                    and (
+                        dependency_marker is None
+                        or dependency_marker.output_refs[0]
+                        not in candidate.recovery_decision_refs
+                    )
+                )
+                or (
+                    _django_schema
+                    and (
+                        source_marker is None
+                        or source_marker.output_refs[0]
+                        not in candidate.recovery_decision_refs
+                    )
+                )
+                or (
+                    _server_constructor
+                    and storage_marker.output_refs[0]
+                    not in candidate.recovery_decision_refs
+                )
                 or candidate.gate_revision_count != exhausted.gate_revision_count
                 or candidate.recipe_ref != exhausted.recipe_ref
                 or candidate.image_digest != exhausted.image_digest
@@ -6125,6 +10691,20 @@ class SimpleCheckpointStore:
                 )
             ):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_LINEAGE_INVALID")
+            if _django_settings:
+                try:
+                    validator_correction_replay_previous(candidate, artifacts)
+                    if (
+                        urlconf_replay_binding(candidate, artifacts) is None
+                        or pinned_layout_replay_binding(candidate, artifacts) is None
+                        or candidate_app_replay_unsupported_app(candidate, artifacts)
+                        is None
+                    ):
+                        raise ValueError("missing prior replay binding")
+                except ValueError as error:
+                    raise ValueError(
+                        "POC_EXTRACT_EXHAUSTION_LINEAGE_INVALID"
+                    ) from error
             execution_ref, stdout_ref, stderr_ref, cleanup_ref = exhausted.output_refs
             try:
                 candidate_record = json.loads(
@@ -6140,6 +10720,8 @@ class SimpleCheckpointStore:
                 cleanup = json.loads(artifacts.read_bounded(cleanup_ref, 64 * 1024))
             except (OSError, ValueError, TypeError, sqlite3.Error) as error:
                 raise ValueError("POC_EXTRACT_EXHAUSTION_EVIDENCE_INVALID") from error
+            settings_proof: _SettingsProof | _RelationSettingsProof | None = None
+            relation_proof: _RelationSettingsProof | None = None
             if _local_import:
                 # Earlier diagnostics may precede the failing import. They are
                 # not proof of this failure, and a competing import traceback
@@ -6154,6 +10736,199 @@ class SimpleCheckpointStore:
                     else _pinned_local_import_diagnostic(stderr, run.workspace_path)
                 )
                 diagnostic = local_import[1] if local_import is not None else None
+            elif _candidate_app:
+                local_import = None
+                app_name = django_candidate_app_import_failure(
+                    stderr, stdout, candidate_content
+                )
+                diagnostic = (
+                    b"candidate-only Django app import during setup"
+                    if app_name is not None
+                    and self._pinned_candidate_app_absent(
+                        artifacts=artifacts,
+                        run=run,
+                        identity=identity,
+                        recipe_ref=exhausted.recipe_ref,
+                        image_digest=exhausted.image_digest,
+                        app_name=app_name,
+                    )
+                    else None
+                )
+            elif _urlconf:
+                local_import = None
+                urlconf_signature = django_urlconf_reverse_failure(
+                    stderr, stdout, candidate_content
+                )
+                urlconf_roots = (
+                    self._pinned_django_urlconf_route(
+                        run=run,
+                        identity=identity,
+                        candidate_content=candidate_content,
+                        signature=urlconf_signature,
+                    )
+                    if urlconf_signature is not None
+                    else None
+                )
+                diagnostic = (
+                    b"candidate-only Django URLConf namespace wiring"
+                    if urlconf_roots is not None
+                    else None
+                )
+            elif _pinned_layout:
+                local_import = None
+                failed_path = literal_required_python_path(candidate_content, stderr)
+                corrected_path = None
+                try:
+                    recipe_record = json.loads(
+                        artifacts.read_bounded(exhausted.recipe_ref, 256 * 1024)
+                    )
+                    dockerfile_ref = StoredDataRef.model_validate(
+                        recipe_record["dockerfile_ref"]
+                    )
+                    dockerfile = artifacts.read_bounded(dockerfile_ref, 256 * 1024)
+                    if (
+                        recipe_record.get("kind") == "simple_environment_recipe"
+                        and recipe_record.get("analysis_id") == identity.analysis_id
+                        and recipe_record.get("workspace_id") == identity.workspace_id
+                        and recipe_record.get("commit_id") == identity.commit_id
+                        and recipe_record.get("hypothesis_id") == identity.hypothesis_id
+                        and recipe_record.get("status") == "BUILT"
+                        and recipe_record.get("degraded") is False
+                        and recipe_record.get("image_digest") == exhausted.image_digest
+                        and run.workspace_path is not None
+                        and failed_path is not None
+                    ):
+                        corrected_path = pinned_layout_correction(
+                            run.workspace_path,
+                            identity.commit_id,
+                            failed_path,
+                            dockerfile,
+                        )
+                except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                    corrected_path = None
+                diagnostic = (
+                    b"executed required pinned Python source path mismatch"
+                    if corrected_path is not None
+                    and not any(
+                        _POC_SUCCESS_CLAIM_LINE.fullmatch(line.strip())
+                        for line in stdout.splitlines()
+                    )
+                    else None
+                )
+            elif _django_settings:
+                local_import = None
+                settings_proof = self._pinned_django_settings_mismatch(
+                    artifacts=artifacts,
+                    run=run,
+                    identity=identity,
+                    stderr=stderr,
+                    stdout=stdout,
+                    candidate_content=candidate_content,
+                )
+                diagnostic = (
+                    b"pinned Django migration settings mismatch"
+                    if settings_proof is not None
+                    else None
+                )
+            elif _relation_settings:
+                local_import = None
+                relation_proof = self._pinned_django_relation_settings_mismatch(
+                    artifacts=artifacts,
+                    run=run,
+                    identity=identity,
+                    stderr=stderr,
+                    stdout=stdout,
+                    candidate_content=candidate_content,
+                )
+                diagnostic = (
+                    b"pinned Django relation settings mismatch"
+                    if relation_proof is not None
+                    else None
+                )
+                settings_proof = relation_proof
+            elif _migration_settings:
+                local_import = None
+                relation_proof = self._pinned_django_migration_graph_omission(
+                    artifacts=artifacts,
+                    run=run,
+                    identity=identity,
+                    stderr=stderr,
+                    stdout=stdout,
+                    candidate_content=candidate_content,
+                )
+                diagnostic = (
+                    b"pinned Django migration graph setting omission"
+                    if relation_proof is not None
+                    else None
+                )
+                settings_proof = relation_proof
+            elif _fixture:
+                local_import = None
+                fixture_diagnostic = django_poc_fixture_failure(
+                    stderr, candidate_content
+                )
+                diagnostic = (
+                    fixture_diagnostic.encode("ascii")
+                    if fixture_diagnostic is not None
+                    else None
+                )
+            elif _source_gap:
+                local_import = None
+                source_gap_diagnostic = self._poc_source_gap_fixture_failure(
+                    stderr, stdout, candidate_content
+                )
+                diagnostic = (
+                    source_gap_diagnostic.encode("ascii")
+                    if source_gap_diagnostic is not None
+                    else None
+                )
+            elif _django_schema:
+                local_import = None
+                diagnostic = (
+                    b"Django fixture schema before route"
+                    if django_poc_schema_exhaustion_failure(
+                        stderr, stdout, candidate_content
+                    )
+                    else None
+                )
+            elif _fixture_dependency:
+                local_import = None
+                dependency_diagnostic = django_poc_fixture_dependency_failure(
+                    stderr, stdout, candidate_content
+                )
+                diagnostic = (
+                    dependency_diagnostic.encode("ascii")
+                    if dependency_diagnostic is not None
+                    else None
+                )
+            elif _in_memory_storage:
+                local_import = None
+                diagnostic = (
+                    b"in-memory SQLite file-path mismatch"
+                    if self._pinned_in_memory_sqlite_target(
+                        artifacts=artifacts,
+                        run=run,
+                        identity=identity,
+                        stderr=stderr,
+                        stdout=stdout,
+                        candidate_content=candidate_content,
+                    )
+                    else None
+                )
+            elif _server_constructor:
+                local_import = None
+                diagnostic = (
+                    b"pinned variadic HTTP server constructor"
+                    if self._pinned_http_server_constructor(
+                        artifacts=artifacts,
+                        run=run,
+                        identity=identity,
+                        stderr=stderr,
+                        stdout=stdout,
+                        candidate_content=candidate_content,
+                    )
+                    else None
+                )
             else:
                 local_import = None
                 diagnostic = sanitized_extract_failure(stderr)
@@ -6179,9 +10954,37 @@ class SimpleCheckpointStore:
                 or not execution["container_id"]
                 or type(execution.get("exit_code")) is not int
                 or execution["exit_code"] == 0
-                or (_local_import and execution["exit_code"] != 2)
+                or (
+                    (
+                        _local_import
+                        or _candidate_app
+                        or _urlconf
+                        or _fixture
+                        or _fixture_dependency
+                        or _source_gap
+                        or _django_schema
+                        or _server_constructor
+                        or _in_memory_storage
+                        or _pinned_layout
+                        or _django_settings
+                        or _relation_settings
+                        or _migration_settings
+                    )
+                    and execution["exit_code"] != 2
+                )
                 or execution.get("timed_out") is not False
                 or diagnostic is None
+                or (
+                    _source_gap
+                    and not self._pinned_poc_model_source_gap(
+                        artifacts=artifacts,
+                        run=run,
+                        identity=identity,
+                        candidate_record=candidate_record,
+                        pro_con=pro_con,
+                        candidate_content=candidate_content,
+                    )
+                )
                 or not isinstance(cleanup, dict)
                 or cleanup.get("kind") != "simple_container_cleanup"
                 or cleanup.get("attempt_id") != exhausted.attempt_id
@@ -6190,6 +10993,7 @@ class SimpleCheckpointStore:
             ):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_EVIDENCE_INVALID")
 
+            extract_decision_fn = sanitized_extract_recovery_decision
             rule_decision = (
                 RecoveryDecision(
                     category=RecoveryCategory.GENERATED_INPUT,
@@ -6205,22 +11009,290 @@ class SimpleCheckpointStore:
                     ),
                 )
                 if _local_import
-                else sanitized_extract_recovery_decision()
+                else (
+                    RecoveryDecision(
+                        category=RecoveryCategory.GENERATED_INPUT,
+                        action=RecoveryAction.REGENERATE_INPUT,
+                        diagnosis=(
+                            "The executed PoC required a pinned Python file at "
+                            "the wrong import-root path"
+                        ),
+                        guidance=(
+                            "Regenerate only the PoC. Verify each imported top-"
+                            "level package against its pinned location and the "
+                            "container import roots; distinct packages may "
+                            "need distinct sys.path roots. Preserve product "
+                            "routes and dependencies. The failed prerequisite "
+                            "is a harness error, not a vulnerability verdict."
+                        ),
+                    )
+                    if _pinned_layout
+                    else (
+                        RecoveryDecision(
+                            category=RecoveryCategory.GENERATED_INPUT,
+                            action=RecoveryAction.REGENERATE_INPUT,
+                            diagnosis=(
+                                "The generated PoC used the app URL module as its "
+                                "root while reversing a namespaced project route"
+                            ),
+                            guidance=(
+                                "Regenerate only the PoC candidate. Configure a pinned "
+                                "project ROOT_URLCONF that includes the app URL module "
+                                "with the declared namespace before calling reverse. "
+                                "Verify that this ROOT_URLCONF module and the app "
+                                "package are importable through a coherent container "
+                                "sys.path from the pinned source layout. "
+                                "Keep the pinned route name and argument count, do not "
+                                "patch product URLs or install a dependency, "
+                                "and do not treat this harness error as a "
+                                "vulnerability verdict."
+                            ),
+                        )
+                        if _urlconf
+                        else (
+                            django_candidate_app_recovery_decision()
+                            if _candidate_app
+                            else (
+                                http_server_constructor_recovery_decision()
+                                if _server_constructor
+                                else (
+                                    django_poc_schema_exhaustion_decision()
+                                    if _django_schema
+                                    else (
+                                        sqlite_in_memory_storage_recovery_decision()
+                                        if _in_memory_storage
+                                        else (
+                                            django_poc_source_gap_recovery_decision()
+                                            if _source_gap
+                                            else (
+                                                django_poc_fixture_dependency_recovery_decision()
+                                                if _fixture_dependency or _candidate_app
+                                                else (
+                                                    django_poc_fixture_recovery_decision(
+                                                        fixture_diagnostic
+                                                    )
+                                                    if _fixture
+                                                    and fixture_diagnostic is not None
+                                                    else extract_decision_fn()
+                                                )
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
             )
+            if _django_settings:
+                assert settings_proof is not None
+                rule_decision = RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis=(
+                        "The generated Django PoC omitted a pinned project "
+                        "setting required for its migration graph"
+                    ),
+                    guidance=(
+                        "Regenerate only the PoC candidate using the pinned "
+                        "project settings and installed apps. When configuring "
+                        "Django directly, preserve the project's default-off "
+                        "feature flag before django.setup and migrate. Verify "
+                        "the complete migration graph before fixtures or the "
+                        "route, and retain the prior URL, source layout and "
+                        "absent-app constraints. Do not edit repository code "
+                        "or treat this setup failure as a vulnerability verdict."
+                    ),
+                )
+            if _relation_settings:
+                assert settings_proof is not None
+                rule_decision = RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis=(
+                        "The generated Django PoC omitted a pinned default-off "
+                        "setting used by a model relation"
+                    ),
+                    guidance=(
+                        "Regenerate only the PoC candidate against the pinned "
+                        "project and app settings. Before "
+                        "settings.configure(**options), "
+                        "assign options['"
+                        + settings_proof[0]
+                        + "'] = False as the final override. Preserve the original "
+                        "URLConf, installed apps, source layout, and storage fixture. "
+                        "Do not edit repository code or treat this Django setup "
+                        "failure as a vulnerability verdict."
+                    ),
+                )
+            if _migration_settings:
+                assert settings_proof is not None
+                rule_decision = RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis=(
+                        "The generated Django PoC omitted a pinned default-off "
+                        "setting used by the migration graph"
+                    ),
+                    guidance=(
+                        "Regenerate only this PoC candidate. Preserve the pinned "
+                        "project settings, installed apps, source layout, URLConf "
+                        "and target route. Immediately before "
+                        "settings.configure(**settings_values), assign "
+                        "settings_values['"
+                        + settings_proof[0]
+                        + "'] = False as the final override; do not replace "
+                        "repository code or treat this setup failure as a "
+                        "vulnerability verdict. Verify migration setup and then "
+                        "execute the original route."
+                    ),
+                )
+            if (
+                _pinned_layout
+                and failed_path is not None
+                and corrected_path is not None
+            ):
+                rule_decision = rule_decision.model_copy(
+                    update={
+                        "guidance": (
+                            rule_decision.guidance
+                            + " The executed path "
+                            + failed_path
+                            + " failed its required isfile check. The unique pinned "
+                            "project file is "
+                            + corrected_path
+                            + ". Verify the file exists inside the built container "
+                            "before importing; do not create or alter product files."
+                        )
+                    }
+                )
+            if _urlconf and urlconf_roots is not None:
+                rule_decision = rule_decision.model_copy(
+                    update={
+                        "guidance": (
+                            rule_decision.guidance
+                            + " Pinned project ROOT_URLCONF module options: "
+                            + ", ".join(urlconf_roots)
+                            + ". Verify the chosen module imports in the PoC "
+                            "container before reversing the route."
+                        )
+                    }
+                )
+            fixture_dependency_message = "PoC fixture dependencies remain incomplete"
+            fixture_message = "PoC failed during Django fixture setup"
+            extract_message = "PoC failed during sanitized source extraction"
             original_error = StageFailure(
                 code=(
                     "POC_RUNTIME_IMPORT_FAILED"
-                    if _local_import
+                    if _local_import or _candidate_app
                     else "POC_EXECUTION_FAILED"
                 ),
                 retryable=True,
                 safe_message=(
                     "PoC failed to import pinned local source"
                     if _local_import
-                    else "PoC failed during sanitized source extraction"
+                    else (
+                        "PoC configured an app absent from pinned source"
+                        if _candidate_app
+                        else (
+                            "PoC directly rooted a namespaced app URL module"
+                            if _urlconf
+                            else (
+                                "PoC failed to construct a pinned variadic HTTP server"
+                                if _server_constructor
+                                else (
+                                    "PoC assumed file-backed SQLite for a pinned "
+                                    "in-memory target"
+                                    if _in_memory_storage
+                                    else (
+                                        "PoC failed before route execution during "
+                                        "Django fixture setup"
+                                        if _django_schema
+                                        else (
+                                            "PoC lacked requested pinned model source"
+                                            if _source_gap
+                                            else (
+                                                fixture_dependency_message
+                                                if _fixture_dependency
+                                                else (
+                                                    fixture_message
+                                                    if _fixture
+                                                    else extract_message
+                                                )
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
                 ),
                 evidence_refs=exhausted.output_refs,
             )
+            if _django_settings or _relation_settings or _migration_settings:
+                original_error = original_error.model_copy(
+                    update={
+                        "safe_message": (
+                            "PoC omitted a pinned Django migration graph setting"
+                            if _migration_settings
+                            else (
+                                "PoC omitted a pinned Django relation setting"
+                                if _relation_settings
+                                else "PoC omitted a pinned Django migration setting"
+                            )
+                        )
+                    }
+                )
+            layout_candidate_checkpoint_ref = (
+                artifacts.put_json(candidate.model_dump(mode="json"))
+                if _pinned_layout
+                else None
+            )
+            layout_execution_checkpoint_ref = (
+                artifacts.put_json(exhausted.model_dump(mode="json"))
+                if _pinned_layout
+                else None
+            )
+            settings_candidate_checkpoint_ref = (
+                artifacts.put_json(candidate.model_dump(mode="json"))
+                if _django_settings or _relation_settings or _migration_settings
+                else None
+            )
+            settings_execution_checkpoint_ref = (
+                artifacts.put_json(exhausted.model_dump(mode="json"))
+                if _django_settings or _relation_settings or _migration_settings
+                else None
+            )
+            settings_source_refs = (
+                tuple(
+                    artifacts.put_bytes(source, "text/x-python")
+                    for source in settings_proof[2]
+                )
+                if (
+                    (_django_settings or _relation_settings or _migration_settings)
+                    and settings_proof is not None
+                )
+                else ()
+            )
+            relation_project_refs = (
+                tuple(
+                    artifacts.put_bytes(source, "text/x-python")
+                    for _, source in relation_proof[4]
+                )
+                if (_relation_settings or _migration_settings)
+                and relation_proof is not None
+                else ()
+            )
+            relation_reachable_refs = (
+                tuple(
+                    artifacts.put_bytes(source, "text/x-python")
+                    for _, source in relation_proof[6]
+                )
+                if (_relation_settings or _migration_settings)
+                and relation_proof is not None
+                else ()
+            )
+            extract_revision = SANITIZED_EXTRACT_RECOVERY_REVISION
             rule_ref = artifacts.put_json(
                 {
                     "kind": "simple_recovery_decision",
@@ -6233,7 +11305,172 @@ class SimpleCheckpointStore:
                     "decision_origin": "RULE",
                     "diagnostic_excerpt": diagnostic.decode("ascii"),
                     "explicit_exhaustion_replay": True,
-                    "recovery_revision": SANITIZED_EXTRACT_RECOVERY_REVISION,
+                    **(
+                        {
+                            **(
+                                {"settings_mismatch_replay": True}
+                                if _django_settings
+                                else {}
+                            ),
+                            **(
+                                {"relation_settings_replay": True}
+                                if _relation_settings
+                                else {}
+                            ),
+                            **(
+                                {"migration_settings_replay": True}
+                                if _migration_settings
+                                else {}
+                            ),
+                            "settings_flag": settings_proof[0],
+                            "settings_source_paths": list(settings_proof[1]),
+                            "settings_source_refs": [
+                                ref.model_dump(mode="json")
+                                for ref in settings_source_refs
+                            ],
+                            **(
+                                {
+                                    "settings_project_selection": relation_proof[3],
+                                    "settings_tracked_manifest_ref": (
+                                        relation_proof[5].model_dump(mode="json")
+                                    ),
+                                    "settings_reachable_sources": [
+                                        {
+                                            "path": path,
+                                            "ref": ref.model_dump(mode="json"),
+                                        }
+                                        for (path, _), ref in zip(
+                                            relation_proof[6],
+                                            relation_reachable_refs,
+                                            strict=True,
+                                        )
+                                    ],
+                                    "settings_project_candidates": [
+                                        {
+                                            "path": path,
+                                            "ref": ref.model_dump(mode="json"),
+                                        }
+                                        for (path, _), ref in zip(
+                                            relation_proof[4],
+                                            relation_project_refs,
+                                            strict=True,
+                                        )
+                                    ],
+                                }
+                                if (_relation_settings or _migration_settings)
+                                and relation_proof is not None
+                                else {}
+                            ),
+                            "settings_candidate_checkpoint_ref": (
+                                settings_candidate_checkpoint_ref.model_dump(
+                                    mode="json"
+                                )
+                            ),
+                            "settings_execution_checkpoint_ref": (
+                                settings_execution_checkpoint_ref.model_dump(
+                                    mode="json"
+                                )
+                            ),
+                            "settings_candidate_checkpoint_hash": hashlib.sha256(
+                                canonical_bytes(candidate.model_dump(mode="json"))
+                            ).hexdigest(),
+                            "settings_execution_checkpoint_hash": hashlib.sha256(
+                                canonical_bytes(exhausted.model_dump(mode="json"))
+                            ).hexdigest(),
+                        }
+                        if (
+                            _django_settings
+                            or _relation_settings
+                            or _migration_settings
+                        )
+                        and settings_proof is not None
+                        and settings_candidate_checkpoint_ref is not None
+                        and settings_execution_checkpoint_ref is not None
+                        else {}
+                    ),
+                    **({"candidate_app_replay": True} if _candidate_app else {}),
+                    **(
+                        {
+                            "pinned_layout_replay": True,
+                            "layout_failed_path": failed_path,
+                            "layout_corrected_path": corrected_path,
+                            "layout_candidate_checkpoint_ref": (
+                                layout_candidate_checkpoint_ref.model_dump(mode="json")
+                            ),
+                            "layout_candidate_checkpoint_hash": hashlib.sha256(
+                                canonical_bytes(candidate.model_dump(mode="json"))
+                            ).hexdigest(),
+                            "layout_execution_checkpoint_ref": (
+                                layout_execution_checkpoint_ref.model_dump(mode="json")
+                            ),
+                            "layout_execution_checkpoint_hash": hashlib.sha256(
+                                canonical_bytes(exhausted.model_dump(mode="json"))
+                            ).hexdigest(),
+                            "layout_dockerfile_ref": dockerfile_ref.model_dump(
+                                mode="json"
+                            ),
+                        }
+                        if (
+                            _pinned_layout
+                            and layout_candidate_checkpoint_ref is not None
+                            and layout_execution_checkpoint_ref is not None
+                        )
+                        else {}
+                    ),
+                    **(
+                        {
+                            "urlconf_replay": True,
+                            "urlconf_signature": list(urlconf_signature),
+                            "urlconf_project_roots": list(urlconf_roots),
+                        }
+                        if _urlconf
+                        and urlconf_signature is not None
+                        and urlconf_roots is not None
+                        else {}
+                    ),
+                    "recovery_revision": (
+                        DJANGO_MIGRATION_GRAPH_SETTINGS_SOURCE_BOUND_REVISION
+                        if _migration_settings
+                        else DJANGO_RELATION_SETTINGS_SOURCE_BOUND_REVISION
+                        if _relation_settings
+                        else (
+                            DJANGO_SETTINGS_MISMATCH_RECOVERY_REVISION
+                            if _django_settings
+                            else (
+                                DJANGO_URLCONF_RECOVERY_REVISION
+                                if _urlconf
+                                else (
+                                    DJANGO_CANDIDATE_APP_RECOVERY_REVISION
+                                    if _candidate_app
+                                    else (
+                                        HTTP_SERVER_CONSTRUCTOR_RECOVERY_REVISION
+                                        if _server_constructor
+                                        else (
+                                            DJANGO_POC_SCHEMA_RECOVERY_REVISION
+                                            if _django_schema
+                                            else (
+                                                SQLITE_IN_MEMORY_STORAGE_RECOVERY_REVISION
+                                                if _in_memory_storage
+                                                else (
+                                                    DJANGO_POC_SOURCE_GAP_RECOVERY_REVISION
+                                                    if _source_gap
+                                                    else (
+                                                        DJANGO_POC_FIXTURE_DEPENDENCY_RECOVERY_REVISION
+                                                        if _fixture_dependency
+                                                        else (
+                                                            DJANGO_POC_FIXTURE_RECOVERY_REVISION
+                                                            if _fixture
+                                                            else extract_revision
+                                                        )
+                                                    )
+                                                )
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    ),
                     **(
                         {"source_module": local_import[0]}
                         if local_import is not None
@@ -6256,6 +11493,35 @@ class SimpleCheckpointStore:
                         *candidate.output_refs,
                         *exhausted.input_refs,
                         *exhausted.output_refs,
+                        *(
+                            (layout_candidate_checkpoint_ref,)
+                            if layout_candidate_checkpoint_ref is not None
+                            else ()
+                        ),
+                        *(
+                            (layout_execution_checkpoint_ref,)
+                            if layout_execution_checkpoint_ref is not None
+                            else ()
+                        ),
+                        *(
+                            (settings_candidate_checkpoint_ref,)
+                            if settings_candidate_checkpoint_ref is not None
+                            else ()
+                        ),
+                        *(
+                            (settings_execution_checkpoint_ref,)
+                            if settings_execution_checkpoint_ref is not None
+                            else ()
+                        ),
+                        *settings_source_refs,
+                        *relation_project_refs,
+                        *relation_reachable_refs,
+                        *(
+                            (relation_proof[5],)
+                            if (_relation_settings or _migration_settings)
+                            and relation_proof is not None
+                            else ()
+                        ),
                         *decision_refs,
                     )
                 )
@@ -6294,6 +11560,63 @@ class SimpleCheckpointStore:
                 ),
             )
             self._upsert_checkpoint_connection(connection, pending)
+            if _candidate_app:
+                replay_summary_ko = (
+                    "후보가 추가한 Django 앱의 import 오류를 보존하고 "
+                    "PoC 후보만 한 번 다시 생성합니다."
+                )
+            elif _urlconf:
+                replay_summary_ko = (
+                    "검증된 Django URLConf namespace 결선 오류를 보존하고 "
+                    "PoC 후보만 한 번 다시 생성합니다."
+                )
+            elif _pinned_layout:
+                replay_summary_ko = (
+                    "실행에서 확인된 Python 파일 경로 가정 오류를 보존하고 "
+                    "PoC 후보만 한 번 다시 생성합니다."
+                )
+            elif _local_import:
+                replay_summary_ko = (
+                    "로컬 Python import 오류를 보존하고 "
+                    "PoC 후보만 한 번 다시 생성합니다."
+                )
+            elif _in_memory_storage:
+                replay_summary_ko = (
+                    "고정된 인메모리 SQLite 대상과 PoC의 파일 경로 가정 "
+                    "오류를 보존하고 후보만 한 번 다시 생성합니다."
+                )
+            elif _server_constructor:
+                replay_summary_ko = (
+                    "검증된 HTTP 서버 생성자 인자 오류를 보존하고 "
+                    "후보만 한 번 다시 생성합니다."
+                )
+            elif _django_schema:
+                replay_summary_ko = (
+                    "Django fixture 준비 오류를 보존하고 검증된 소스와 "
+                    "스키마 기준으로 후보만 한 번 다시 생성합니다."
+                )
+            elif _source_gap:
+                replay_summary_ko = (
+                    "요청한 Python 모델 소스의 예산 누락과 "
+                    "PoC 설정 오류를 "
+                    "보존하고 후보만 한 번 다시 생성합니다."
+                )
+            elif _fixture_dependency:
+                replay_summary_ko = (
+                    "검증된 Django fixture 의존성 오류를 "
+                    "보존하고 "
+                    "후보만 한 번 다시 생성합니다."
+                )
+            elif _fixture:
+                replay_summary_ko = (
+                    "검증된 Django PoC 설정 오류를 "
+                    "보존하고 "
+                    "후보만 한 번 다시 생성합니다."
+                )
+            else:
+                replay_summary_ko = (
+                    "검증된 PoC 추출 오류를 보존하고 후보만 한 번 다시 생성합니다."
+                )
             AgentActivityStore.append_connection(
                 connection,
                 self._lifecycle_event(
@@ -6301,13 +11624,7 @@ class SimpleCheckpointStore:
                     ActivityKind.DECISION_RECORDED,
                     sequence=self._stage_sequence(exhausted.stage, 102),
                     status=StageStatus.BLOCKED,
-                    summary_ko=(
-                        "로컬 Python import 오류를 보존하고 "
-                        "PoC 후보만 한 번 다시 생성합니다."
-                        if _local_import
-                        else "검증된 PoC 추출 오류를 보존하고 "
-                        "후보만 한 번 다시 생성합니다."
-                    ),
+                    summary_ko=replay_summary_ko,
                     output_refs=(rule_ref,),
                     error_code=replay_code,
                 ),
@@ -6721,6 +12038,292 @@ class SimpleCheckpointStore:
         finally:
             connection.close()
 
+    def prepare_auth_required_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one bound PoC candidate after external login is restored.
+
+        The failed attempt and all prior evidence stay in the append-only ledgers.
+        This is not an authentication bypass: the next attempt calls Codex normally.
+        The caller must hold the analysis run lease while invoking this method.
+        """
+
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or stopped.stage_version != STAGE_VERSION[stopped.stage]
+            or stopped.status is not StageStatus.FAILED
+            or stopped.error_code != "AUTH_REQUIRED"
+            or stopped.retryable
+            or stopped.attempt_number < 1
+            or stopped.attempt_number >= MAX_RECOVERY_ATTEMPTS
+            or not stopped.attempt_id
+            or stopped.input_hash != input_reference_hash(stopped.input_refs)
+            or stopped.recipe_ref is None
+            or stopped.image_digest is None
+            or stopped.container_id is not None
+            or stopped.validated_poc_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("AUTH_REQUIRED_REPLAY_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(
+                hypothesis_key: str, stage: SimpleStage
+            ) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, hypothesis_key, stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            child_key = self._hypothesis_key(identity)
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            root_key = self._hypothesis_key(root_identity)
+            if checkpoint_at(child_key, stopped.stage) != stopped:
+                raise ValueError("AUTH_REQUIRED_REPLAY_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("AUTH_REQUIRED_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("AUTH_REQUIRED_REPLAY_RUN_INVALID")
+            static = checkpoint_at(root_key, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.identity != root_identity
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+            ):
+                raise ValueError("AUTH_REQUIRED_REPLAY_STATIC_INVALID")
+            root = checkpoint_at(root_key, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:AUTH_REQUIRED:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if (
+                root is None
+                or root.identity != root_identity
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.status is not StageStatus.FAILED
+                or root.retryable
+                or not root.attempt_id
+                or root.error_code != root_code
+                or root.input_hash != input_reference_hash(root.input_refs)
+            ):
+                raise ValueError("AUTH_REQUIRED_REPLAY_ROOT_BOUND_INVALID")
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in rows
+            ):
+                raise ValueError("AUTH_REQUIRED_REPLAY_RUN_ACTIVE")
+            if any(
+                checkpoint_at(child_key, stage) is not None
+                for stage in STAGE_ORDER[
+                    STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE) :
+                ]
+            ):
+                raise ValueError("AUTH_REQUIRED_REPLAY_DOWNSTREAM_EXISTS")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("AUTH_REQUIRED_REPLAY_CODEX_UNRESOLVED")
+            claimed = connection.execute(
+                "SELECT 1 FROM simple_candidate_child_claims "
+                "WHERE analysis_id = ? LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if claimed is not None:
+                raise ValueError("AUTH_REQUIRED_REPLAY_CHILD_CLAIM_ACTIVE")
+            pro_con = checkpoint_at(child_key, SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(child_key, SimpleStage.VERIFICATION_INITIAL_DONE)
+            if (
+                pro_con is None
+                or pro_con.identity != identity
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or initial is None
+                or initial.identity != identity
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version
+                != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                or initial.recipe_ref != stopped.recipe_ref
+                or initial.image_digest != stopped.image_digest
+            ):
+                raise ValueError("AUTH_REQUIRED_REPLAY_LINEAGE_INVALID")
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                )
+            )
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stopped.stage.value
+                and event.error_code == "AUTH_REQUIRED_REPLAYED"
+                for event in events
+            ):
+                raise ValueError("AUTH_REQUIRED_REPLAY_ALREADY_REPLAYED")
+            if not all(
+                all(
+                    any(
+                        event.kind is kind
+                        and event.analysis_id == identity.analysis_id
+                        and event.workspace_id == identity.workspace_id
+                        and event.commit_id == identity.commit_id
+                        and event.hypothesis_id == expected_identity.hypothesis_id
+                        and event.stage == checkpoint.stage.value
+                        and event.attempt_id == checkpoint.attempt_id
+                        and event.sequence
+                        == self._stage_sequence(
+                            checkpoint.stage,
+                            1 if kind is ActivityKind.STAGE_STARTED else 99,
+                        )
+                        and event.input_refs == checkpoint.input_refs
+                        and event.output_refs
+                        == (
+                            ()
+                            if kind is ActivityKind.STAGE_STARTED
+                            else checkpoint.output_refs
+                        )
+                        and event.error_code == event_error_code
+                        for event in events
+                    )
+                    for kind, event_error_code in (
+                        (ActivityKind.STAGE_STARTED, None),
+                        (ActivityKind.STAGE_FAILED, error_code),
+                    )
+                )
+                for expected_identity, checkpoint, error_code in (
+                    (identity, stopped, "AUTH_REQUIRED"),
+                    (root_identity, root, root_code),
+                )
+            ):
+                raise ValueError("AUTH_REQUIRED_REPLAY_EVENT_INVALID")
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": "simple_auth_required_replay",
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": stopped.attempt_id,
+                    "old_attempt_number": stopped.attempt_number,
+                    "old_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(stopped.model_dump(mode="json"))
+                    ).hexdigest(),
+                    "old_root_attempt_id": root.attempt_id,
+                    "old_root_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(root.model_dump(mode="json"))
+                    ).hexdigest(),
+                }
+            )
+            inputs = tuple(dict.fromkeys((*stopped.input_refs, marker_ref)))
+            now = datetime.now(UTC)
+            pending = stopped.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "input_refs": inputs,
+                    "input_hash": input_reference_hash(inputs),
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": now,
+                }
+            )
+            pending_root = root.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": now,
+                }
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            self._upsert_checkpoint_connection(connection, pending_root)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 103),
+                    status=StageStatus.FAILED,
+                    summary_ko="인증 실패 PoC 후보의 남은 시도를 재개합니다.",
+                    output_refs=(marker_ref,),
+                    error_code="AUTH_REQUIRED_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def prepare_poc_sensitive_content_replay(
         self,
         stopped: StageCheckpoint,
@@ -6730,8 +12333,8 @@ class SimpleCheckpointStore:
     ) -> StageCheckpoint:
         """Reopen one old sensitive-content STOP after diagnostic revision.
 
-        This never reads or stores the rejected PoC. The two old, numeric-only
-        diagnostics and recovery decisions must match the bound child exactly.
+        This never reads or stores the rejected PoC. The two bounded diagnostics
+        and recovery decisions must match the bound child exactly.
         """
 
         identity = stopped.identity
@@ -6755,30 +12358,78 @@ class SimpleCheckpointStore:
         ):
             raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_INVALID")
 
-        def old_diagnostic(ref: StoredDataRef) -> bool:
+        def bounded_diagnostic(ref: StoredDataRef) -> bool:
             try:
                 value = json.loads(artifacts.read_bounded(ref, 4 * 1024))
             except (OSError, ValueError, TypeError) as error:
                 raise ValueError(
                     "POC_SENSITIVE_CONTENT_REPLAY_DIAGNOSTIC_INVALID"
                 ) from error
-            fields = {
-                "kind",
-                "reason",
+            numeric_fields = {
                 "line_count",
                 "branch_count",
                 "inconclusive_line_count",
                 "exit_two_line_count",
                 "exit_zero_line_count",
             }
+            legacy_fields = numeric_fields | {
+                "kind",
+                "reason",
+            }
+            current_fields = legacy_fields | {"sensitive_category", "sensitive_line"}
+            rule_fields = current_fields | {"sensitive_rule_id"}
+            categories = {
+                "UNCLASSIFIED",
+                "COOKIE",
+                "TOKEN",
+                "CREDENTIAL",
+                "HOST_ABSOLUTE_PATH",
+                "MULTIPLE_RULES",
+                "REDACTION_MISMATCH",
+            }
             return (
                 isinstance(value, dict)
-                and set(value) == fields
+                and set(value) in (legacy_fields, current_fields, rule_fields)
                 and value.get("kind") == "simple_poc_candidate_rejection_diagnostic"
                 and value.get("reason") == "SENSITIVE_CONTENT"
                 and all(
                     type(value[field]) is int and value[field] >= 0
-                    for field in fields - {"kind", "reason"}
+                    for field in numeric_fields
+                )
+                and (
+                    set(value) == legacy_fields
+                    or (
+                        isinstance(value.get("sensitive_category"), str)
+                        and value.get("sensitive_category") in categories
+                        and type(value.get("sensitive_line")) is int
+                        and 0 <= value["sensitive_line"] <= value["line_count"]
+                        and (
+                            set(value) == current_fields
+                            or (
+                                isinstance(value.get("sensitive_rule_id"), str)
+                                and value["sensitive_rule_id"] in POC_SENSITIVE_RULE_IDS
+                                and (
+                                    value["sensitive_rule_id"] == "REDACTION_MISMATCH"
+                                    or (
+                                        value["sensitive_rule_id"] == "UNCLASSIFIED"
+                                        and value["sensitive_category"]
+                                        == "UNCLASSIFIED"
+                                    )
+                                    or (
+                                        value["sensitive_rule_id"]
+                                        not in {"UNCLASSIFIED", "REDACTION_MISMATCH"}
+                                        and value["sensitive_category"]
+                                        in {
+                                            POC_SENSITIVE_RULE_CATEGORY.get(
+                                                value["sensitive_rule_id"]
+                                            ),
+                                            "MULTIPLE_RULES",
+                                        }
+                                    )
+                                )
+                            )
+                        )
+                    )
                 )
             )
 
@@ -6948,7 +12599,7 @@ class SimpleCheckpointStore:
                     )
                     or blocked.error_code != "POC_SENSITIVE_CONTENT"
                     or decision.error_code != "POC_SENSITIVE_CONTENT"
-                    or not old_diagnostic(blocked.output_refs[0])
+                    or not bounded_diagnostic(blocked.output_refs[0])
                 ):
                     raise ValueError("POC_SENSITIVE_CONTENT_REPLAY_EVENT_INVALID")
                 try:
@@ -7067,6 +12718,446 @@ class SimpleCheckpointStore:
                     summary_ko="기존 민감도 검사로 차단된 PoC 후보만 재검증합니다.",
                     output_refs=(marker_ref,),
                     error_code="POC_SENSITIVE_CONTENT_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+            return pending
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def prepare_poc_anchor_failure_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replay one failed, pre-provider PoC anchor check after pinned preflight.
+
+        The application must first verify the checkout, static scope, proposal,
+        and exact source anchor. This transaction binds that permission to the
+        failed attempt and proves it did not reach a provider or a child process.
+        """
+
+        identity = stopped.identity
+        discriminator_retry = stopped.attempt_number == MAX_RECOVERY_ATTEMPTS + 1
+        migration_collision_retry = stopped.attempt_number == MAX_RECOVERY_ATTEMPTS + 2
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or stopped.stage_version != STAGE_VERSION[stopped.stage]
+            or stopped.status is not StageStatus.FAILED
+            or stopped.error_code != "HYPOTHESIS_ANCHOR_INVALID"
+            or stopped.retryable
+            or stopped.attempt_number
+            not in {
+                MAX_RECOVERY_ATTEMPTS,
+                MAX_RECOVERY_ATTEMPTS + 1,
+                MAX_RECOVERY_ATTEMPTS + 2,
+            }
+            or not stopped.attempt_id
+            or stopped.output_refs
+            or stopped.input_hash != input_reference_hash(stopped.input_refs)
+            or stopped.container_id is not None
+            or stopped.validated_poc_ref is not None
+            or stopped.recipe_ref is None
+            or stopped.image_digest is None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("POC_ANCHOR_REPLAY_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(
+                hypothesis_key: str, stage: SimpleStage
+            ) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, hypothesis_key, stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            child_key = self._hypothesis_key(identity)
+            root_key = self._hypothesis_key(
+                identity.model_copy(update={"hypothesis_id": None})
+            )
+            if checkpoint_at(child_key, stopped.stage) != stopped:
+                raise ValueError("POC_ANCHOR_REPLAY_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("POC_ANCHOR_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_RUN_INVALID")
+            static = checkpoint_at(root_key, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_STATIC_INVALID")
+            rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for row in rows
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_RUN_ACTIVE")
+            root = checkpoint_at(root_key, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:HYPOTHESIS_ANCHOR_INVALID:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if (
+                root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.status is not StageStatus.FAILED
+                or root.retryable
+                or not root.attempt_id
+                or root.error_code != root_code
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_ROOT_BOUND_INVALID")
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                )
+            )
+            earlier_replays = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.error_code == "POC_ANCHOR_REPLAYED"
+            )
+            discriminator_replays = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.error_code == "POC_ANCHOR_DISCRIMINATOR_REPLAYED"
+            )
+            collision_replays = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.error_code == "POC_ANCHOR_MIGRATION_COLLISION_REPLAYED"
+            )
+            if (
+                collision_replays
+                or (not migration_collision_retry and discriminator_replays)
+                or (
+                    not discriminator_retry
+                    and not migration_collision_retry
+                    and earlier_replays
+                )
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_ALREADY_REPLAYED")
+            if discriminator_retry or migration_collision_retry:
+                if (
+                    len(earlier_replays) != 1
+                    or earlier_replays[0].kind is not ActivityKind.DECISION_RECORDED
+                    or len(earlier_replays[0].output_refs) != 1
+                    or (
+                        migration_collision_retry
+                        and (
+                            len(discriminator_replays) != 1
+                            or discriminator_replays[0].kind
+                            is not ActivityKind.DECISION_RECORDED
+                            or len(discriminator_replays[0].output_refs) != 1
+                        )
+                    )
+                    or not stopped.recovery_decision_refs
+                    or stopped.recovery_origin_stage
+                    is not SimpleStage.POC_CANDIDATE_DONE
+                ):
+                    raise ValueError("POC_ANCHOR_REPLAY_DISCRIMINATOR_INVALID")
+                try:
+                    earlier_marker = json.loads(
+                        artifacts.read_bounded(
+                            earlier_replays[0].output_refs[0], 4 * 1024
+                        )
+                    )
+                    decision_ref = stopped.recovery_decision_refs[-1]
+                    decision = json.loads(
+                        artifacts.read_bounded(decision_ref, 64 * 1024)
+                    )
+                    discriminator_marker = (
+                        json.loads(
+                            artifacts.read_bounded(
+                                discriminator_replays[0].output_refs[0], 4 * 1024
+                            )
+                        )
+                        if migration_collision_retry
+                        else None
+                    )
+                except (OSError, ValueError, TypeError) as error:
+                    raise ValueError(
+                        "POC_ANCHOR_REPLAY_DISCRIMINATOR_INVALID"
+                    ) from error
+                if (
+                    not isinstance(earlier_marker, dict)
+                    or earlier_marker.get("kind") != "simple_poc_anchor_replay"
+                    or earlier_marker.get("identity")
+                    != identity.model_dump(mode="json")
+                    or type(earlier_marker.get("old_attempt_number")) is not int
+                    or earlier_marker.get("old_attempt_number") != MAX_RECOVERY_ATTEMPTS
+                    or earlier_marker.get("old_attempt_id")
+                    != earlier_replays[0].attempt_id
+                    or earlier_replays[0].attempt_id == stopped.attempt_id
+                    or (
+                        migration_collision_retry
+                        and (
+                            not isinstance(discriminator_marker, dict)
+                            or discriminator_marker.get("kind")
+                            != "simple_poc_anchor_discriminator_replay"
+                            or discriminator_marker.get("identity")
+                            != identity.model_dump(mode="json")
+                            or type(discriminator_marker.get("old_attempt_number"))
+                            is not int
+                            or discriminator_marker.get("old_attempt_number")
+                            != MAX_RECOVERY_ATTEMPTS + 1
+                            or discriminator_marker.get("old_attempt_id")
+                            != discriminator_replays[0].attempt_id
+                            or discriminator_replays[0].attempt_id
+                            in {earlier_replays[0].attempt_id, stopped.attempt_id}
+                            or not isinstance(
+                                discriminator_marker.get("old_checkpoint_hash"), str
+                            )
+                            or re.fullmatch(
+                                r"[0-9a-f]{64}",
+                                discriminator_marker["old_checkpoint_hash"],
+                            )
+                            is None
+                            or discriminator_replays[0].started_at
+                            <= earlier_replays[0].started_at
+                        )
+                    )
+                    or not isinstance(decision, dict)
+                    or decision_ref not in stopped.input_refs
+                    or decision.get("kind") != "simple_recovery_decision"
+                    or decision.get("identity") != identity.model_dump(mode="json")
+                    or decision.get("stage") != SimpleStage.POC_CANDIDATE_DONE.value
+                    or type(decision.get("attempt")) is not int
+                    or decision.get("attempt") not in {1, 2}
+                    or not isinstance(decision.get("attempt_id"), str)
+                    or not decision["attempt_id"]
+                    or not isinstance(decision.get("original_error"), dict)
+                    or decision["original_error"].get("code") != "POC_SENSITIVE_CONTENT"
+                    or not isinstance(decision.get("decision"), dict)
+                    or decision["decision"].get("category") != "GENERATED_INPUT"
+                    or decision["decision"].get("action")
+                    not in {"REGENERATE_INPUT", "STOP"}
+                ):
+                    raise ValueError("POC_ANCHOR_REPLAY_DISCRIMINATOR_INVALID")
+            if not any(
+                event.kind is ActivityKind.STAGE_FAILED
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.error_code == root_code
+                and event.input_refs == root.input_refs
+                and event.output_refs == root.output_refs
+                for event in events
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_ROOT_BOUND_INVALID")
+            attempt_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stopped.stage.value
+                and event.attempt_id == stopped.attempt_id
+            )
+            if (
+                len(attempt_events) != 2
+                or tuple(event.kind for event in attempt_events)
+                != (ActivityKind.STAGE_STARTED, ActivityKind.STAGE_FAILED)
+                or attempt_events[0].started_at > attempt_events[1].started_at
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.input_refs != stopped.input_refs
+                    or event.output_refs
+                    or event.tool_result_refs
+                    or event.provider is not None
+                    or event.model is not None
+                    or event.prompt_digest is not None
+                    or event.output_digest is not None
+                    for event in attempt_events
+                )
+                or attempt_events[0].error_code is not None
+                or attempt_events[1].error_code != stopped.error_code
+                or (
+                    (discriminator_retry or migration_collision_retry)
+                    and earlier_replays[0].started_at >= attempt_events[0].started_at
+                )
+                or (
+                    migration_collision_retry
+                    and discriminator_replays[0].started_at
+                    >= attempt_events[0].started_at
+                )
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_EVENT_INVALID")
+            overlapping_call = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND started_at <= ? AND "
+                "(resolved_at IS NULL OR resolved_at >= ?) LIMIT 1",
+                (
+                    identity.analysis_id,
+                    attempt_events[1].started_at.isoformat(),
+                    attempt_events[0].started_at.isoformat(),
+                ),
+            ).fetchone()
+            attributed_llm = connection.execute(
+                "SELECT 1 FROM simple_llm_attempt_metadata "
+                "WHERE checkpoint_attempt_id = ? LIMIT 1",
+                (stopped.attempt_id,),
+            ).fetchone()
+            same_attempt_llm = connection.execute(
+                "SELECT 1 FROM simple_llm_attempts "
+                "WHERE analysis_id = ? AND attempt_id = ? LIMIT 1",
+                (identity.analysis_id, stopped.attempt_id),
+            ).fetchone()
+            if (
+                overlapping_call is not None
+                or attributed_llm is not None
+                or same_attempt_llm is not None
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_CALL_INVALID")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("POC_ANCHOR_REPLAY_CODEX_UNRESOLVED")
+            pro_con = checkpoint_at(child_key, SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(child_key, SimpleStage.VERIFICATION_INITIAL_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version
+                != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                or initial.recipe_ref != stopped.recipe_ref
+                or initial.image_digest != stopped.image_digest
+                or any(
+                    checkpoint_at(child_key, stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError("POC_ANCHOR_REPLAY_LINEAGE_INVALID")
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": (
+                        "simple_poc_anchor_migration_collision_replay"
+                        if migration_collision_retry
+                        else "simple_poc_anchor_discriminator_replay"
+                        if discriminator_retry
+                        else "simple_poc_anchor_replay"
+                    ),
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": stopped.attempt_id,
+                    "old_attempt_number": stopped.attempt_number,
+                    "old_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(stopped.model_dump(mode="json"))
+                    ).hexdigest(),
+                }
+            )
+            pending = stopped.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 102),
+                    status=StageStatus.FAILED,
+                    summary_ko=(
+                        "마이그레이션 복구와 충돌한 PoC 후보만 한 번 재시도합니다."
+                        if migration_collision_retry
+                        else "복구 유형이 혼동된 PoC 후보만 추가로 한 번 재시도합니다."
+                        if discriminator_retry
+                        else "검증된 PoC 위치 오류 후보만 한 번 재시도합니다."
+                    ),
+                    output_refs=(marker_ref,),
+                    error_code=(
+                        "POC_ANCHOR_MIGRATION_COLLISION_REPLAYED"
+                        if migration_collision_retry
+                        else "POC_ANCHOR_DISCRIMINATOR_REPLAYED"
+                        if discriminator_retry
+                        else "POC_ANCHOR_REPLAYED"
+                    ),
                 ),
             )
             if fail_before_commit:
@@ -7858,6 +13949,220 @@ class SimpleCheckpointStore:
                     summary_ko=(
                         "고정된 Python 배포본의 재현 환경 비호환을 "
                         "검증된 미확정 상태로 기록했습니다."
+                    ),
+                    output_refs=completed.output_refs,
+                ),
+            )
+            connection.commit()
+            return completed
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def promote_exit_one_inconclusive_execution(
+        self,
+        exhausted: StageCheckpoint,
+        *,
+        artifacts: SimpleArtifactRepository,
+    ) -> StageCheckpoint:
+        """Preserve a completed, cleaned-up exit-one observation as HOLD.
+
+        Only the exact five-ref failure emitted after an INCONCLUSIVE model
+        interpretation is eligible. The original failure remains in activity
+        events; the terminal checkpoint carries the three verified PoC refs.
+        """
+
+        if (
+            exhausted.stage is not SimpleStage.POC_EXECUTION_DONE
+            or exhausted.stage_version != STAGE_VERSION[SimpleStage.POC_EXECUTION_DONE]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.attempt_number < MAX_RECOVERY_ATTEMPTS
+            or exhausted.attempt_id is None
+            or len(exhausted.output_refs) != 5
+            or len(exhausted.input_refs) < 2
+            or exhausted.validated_poc_ref is not None
+            or artifacts.identity != exhausted.identity
+        ):
+            raise ValueError("POC_EXIT_ONE_INCONCLUSIVE_PROMOTION_INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    exhausted.identity.analysis_id,
+                    self._hypothesis_key(exhausted.identity),
+                    exhausted.stage.value,
+                ),
+            ).fetchone()
+            if (
+                current is None
+                or StageCheckpoint.model_validate_json(current["checkpoint_json"])
+                != exhausted
+            ):
+                raise ValueError("POC_EXIT_ONE_INCONCLUSIVE_PROMOTION_STALE")
+            candidate_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    exhausted.identity.analysis_id,
+                    self._hypothesis_key(exhausted.identity),
+                    SimpleStage.POC_CANDIDATE_DONE.value,
+                ),
+            ).fetchone()
+            candidate = (
+                StageCheckpoint.model_validate_json(candidate_row["checkpoint_json"])
+                if candidate_row is not None
+                else None
+            )
+            initial_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    exhausted.identity.analysis_id,
+                    self._hypothesis_key(exhausted.identity),
+                    SimpleStage.VERIFICATION_INITIAL_DONE.value,
+                ),
+            ).fetchone()
+            initial = (
+                StageCheckpoint.model_validate_json(initial_row["checkpoint_json"])
+                if initial_row is not None
+                else None
+            )
+            if (
+                candidate is None
+                or candidate.identity != exhausted.identity
+                or candidate.stage_version
+                != STAGE_VERSION[SimpleStage.POC_CANDIDATE_DONE]
+                or candidate.status is not StageStatus.SUCCEEDED
+                or candidate.attempt_id != exhausted.attempt_id
+                or candidate.output_refs[:2] != exhausted.input_refs[:2]
+                or len(candidate.output_refs) < 2
+                or candidate.recipe_ref is None
+                or candidate.recipe_ref != exhausted.recipe_ref
+                or not isinstance(candidate.image_digest, str)
+                or not candidate.image_digest.startswith("sha256:")
+                or candidate.image_digest != exhausted.image_digest
+                or initial is None
+                or initial.identity != exhausted.identity
+                or initial.stage_version
+                != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.recipe_ref != candidate.recipe_ref
+                or initial.image_digest != candidate.image_digest
+            ):
+                raise ValueError("POC_EXIT_ONE_INCONCLUSIVE_UNVERIFIED")
+            execution_ref, stdout_ref, stderr_ref, interpretation_ref, cleanup_ref = (
+                exhausted.output_refs
+            )
+            candidate_ref, content_ref = candidate.output_refs[:2]
+            try:
+                candidate_record = json.loads(artifacts.read(candidate_ref))
+                recipe = json.loads(artifacts.read(candidate.recipe_ref))
+                artifacts.read_bounded(content_ref, 1_048_576)
+                execution = json.loads(artifacts.read(execution_ref))
+                stdout = artifacts.read_bounded(stdout_ref, 1_048_576)
+                stderr = artifacts.read_bounded(stderr_ref, 1_048_576)
+                interpretation = json.loads(artifacts.read(interpretation_ref))
+                cleanup = json.loads(artifacts.read(cleanup_ref))
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+                UnicodeError,
+                sqlite3.Error,
+            ) as error:
+                raise ValueError("POC_EXIT_ONE_INCONCLUSIVE_UNVERIFIED") from error
+            if not all(
+                isinstance(record, dict)
+                for record in (
+                    candidate_record,
+                    recipe,
+                    execution,
+                    interpretation,
+                    cleanup,
+                )
+            ):
+                raise ValueError("POC_EXIT_ONE_INCONCLUSIVE_UNVERIFIED")
+            result = interpretation.get("result")
+            container_id = execution.get("container_id")
+            if (
+                candidate_record.get("kind") != "simple_poc_candidate"
+                or candidate_record.get("attempt_id") != exhausted.attempt_id
+                or candidate_record.get("content_ref")
+                != content_ref.model_dump(mode="json")
+                or candidate_record.get("content_digest") != content_ref.content_hash
+                or recipe.get("kind") != "simple_environment_recipe"
+                or recipe.get("status") != "BUILT"
+                or recipe.get("analysis_id") != exhausted.identity.analysis_id
+                or recipe.get("workspace_id") != exhausted.identity.workspace_id
+                or recipe.get("commit_id") != exhausted.identity.commit_id
+                or recipe.get("hypothesis_id") != exhausted.identity.hypothesis_id
+                or not isinstance(recipe.get("attempt_id"), str)
+                or not recipe.get("attempt_id")
+                or recipe.get("dockerfile_source")
+                not in {
+                    "REPOSITORY_DOCKERFILE",
+                    "GENERATED",
+                    "GENERATED_NO_INSTALL",
+                    "GENERATED_OFFLINE_WHEELS",
+                }
+                or recipe.get("degraded") is not False
+                or recipe.get("dockerfile_source") == "GENERATED_NO_INSTALL"
+                or "image_digest" in recipe
+                and recipe.get("image_digest") != candidate.image_digest
+                or execution.get("kind") != "simple_poc_execution"
+                or execution.get("attempt_id") != exhausted.attempt_id
+                or execution.get("candidate_ref")
+                != candidate_ref.model_dump(mode="json")
+                or execution.get("content_ref") != content_ref.model_dump(mode="json")
+                or execution.get("stdout_ref") != stdout_ref.model_dump(mode="json")
+                or execution.get("stderr_ref") != stderr_ref.model_dump(mode="json")
+                or execution.get("timed_out") is not False
+                or type(execution.get("exit_code")) is not int
+                or execution.get("exit_code") != 1
+                or execution.get("image_digest") != exhausted.image_digest
+                or not isinstance(container_id, str)
+                or not container_id
+                or exhausted.container_id is not None
+                and exhausted.container_id != container_id
+                or not exit_one_claim_interpreted_inconclusive(stdout, stderr)
+                or interpretation.get("kind") != "simple_dynamic_interpretation"
+                or interpretation.get("execution_ref")
+                != execution_ref.model_dump(mode="json")
+                or not isinstance(result, dict)
+                or result.get("outcome") != "INCONCLUSIVE"
+                or cleanup.get("kind") != "simple_container_cleanup"
+                or cleanup.get("attempt_id") != exhausted.attempt_id
+                or cleanup.get("container_id") != container_id
+                or cleanup.get("status") != "REMOVED"
+            ):
+                raise ValueError("POC_EXIT_ONE_INCONCLUSIVE_UNVERIFIED")
+            completed = exhausted.model_copy(
+                update={
+                    "status": StageStatus.SUCCEEDED,
+                    "output_refs": (execution_ref, interpretation_ref, cleanup_ref),
+                    "verdict": "HOLD",
+                    "error_code": None,
+                    "retryable": False,
+                    "container_id": container_id,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._upsert_checkpoint_connection(connection, completed)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    completed,
+                    ActivityKind.STAGE_COMPLETED,
+                    sequence=self._stage_sequence(completed.stage, 2),
+                    status=StageStatus.SUCCEEDED,
+                    summary_ko=(
+                        "실행을 마친 PoC의 판정 근거 부족을 미확정으로 기록했습니다."
                     ),
                     output_refs=completed.output_refs,
                 ),

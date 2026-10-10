@@ -1,6 +1,11 @@
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, WorkspaceId
+from sastsimi.contracts.prompt_redaction import (
+    assert_safe_provider_text,
+    redact_projected_json,
+)
 from sastsimi.contracts.reporting import validate_report_content
 from sastsimi.contracts.static import CodeLocation
 
@@ -26,11 +31,78 @@ def test_report_accepts_only_supported_location() -> None:
     assert b"src/app.py:12" in encoded
 
 
+def test_report_rejects_ambiguous_authorization_prose() -> None:
+    summary = (
+        "Confirmed conditional missing authorization: with public ticket viewing "
+        "enabled, an anonymous requester can close a resolved ticket."
+    )
+
+    with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
+        validate_report_content({"summary": summary}, allowed_locations=())
+
+
+def test_report_rejects_generic_missing_authorization_prose() -> None:
+    summary = (
+        "Missing authorization: with delegated access enabled, a request can "
+        "change state."
+    )
+
+    with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
+        validate_report_content({"summary": summary}, allowed_locations=())
+
+
+def test_shared_redactor_rejects_multiword_authorization_value() -> None:
+    raw = canonical_bytes(
+        {"note": "missing authorization: with amber river stone, please rotate it"}
+    )
+
+    with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
+        assert_safe_provider_text(raw)
+
+
+def test_shared_redactor_removes_multiword_authorization_value() -> None:
+    raw = canonical_bytes(
+        {"note": "missing authorization: with amber river stone, please rotate it"}
+    )
+
+    redacted = redact_projected_json(raw)
+
+    assert redacted.categories == ("CREDENTIAL",)
+    assert b"amber river stone" not in redacted.data
+
+
 @pytest.mark.parametrize(
     ("content", "error"),
     [
         ({"summary": "Unsupported at src/app.py:21"}, "LOCATION"),
         ({"summary": "authorization=Bearer secret-value"}, "REDACTION"),
+        ({"summary": "authorization: secret-value"}, "REDACTION"),
+        ({"summary": "Authorization: Bearer abc123"}, "REDACTION"),
+        ({"summary": '"Authorization: Bearer abc123"'}, "REDACTION"),
+        ({"summary": "authorization: abc123"}, "REDACTION"),
+        ({"summary": "missing authorization: secret-value"}, "REDACTION"),
+        ({"summary": "missing authorization: with secret-value"}, "REDACTION"),
+        (
+            {"summary": "missing authorization: with secret token exposed, stop."},
+            "REDACTION",
+        ),
+        (
+            {"summary": "missing authorization: with sk-abcdefghij access on, stop."},
+            "REDACTION",
+        ),
+        (
+            {"summary": "authorization: with delegated access enabled, stop."},
+            "REDACTION",
+        ),
+        (
+            {
+                "summary": (
+                    "Missing authorization: with public ticket viewing enabled; "
+                    "authorization: Bearer secret-value"
+                )
+            },
+            "REDACTION",
+        ),
         ({"summary": "hidden reasoning: private notes"}, "HIDDEN_REASONING"),
     ],
 )
