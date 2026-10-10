@@ -418,8 +418,9 @@ def test_public_group_export_reuses_current_evidence_without_new_finding_ids(
 
 
 def test_dashboard_group_download_and_outputs_tab_keep_raw_reports(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("SASTSIMI_DASHBOARD_INDEX_MODE", "source")
     run, _checkpoints, group, data_dir, _database, _store = _reported_case(tmp_path)
     query = DashboardQuery(data_dir)
     body = query.group_bundle_bytes(run.analysis_id, group.group_id)
@@ -441,6 +442,7 @@ def test_dashboard_group_download_and_outputs_tab_keep_raw_reports(
 def test_dashboard_keeps_current_group_when_other_report_lacks_group_proof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("SASTSIMI_DASHBOARD_INDEX_MODE", "source")
     run, _checkpoints, group, data_dir, _database, _store = _reported_case(tmp_path)
     query = DashboardQuery(data_dir)
     original_reports = query._reports(run.analysis_id)
