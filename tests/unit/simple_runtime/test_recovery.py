@@ -1009,13 +1009,18 @@ def _foreign_ref() -> StoredDataRef:
 
 def test_saved_http_server_constructor_failure_uses_exact_bound_evidence() -> None:
     fixture = Path(__file__).parents[2] / "fixtures/simple_runtime"
-    candidate = (fixture / "a001_attempt4_poc.sh").read_bytes().removesuffix(b"\n")
+    candidate = (
+        (fixture / "a001_attempt4_poc.sh")
+        .read_bytes()
+        .replace(b"\r\n", b"\n")
+        .removesuffix(b"\n")
+    )
     pinned_source = (fixture / "a001_server.py").read_bytes().removesuffix(b"\n")
     assert hashlib.sha256(candidate).hexdigest() == (
         "db74ad8ef5d3527d781c7448a7cf8cd101b5c47e0714e863a50a5b31ee354c91"
     )
     assert hashlib.sha256(pinned_source).hexdigest() == (
-        "00dbcdff9be0e5e5ae19c347dd3e4dec007f5b996fcba4bea91e606dc0532b05"
+        "f91ebecbf9d22e563e07bfa4dffed3abe19c89eaa779c00cbaf6fb8603dea5e0"
     )
     stderr = (
         b"TypeError: runtime_failure\n"
@@ -1049,15 +1054,20 @@ def test_saved_http_server_constructor_failure_uses_exact_bound_evidence() -> No
         b"",
         candidate,
         pinned_source.replace(
-            b"def __init__(self, *args, **kwargs):",
-            b"def __init__(self, address, handler):",
+            b"def __init__(self, *args: Any, **kwargs: Any) -> None:",
+            b"def __init__(self, address: Any, handler: Any) -> None:",
         ),
     )
 
 
 def test_http_server_constructor_source_path_is_generic_and_unambiguous() -> None:
     fixture = Path(__file__).parents[2] / "fixtures/simple_runtime"
-    candidate = (fixture / "a001_attempt4_poc.sh").read_bytes().removesuffix(b"\n")
+    candidate = (
+        (fixture / "a001_attempt4_poc.sh")
+        .read_bytes()
+        .replace(b"\r\n", b"\n")
+        .removesuffix(b"\n")
+    )
     generic = candidate.replace(b"'dsvpwa' / 'server.py'", b"'app' / 'server.py'")
     assert (
         simple_recovery.http_server_constructor_source_path(generic) == "app/server.py"

@@ -3849,12 +3849,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_report_validator_replay(
         self,
@@ -4600,12 +4601,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
@@ -7388,12 +7390,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_poc_candidate_constraint_replay(
         self,
@@ -7726,12 +7729,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_poc_urlconf_candidate_replay(
         self,
@@ -9407,12 +9411,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_poc_django_schema_exhaustion_replay(
         self,
@@ -11632,12 +11637,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_poc_placeholder_exhaustion_replay(
         self,
@@ -12031,12 +12037,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_auth_required_replay(
         self,
@@ -12317,12 +12324,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_poc_sensitive_content_replay(
         self,
@@ -12723,12 +12731,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_poc_anchor_failure_replay(
         self,
@@ -13163,12 +13172,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def _prepare_fallback_poc_stop_replan(
         self,
@@ -13687,12 +13697,13 @@ class SimpleCheckpointStore:
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_gate_revision(
         self,
@@ -14168,12 +14179,13 @@ class SimpleCheckpointStore:
                 ),
             )
             connection.commit()
-            return completed
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(exhausted.identity.analysis_id)
+        return completed
 
     def promote_inconclusive_execution(
         self,
@@ -14478,6 +14490,13 @@ class SimpleCheckpointStore:
             self._post_commit_projection(
                 self._artifact_data_dir, checkpoint.identity.analysis_id
             )
+
+    def _project_after_direct_commit(self, analysis_id: str) -> None:
+        if (
+            self._artifact_data_dir is not None
+            and self._post_commit_projection is not None
+        ):
+            self._post_commit_projection(self._artifact_data_dir, analysis_id)
 
     def _upsert_checkpoint_connection(
         self,

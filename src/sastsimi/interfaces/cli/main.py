@@ -1298,6 +1298,7 @@ def main(
                 or args.repair_poc_anchor is not None
                 or args.repair_report_validator is not None
                 or args.repair_auth_required_hypothesis is not None
+                or args.supplement_saved_v2_ast_orphans
             ):
                 raise _InputError
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)

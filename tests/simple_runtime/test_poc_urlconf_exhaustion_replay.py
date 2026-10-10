@@ -31,14 +31,11 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import StageBlocked
+from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
 from sastsimi.simple_runtime.stages import PoCCandidateStage, PoCExecutionStage
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
 from tests.simple_runtime.test_legacy_import_stop_replan import _PinnedStaticStub
-from tests.simple_runtime.test_poc_candidate_app_exhaustion_replay import (
-    _CandidateClient,
-)
 from tests.simple_runtime.test_poc_fixture_dependency_replay import (
     _exhausted_attempt_four,
 )
@@ -93,6 +90,29 @@ _STDERR = (
     b"  at unresolved_frame:90\n  at reverse:92\n"
 )
 _STDOUT = b"Pinned follow-up view source matched\n"
+
+
+class _NoLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def call(self, **_kwargs: object) -> SimpleLLMCallResult:
+        self.calls += 1
+        raise AssertionError("LLM must not be reached for URLConf-bound replay")
+
+
+class _NoContainer:
+    def __init__(self) -> None:
+        self.acquires = 0
+        self.releases = 0
+
+    async def acquire(self, *_args: object) -> str:
+        self.acquires += 1
+        raise AssertionError("Docker acquire must not be reached")
+
+    async def release(self, _checkpoint: StageCheckpoint, _container_id: str) -> bool:
+        self.releases += 1
+        raise AssertionError("Docker release must not be reached")
 
 
 def _checkout(tmp_path: Path, *, file_changes: dict[str, str] | None = None) -> str:
@@ -682,10 +702,78 @@ def test_generated_input_replay_rolls_back_and_rejects_tampered_stop(
         recovery.urlconf_replay_binding(forged, artifacts)
 
 
+async def _assert_urlconf_bound_stages_block_before_downstream(
+    store: SimpleCheckpointStore,
+    artifacts: SimpleArtifactRepository,
+    running: StageCheckpoint,
+    content: bytes,
+) -> StageCheckpoint:
+    client = _NoLLM()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        running.identity.analysis_id
+    )
+    with pytest.raises(StageBlocked) as candidate_error:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(running, {})
+    assert candidate_error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    assert candidate_error.value.failure.evidence_refs == ()
+    assert client.calls == 0
+    assert store.require(running.identity, running.stage) == running
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            running.identity.analysis_id
+        )
+        == before
+    )
+    attempt_id = running.attempt_id
+    assert attempt_id is not None
+    content_ref = artifacts.put_bytes(content, "text/x-shellscript")
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "attempt_id": attempt_id,
+            "content_ref": content_ref.model_dump(mode="json"),
+            "content_digest": hashlib.sha256(content).hexdigest(),
+        }
+    )
+    saved = store.complete(
+        running, StageResult(output_refs=(candidate_ref, content_ref))
+    )
+    execution = store.mark_running(
+        saved.identity,
+        SimpleStage.POC_EXECUTION_DONE,
+        (candidate_ref, content_ref),
+        attempt_id=attempt_id,
+        inherit_from=saved,
+    )
+    containers = _NoContainer()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        running.identity.analysis_id
+    )
+    with pytest.raises(StageBlocked) as execution_error:
+        await PoCExecutionStage(
+            client=client,
+            artifacts=artifacts,
+            docker=cast(DockerAdapter, object()),
+            containers=containers,
+        )(execution, {SimpleStage.POC_CANDIDATE_DONE: saved})
+    assert execution_error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    assert execution_error.value.failure.evidence_refs == ()
+    assert client.calls == 0
+    assert containers.acquires == containers.releases == 0
+    assert store.require(saved.identity, saved.stage) == saved
+    assert store.require(execution.identity, execution.stage) == execution
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            running.identity.analysis_id
+        )
+        == before
+    )
+    return saved
+
+
 @pytest.mark.asyncio
-async def test_attempt9_fixed_candidate_reaches_docker_only_after_prior_guards(
+async def test_attempt9_fixed_candidate_blocks_before_llm_and_docker(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, artifacts, stopped = _blocked_layout_execution(tmp_path)
     pending = store.prepare_poc_generated_input_replay(stopped, artifacts)
@@ -698,50 +786,16 @@ async def test_attempt9_fixed_candidate_reaches_docker_only_after_prior_guards(
     from sastsimi.simple_runtime import stages
 
     stages._reject_candidate_app_replay_content(running, artifacts, fixed)
-    stages._reject_urlconf_replay_content(running, artifacts, fixed)
-    content_ref = artifacts.put_bytes(fixed, "text/x-shellscript")
-    candidate_ref = artifacts.put_json(
-        {
-            "kind": "simple_poc_candidate",
-            "attempt_id": "attempt-9",
-            "content_ref": content_ref.model_dump(mode="json"),
-            "content_digest": hashlib.sha256(fixed).hexdigest(),
-        }
+    with pytest.raises(StageBlocked) as guard_error:
+        stages._reject_urlconf_replay_content(running, artifacts, fixed)
+    assert guard_error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    await _assert_urlconf_bound_stages_block_before_downstream(
+        store, artifacts, running, fixed
     )
-    saved = store.complete(
-        running, StageResult(output_refs=(candidate_ref, content_ref))
-    )
-    execution = store.mark_running(
-        saved.identity,
-        SimpleStage.POC_EXECUTION_DONE,
-        (candidate_ref, content_ref),
-        attempt_id="attempt-9",
-        inherit_from=saved,
-    )
-
-    class NoContainer:
-        async def acquire(self, *_args: object) -> str:
-            raise AssertionError("Docker acquire reached after bound preflight")
-
-        async def release(
-            self, _checkpoint: StageCheckpoint, _container_id: str
-        ) -> bool:
-            raise AssertionError("Docker release must not be reached")
-
-    monkeypatch.setattr(
-        PoCExecutionStage, "_require_reportable_environment", lambda *_args: None
-    )
-    with pytest.raises(AssertionError, match="Docker acquire reached"):
-        await PoCExecutionStage(
-            client=_CandidateClient(fixed),
-            artifacts=artifacts,
-            docker=cast(DockerAdapter, object()),
-            containers=NoContainer(),
-        )(execution, {SimpleStage.POC_CANDIDATE_DONE: saved})
 
 
 @pytest.mark.asyncio
-async def test_generated_input_replay_prompt_preserves_distinct_import_roots(
+async def test_generated_input_replay_preserves_import_roots_before_llm_block(
     tmp_path: Path,
 ) -> None:
     store, artifacts, stopped = _blocked_layout_execution(tmp_path)
@@ -749,24 +803,25 @@ async def test_generated_input_replay_prompt_preserves_distinct_import_roots(
     running = store.mark_running(
         pending.identity, pending.stage, pending.input_refs, attempt_id="attempt-9"
     )
-    prompts: list[str] = []
-
-    class CaptureClient:
-        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
-            raw = kwargs["prompt"]
-            assert isinstance(raw, bytes)
-            prompts.append(raw.decode("utf-8"))
-            raise RuntimeError("captured candidate prompt")
-
-    with pytest.raises(RuntimeError, match="captured candidate prompt"):
-        await PoCCandidateStage(client=CaptureClient(), artifacts=artifacts)(
-            running, {}
+    marker = json.loads(artifacts.read(pending.recovery_decision_refs[-1]))
+    assert marker["layout_failed_path"] == "/workspace/src/standalone/config/urls.py"
+    assert marker["layout_corrected_path"] == "/workspace/standalone/config/urls.py"
+    client = _NoLLM()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        running.identity.analysis_id
+    )
+    with pytest.raises(StageBlocked) as error:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(running, {})
+    assert error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    assert error.value.failure.evidence_refs == ()
+    assert client.calls == 0
+    assert store.require(running.identity, running.stage) == running
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            running.identity.analysis_id
         )
-    assert len(prompts) == 1
-    assert "/workspace/src/standalone/config/urls.py" in prompts[0]
-    assert "/workspace/standalone/config/urls.py" in prompts[0]
-    assert "each distinct top-level package" in prompts[0]
-    assert "Choose exactly one compatible strategy" not in prompts[0]
+        == before
+    )
 
 
 @pytest.mark.asyncio
@@ -875,9 +930,8 @@ def test_urlconf_candidate_replay_rolls_back_and_rejects_missing_marker(
 
 
 @pytest.mark.asyncio
-async def test_attempt8_valid_candidate_passes_candidate_and_execution_preflight(
+async def test_attempt8_pinned_candidate_blocks_before_llm_and_docker(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, artifacts, stopped = _blocked_urlconf_constraint(tmp_path)
     pending = store.prepare_poc_urlconf_candidate_replay(stopped, artifacts)
@@ -891,48 +945,12 @@ async def test_attempt8_valid_candidate_passes_candidate_and_execution_preflight
     from sastsimi.simple_runtime import stages
 
     stages._reject_candidate_app_replay_content(running, artifacts, fixed)
-    stages._reject_urlconf_replay_content(running, artifacts, fixed)
-    content_ref = artifacts.put_bytes(fixed, "text/x-shellscript")
-    candidate_ref = artifacts.put_json(
-        {
-            "kind": "simple_poc_candidate",
-            "attempt_id": "attempt-8",
-            "content_ref": content_ref.model_dump(mode="json"),
-            "content_digest": hashlib.sha256(fixed).hexdigest(),
-        }
+    with pytest.raises(StageBlocked) as guard_error:
+        stages._reject_urlconf_replay_content(running, artifacts, fixed)
+    assert guard_error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    await _assert_urlconf_bound_stages_block_before_downstream(
+        store, artifacts, running, fixed
     )
-    saved = store.complete(
-        running, StageResult(output_refs=(candidate_ref, content_ref))
-    )
-    stages._reject_candidate_app_replay_content(saved, artifacts, fixed)
-    stages._reject_urlconf_replay_content(saved, artifacts, fixed)
-    execution = store.mark_running(
-        saved.identity,
-        SimpleStage.POC_EXECUTION_DONE,
-        (candidate_ref, content_ref),
-        attempt_id="attempt-8",
-        inherit_from=saved,
-    )
-
-    class NoContainer:
-        async def acquire(self, *_args: object) -> str:
-            raise AssertionError("Docker acquire reached after safe preflight")
-
-        async def release(
-            self, _checkpoint: StageCheckpoint, _container_id: str
-        ) -> bool:
-            raise AssertionError("Docker release must not be reached")
-
-    monkeypatch.setattr(
-        PoCExecutionStage, "_require_reportable_environment", lambda *_args: None
-    )
-    with pytest.raises(AssertionError, match="Docker acquire reached"):
-        await PoCExecutionStage(
-            client=_CandidateClient(fixed),
-            artifacts=artifacts,
-            docker=cast(DockerAdapter, object()),
-            containers=NoContainer(),
-        )(execution, {SimpleStage.POC_CANDIDATE_DONE: saved})
 
 
 def test_urlconf_replay_reseeds_only_one_candidate_with_lineage(tmp_path: Path) -> None:
@@ -1013,20 +1031,43 @@ def test_urlconf_proof_accepts_literal_include_plus_django_static(
     )
 
 
-def test_urlconf_replay_guard_rejects_same_wiring_and_allows_pinned_root(
-    tmp_path: Path,
+def test_urlconf_replay_guard_blocks_both_wirings_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, artifacts, exhausted = _exhausted_urlconf(tmp_path)
     pending = store.prepare_poc_urlconf_exhaustion_replay(exhausted, artifacts)
     from sastsimi.simple_runtime import stages
 
     assert recovery.migration_settings_replay_binding(pending, artifacts) is None
-    with pytest.raises(PoCCandidateRejected, match="POC_URLCONF_REPLAY_UNSUPPORTED"):
-        stages._reject_urlconf_replay_content(pending, artifacts, _candidate())
     fixed = _candidate().replace(
         b"ROOT_URLCONF='helpdesk.urls'", b"ROOT_URLCONF='standalone.config.urls'"
     )
-    stages._reject_urlconf_replay_content(pending, artifacts, fixed)
+    before = AgentActivityStore(store.database_path).list_analysis(
+        pending.identity.analysis_id
+    )
+    for content in (_candidate(), fixed):
+        with pytest.raises(StageBlocked) as error:
+            stages._reject_urlconf_replay_content(pending, artifacts, content)
+        assert error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+        assert error.value.failure.evidence_refs == ()
+        assert store.require(pending.identity, pending.stage) == pending
+        assert (
+            AgentActivityStore(store.database_path).list_analysis(
+                pending.identity.analysis_id
+            )
+            == before
+        )
+
+    predecessor = pending.model_copy(update={"recovery_decision_refs": ()})
+    assert recovery.urlconf_replay_binding(predecessor, artifacts) is None
+    monkeypatch.setattr(
+        stages,
+        "settings_replay_binding",
+        lambda _checkpoint, _artifacts: ("HELPDESK_TEAMS_MODE_ENABLED", predecessor),
+    )
+    with pytest.raises(StageBlocked) as error:
+        stages._reject_urlconf_replay_content(pending, artifacts, fixed)
+    assert error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
 
 
 def test_non_migration_marker_cannot_bypass_migration_replay_validation(
@@ -1071,9 +1112,8 @@ def test_non_migration_marker_cannot_bypass_migration_replay_validation(
 
 
 @pytest.mark.asyncio
-async def test_urlconf_replay_valid_candidate_passes_running_and_execution_guard(
+async def test_urlconf_replay_pinned_candidate_blocks_running_and_saved_execution(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, artifacts, exhausted = _exhausted_urlconf(tmp_path)
     pending = store.prepare_poc_urlconf_exhaustion_replay(exhausted, artifacts)
@@ -1086,17 +1126,71 @@ async def test_urlconf_replay_valid_candidate_passes_running_and_execution_guard
     )
     from sastsimi.simple_runtime import stages
 
-    stages._reject_urlconf_replay_content(running, artifacts, fixed)
+    with pytest.raises(StageBlocked) as running_error:
+        stages._reject_urlconf_replay_content(running, artifacts, fixed)
+    assert running_error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
     beyond_one_shot = running.model_copy(
         update={"attempt_number": running.attempt_number + 1, "attempt_id": "attempt-7"}
     )
     with pytest.raises(PoCCandidateRejected, match="POC_URLCONF_REPLAY_UNSUPPORTED"):
         stages._reject_urlconf_replay_content(beyond_one_shot, artifacts, fixed)
+    saved = await _assert_urlconf_bound_stages_block_before_downstream(
+        store, artifacts, running, fixed
+    )
+    with pytest.raises(StageBlocked) as saved_error:
+        stages._reject_urlconf_replay_content(saved, artifacts, fixed)
+    assert saved_error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_saved_settings_replay_with_urlconf_marker_blocks_before_docker(
+    tmp_path: Path,
+) -> None:
+    from tests.simple_runtime.test_poc_django_settings_exhaustion_replay import (
+        _CANDIDATE as settings_candidate,
+    )
+    from tests.simple_runtime.test_poc_django_settings_exhaustion_replay import (
+        _exhausted_settings_attempt,
+    )
+
+    store, artifacts, exhausted = _exhausted_settings_attempt(tmp_path)
+    pending = store.prepare_poc_django_settings_exhaustion_replay(exhausted, artifacts)
+    running = store.mark_running(
+        pending.identity, pending.stage, pending.input_refs, attempt_id="attempt-11"
+    )
+    records = [
+        json.loads(artifacts.read(ref)) for ref in running.recovery_decision_refs
+    ]
+    assert any(record.get("urlconf_replay") is True for record in records)
+    assert any(record.get("settings_mismatch_replay") is True for record in records)
+    assert recovery.settings_replay_binding(running, artifacts) is not None
+    with pytest.raises(ValueError, match="POC_URLCONF_REPLAY_UNBOUND"):
+        recovery.urlconf_replay_binding(running, artifacts)
+    fixed = settings_candidate.replace(
+        b"INSTALLED_APPS=[", b"HELPDESK_TEAMS_MODE_ENABLED=False, INSTALLED_APPS=["
+    )
+    client = _NoLLM()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        running.identity.analysis_id
+    )
+    with pytest.raises(StageFailed) as candidate_error:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(running, {})
+    assert candidate_error.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
+    assert candidate_error.value.failure.evidence_refs == ()
+    assert client.calls == 0
+    assert store.require(running.identity, running.stage) == running
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            running.identity.analysis_id
+        )
+        == before
+    )
+
     content_ref = artifacts.put_bytes(fixed, "text/x-shellscript")
     candidate_ref = artifacts.put_json(
         {
             "kind": "simple_poc_candidate",
-            "attempt_id": "attempt-6",
+            "attempt_id": "attempt-11",
             "content_ref": content_ref.model_dump(mode="json"),
             "content_digest": hashlib.sha256(fixed).hexdigest(),
         }
@@ -1104,57 +1198,40 @@ async def test_urlconf_replay_valid_candidate_passes_running_and_execution_guard
     saved = store.complete(
         running, StageResult(output_refs=(candidate_ref, content_ref))
     )
-    stages._reject_urlconf_replay_content(saved, artifacts, fixed)
     execution = store.mark_running(
         saved.identity,
         SimpleStage.POC_EXECUTION_DONE,
         (candidate_ref, content_ref),
-        attempt_id="attempt-6",
+        attempt_id="attempt-11",
         inherit_from=saved,
     )
-
-    class NoContainer:
-        async def acquire(self, *_args: object) -> str:
-            raise AssertionError("Docker acquire reached after safe preflight")
-
-        async def release(
-            self, _checkpoint: StageCheckpoint, _container_id: str
-        ) -> bool:
-            raise AssertionError("Docker release must not be reached")
-
-    monkeypatch.setattr(
-        PoCExecutionStage,
-        "_require_reportable_environment",
-        lambda *_args: None,
+    containers = _NoContainer()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        running.identity.analysis_id
     )
-    with pytest.raises(AssertionError, match="Docker acquire reached"):
+    with pytest.raises(StageBlocked) as error:
         await PoCExecutionStage(
-            client=_CandidateClient(fixed),
+            client=client,
             artifacts=artifacts,
             docker=cast(DockerAdapter, object()),
-            containers=NoContainer(),
+            containers=containers,
         )(execution, {SimpleStage.POC_CANDIDATE_DONE: saved})
-
-
-@pytest.mark.asyncio
-async def test_urlconf_replay_rejects_repeated_wiring_before_candidate_save(
-    tmp_path: Path,
-) -> None:
-    store, artifacts, exhausted = _exhausted_urlconf(tmp_path)
-    pending = store.prepare_poc_urlconf_exhaustion_replay(exhausted, artifacts)
-    running = store.mark_running(
-        pending.identity, pending.stage, pending.input_refs, attempt_id="attempt-6"
-    )
-    with pytest.raises(StageBlocked) as error:
-        await PoCCandidateStage(
-            client=_CandidateClient(_candidate()), artifacts=artifacts
-        )(running, {})
     assert error.value.failure.code == "POC_URLCONF_REPLAY_UNSUPPORTED"
-    assert store.require(running.identity, running.stage) == running
+    assert error.value.failure.evidence_refs == (candidate_ref, content_ref)
+    assert client.calls == 0
+    assert containers.acquires == containers.releases == 0
+    assert store.require(saved.identity, saved.stage) == saved
+    assert store.require(execution.identity, execution.stage) == execution
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            running.identity.analysis_id
+        )
+        == before
+    )
 
 
 @pytest.mark.asyncio
-async def test_candidate_replay_prompts_keep_prior_app_constraint(
+async def test_urlconf_replay_blocks_before_candidate_save_or_llm(
     tmp_path: Path,
 ) -> None:
     store, artifacts, exhausted = _exhausted_urlconf(tmp_path)
@@ -1162,40 +1239,57 @@ async def test_candidate_replay_prompts_keep_prior_app_constraint(
     running = store.mark_running(
         pending.identity, pending.stage, pending.input_refs, attempt_id="attempt-6"
     )
-    bad = _candidate().replace(
-        b"ROOT_URLCONF='helpdesk.urls'",
-        b"ROOT_URLCONF='standalone.config.urls', INSTALLED_APPS=['django_mailbox']",
+    client = _NoLLM()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        running.identity.analysis_id
     )
-
-    class RecordingClient:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
-
-        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
-            raw_prompt = kwargs["prompt"]
-            assert isinstance(raw_prompt, bytes)
-            self.prompts.append(raw_prompt.decode("utf-8"))
-            return SimpleLLMCallResult(
-                value={"content": bad.decode()},
-                prompt_digest="a" * 64,
-                output_digest="b" * 64,
-            )
-
-    client = RecordingClient()
     with pytest.raises(StageBlocked) as error:
         await PoCCandidateStage(client=client, artifacts=artifacts)(running, {})
-    assert error.value.failure.code == "POC_CANDIDATE_APP_REPLAY_UNSUPPORTED"
-    assert len(client.prompts) == 2
-    assert all("django_mailbox" in prompt for prompt in client.prompts)
-    assert "do not import" in client.prompts[0].lower()
-    assert "ROOT_URLCONF='standalone.config.urls' in a complete" in client.prompts[0]
-    assert "Do not generate a synthetic URLConf" in client.prompts[0]
-    assert "shim" in client.prompts[1].lower()
-    assert "INSTALLED_APPS" in client.prompts[1]
+    assert error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    assert error.value.failure.evidence_refs == ()
+    assert client.calls == 0
+    assert store.require(running.identity, running.stage) == running
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            running.identity.analysis_id
+        )
+        == before
+    )
 
 
 @pytest.mark.asyncio
-async def test_attempt8_prompts_pin_urlconf_and_keep_app_constraint(
+async def test_candidate_replay_keeps_prior_app_constraint_before_llm_block(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, exhausted = _exhausted_urlconf(tmp_path)
+    pending = store.prepare_poc_urlconf_exhaustion_replay(exhausted, artifacts)
+    running = store.mark_running(
+        pending.identity, pending.stage, pending.input_refs, attempt_id="attempt-6"
+    )
+    assert recovery.candidate_app_replay_unsupported_app(running, artifacts) == (
+        "django_mailbox"
+    )
+    assert recovery.urlconf_replay_binding(running, artifacts) is not None
+    client = _NoLLM()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        running.identity.analysis_id
+    )
+    with pytest.raises(StageBlocked) as error:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(running, {})
+    assert error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    assert error.value.failure.evidence_refs == ()
+    assert client.calls == 0
+    assert store.require(running.identity, running.stage) == running
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            running.identity.analysis_id
+        )
+        == before
+    )
+
+
+@pytest.mark.asyncio
+async def test_attempt8_keeps_urlconf_and_app_constraint_before_llm_block(
     tmp_path: Path,
 ) -> None:
     store, artifacts, stopped = _blocked_urlconf_constraint(tmp_path)
@@ -1203,34 +1297,26 @@ async def test_attempt8_prompts_pin_urlconf_and_keep_app_constraint(
     running = store.mark_running(
         pending.identity, pending.stage, pending.input_refs, attempt_id="attempt-8"
     )
-    bad = _candidate().replace(
-        b"ROOT_URLCONF='helpdesk.urls'",
-        b"ROOT_URLCONF='sastsimi_root'",
+    assert recovery.candidate_app_replay_unsupported_app(running, artifacts) == (
+        "django_mailbox"
     )
-
-    class RecordingClient:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
-
-        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
-            prompt = kwargs["prompt"]
-            assert isinstance(prompt, bytes)
-            self.prompts.append(prompt.decode("utf-8"))
-            return SimpleLLMCallResult(
-                value={"content": bad.decode()},
-                prompt_digest="a" * 64,
-                output_digest="b" * 64,
-            )
-
-    client = RecordingClient()
+    assert recovery.urlconf_replay_binding(running, artifacts) is not None
+    client = _NoLLM()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        running.identity.analysis_id
+    )
     with pytest.raises(StageBlocked) as error:
         await PoCCandidateStage(client=client, artifacts=artifacts)(running, {})
-    assert error.value.failure.code == "POC_URLCONF_REPLAY_UNSUPPORTED"
-    assert len(client.prompts) == 2
-    for prompt in client.prompts:
-        assert "ROOT_URLCONF='standalone.config.urls' in a complete" in prompt
-        assert "django_mailbox" in prompt
-    assert "reverse(urlconf=...)" in client.prompts[1]
+    assert error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    assert error.value.failure.evidence_refs == ()
+    assert client.calls == 0
+    assert store.require(running.identity, running.stage) == running
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            running.identity.analysis_id
+        )
+        == before
+    )
 
 
 @pytest.mark.asyncio
@@ -1263,23 +1349,30 @@ async def test_urlconf_replay_rejects_saved_bad_candidate_before_docker(
         inherit_from=saved,
     )
 
-    class NoContainer:
-        async def acquire(self, *_args: object) -> str:
-            raise AssertionError("Docker must not be reached")
-
-        async def release(
-            self, _checkpoint: StageCheckpoint, _container_id: str
-        ) -> bool:
-            raise AssertionError("Docker release must not be reached")
-
+    client = _NoLLM()
+    containers = _NoContainer()
+    before = AgentActivityStore(store.database_path).list_analysis(
+        execution.identity.analysis_id
+    )
     with pytest.raises(StageBlocked) as error:
         await PoCExecutionStage(
-            client=_CandidateClient(content),
+            client=client,
             artifacts=artifacts,
             docker=cast(DockerAdapter, object()),
-            containers=NoContainer(),
+            containers=containers,
         )(execution, {SimpleStage.POC_CANDIDATE_DONE: saved})
-    assert error.value.failure.code == "POC_URLCONF_REPLAY_UNSUPPORTED"
+    assert error.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
+    assert error.value.failure.evidence_refs == ()
+    assert client.calls == 0
+    assert containers.acquires == containers.releases == 0
+    assert store.require(saved.identity, saved.stage) == saved
+    assert store.require(execution.identity, execution.stage) == execution
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(
+            execution.identity.analysis_id
+        )
+        == before
+    )
 
 
 @pytest.mark.parametrize(
@@ -1378,15 +1471,17 @@ async def test_application_replays_urlconf_only_with_explicit_flag(
     await application.resume(identity.analysis_id)
     assert store.require(identity, SimpleStage.POC_EXECUTION_DONE) == exhausted
 
-    await application.resume(
-        identity.analysis_id,
-        repair_poc_urlconf_exhaustion_hypothesis=identity.hypothesis_id,
-    )
+    before = AgentActivityStore(store.database_path).list_analysis(identity.analysis_id)
+    with pytest.raises(ValueError, match="POC_URLCONF_EXHAUSTION_ORIGIN_UNVERIFIED"):
+        await application.resume(
+            identity.analysis_id,
+            repair_poc_urlconf_exhaustion_hypothesis=identity.hypothesis_id,
+        )
+    assert store.require(identity, SimpleStage.POC_EXECUTION_DONE) == exhausted
     assert (
-        store.require(identity, SimpleStage.POC_CANDIDATE_DONE).status
-        is StageStatus.PENDING
+        AgentActivityStore(store.database_path).list_analysis(identity.analysis_id)
+        == before
     )
-    assert store.get(identity, SimpleStage.POC_EXECUTION_DONE) is None
 
 
 @pytest.mark.asyncio
@@ -1462,11 +1557,19 @@ async def test_application_replays_exact_urlconf_candidate_stop(
     )
     await application.resume(identity.analysis_id)
     assert store.require(identity, stopped.stage) == stopped
-    await application.resume(
-        identity.analysis_id,
-        repair_poc_urlconf_candidate_hypothesis=identity.hypothesis_id,
+    before = AgentActivityStore(store.database_path).list_analysis(identity.analysis_id)
+    with pytest.raises(
+        ValueError, match="POC_URLCONF_CANDIDATE_REPLAY_ORIGIN_UNVERIFIED"
+    ):
+        await application.resume(
+            identity.analysis_id,
+            repair_poc_urlconf_candidate_hypothesis=identity.hypothesis_id,
+        )
+    assert store.require(identity, stopped.stage) == stopped
+    assert (
+        AgentActivityStore(store.database_path).list_analysis(identity.analysis_id)
+        == before
     )
-    assert store.require(identity, stopped.stage).status is StageStatus.PENDING
 
 
 def test_cli_forwards_urlconf_replay_in_plain_and_progress_modes(

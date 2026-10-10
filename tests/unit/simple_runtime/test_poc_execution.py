@@ -1237,6 +1237,7 @@ def test_saved_variadic_server_candidate_is_blocked_before_container_acquire(
     content = (
         (Path(__file__).parents[2] / "fixtures/simple_runtime/a001_attempt4_poc.sh")
         .read_bytes()
+        .replace(b"\r\n", b"\n")
         .removesuffix(b"\n")
     )
     assert hashlib.sha256(content).hexdigest() == (

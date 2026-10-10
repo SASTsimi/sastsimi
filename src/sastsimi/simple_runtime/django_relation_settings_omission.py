@@ -6,7 +6,7 @@ import ast
 import re
 from pathlib import PurePosixPath
 
-from sastsimi.simple_runtime.recovery import (
+from sastsimi.simple_runtime.django_project_defaults import (
     _django_project_default_false,
 )
 

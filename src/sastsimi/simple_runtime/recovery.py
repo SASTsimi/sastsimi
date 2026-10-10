@@ -26,6 +26,7 @@ from sastsimi.contracts.prompt_redaction import (
 from sastsimi.contracts.refs import StoredDataRef
 
 from .artifacts import SimpleArtifactRepository
+from .django_project_defaults import _django_project_default_false
 from .models import (
     MAX_RECOVERY_ATTEMPTS,
     SimpleAnalysisRun,
@@ -1083,7 +1084,11 @@ def candidate_urlconf_replay_forbidden(
     failing: tuple[str, str, str, int],
     project_roots: tuple[str, ...] | None = None,
 ) -> bool:
-    """Reject ambiguous roots or a repeated direct app-root namespace failure."""
+    """Legacy structural check, not proof of runtime URL module provenance.
+
+    Production URLConf replays are blocked before execution; keep this parser
+    for saved-evidence diagnostics only.
+    """
 
     tree = _django_candidate_url_tree(content)
     if tree is None:
@@ -2123,39 +2128,6 @@ def _django_literal_configuration(candidate: bytes) -> dict[str, object] | None:
     return values
 
 
-def _django_project_default_false(value: ast.expr, flag: str) -> bool:
-    if isinstance(value, ast.Constant) and value.value is False:
-        return True
-    if (
-        not isinstance(value, ast.Compare)
-        or len(value.ops) != 1
-        or not isinstance(value.ops[0], ast.Eq)
-        or len(value.comparators) != 1
-        or not isinstance(value.comparators[0], ast.Constant)
-        or value.comparators[0].value != "true"
-        or not isinstance(value.left, ast.Call)
-        or value.left.args
-        or value.left.keywords
-        or not isinstance(value.left.func, ast.Attribute)
-        or value.left.func.attr != "lower"
-        or not isinstance(value.left.func.value, ast.Call)
-    ):
-        return False
-    getenv = value.left.func.value
-    return (
-        isinstance(getenv.func, ast.Attribute)
-        and isinstance(getenv.func.value, ast.Name)
-        and getenv.func.value.id == "os"
-        and getenv.func.attr == "getenv"
-        and not getenv.keywords
-        and len(getenv.args) == 2
-        and isinstance(getenv.args[0], ast.Constant)
-        and isinstance(getenv.args[1], ast.Constant)
-        and getenv.args[0].value == flag
-        and getenv.args[1].value == "false"
-    )
-
-
 def django_migration_setting_mismatch(
     stderr: bytes,
     stdout: bytes,
@@ -2934,6 +2906,34 @@ def migration_settings_replay_binding(
                 )
             except (OSError, TypeError, ValueError, UnicodeError):
                 final_marker = None
+            if not (
+                isinstance(final_marker, dict)
+                and final_marker.get("kind")
+                == "simple_poc_django_migration_settings_candidate_replay"
+            ):
+                # Attempt numbers overlap with candidate-app replay, and a
+                # later decision may follow its marker. Defer that lineage to
+                # its own strict validator only when no migration marker is
+                # present anywhere in the lineage.
+                candidate_app_marker_seen = False
+                migration_marker_seen = False
+                for ref in checkpoint.recovery_decision_refs:
+                    try:
+                        marker = json.loads(artifacts.read_bounded(ref, 64 * 1024))
+                    except (OSError, TypeError, ValueError, UnicodeError):
+                        continue
+                    if isinstance(marker, dict):
+                        migration_marker_seen |= (
+                            marker.get("kind")
+                            == "simple_poc_django_migration_settings_candidate_replay"
+                        )
+                        candidate_app_marker_seen |= (
+                            marker.get("candidate_app_replay") is True
+                            or marker.get("diagnostic_excerpt")
+                            == "candidate-only Django app import during setup"
+                        )
+                if candidate_app_marker_seen and not migration_marker_seen:
+                    return None
             if (
                 isinstance(final_marker, dict)
                 and final_marker.get("kind") == "simple_recovery_decision"

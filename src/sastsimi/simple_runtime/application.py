@@ -953,19 +953,9 @@ class SimpleAnalysisApplication:
     async def _prepare_poc_urlconf_exhaustion_locked(
         self, analysis_id: str, hypothesis_id: str
     ) -> None:
-        """Replay only a bound fifth PoC with proven URLConf wiring failure."""
+        """Preserve the stop until repository URLConf provenance can be proved."""
 
-        try:
-            await self._prepare_bound_fallback_stop_locked(
-                analysis_id, hypothesis_id, mode="urlconf"
-            )
-        except ValueError as error:
-            message = str(error)
-            if message.startswith("LEGACY_IMPORT_STOP_"):
-                raise ValueError(
-                    message.replace("LEGACY_IMPORT_STOP_", "POC_URLCONF_EXHAUSTION_", 1)
-                ) from error
-            raise
+        raise ValueError("POC_URLCONF_EXHAUSTION_ORIGIN_UNVERIFIED")
 
     async def _prepare_poc_candidate_constraint_locked(
         self, analysis_id: str, hypothesis_id: str
@@ -989,21 +979,9 @@ class SimpleAnalysisApplication:
     async def _prepare_poc_urlconf_candidate_locked(
         self, analysis_id: str, hypothesis_id: str
     ) -> None:
-        """Regenerate one candidate after a proven URLConf guard rejection."""
+        """Preserve the stop until repository URLConf provenance can be proved."""
 
-        try:
-            await self._prepare_bound_fallback_stop_locked(
-                analysis_id, hypothesis_id, mode="urlconf_candidate"
-            )
-        except ValueError as error:
-            message = str(error)
-            if message.startswith("LEGACY_IMPORT_STOP_"):
-                raise ValueError(
-                    message.replace(
-                        "LEGACY_IMPORT_STOP_", "POC_URLCONF_CANDIDATE_REPLAY_", 1
-                    )
-                ) from error
-            raise
+        raise ValueError("POC_URLCONF_CANDIDATE_REPLAY_ORIGIN_UNVERIFIED")
 
     async def _prepare_poc_generated_input_locked(
         self, analysis_id: str, hypothesis_id: str

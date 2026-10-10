@@ -28,6 +28,7 @@ from sastsimi.simple_runtime.recovery import (
     candidate_app_replay_unsupported_app,
     urlconf_replay_binding,
 )
+from sastsimi.simple_runtime.runner import StageBlocked
 from sastsimi.simple_runtime.stages import (
     _reject_candidate_app_replay_content,
     _reject_urlconf_replay_content,
@@ -146,7 +147,9 @@ def test_validator_correction_replay_is_one_shot_and_keeps_prior_bindings(
         b"root = '/workspace/src'", b"root = '/workspace'"
     )
     _reject_candidate_app_replay_content(running, artifacts, corrected)
-    _reject_urlconf_replay_content(running, artifacts, corrected)
+    with pytest.raises(StageBlocked) as blocked:
+        _reject_urlconf_replay_content(running, artifacts, corrected)
+    assert blocked.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
     with pytest.raises(
         PoCCandidateRejected, match="POC_CANDIDATE_APP_REPLAY_UNSUPPORTED"
     ):
@@ -155,7 +158,7 @@ def test_validator_correction_replay_is_one_shot_and_keeps_prior_bindings(
             artifacts,
             corrected.replace(b"import os", b"import os\nimport django_mailbox"),
         )
-    with pytest.raises(PoCCandidateRejected, match="POC_URLCONF_REPLAY_UNSUPPORTED"):
+    with pytest.raises(StageBlocked) as blocked:
         _reject_urlconf_replay_content(
             running,
             artifacts,
@@ -166,6 +169,7 @@ def test_validator_correction_replay_is_one_shot_and_keeps_prior_bindings(
                 b"setattr(conf.settings, 'ROOT_' + 'URLCONF', 'helpdesk.urls')",
             ),
         )
+    assert blocked.value.failure.code == "POC_URLCONF_ORIGIN_UNVERIFIED"
     with pytest.raises(ValueError, match="POC_URLCONF_REPLAY_UNBOUND"):
         forged_marker = dict(marker, old_checkpoint_hash="0" * 64)
         forged_ref = artifacts.put_json(forged_marker)

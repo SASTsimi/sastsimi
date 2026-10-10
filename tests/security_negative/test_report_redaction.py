@@ -5,6 +5,7 @@ from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.prompt_redaction import (
     assert_safe_provider_text,
     redact_projected_json,
+    render_provider_prompt,
 )
 from sastsimi.contracts.reporting import validate_report_content
 from sastsimi.contracts.static import CodeLocation
@@ -69,6 +70,55 @@ def test_shared_redactor_removes_multiword_authorization_value() -> None:
 
     assert redacted.categories == ("CREDENTIAL",)
     assert b"amber river stone" not in redacted.data
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        'Authorization: Bearer "synthetic_canary_123"',
+        'Authorization: Bearer\r\n "synthetic_canary_123"',
+        'Authorization:\r\n "synthetic_canary_123"',
+        "Authorization: Bearer\r\n synthetic_canary_123",
+        'HTTP_AUTHORIZATION=Bearer "synthetic_prefix" "synthetic_canary_123"',
+    ],
+)
+def test_quoted_authorization_value_never_reaches_provider_prompt(
+    authorization: str,
+) -> None:
+    projected = canonical_bytes({"note": authorization})
+
+    rendered = render_provider_prompt(b"# Trusted rules", (("evidence", projected),))
+
+    assert b"synthetic_canary_123" not in rendered
+    assert b"[REDACTED:CREDENTIAL]" in rendered
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        'token=Bearer "synthetic_canary_123"',
+        'cookie=Bearer "synthetic_canary_123"',
+        '{"Authorization":"Bearer\\u0020synthetic_canary_123"}',
+    ],
+)
+def test_other_encoded_credential_values_never_reach_provider_prompt(
+    note: str,
+) -> None:
+    rendered = render_provider_prompt(
+        b"# Trusted rules", (("evidence", canonical_bytes({"note": note})),)
+    )
+
+    assert b"synthetic_canary_123" not in rendered
+
+
+def test_encoded_bearer_value_in_trusted_template_is_rejected() -> None:
+    with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
+        assert_safe_provider_text(b"Bearer\\u0020synthetic_canary_123")
+
+
+def test_quoted_authorization_key_in_trusted_template_is_rejected() -> None:
+    with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
+        assert_safe_provider_text(b'{"Authorization": "synthetic123"}')
 
 
 @pytest.mark.parametrize(

@@ -190,7 +190,7 @@ class _ServerConstructorClient:
 
 def _attempt4_poc() -> bytes:
     path = Path(__file__).parents[2] / "fixtures/simple_runtime/a001_attempt4_poc.sh"
-    content = path.read_bytes().removesuffix(b"\n")
+    content = path.read_bytes().replace(b"\r\n", b"\n").removesuffix(b"\n")
     assert hashlib.sha256(content).hexdigest() == (
         "db74ad8ef5d3527d781c7448a7cf8cd101b5c47e0714e863a50a5b31ee354c91"
     )

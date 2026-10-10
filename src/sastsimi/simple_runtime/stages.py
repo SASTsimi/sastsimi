@@ -88,7 +88,6 @@ from .recovery import (
     RecoveryAction,
     candidate_app_replay_forbidden,
     candidate_app_replay_unsupported_app,
-    candidate_urlconf_replay_forbidden,
     django_settings_replay_forbidden,
     migration_settings_replay_binding,
     relation_settings_replay_binding,
@@ -145,22 +144,31 @@ def _reject_urlconf_replay_content(
     content: bytes,
 ) -> None:
     try:
-        settings = settings_replay_binding(checkpoint, artifacts)
-        migration = migration_settings_replay_binding(checkpoint, artifacts)
-        prior = (
-            settings[1]
-            if settings is not None
-            else migration[1]
-            if migration is not None
-            else checkpoint
-        )
-        binding = urlconf_replay_binding(prior, artifacts)
+        binding = urlconf_replay_binding(checkpoint, artifacts)
+        if binding is None:
+            settings = settings_replay_binding(checkpoint, artifacts)
+            migration = migration_settings_replay_binding(checkpoint, artifacts)
+            prior = (
+                settings[1]
+                if settings is not None
+                else migration[1]
+                if migration is not None
+                else checkpoint
+            )
+            binding = urlconf_replay_binding(prior, artifacts)
     except ValueError as error:
         raise PoCCandidateRejected("POC_URLCONF_REPLAY_UNSUPPORTED") from error
-    if binding is not None and candidate_urlconf_replay_forbidden(
-        content, binding[0], binding[1]
-    ):
-        raise PoCCandidateRejected("POC_URLCONF_REPLAY_UNSUPPORTED")
+    if binding is not None:
+        # A free-form PoC can forge sys.modules or shadow imports even when
+        # ROOT_URLCONF is a literal. Preserve the stop until a trusted runner
+        # can prove the imported module came from the pinned checkout.
+        raise StageBlocked(
+            StageFailure(
+                code="POC_URLCONF_ORIGIN_UNVERIFIED",
+                retryable=False,
+                safe_message="Pinned Django URLConf provenance is unverified",
+            )
+        )
 
 
 def _reject_settings_replay_content(
@@ -417,24 +425,6 @@ def _has_partial_django_schema(tree: ast.Module) -> bool:
         and call.func.attr == "setup"
         and isinstance(call.func.value, ast.Name)
         and call.func.value.id == "django"
-        for call in calls
-    ):
-        return False
-    if any(
-        isinstance(call.func, ast.Attribute)
-        and call.func.attr == "get_models"
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == "apps"
-        or (
-            isinstance(call.func, (ast.Attribute, ast.Name))
-            and (
-                call.func.attr if isinstance(call.func, ast.Attribute) else call.func.id
-            )
-            == "call_command"
-            and bool(call.args)
-            and isinstance(call.args[0], ast.Constant)
-            and call.args[0].value == "migrate"
-        )
         for call in calls
     ):
         return False
@@ -1750,14 +1740,24 @@ class PoCCandidateStage:
             prior_unsupported_app = candidate_app_replay_unsupported_app(
                 replay_predecessor, self._artifacts
             )
-            prior_urlconf_binding = urlconf_replay_binding(
-                replay_predecessor, self._artifacts
-            )
+            prior_urlconf_binding = urlconf_replay_binding(checkpoint, self._artifacts)
+            if prior_urlconf_binding is None:
+                prior_urlconf_binding = urlconf_replay_binding(
+                    replay_predecessor, self._artifacts
+                )
             prior_layout_binding = pinned_layout_replay_binding(
                 replay_predecessor, self._artifacts
             )
         except ValueError as error:
             raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID") from error
+        if prior_urlconf_binding is not None:
+            raise StageBlocked(
+                StageFailure(
+                    code="POC_URLCONF_ORIGIN_UNVERIFIED",
+                    retryable=False,
+                    safe_message="Pinned Django URLConf provenance is unverified",
+                )
+            )
         instructions = """
 You are the Dynamic Reproduction Agent. Return exactly one JSON object with a
 single `content` field containing a complete POSIX `/bin/sh` script. The script
@@ -1888,29 +1888,6 @@ boundary without altering the target's behavior.
                 + " is absent. Do not import, shim, register in "
                 "INSTALLED_APPS, or install it; use only pinned repository "
                 "settings and packages. Preserve the actual target behavior."
-            )
-        if prior_urlconf_binding is not None:
-            signature, project_roots = prior_urlconf_binding
-            selected_root = project_roots[0]
-            instructions += (
-                "\nA prior pinned replay proved a namespaced Django route: "
-                + signature[1]
-                + ":"
-                + signature[2]
-                + ". Include ROOT_URLCONF='"
-                + selected_root
-                + "' in a complete repository-backed settings.configure(...) call"
-                + " before django.setup(), then call reverse('"
-                + signature[1]
-                + ":"
-                + signature[2]
-                + "', args=[...]) directly with the verified argument count "
-                + str(signature[3])
-                + ". Ensure that this module imports from the container's "
-                "sys.path. Do not generate a synthetic URLConf, dynamically "
-                "search or select URL modules, assign settings.ROOT_URLCONF "
-                "after configuration, or override reverse(urlconf=...). "
-                "Keep the pinned product URLs and the absent-app constraint."
             )
         if prior_layout_binding is not None:
             failed_path, corrected_path, _prior_candidate = prior_layout_binding

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from sastsimi import bootstrap
 from sastsimi.config.user_config import UserConfig, UserConfigStore
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.main import main
@@ -619,6 +620,32 @@ def test_resume_provider_mismatch_exits_with_config_error(
     else:
         assert "원래 공급자" in output.err
         assert "sastsimi resume A-001" not in output.err
+
+
+def test_v2_ast_supplement_is_rejected_for_production_resume(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_production_resume(*_args: object) -> None:
+        raise AssertionError("production resume must not run")
+
+    monkeypatch.setattr(
+        bootstrap, "inspect_production_resume", unexpected_production_resume
+    )
+    code = main(
+        [
+            "resume",
+            "production-id",
+            "--supplement-saved-v2-ast-orphans",
+            "--format",
+            "json",
+        ],
+        user_config_store=_config(tmp_path),
+    )
+
+    assert code == int(ExitCode.INPUT_ERROR)
+    assert json.loads(capsys.readouterr().err)["code"] == "INPUT_ERROR"
 
 
 def test_public_analyze_uses_positional_repo_and_human_output(

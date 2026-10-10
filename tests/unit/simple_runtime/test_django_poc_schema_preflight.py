@@ -168,6 +168,39 @@ def test_explicit_model_list_in_try_block_is_repaired_before_candidate_commit(
     assert len(client.prompts) == 2
 
 
+@pytest.mark.parametrize(
+    "other_schema_setup",
+    [
+        "call_command('migrate', run_syncdb=True)",
+        "models = apps.get_models()",
+        "if False:\n    call_command('migrate', run_syncdb=True)",
+        (
+            "try:\n    call_command('migrate', run_syncdb=True)\n"
+            "except Exception:\n    pass"
+        ),
+    ],
+    ids=(
+        "migration-before-subset",
+        "all-models-call-before-subset",
+        "unreachable-migration",
+        "caught-migration-failure",
+    ),
+)
+def test_other_schema_setup_does_not_hide_explicit_model_subset(
+    tmp_path: Path, other_schema_setup: str
+) -> None:
+    mixed_script = _PARTIAL_SCHEMA.replace(
+        "with connection.schema_editor() as editor:",
+        other_schema_setup + "\nwith connection.schema_editor() as editor:",
+    )
+    client = _CandidateClient(mixed_script, _MIGRATION_SCHEMA)
+
+    asyncio.run(_run_candidate(tmp_path, client))
+
+    assert len(client.prompts) == 2
+    assert b"POC_DJANGO_SCHEMA_SUBSET_UNVERIFIED" in client.prompts[1]
+
+
 def test_persistently_partial_django_schema_is_blocked_not_confirmed(
     tmp_path: Path,
 ) -> None:

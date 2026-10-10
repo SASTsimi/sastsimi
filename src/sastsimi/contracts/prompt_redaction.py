@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from uuid import UUID
 
 from .canonical_json import canonical_bytes
 
@@ -19,23 +20,41 @@ _LOCAL_FILE_URL = re.compile(r"(?i)\bfile:(?!\s)[^\r\n]*")
 _LOCAL_FILE_URL_TOKEN = re.compile(r"(?i)\bfile:(?!\s)[^\s\r\n,;\"'<>]*")
 _MAX_NESTED_JSON_DEPTH = 16
 _OPAQUE_TOKEN = re.compile(
-    r"(?i)(?:\b(?:bearer|basic)\s+[^\s,;]+|\bsk-[A-Za-z0-9_-]{8,}|"
+    r"(?i)(?:\b(?:bearer|basic)(?:\s|\\+(?:u00(?:09|0a|0d|20)|[tnr]))+"
+    r"[^\s,;]+|\bsk-[A-Za-z0-9_-]{8,}|"
     r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}|"
     r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}|"
     r"\bglpat-[A-Za-z0-9_-]{8,}|\bxox[A-Za-z0-9]*-[A-Za-z0-9-]{8,}|"
     r"\b(?:AKIA|ASIA)[A-Z0-9]{12,})"
 )
+_QUOTED_ASSIGNMENT_PART = r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\')'
+_TOKEN_OR_COOKIE_VALUE = (
+    r"(?:(?:bearer|basic)\s+[^\s,;]+"
+    rf"(?:[ \t]*(?:\+[ \t]*)?{_QUOTED_ASSIGNMENT_PART})*|"
+    rf"{_QUOTED_ASSIGNMENT_PART}"
+    rf"(?:[ \t]*(?:\+[ \t]*)?{_QUOTED_ASSIGNMENT_PART})*|"
+    r"[^\s,;]+)"
+)
 _COOKIE_ASSIGNMENT = re.compile(
     r"(?i)\b(?:cookies?|session[_-]?ids?|sessionid)\b\s*[:=]\s*"
-    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
+    + _TOKEN_OR_COOKIE_VALUE
 )
 _TOKEN_ASSIGNMENT = re.compile(
     r"(?i)\b(?:access[_-]?tokens?|refresh[_-]?tokens?|tokens?)\b\s*[:=]\s*"
-    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
+    + _TOKEN_OR_COOKIE_VALUE
+)
+_AUTHORIZATION_CODE_VALUE = (
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+    r"(?=[ \t]*(?:[;)}\]]|,[ \t]*(?:"
+    rf"{_QUOTED_ASSIGNMENT_PART}[ \t]*:"
+    r"|[A-Za-z_][A-Za-z0-9_]*[ \t]*=)))"
 )
 _AUTHORIZATION_ASSIGNMENT = re.compile(
-    r"(?i)\bauthorization\b\s*[:=]\s*"
-    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\r\n"\']+)'
+    r"""(?i)\b(?:[A-Z_][A-Z0-9_]*_)?authorization\b["']?[ \t]*[:=][ \t]*"""
+    r"(?:(?:fr|rf|br|rb|f|r|b|u)?"
+    r"""(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')"""
+    r"(?=[ \t]*(?:;|[,}\]]|$))|" + _AUTHORIZATION_CODE_VALUE + r"|"
+    r'[^\r\n]+(?:\r?\n(?:[ \t]+|(?=["\']))[^\r\n]+)*)'
 )
 _CREDENTIAL_ASSIGNMENT = re.compile(
     r"(?i)\b(?:api[_-]?keys?|client[_-]?secrets?|passwords?|passwd|pwd|"
@@ -117,6 +136,32 @@ def is_sensitive_name(value: str) -> bool:
     return bool(_SECRET_KEY.search(value))
 
 
+def _is_safe_typed_metadata(key: str, value: object) -> bool:
+    """Retain only closed, non-secret provider and usage contract values."""
+
+    if key == "credential_source":
+        return isinstance(value, str) and value in {
+            "ENVIRONMENT",
+            "SECRET_STORE",
+            "OFFICIAL_CLIENT_SESSION",
+        }
+    if key in {"token_usage", "session_metadata"}:
+        return isinstance(value, str) and value in {
+            "SUPPORTED",
+            "UNSUPPORTED",
+            "UNVERIFIED",
+        }
+    if key == "token_source":
+        return isinstance(value, str) and value in {
+            "PROVIDER_REPORTED",
+            "ADAPTER_REPORTED",
+            "UNAVAILABLE",
+        }
+    if key in {"input_tokens", "output_tokens", "total_tokens"}:
+        return value is None or (type(value) is int and value >= 0)
+    return False
+
+
 def _replace_string(
     value: str, *, preserve_lines: bool = False
 ) -> tuple[str, set[str]]:
@@ -165,7 +210,7 @@ def _replace_string(
     return _restore_safe_sandbox_paths(result), categories
 
 
-def _redact(value: object) -> tuple[object, set[str]]:
+def _redact(value: object, *, nested_depth: int = 0) -> tuple[object, set[str]]:
     if isinstance(value, Mapping):
         output: dict[str, object] = {}
         categories: set[str] = set()
@@ -175,39 +220,88 @@ def _redact(value: object) -> tuple[object, set[str]]:
             if _HIDDEN_KEY.fullmatch(key):
                 output[key] = "[REDACTED:HIDDEN_REASONING]"
                 categories.add("HIDDEN_REASONING")
-            elif _SECRET_KEY.search(key):
+            elif _SECRET_KEY.search(key) and not _is_safe_typed_metadata(key, item):
                 output[key] = "[REDACTED:CREDENTIAL]"
                 categories.add("CREDENTIAL")
             else:
-                output[key], nested = _redact(item)
+                output[key], nested = _redact(item, nested_depth=nested_depth)
                 categories.update(nested)
         return output, categories
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         items: list[object] = []
         sequence_categories: set[str] = set()
         for item in value:
-            redacted, nested = _redact(item)
+            redacted, nested = _redact(item, nested_depth=nested_depth)
             items.append(redacted)
             sequence_categories.update(nested)
         return items, sequence_categories
     if isinstance(value, str):
+        if value.lstrip().startswith(("{", "[")):
+            try:
+                nested_value = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if nested_depth >= _MAX_NESTED_JSON_DEPTH:
+                    raise ValueError("PROMPT_REDACTION_FAILED")
+                nested_redacted, nested_categories = _redact(
+                    nested_value, nested_depth=nested_depth + 1
+                )
+                if nested_categories:
+                    try:
+                        encoded_nested = json.dumps(
+                            nested_redacted,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        )
+                    except (TypeError, ValueError) as error:
+                        raise ValueError("PROMPT_REDACTION_FAILED") from error
+                    return (
+                        encoded_nested,
+                        nested_categories,
+                    )
         return _replace_string(value)
+    if isinstance(value, float) and nested_depth > 0:
+        return value, set()
     if value is None or isinstance(value, (bool, int)):
         return value, set()
     raise ValueError("PROMPT_REDACTION_FAILED")
 
 
-def _has_sensitive_string(value: object) -> bool:
+def _has_sensitive_string(value: object, *, nested_depth: int = 0) -> bool:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if _SECRET_KEY.search(str(key)) and item != "[REDACTED:CREDENTIAL]":
+            if (
+                _SECRET_KEY.search(str(key))
+                and item != "[REDACTED:CREDENTIAL]"
+                and not (
+                    key == "credential_ref" and _is_symbolic_credential_reference(item)
+                )
+                and not _is_reviewed_authorization_metadata(key, item)
+                and not _is_safe_typed_metadata(str(key), item)
+            ):
                 return True
-            if _has_sensitive_string(item):
+            if _has_sensitive_string(item, nested_depth=nested_depth):
                 return True
         return False
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return any(_has_sensitive_string(item) for item in value)
+        return any(
+            _has_sensitive_string(item, nested_depth=nested_depth) for item in value
+        )
     if isinstance(value, str):
+        if value.lstrip().startswith(("{", "[")):
+            try:
+                nested_value = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if nested_depth >= _MAX_NESTED_JSON_DEPTH:
+                    return True
+                return _has_sensitive_string(
+                    nested_value, nested_depth=nested_depth + 1
+                )
         value = _protect_safe_sandbox_paths(value)
         return bool(
             _OPAQUE_TOKEN.search(value)
@@ -221,6 +315,39 @@ def _has_sensitive_string(value: object) -> bool:
             or _POSIX_HOST_PATH.search(value)
         )
     return False
+
+
+def _is_reviewed_authorization_metadata(key: object, value: object) -> bool:
+    """Permit exact non-secret sandbox approval metadata, never arbitrary values."""
+
+    if key == "authorization_policy_sha256":
+        return (
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+        )
+    return (
+        key == "authorization_implementation_key"
+        and value == "RUNTIME_DYNAMIC_AUTHORIZATION_V1"
+    )
+
+
+def _is_symbolic_credential_reference(value: object) -> bool:
+    """Permit only validated non-secret references in raw profile JSON."""
+
+    if isinstance(value, Mapping):
+        if set(value) != {"reference"}:
+            return False
+        value = value["reference"]
+    if not isinstance(value, str):
+        return False
+    if re.fullmatch(r"env:[A-Z_][A-Z0-9_]*", value):
+        return True
+    if not value.startswith("handle:"):
+        return False
+    try:
+        identifier = UUID(value.removeprefix("handle:"))
+    except ValueError:
+        return False
+    return value == f"handle:{identifier}"
 
 
 def redact_projected_json(data: bytes) -> RedactionResult:

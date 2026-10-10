@@ -106,6 +106,56 @@ def test_pre_provider_anchor_failure_reopens_only_candidate_once(
         store.prepare_poc_anchor_failure_replay(failed, artifacts)
 
 
+def test_anchor_replay_projects_once_only_after_durable_commit(tmp_path: Path) -> None:
+    seeded_store, artifacts, failed = _failed_anchor(tmp_path)
+    projected: list[str] = []
+
+    def project(data_dir: Path, analysis_id: str) -> None:
+        assert data_dir == tmp_path / "data"
+        with sqlite3.connect(seeded_store.database_path) as connection:
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (analysis_id, failed.identity.hypothesis_id, failed.stage.value),
+            ).fetchone()
+        assert row is not None
+        assert StageCheckpoint.model_validate_json(row[0]).status is StageStatus.PENDING
+        projected.append(analysis_id)
+
+    store = SimpleCheckpointStore(
+        seeded_store.database_path,
+        artifact_data_dir=tmp_path / "data",
+        post_commit_projection=project,
+    )
+    pending = store.prepare_poc_anchor_failure_replay(failed, artifacts)
+
+    assert pending.status is StageStatus.PENDING
+    assert projected == [failed.identity.analysis_id]
+    with pytest.raises(ValueError, match="POC_ANCHOR_REPLAY_"):
+        store.prepare_poc_anchor_failure_replay(failed, artifacts)
+    assert projected == [failed.identity.analysis_id]
+
+
+def test_anchor_replay_rollback_does_not_project(tmp_path: Path) -> None:
+    seeded_store, artifacts, failed = _failed_anchor(tmp_path)
+    projected: list[str] = []
+    store = SimpleCheckpointStore(
+        seeded_store.database_path,
+        artifact_data_dir=tmp_path / "data",
+        post_commit_projection=lambda _data_dir, analysis_id: projected.append(
+            analysis_id
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        store.prepare_poc_anchor_failure_replay(
+            failed, artifacts, fail_before_commit=True
+        )
+
+    assert store.require(failed.identity, failed.stage) == failed
+    assert projected == []
+
+
 def test_anchor_replay_refuses_unresolved_codex_call(tmp_path: Path) -> None:
     store, artifacts, failed = _failed_anchor(tmp_path)
     assert store.begin_codex_call("unresolved-anchor-call", failed.identity.analysis_id)

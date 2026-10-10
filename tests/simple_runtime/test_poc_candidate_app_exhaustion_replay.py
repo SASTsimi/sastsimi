@@ -24,6 +24,10 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.recovery import (
+    candidate_app_replay_unsupported_app,
+    migration_settings_replay_binding,
+)
 from sastsimi.simple_runtime.runner import StageBlocked
 from sastsimi.simple_runtime.stages import PoCCandidateStage, PoCExecutionStage
 from sastsimi.storage.agent_activity import AgentActivityStore
@@ -364,6 +368,10 @@ async def test_candidate_app_replay_allows_clean_regenerated_candidate(
     running = store.mark_running(
         pending.identity, pending.stage, pending.input_refs, attempt_id="attempt-5"
     )
+    # Active attempt 5 is shared with migration replay; the saved decision,
+    # not the numeric attempt, determines which validator owns this candidate.
+    assert candidate_app_replay_unsupported_app(running, artifacts) == "invented_app"
+    assert migration_settings_replay_binding(running, artifacts) is None
     content = b"#!/bin/sh\nprintf 'fixture_value\\n'\n"
 
     result = await PoCCandidateStage(
@@ -372,6 +380,37 @@ async def test_candidate_app_replay_allows_clean_regenerated_candidate(
     )(running, {})
 
     assert artifacts.read(result.output_refs[1]) == content
+
+
+def test_candidate_app_marker_cannot_hide_a_later_migration_replay(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, exhausted = _exhausted_app(tmp_path)
+    pending = store.prepare_poc_candidate_app_exhaustion_replay(exhausted, artifacts)
+    running = store.mark_running(
+        pending.identity, pending.stage, pending.input_refs, attempt_id="attempt-5"
+    )
+    migration_ref = artifacts.put_json(
+        {"kind": "simple_poc_django_migration_settings_candidate_replay"}
+    )
+    unrelated_ref = artifacts.put_json({"kind": "simple_recovery_decision"})
+    inputs = (*running.input_refs, migration_ref, unrelated_ref)
+    forged = running.model_copy(
+        update={
+            "input_refs": inputs,
+            "input_hash": input_reference_hash(inputs),
+            "recovery_decision_refs": (
+                *running.recovery_decision_refs,
+                migration_ref,
+                unrelated_ref,
+            ),
+        }
+    )
+
+    with pytest.raises(
+        ValueError, match="POC_DJANGO_MIGRATION_SETTINGS_REPLAY_UNBOUND"
+    ):
+        migration_settings_replay_binding(forged, artifacts)
 
 
 @pytest.mark.asyncio

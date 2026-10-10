@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.contracts.poc_candidate import PoCCandidateRejected
 from sastsimi.observability.agent_activity import ActivityKind
 from sastsimi.simple_runtime import recovery, stages
 from sastsimi.simple_runtime.models import (
@@ -235,7 +236,10 @@ def test_settings_replay_is_one_shot_and_preserves_lineage(tmp_path: Path) -> No
     )
     stages._reject_settings_replay_content(running, artifacts, fixed)
     stages._reject_candidate_app_replay_content(running, artifacts, fixed)
-    stages._reject_urlconf_replay_content(running, artifacts, fixed)
+    # A historical URLConf replay in this lineage no longer qualifies for
+    # automatic execution: source provenance cannot be proved in the runner.
+    with pytest.raises(PoCCandidateRejected, match="POC_URLCONF_REPLAY_UNSUPPORTED"):
+        stages._reject_urlconf_replay_content(running, artifacts, fixed)
     with pytest.raises(Exception, match="POC_DJANGO_SETTINGS_REPLAY_UNSUPPORTED"):
         stages._reject_settings_replay_content(running, artifacts, _CANDIDATE)
 

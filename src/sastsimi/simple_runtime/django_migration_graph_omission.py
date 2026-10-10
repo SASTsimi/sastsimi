@@ -9,12 +9,12 @@ from __future__ import annotations
 import ast
 import re
 
+from .django_project_defaults import _django_project_default_false
 from .django_relation_settings_omission import (
     _literal_collector,
     _path_constructor_is_unshadowed,
     _python_tree,
 )
-from .recovery import _django_project_default_false
 
 _GRAPH_ERROR = re.compile(
     rb"NodeNotFoundError\r?\ntraceback: handle > __init__ > __init__ > "
