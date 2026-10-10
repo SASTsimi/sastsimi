@@ -144,8 +144,8 @@ select, input[type="search"] { min-width: 0; padding: .52rem .62rem; border: 1px
 .selection-option { display: flex; align-items: center; gap: .45rem; margin-top: .65rem; color: var(--color-muted); font-size: .78rem; }
 .download { margin-top: .65rem; border-color: #3c7868; }
 
-.tab-dock { position: sticky; top: 0; z-index: 30; display: flex; min-width: 0; border: 1px solid var(--border); border-radius: 5px; background: rgba(29,33,38,.97); backdrop-filter: blur(10px); }
-.dashboard-tabs { display: flex; flex: 1 1 auto; gap: .15rem; min-width: 0; overflow-x: auto; padding: .36rem; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.tab-dock { max-width: 100%; overflow: hidden; position: sticky; top: 0; z-index: 30; display: flex; min-width: 0; border: 1px solid var(--border); border-radius: 5px; background: rgba(29,33,38,.97); backdrop-filter: blur(10px); }
+.dashboard-tabs { display: flex; width: 100%; max-width: 100%; flex: 1 1 auto; gap: .15rem; min-width: 0; overflow-x: auto; padding: .36rem; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .dashboard-tabs button, .subtabs button { width: auto; min-height: 2.35rem; padding: .48rem .66rem; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--color-muted); font-weight: 700; white-space: nowrap; cursor: pointer; }
 .dashboard-tabs button:hover, .subtabs button:hover { color: var(--color-text); background: #292f36; }
 .dashboard-tabs button[aria-selected="true"], .subtabs button[aria-selected="true"] { border-color: #318d98; background: #183a40; color: #e9fdff; }
@@ -237,6 +237,12 @@ body.summary-condensed .compact-summary { display: flex; }
 .status-cell:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .page-controls { display: flex; justify-content: space-between; align-items: center; gap: .7rem; margin-top: .7rem; }
 .page-controls button:disabled { cursor: default; opacity: .42; }
+.page-numbers { display: inline-flex; align-items: center; justify-content: center; gap: .3rem; min-width: 0; }
+.page-number { display: inline-flex; align-items: center; justify-content: center; min-width: 2.15rem; min-height: 2.15rem; padding: .3rem .45rem; border: 1px solid var(--border); border-radius: 3px; background: #242a30; color: var(--color-muted); cursor: pointer; }
+.page-number:hover { border-color: var(--border-strong); color: var(--color-text); }
+.page-number.current { border-color: var(--color-accent); background: #1f3c43; color: #dffbff; font-weight: 800; }
+.page-controls[hidden] { display: none; }
+.page-controls .error { flex: 1 1 100%; }
 .progress-command-summary { display: block; padding: .68rem .85rem .78rem; }
 .progress-command-title { margin: 0 0 .42rem; }
 .progress-command-grid { display: grid; grid-template-columns: minmax(19rem, 32fr) minmax(18rem, 36fr) minmax(17rem, 32fr); align-items: stretch; min-width: 0; }
@@ -451,6 +457,19 @@ body.presentation .pipeline { grid-template-columns: repeat(4, minmax(175px, 1fr
   .relation-row { grid-template-columns: minmax(0, 1fr); }
   .report-row { align-items: flex-start; }
   .header-actions .meta { max-width: 100%; overflow-wrap: anywhere; }
+  .tab-summary .summary-facts { grid-template-columns: minmax(0, 1fr); }
+  .app-header, .header-summary, .content, .tab-panel, .tab-summary,
+  .summary-focus, .summary-facts, .summary-fact, .panel {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .summary-fact dd, .summary-fact dt, .artifact-row-meta,
+  .artifact-row-meta > *, .technical-id {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
 }
 
 @media (max-width: 340px) {
@@ -460,3 +479,7 @@ body.presentation .pipeline { grid-template-columns: repeat(4, minmax(175px, 1fr
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
+
+.log-cursor-controls { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding-top: .75rem; border-top: 1px solid var(--border-subtle); }
+.log-cursor-controls .small-button { min-height: 2.75rem; }
+@media (max-width: 430px) { .log-cursor-controls { align-items: stretch; flex-direction: column; } }

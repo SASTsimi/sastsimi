@@ -3255,6 +3255,10 @@ class SimpleCheckpointStore:
                     ).fetchone()
                     if row is None or tuple(row) != metadata:
                         raise ValueError("LLM_ATTEMPT_CONFLICT")
+        if self._artifact_data_dir is not None:
+            from sastsimi.dashboard.read_model import project_after_source_write
+
+            project_after_source_write(self._artifact_data_dir, analysis_id)
 
     def unresolved_codex_call(self, analysis_id: str) -> str | None:
         """Return the durable call ID that still needs process resolution."""
@@ -5280,6 +5284,14 @@ class SimpleCheckpointStore:
             raise
         finally:
             connection.close()
+        if self._artifact_data_dir is not None:
+            # The source transaction above is already durable. A read-model
+            # failure is recorded as INCOMPLETE and never rolls it back.
+            from sastsimi.dashboard.read_model import project_after_source_write
+
+            project_after_source_write(
+                self._artifact_data_dir, checkpoint.identity.analysis_id
+            )
 
     def _upsert_checkpoint_connection(
         self,

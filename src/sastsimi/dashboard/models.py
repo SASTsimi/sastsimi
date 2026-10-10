@@ -376,11 +376,18 @@ class AnalysisDetailView(AnalysisSummaryView):
 
 class StaticCoveragePageView(ContractModel):
     kind: str
+    items: tuple[dict[str, str], ...]
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+    has_previous: bool
+    has_next: bool
+    coverage_digest: str
+    # Compatibility fields for existing clients.
     total: int
     offset: int
     limit: int
-    coverage_digest: str
-    items: tuple[dict[str, str], ...]
 
 
 __all__ = [

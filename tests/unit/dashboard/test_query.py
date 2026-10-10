@@ -720,7 +720,12 @@ def test_static_coverage_pages_include_full_ledger_and_bounded_limits(
     query = DashboardQuery(tmp_path)
 
     gaps = query.get_static_coverage_page("A-001", kind="gaps", offset=100, limit=20)
-    assert gaps.total == 105
+    assert gaps.total == gaps.total_items == 105
+    assert gaps.page == 6
+    assert gaps.page_size == 20
+    assert gaps.total_pages == 6
+    assert gaps.has_previous is True
+    assert gaps.has_next is False
     assert len(gaps.items) == 5
     assert gaps.items[0] == {
         "path": "src/file-100.ts",
