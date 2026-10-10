@@ -15,7 +15,8 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.dashboard.read_model import DashboardReadModel, rebuild_analysis
+from sastsimi.dashboard.projection import project_after_source_write, rebuild_analysis
+from sastsimi.dashboard.read_model import DashboardReadModel
 from sastsimi.dashboard.server import create_server
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -988,7 +989,9 @@ def test_source_commit_rebuilds_incomplete_read_model_without_duplicates(
         hypothesis_id="hypothesis-1",
     )
     store = SimpleCheckpointStore(
-        tmp_path / "db" / "sastsimi.sqlite3", artifact_data_dir=tmp_path
+        tmp_path / "db" / "sastsimi.sqlite3",
+        artifact_data_dir=tmp_path,
+        post_commit_projection=project_after_source_write,
     )
     checkpoint = store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
     assert checkpoint is not None

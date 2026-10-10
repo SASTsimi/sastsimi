@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 
-from sastsimi.dashboard.read_model import rebuild_all, rebuild_analysis
+from sastsimi.dashboard.projection import rebuild_all, rebuild_analysis
 
 
 def run(

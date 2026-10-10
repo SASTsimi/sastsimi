@@ -11,8 +11,9 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sastsimi.dashboard.projection import collect_source_pages
 from sastsimi.dashboard.query import DashboardQuery
-from sastsimi.dashboard.read_model import DashboardReadModel, collect_source_pages
+from sastsimi.dashboard.read_model import DashboardReadModel
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.storage.agent_activity import AgentActivityStore
 

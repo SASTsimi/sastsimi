@@ -6,7 +6,7 @@ import json
 import math
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -245,12 +245,17 @@ class SimpleCheckpointStore:
     """Atomic checkpoint storage for the single-process local runtime."""
 
     def __init__(
-        self, database_path: str | Path, *, artifact_data_dir: str | Path | None = None
+        self,
+        database_path: str | Path,
+        *,
+        artifact_data_dir: str | Path | None = None,
+        post_commit_projection: Callable[[Path, str], None] | None = None,
     ) -> None:
         self._database_path = Path(database_path)
         self._artifact_data_dir = (
             Path(artifact_data_dir) if artifact_data_dir is not None else None
         )
+        self._post_commit_projection = post_commit_projection
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -3844,10 +3849,11 @@ class SimpleCheckpointStore:
                     ).fetchone()
                     if row is None or tuple(row) != metadata:
                         raise ValueError("LLM_ATTEMPT_CONFLICT")
-        if self._artifact_data_dir is not None:
-            from sastsimi.dashboard.read_model import project_after_source_write
-
-            project_after_source_write(self._artifact_data_dir, analysis_id)
+        if (
+            self._artifact_data_dir is not None
+            and self._post_commit_projection is not None
+        ):
+            self._post_commit_projection(self._artifact_data_dir, analysis_id)
 
     def unresolved_codex_call(self, analysis_id: str) -> str | None:
         """Return the durable call ID that still needs process resolution."""
@@ -8158,12 +8164,13 @@ class SimpleCheckpointStore:
             raise
         finally:
             connection.close()
-        if self._artifact_data_dir is not None:
+        if (
+            self._artifact_data_dir is not None
+            and self._post_commit_projection is not None
+        ):
             # The source transaction above is already durable. A read-model
             # failure is recorded as INCOMPLETE and never rolls it back.
-            from sastsimi.dashboard.read_model import project_after_source_write
-
-            project_after_source_write(
+            self._post_commit_projection(
                 self._artifact_data_dir, checkpoint.identity.analysis_id
             )
 

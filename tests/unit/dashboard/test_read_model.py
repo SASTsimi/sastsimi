@@ -7,13 +7,14 @@ from typing import cast
 
 import pytest
 
+import sastsimi.dashboard.projection as projection_module
 import sastsimi.dashboard.query as dashboard_query_module
-import sastsimi.dashboard.read_model as read_model_module
 from sastsimi.dashboard.query import DashboardQuery
 from sastsimi.dashboard.read_model import (
     INDEXED_TABS,
     DashboardIndexNotReady,
     DashboardReadModel,
+    RebuildResult,
 )
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 from sastsimi.storage.agent_activity import AgentActivityStore
@@ -241,8 +242,8 @@ def test_rebuild_failure_records_incomplete_reason(
     def fail_collection(*_args: object, **_kwargs: object) -> object:
         raise ValueError("CORRUPT_SOURCE_RECORD")
 
-    monkeypatch.setattr(read_model_module, "collect_source_pages", fail_collection)
-    result = read_model_module.rebuild_analysis(tmp_path, "BROKEN-ANALYSIS")
+    monkeypatch.setattr(projection_module, "collect_source_pages", fail_collection)
+    result = projection_module.rebuild_analysis(tmp_path, "BROKEN-ANALYSIS")
 
     assert result.status == "FAILED"
     assert result.error == "ValueError: CORRUPT_SOURCE_RECORD"
@@ -266,9 +267,9 @@ def test_rebuild_all_continues_after_one_analysis_fails(
 
     def rebuild(
         _data_dir: Path, analysis_id: str, *, dry_run: bool = False
-    ) -> read_model_module.RebuildResult:
+    ) -> RebuildResult:
         status = "FAILED" if analysis_id == "BROKEN" else "READY"
-        return read_model_module.RebuildResult(
+        return RebuildResult(
             analysis_id,
             {},
             {},
@@ -278,8 +279,8 @@ def test_rebuild_all_continues_after_one_analysis_fails(
         )
 
     monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
-    monkeypatch.setattr(read_model_module, "rebuild_analysis", rebuild)
-    results = read_model_module.rebuild_all(tmp_path)
+    monkeypatch.setattr(projection_module, "rebuild_analysis", rebuild)
+    results = projection_module.rebuild_all(tmp_path)
 
     assert [item.analysis_id for item in results] == ["GOOD-1", "BROKEN", "GOOD-2"]
     assert [item.status for item in results] == ["READY", "FAILED", "READY"]

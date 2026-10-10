@@ -27,6 +27,7 @@ from sastsimi.config.user_config import (
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.prompt_redaction import redact_local_file_urls
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.dashboard.projection import project_after_source_write
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.policy.adapters.official_http import (
     PinnedHttpsTransport,
@@ -217,6 +218,7 @@ class SimpleClientFactory:
         self._store = SimpleCheckpointStore(
             profile.data_dir / "db" / "sastsimi.sqlite3",
             artifact_data_dir=profile.data_dir,
+            post_commit_projection=project_after_source_write,
         )
 
     def _budget(self, identity: CheckpointIdentity) -> RunUsageBudget:
@@ -436,7 +438,9 @@ def build_analysis_application(
 ) -> SimpleAnalysisApplication:
     data_dir = config.data_dir
     store = SimpleCheckpointStore(
-        data_dir / "db" / "sastsimi.sqlite3", artifact_data_dir=data_dir
+        data_dir / "db" / "sastsimi.sqlite3",
+        artifact_data_dir=data_dir,
+        post_commit_projection=project_after_source_write,
     )
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
@@ -590,6 +594,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         self._store = SimpleCheckpointStore(
             config.data_dir / "db" / "sastsimi.sqlite3",
             artifact_data_dir=config.data_dir,
+            post_commit_projection=project_after_source_write,
         )
         self._display = AnalysisDisplayIdStore(self._store.database_path)
 
