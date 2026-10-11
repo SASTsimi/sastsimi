@@ -15,6 +15,7 @@ import pytest
 from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 from sastsimi.simple_runtime import bootstrap_stages as static_module
 from sastsimi.simple_runtime import semgrep_fallback as semgrep_module
 from sastsimi.simple_runtime.application import (
@@ -3788,7 +3789,7 @@ async def test_opengrep_corrupt_timed_out_parent_request_is_recreated_on_resume(
     ]
     quarantined = list(artifacts.paths.quarantine.iterdir())
     assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == b"corrupt"
+    assert windows_extended_path(quarantined[0]).read_bytes() == b"corrupt"
 
 
 @pytest.mark.asyncio
@@ -3834,7 +3835,7 @@ async def test_opengrep_corrupt_successful_child_raw_is_recreated_on_resume(
     assert json.loads(artifacts.read(child.raw_ref))["paths"]["scanned"] == ["app.py"]
     quarantined = list(artifacts.paths.quarantine.iterdir())
     assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == b"corrupt"
+    assert windows_extended_path(quarantined[0]).read_bytes() == b"corrupt"
 
 
 @pytest.mark.asyncio

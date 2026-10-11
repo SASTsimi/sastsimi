@@ -231,7 +231,7 @@ class SimpleArtifactRepository:
         ):
             raise ValueError("SIMPLE_RUNTIME_QUARANTINE_PATH_UNSAFE")
         destination = quarantine / f"{ref.content_hash}-{uuid4().hex}"
-        os.replace(path, destination)
+        os.replace(windows_extended_path(path), windows_extended_path(destination))
         return True
 
     def read_bounded(self, ref: StoredDataRef, max_bytes: int) -> bytes:

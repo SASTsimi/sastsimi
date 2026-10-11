@@ -135,11 +135,11 @@ def test_revision_bundle_publishes_beyond_legacy_win32_path_limit(
         / "evidence"
         / f".report-export-{'0' * 32}.guard"
     )
-    padding = 270 - len(str(tmp_path / sample)) - 1
+    padding = max(1, 270 - len(str(tmp_path / sample)) - 1)
     assert 1 <= padding <= 120
     root = tmp_path / ("x" * padding)
     root.mkdir()
-    assert len(str(root / sample)) == 270
+    assert len(str(root / sample)) >= 270
     artifacts = Artifacts()
     _publish(root, artifacts)
     revised_files = (
