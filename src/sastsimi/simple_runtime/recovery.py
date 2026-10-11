@@ -57,6 +57,8 @@ _SANITIZED_EXTRACT_FAILURE = re.compile(
     rb"Traceback \(sanitized\): extract\r?\n"
     rb"(?:AssertionError|RuntimeError|TypeError|ValueError)\r?\n?"
 )
+_CLOSED_RUNTIME_CLASS = re.compile(rb"[A-Z][A-Za-z0-9_]{0,63}(?:Error|Exception)")
+_CLOSED_RUNTIME_FRAME = re.compile(rb"(?:[A-Za-z_][A-Za-z0-9_]{0,63}|<module>)")
 SANITIZED_EXTRACT_RECOVERY_REVISION = 1
 DJANGO_POC_FIXTURE_RECOVERY_REVISION = 1
 DJANGO_POC_FIXTURE_DEPENDENCY_RECOVERY_REVISION = 1
@@ -2369,6 +2371,64 @@ def sanitized_extract_recovery_decision() -> RecoveryDecision:
     )
 
 
+def closed_poc_runtime_diagnostic(stderr: bytes) -> dict[str, str | list[str]] | None:
+    """Discard free-form error text, keeping only closed traceback identifiers.
+
+    This is a generated-PoC repair hint, never evidence of a vulnerability.
+    Only a complete, short, function-only traceback is accepted; standard
+    tracebacks with source paths, lines, or mixed output are not forwarded.
+    """
+
+    if not stderr or len(stderr) > 8 * 1024:
+        return None
+    lines = stderr.replace(b"\r\n", b"\n").splitlines()
+    phase = "POC_EXECUTION"
+    if lines and lines[0] == b"stage=schema":
+        phase = "SCHEMA_SETUP"
+        lines = lines[1:]
+    if len(lines) != 2:
+        return None
+    exception_class, _separator, _ignored_message = lines[0].partition(b":")
+    if (
+        _CLOSED_RUNTIME_CLASS.fullmatch(exception_class) is None
+        or _CANDIDATE_SECRET_NAME.search(exception_class) is not None
+    ):
+        return None
+    traceback_prefix = next(
+        (
+            prefix
+            for prefix in (b"Traceback: ", b"Traceback functions: ")
+            if lines[1].startswith(prefix)
+        ),
+        None,
+    )
+    if traceback_prefix is None:
+        return None
+    raw_frames = lines[1][len(traceback_prefix) :]
+    if not raw_frames or (b" > " in raw_frames and b" -> " in raw_frames):
+        return None
+    frame_parts = raw_frames.split(b" -> " if b" -> " in raw_frames else b" > ")
+    if not 1 <= len(frame_parts) <= 12 or any(
+        _CLOSED_RUNTIME_FRAME.fullmatch(frame) is None
+        or _CANDIDATE_SECRET_NAME.search(frame) is not None
+        for frame in frame_parts
+    ):
+        return None
+    diagnostic: dict[str, str | list[str]] = {
+        "kind": "simple_poc_runtime_diagnostic_v1",
+        "exception_class": exception_class.decode("ascii"),
+        "phase": phase,
+        "function_frames": [frame.decode("ascii") for frame in frame_parts],
+    }
+    serialized = canonical_bytes(diagnostic)
+    try:
+        if redact_untrusted_text(serialized).data != serialized:
+            return None
+    except ValueError:
+        return None
+    return diagnostic
+
+
 def django_poc_fixture_failure(stderr: bytes, candidate: bytes) -> str | None:
     """Classify only bounded, redacted Django setup frames in a schema-building PoC.
 
@@ -2697,6 +2757,33 @@ def _candidate_sensitive_content_replay_marker(
     )
 
 
+def _closed_runtime_replay_marker(
+    checkpoint: StageCheckpoint, marker: Mapping[str, object]
+) -> bool:
+    """Distinguish the bound exit-two replay from numeric Django revisions."""
+
+    return (
+        marker.get("kind") == "simple_recovery_decision"
+        and marker.get("identity") == checkpoint.identity.model_dump(mode="json")
+        and marker.get("stage") == SimpleStage.POC_EXECUTION_DONE.value
+        and marker.get("decision_origin") == "RULE"
+        and marker.get("explicit_exhaustion_replay") is True
+        and type(marker.get("recovery_revision")) is int
+        and marker["recovery_revision"] == 1
+        and type(marker.get("closed_runtime_policy_revision")) is int
+        and marker["closed_runtime_policy_revision"] == 1
+        and marker.get("closed_runtime_replay") is True
+        # An anchor-only replay may advance the candidate checkpoint once
+        # without creating another PoC execution or recovery decision.
+        and marker.get("attempt") == MAX_RECOVERY_ATTEMPTS
+        and checkpoint.attempt_number
+        in {MAX_RECOVERY_ATTEMPTS + 1, MAX_RECOVERY_ATTEMPTS + 2}
+        and "relation_settings_replay" not in marker
+        and "migration_settings_replay" not in marker
+        and "settings_mismatch_replay" not in marker
+    )
+
+
 def _settings_replay_binding(
     checkpoint: StageCheckpoint,
     artifacts: SimpleArtifactRepository,
@@ -2743,6 +2830,8 @@ def _settings_replay_binding(
         marker = json.loads(artifacts.read_bounded(marker_ref, 64 * 1024))
         if not isinstance(marker, dict):
             raise ValueError("invalid settings replay marker")
+        if relation and _closed_runtime_replay_marker(checkpoint, marker):
+            return None
         if migration and marker.get("recovery_revision") != (
             DJANGO_MIGRATION_GRAPH_SETTINGS_SOURCE_BOUND_REVISION
         ):
@@ -3255,6 +3344,10 @@ def migration_settings_replay_binding(
                 )
             except (OSError, TypeError, ValueError, UnicodeError):
                 final_marker = None
+            if isinstance(final_marker, dict) and _closed_runtime_replay_marker(
+                checkpoint, final_marker
+            ):
+                return None
             if not (
                 isinstance(final_marker, dict)
                 and final_marker.get("kind")
@@ -4550,6 +4643,17 @@ class SimpleRecoveryCoordinator:
                         )
 
         if self._verified_exit_two_with_clean_cleanup(checkpoint, failure):
+            closed_diagnostic = None
+            stderr_ref = self._bound_poc_stream_ref(checkpoint, failure, "stderr_ref")
+            if stderr_ref is not None:
+                try:
+                    full_stderr = self._artifacts.read_bounded(
+                        stderr_ref, _MAX_POC_OUTPUT_BYTES
+                    )
+                except (OSError, ValueError):
+                    pass
+                else:
+                    closed_diagnostic = closed_poc_runtime_diagnostic(full_stderr)
             return self._store(
                 checkpoint,
                 failure,
@@ -4563,10 +4667,18 @@ class SimpleRecoveryCoordinator:
                         "Regenerate only the PoC candidate for the same pinned "
                         "source and supported runtime. Recheck the existing "
                         "route, method, and branch that reach the intended sink; "
+                        "use only the closed exception class and function frames "
+                        "when present, never the free-form error message; "
                         "do not alter target or framework behavior and do not "
                         "treat this execution error as counterevidence."
                     ),
                 ),
+                diagnostic_excerpt=(
+                    canonical_bytes(closed_diagnostic)
+                    if closed_diagnostic is not None
+                    else None
+                ),
+                closed_runtime_policy_revision=1,
             )
 
         refs = tuple(dict.fromkeys(checkpoint.input_refs + failure.evidence_refs))
@@ -5080,6 +5192,7 @@ class SimpleRecoveryCoordinator:
         *,
         decision_origin: Literal["AGENT", "RULE", "FALLBACK"] = "RULE",
         diagnostic_excerpt: bytes | None = None,
+        closed_runtime_policy_revision: int | None = None,
         policy_validation_attempts: tuple[
             tuple[StoredDataRef | None, str | None], ...
         ] = (),
@@ -5106,6 +5219,11 @@ class SimpleRecoveryCoordinator:
                 "original_error": failure.model_dump(mode="json"),
                 "decision": decision.model_dump(mode="json"),
                 "decision_origin": decision_origin,
+                **(
+                    {"closed_runtime_policy_revision": closed_runtime_policy_revision}
+                    if closed_runtime_policy_revision is not None
+                    else {}
+                ),
                 **(
                     {
                         "policy_validation_attempts": [

@@ -935,7 +935,7 @@ async def test_mixed_python_typescript_scope_keeps_out_of_scope_reason(
     ).run(_request(profile), identity)
 
     coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
-    assert result.static_disposition == "FULL"
+    assert result.static_disposition == "FULL", coverage["gaps"]
     assert coverage["out_of_scope_product_files"] == [
         {"path": "ui/main.ts", "reason": "non_python_product_source"}
     ]
@@ -945,6 +945,24 @@ async def test_mixed_python_typescript_scope_keeps_out_of_scope_reason(
             "reason": "test-basename+content:javascript-typescript",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_static_scan_supports_max_length_analysis_id(
+    tmp_path: Path,
+) -> None:
+    profile = _without_codeql(_profile(tmp_path))
+    identity = _identity("a" * 128)
+    result = await DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    ).run(_request(profile), identity)
+
+    coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
+    assert result.static_disposition == "FULL", coverage["gaps"]
+    assert coverage["verified_count"] == coverage["expected_count"] == 1
 
 
 def _profile(tmp_path: Path) -> SimpleExecutionProfile:

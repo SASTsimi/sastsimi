@@ -238,6 +238,16 @@ def v4_review_directory(
     return directory
 
 
+def v4_reviewable_parts(directory: list[dict[str, object]]) -> frozenset[str]:
+    """Only graph-defined security roles may be claimed by a v4 review."""
+
+    return frozenset(
+        part
+        for part, graph_role in _ROLES.items()
+        if any(row.get("role") == graph_role for row in directory)
+    )
+
+
 def _location(raw: object) -> tuple[str, int]:
     if not isinstance(raw, str):
         raise _error("HYPOTHESIS_SURFACE_LOCATION_INVALID")

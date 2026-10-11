@@ -99,6 +99,7 @@ from .store import SimpleCheckpointStore, StaticScanAttempt, StaticScanExecution
 from .surface_contexts import SurfaceContext
 from .surface_evidence_validation_v4 import (
     v4_review_directory,
+    v4_reviewable_parts,
     validate_v4_context_payload,
     validate_v4_response,
 )
@@ -221,6 +222,13 @@ _WORKSPACE_INTEGRITY_ERRORS = frozenset(
         "OPENGREP_TOOL_CHANGED",
     }
 )
+
+
+def _static_scan_output_dir(data_dir: Path, analysis_id: str) -> Path:
+    # Only temporary scanner output lives here; checkpoint keys and immutable
+    # raw artifacts do not depend on this path. Bound it for Windows MAX_PATH.
+    digest = hashlib.sha256(analysis_id.encode("ascii")).hexdigest()[:20]
+    return data_dir / "process-output" / "s" / digest
 
 
 def _read_static_scan_output(path: Path) -> bytes:
@@ -1106,9 +1114,7 @@ class DirectStaticBootstrap:
         binding = self._profile.tools["opengrep"]
         self._require_opengrep_tool(binding)
         rules = self._materials / "opengrep" / "rules.yml"
-        output_root = (
-            request.data_dir / "process-output" / "simple-static" / identity.analysis_id
-        )
+        output_root = _static_scan_output_dir(request.data_dir, identity.analysis_id)
         output_root.mkdir(parents=True, exist_ok=True)
         slices: list[CoverageSlice] = (
             collected_slices if collected_slices is not None else []
@@ -1437,7 +1443,7 @@ class DirectStaticBootstrap:
         pending_paths = tuple(sorted(paths - attempted))
         if not pending_paths:
             return slices, refs, errors
-        placeholder = output_root / f"opengrep-chunk-{'0' * 32}.json"
+        placeholder = output_root / f"og-{'0' * 32}.json"
         prefix = (
             self._tool("opengrep"),
             "scan",
@@ -1573,7 +1579,7 @@ class DirectStaticBootstrap:
                     )
                     if safe_targets != targets:
                         raise RuntimeError("OPENGREP_TARGET_INVALID")
-                    output = output_root / f"opengrep-chunk-{uuid4().hex}.json"
+                    output = output_root / f"og-{uuid4().hex}.json"
                     argv = (
                         *prefix[: prefix.index("--output") + 1],
                         str(output),
@@ -1875,9 +1881,7 @@ class DirectStaticBootstrap:
             return slices, refs, errors
         if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity.analysis_id) is None:
             raise RuntimeError("OPENGREP_ANALYSIS_ID_INVALID")
-        output_dir = (
-            request.data_dir / "process-output" / "simple-static" / identity.analysis_id
-        )
+        output_dir = _static_scan_output_dir(request.data_dir, identity.analysis_id)
         output_dir.mkdir(parents=True, exist_ok=True)
         attempts = {
             item.run_key: item
@@ -4120,7 +4124,13 @@ class DirectHypothesisBootstrap:
 
     @classmethod
     def _surface_schema(
-        cls, surface_id: str, context_id: str, *, version: int = 1
+        cls,
+        surface_id: str,
+        context_id: str,
+        *,
+        version: int = 1,
+        context_hash: str | None = None,
+        eligible_review_parts: frozenset[str] | None = None,
     ) -> dict[str, Any]:
         batch_row = cls._batch_schema((surface_id,))["properties"]["candidate_results"][
             "items"
@@ -4162,10 +4172,20 @@ class DirectHypothesisBootstrap:
             "additionalProperties": False,
         }
         if version == 4:
+            if (
+                context_hash is None
+                or eligible_review_parts is None
+                or not eligible_review_parts <= _SURFACE_REVIEW_PARTS
+            ):
+                raise ValueError("HYPOTHESIS_SURFACE_CONTEXT_INVALID")
             review = schema["properties"]["review_evidence"]["items"]
+            if eligible_review_parts:
+                review["properties"]["part"]["enum"] = sorted(eligible_review_parts)
+            else:
+                schema["properties"]["review_evidence"]["maxItems"] = 0
             review["properties"].update(
                 {
-                    "context_hash": {"type": "string"},
+                    "context_hash": {"type": "string", "enum": [context_hash]},
                     "source_sha256": {"type": "string"},
                     "graph_path_id": {"type": "string"},
                     "edge_ids": {
@@ -4546,20 +4566,26 @@ class DirectHypothesisBootstrap:
                     safe_message="Pinned surface graph is unavailable or invalid",
                 )
         try:
-            review_directory = (
-                canonical_bytes(v4_review_directory(payload, graph_payload))
+            review_rows = (
+                v4_review_directory(payload, graph_payload)
                 if v4 and graph_payload is not None
-                else b""
+                else []
             )
+            review_directory = canonical_bytes(review_rows) if v4 else b""
         except (TypeError, ValueError, KeyError):
             return StageFailure(
                 code="HYPOTHESIS_SURFACE_CONTEXT_INVALID",
                 retryable=False,
                 safe_message="Pinned surface graph does not match this context part",
             )
+        eligible_review_parts = v4_reviewable_parts(review_rows) if v4 else None
         client = self._client_factory(identity, artifacts)
         schema = self._surface_schema(
-            context.surface_id, context.context_id, version=4 if v4 else 1
+            context.surface_id,
+            context.context_id,
+            version=4 if v4 else 1,
+            context_hash=context.context_hash if v4 else None,
+            eligible_review_parts=eligible_review_parts,
         )
         attempt_refs: list[StoredDataRef] = []
         feedback: str | None = None
@@ -4573,12 +4599,21 @@ class DirectHypothesisBootstrap:
             )
             v4_guidance = (
                 b" In v4 each review_evidence row must cite this exact context "
-                b"hash, the cited line's source_sha256, a verified graph_path_id "
+                b"hash: "
+                + context.context_hash.encode("ascii")
+                + b". Do not use context_id as context_hash. Cite the line's "
+                b"source_sha256, a verified graph_path_id "
                 b"and incident edge_ids shown in this part. A graph path is "
                 b"syntactic reachability, not proof of attacker-controlled data. "
                 b"Do not combine roles from different graph paths. If an edge "
                 b"or source line is not visible in this part, return "
-                b"INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS rather than inventing it."
+                b"INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS rather than inventing it. "
+                b"ENTRY requires an exact ROUTE_ENTRY graph step, "
+                b"TRUST_BOUNDARY an exact REQUEST_CONTEXT step, and "
+                b"SENSITIVE_OPERATION an exact SINK step. Navigation-only "
+                b"CANDIDATE, CALL, and CALLEE_BODY_LINE steps do not prove "
+                b"these roles. If no such security-role step is visible, "
+                b"return review_evidence=[] and INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS."
                 if v4
                 else b""
             )

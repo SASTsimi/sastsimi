@@ -35,8 +35,8 @@ from sastsimi.simple_runtime.models import (
 from sastsimi.simple_runtime.recovery import sensitive_exhaustion_replay_binding
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.storage.agent_activity import AgentActivityStore
+from tests.simple_runtime.test_legacy_import_stop_replan import _PinnedStaticStub
 from tests.simple_runtime.test_poc_anchor_failure_replay import _failed_second_anchor
-from tests.simple_runtime.test_poc_sensitive_replay import _PinnedStaticStub
 from tests.unit.interfaces.test_public_simple_cli import _config, _PublicApplication
 from tests.unit.simple_runtime.test_recovery_composition import (
     _config as _composition_config,

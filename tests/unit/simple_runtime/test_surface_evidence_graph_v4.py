@@ -96,9 +96,21 @@ def _graph(
         Path,
         SimpleArtifactRepository,
     ],
-    **bounds: int,
+    max_nodes: int = 256,
+    max_edges: int = 512,
 ) -> dict[str, object]:
-    return extract_surface_graph_v4(*fixture, **bounds)
+    return extract_surface_graph_v4(*fixture, max_nodes=max_nodes, max_edges=max_edges)
+
+
+def _rows(payload: dict[str, object], field: str) -> list[dict[str, object]]:
+    value = payload[field]
+    assert isinstance(value, list)
+    rows: list[dict[str, object]] = []
+    for row in value:
+        assert isinstance(row, dict)
+        assert all(isinstance(key, str) for key in row)
+        rows.append(row)
+    return rows
 
 
 def test_enclosing_decorated_function_and_orphan_ast_fact_get_real_lines(
@@ -124,12 +136,12 @@ def test_enclosing_decorated_function_and_orphan_ast_fact_get_real_lines(
 
     assert graph["kind"] == "simple_surface_evidence_graph_v4"
     assert graph["anchor"] == {"surface_id": "surface-1", "path": "app.py", "line": 4}
-    lines = {(row["path"], row["line"]) for row in graph["source_lines"]}
+    lines = {(row["path"], row["line"]) for row in _rows(graph, "source_lines")}
     assert {("app.py", line) for line in (1, 2, 3, 4)} <= lines
     assert ("app.py", 7) not in lines
     assert any(
         fact["path"] == "app.py" and fact["line"] == 4 and fact["kind"] == "Call"
-        for fact in graph["ast_facts"]
+        for fact in _rows(graph, "ast_facts")
     )
 
     _, surface, summary, manifest, workspace, artifacts = fixture
@@ -144,7 +156,7 @@ def test_enclosing_decorated_function_and_orphan_ast_fact_get_real_lines(
     )
     assert any(
         row["path"] == "app.py" and row["line"] == 7
-        for row in orphan_graph["source_lines"]
+        for row in _rows(orphan_graph, "source_lines")
     )
 
 
@@ -180,11 +192,11 @@ def test_verified_cross_file_route_and_direct_callee_are_linked(tmp_path: Path) 
 
     graph = _graph(fixture)
 
-    paths = graph["paths"]
+    paths = _rows(graph, "paths")
     assert any(
         [
             (step["role"], step["path"], step["line"])
-            for step in path["steps"]
+            for step in _rows(path, "steps")
             if step["role"] in {"ROUTE_ENTRY", "CALL", "SINK"}
         ]
         == [
@@ -194,15 +206,15 @@ def test_verified_cross_file_route_and_direct_callee_are_linked(tmp_path: Path) 
         ]
         for path in paths
     )
-    assert {row["path"] for row in graph["source_files"]} >= {
+    assert {row["path"] for row in _rows(graph, "source_files")} >= {
         "routes.py",
         "views.py",
         "dao.py",
     }
-    assert all(row["source_sha256"] for row in graph["source_files"])
-    assert all(row["ast_ref"] for row in graph["source_files"])
+    assert all(row["source_sha256"] for row in _rows(graph, "source_files"))
+    assert all(row["ast_ref"] for row in _rows(graph, "source_files"))
     assert {"ENTRY", "CALL", "SENSITIVE_OPERATION"} <= {
-        edge["type"] for edge in graph["edges"]
+        edge["type"] for edge in _rows(graph, "edges")
     }
 
 
@@ -232,14 +244,18 @@ def test_same_name_decoy_dynamic_call_and_cycle_do_not_invent_edges(
     graph = _graph(fixture)
 
     assert not any(
-        step["path"] == "decoy.py" for path in graph["paths"] for step in path["steps"]
+        step["path"] == "decoy.py"
+        for path in _rows(graph, "paths")
+        for step in _rows(path, "steps")
     )
     assert not any(
         step["path"] == "views.py" and step["line"] == 5
-        for path in graph["paths"]
-        for step in path["steps"]
+        for path in _rows(graph, "paths")
+        for step in _rows(path, "steps")
     )
-    assert any("DYNAMIC_DISPATCH_UNRESOLVED" in str(gap) for gap in graph["gaps"])
+    assert any(
+        "DYNAMIC_DISPATCH_UNRESOLVED" in str(gap) for gap in _rows(graph, "gaps")
+    )
     assert _graph(fixture) == graph
 
     cycle_dir = tmp_path / "cycle"
@@ -261,7 +277,7 @@ def test_same_name_decoy_dynamic_call_and_cycle_do_not_invent_edges(
     )
     cycle_graph = _graph(cycle_fixture)
     assert cycle_graph == _graph(cycle_fixture)
-    assert all(len(path["steps"]) < 12 for path in cycle_graph["paths"])
+    assert all(len(_rows(path, "steps")) < 12 for path in _rows(cycle_graph, "paths"))
 
 
 @pytest.mark.parametrize("mutation", ("changed", "directory", "symlink"))
@@ -327,7 +343,7 @@ def test_oversize_anchor_records_unavailable_without_reading_raw_line(
 
     assert graph["source_lines"] == []
     assert graph["paths"] == []
-    assert {gap["reason"] for gap in graph["gaps"]} >= {"AST_SOURCE_TOO_LARGE"}
+    assert {gap["reason"] for gap in _rows(graph, "gaps")} >= {"AST_SOURCE_TOO_LARGE"}
 
 
 def test_parse_error_anchor_stays_explicitly_unavailable(tmp_path: Path) -> None:
@@ -365,5 +381,7 @@ def test_budget_oversize_and_redaction_leave_explicit_gaps(tmp_path: Path) -> No
     graph = _graph(fixture, max_nodes=2, max_edges=2)
 
     assert secret not in json.dumps(graph)
-    assert any("CONTEXT_BUDGET_EXHAUSTED" in str(gap) for gap in graph["gaps"])
-    assert any("ATOMIC_SOURCE_LINE_TOO_LARGE" in str(gap) for gap in graph["gaps"])
+    assert any("CONTEXT_BUDGET_EXHAUSTED" in str(gap) for gap in _rows(graph, "gaps"))
+    assert any(
+        "ATOMIC_SOURCE_LINE_TOO_LARGE" in str(gap) for gap in _rows(graph, "gaps")
+    )

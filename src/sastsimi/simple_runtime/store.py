@@ -96,6 +96,7 @@ from .recovery import (
     _django_literal_configuration,
     _python_import_traceback_spans,
     candidate_app_replay_unsupported_app,
+    closed_poc_runtime_diagnostic,
     closed_poc_sensitive_diagnostic,
     django_candidate_app_import_failure,
     django_candidate_app_recovery_decision,
@@ -10068,6 +10069,7 @@ class SimpleCheckpointStore:
         _django_settings: bool = False,
         _relation_settings: bool = False,
         _migration_settings: bool = False,
+        _closed_runtime: bool = False,
     ) -> StageCheckpoint:
         """Explicitly regenerate one PoC after a bound sanitized extract failure.
 
@@ -10092,6 +10094,7 @@ class SimpleCheckpointStore:
                     _django_settings,
                     _relation_settings,
                     _migration_settings,
+                    _closed_runtime,
                 )
             )
             > 1
@@ -10269,7 +10272,9 @@ class SimpleCheckpointStore:
                 raise ValueError("POC_EXTRACT_EXHAUSTION_ROOT_BOUND_INVALID")
             extract_replay_code = "POC_EXTRACT_EXHAUSTION_REPLAYED"
             replay_code = (
-                "POC_DJANGO_RELATION_SETTINGS_EXHAUSTION_REPLAYED"
+                "POC_CLOSED_RUNTIME_EXHAUSTION_REPLAYED"
+                if _closed_runtime
+                else "POC_DJANGO_RELATION_SETTINGS_EXHAUSTION_REPLAYED"
                 if _relation_settings
                 else (
                     "POC_DJANGO_SETTINGS_EXHAUSTION_REPLAYED"
@@ -11148,6 +11153,18 @@ class SimpleCheckpointStore:
                     )
                     else None
                 )
+            elif _closed_runtime:
+                local_import = None
+                closed_diagnostic = closed_poc_runtime_diagnostic(stderr)
+                diagnostic = (
+                    canonical_bytes(closed_diagnostic)
+                    if closed_diagnostic is not None
+                    and not any(
+                        _POC_SUCCESS_CLAIM_LINE.fullmatch(line.strip())
+                        for line in stdout.splitlines()
+                    )
+                    else None
+                )
             else:
                 local_import = None
                 diagnostic = sanitized_extract_failure(stderr)
@@ -11188,6 +11205,7 @@ class SimpleCheckpointStore:
                         or _django_settings
                         or _relation_settings
                         or _migration_settings
+                        or _closed_runtime
                     )
                     and execution["exit_code"] != 2
                 )
@@ -11366,6 +11384,20 @@ class SimpleCheckpointStore:
                         "execute the original route."
                     ),
                 )
+            if _closed_runtime:
+                rule_decision = RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis="The generated PoC exited before a usable observation",
+                    guidance=(
+                        "Regenerate only this PoC candidate against the same pinned "
+                        "source and supported runtime. Inspect the closed exception "
+                        "class and function-frame labels, then correct the harness "
+                        "setup or invocation. Do not infer vulnerability absence "
+                        "from this execution error, alter product code, or use "
+                        "free-form exception text."
+                    ),
+                )
             if (
                 _pinned_layout
                 and failed_path is not None
@@ -11462,6 +11494,10 @@ class SimpleCheckpointStore:
                         )
                     }
                 )
+            if _closed_runtime:
+                original_error = original_error.model_copy(
+                    update={"safe_message": "PoC exited before a usable observation"}
+                )
             layout_candidate_checkpoint_ref = (
                 artifacts.put_json(candidate.model_dump(mode="json"))
                 if _pinned_layout
@@ -11524,6 +11560,14 @@ class SimpleCheckpointStore:
                     "decision_origin": "RULE",
                     "diagnostic_excerpt": diagnostic.decode("ascii"),
                     "explicit_exhaustion_replay": True,
+                    **(
+                        {
+                            "closed_runtime_replay": True,
+                            "closed_runtime_policy_revision": 1,
+                        }
+                        if _closed_runtime
+                        else {}
+                    ),
                     **(
                         {
                             **(
@@ -11779,7 +11823,12 @@ class SimpleCheckpointStore:
                 ),
             )
             self._upsert_checkpoint_connection(connection, pending)
-            if _candidate_app:
+            if _closed_runtime:
+                replay_summary_ko = (
+                    "종료된 PoC 실행의 안전한 오류 유형만 보존하고 "
+                    "후보를 정확히 한 번 다시 생성합니다."
+                )
+            elif _candidate_app:
                 replay_summary_ko = (
                     "후보가 추가한 Django 앱의 import 오류를 보존하고 "
                     "PoC 후보만 한 번 다시 생성합니다."
@@ -11858,6 +11907,22 @@ class SimpleCheckpointStore:
             connection.close()
         self._project_after_direct_commit(identity.analysis_id)
         return pending
+
+    def prepare_poc_closed_runtime_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one verified exit-two PoC without leaking its error message."""
+
+        return self.prepare_poc_extract_exhaustion_replay(
+            exhausted,
+            artifacts,
+            fail_before_commit=fail_before_commit,
+            _closed_runtime=True,
+        )
 
     def prepare_poc_placeholder_exhaustion_replay(
         self,
@@ -14466,6 +14531,125 @@ class SimpleCheckpointStore:
                     (identity.analysis_id,),
                 )
             )
+            closed_runtime_anchor_retry = False
+            if (
+                discriminator_retry
+                and stopped.recovery_origin_stage is SimpleStage.POC_EXECUTION_DONE
+                and stopped.recovery_decision_refs
+            ):
+                closed_rule_ref = stopped.recovery_decision_refs[-1]
+                try:
+                    closed_rule = json.loads(
+                        artifacts.read_bounded(closed_rule_ref, 64 * 1024)
+                    )
+                except (OSError, ValueError, UnicodeError, sqlite3.Error):
+                    closed_rule = None
+                if (
+                    isinstance(closed_rule, dict)
+                    and closed_rule.get("closed_runtime_replay") is True
+                ):
+                    try:
+                        closed_error = StageFailure.model_validate_json(
+                            canonical_bytes(closed_rule["original_error"])
+                        )
+                        evidence = closed_error.evidence_refs
+                        if len(evidence) != 4:
+                            raise ValueError("invalid closed runtime evidence count")
+                        execution = json.loads(
+                            artifacts.read_bounded(evidence[0], 64 * 1024)
+                        )
+                        cleanup = json.loads(
+                            artifacts.read_bounded(evidence[3], 4 * 1024)
+                        )
+                        diagnostic = closed_poc_runtime_diagnostic(
+                            artifacts.read_bounded(evidence[2], 1024 * 1024)
+                        )
+                        if (
+                            closed_rule_ref not in stopped.input_refs
+                            or not stopped.recovery_lineage_id
+                            or closed_rule.get("kind") != "simple_recovery_decision"
+                            or closed_rule.get("identity")
+                            != identity.model_dump(mode="json")
+                            or closed_rule.get("stage")
+                            != SimpleStage.POC_EXECUTION_DONE.value
+                            or closed_rule.get("attempt") != MAX_RECOVERY_ATTEMPTS
+                            or closed_rule.get("decision_origin") != "RULE"
+                            or closed_rule.get("explicit_exhaustion_replay") is not True
+                            or type(closed_rule.get("closed_runtime_policy_revision"))
+                            is not int
+                            or closed_rule["closed_runtime_policy_revision"] != 1
+                            or closed_error.code != "POC_EXECUTION_FAILED"
+                            or not isinstance(closed_rule.get("decision"), dict)
+                            or closed_rule["decision"].get("category")
+                            != "GENERATED_INPUT"
+                            or closed_rule["decision"].get("action")
+                            != "REGENERATE_INPUT"
+                            or any(ref not in stopped.input_refs for ref in evidence)
+                            or not isinstance(execution, dict)
+                            or execution.get("kind") != "simple_poc_execution"
+                            or execution.get("attempt_id")
+                            != closed_rule.get("attempt_id")
+                            or execution.get("stdout_ref")
+                            != evidence[1].model_dump(mode="json")
+                            or execution.get("stderr_ref")
+                            != evidence[2].model_dump(mode="json")
+                            or execution.get("candidate_ref") is None
+                            or StoredDataRef.model_validate(execution["candidate_ref"])
+                            not in stopped.input_refs
+                            or execution.get("exit_code") != 2
+                            or execution.get("timed_out") is not False
+                            or not isinstance(cleanup, dict)
+                            or cleanup.get("kind") != "simple_container_cleanup"
+                            or cleanup.get("attempt_id") != execution.get("attempt_id")
+                            or cleanup.get("container_id")
+                            != execution.get("container_id")
+                            or cleanup.get("status") != "REMOVED"
+                            or diagnostic is None
+                            or json.loads(closed_rule["diagnostic_excerpt"])
+                            != diagnostic
+                            or sum(
+                                event.kind is ActivityKind.DECISION_RECORDED
+                                and event.error_code
+                                == "POC_CLOSED_RUNTIME_EXHAUSTION_REPLAYED"
+                                and event.hypothesis_id == identity.hypothesis_id
+                                and event.stage == SimpleStage.POC_EXECUTION_DONE.value
+                                and event.attempt_id == closed_rule.get("attempt_id")
+                                and event.output_refs == (closed_rule_ref,)
+                                for event in events
+                            )
+                            != 1
+                            or not all(
+                                any(
+                                    event.kind is ActivityKind.STAGE_BLOCKED
+                                    and event.error_code == code
+                                    and event.hypothesis_id == identity.hypothesis_id
+                                    and event.stage
+                                    == SimpleStage.POC_EXECUTION_DONE.value
+                                    and event.attempt_id
+                                    == closed_rule.get("attempt_id")
+                                    and event.output_refs == evidence
+                                    for event in events
+                                )
+                                for code in (
+                                    "POC_EXECUTION_FAILED",
+                                    "RECOVERY_EXHAUSTED",
+                                )
+                            )
+                        ):
+                            raise ValueError("unbound closed runtime replay")
+                    except (
+                        KeyError,
+                        OSError,
+                        TypeError,
+                        ValueError,
+                        UnicodeError,
+                        sqlite3.Error,
+                    ) as error:
+                        raise ValueError(
+                            "POC_CLOSED_RUNTIME_ANCHOR_RULE_INVALID"
+                        ) from error
+                    closed_runtime_anchor_retry = True
+                    discriminator_retry = False
             earlier_replays = tuple(
                 event
                 for event in events
@@ -14484,8 +14668,17 @@ class SimpleCheckpointStore:
                 if event.hypothesis_id == identity.hypothesis_id
                 and event.error_code == "POC_ANCHOR_MIGRATION_COLLISION_REPLAYED"
             )
+            closed_runtime_anchor_replays = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.error_code == "POC_CLOSED_RUNTIME_ANCHOR_REPLAYED"
+            )
             if (
                 collision_replays
+                or closed_runtime_anchor_replays
+                or closed_runtime_anchor_retry
+                and (earlier_replays or discriminator_replays)
                 or (not migration_collision_retry and discriminator_replays)
                 or (
                     not discriminator_retry
@@ -14707,6 +14900,8 @@ class SimpleCheckpointStore:
                     "kind": (
                         "simple_poc_anchor_migration_collision_replay"
                         if migration_collision_retry
+                        else "simple_poc_closed_runtime_anchor_replay"
+                        if closed_runtime_anchor_retry
                         else "simple_poc_anchor_discriminator_replay"
                         if discriminator_retry
                         else "simple_poc_anchor_replay"
@@ -14740,6 +14935,8 @@ class SimpleCheckpointStore:
                     summary_ko=(
                         "마이그레이션 복구와 충돌한 PoC 후보만 한 번 재시도합니다."
                         if migration_collision_retry
+                        else "닫힌 PoC 실행 오류의 근거 연결 검사를 한 번 재시도합니다."
+                        if closed_runtime_anchor_retry
                         else "복구 유형이 혼동된 PoC 후보만 추가로 한 번 재시도합니다."
                         if discriminator_retry
                         else "검증된 PoC 위치 오류 후보만 한 번 재시도합니다."
@@ -14748,6 +14945,8 @@ class SimpleCheckpointStore:
                     error_code=(
                         "POC_ANCHOR_MIGRATION_COLLISION_REPLAYED"
                         if migration_collision_retry
+                        else "POC_CLOSED_RUNTIME_ANCHOR_REPLAYED"
+                        if closed_runtime_anchor_retry
                         else "POC_ANCHOR_DISCRIMINATOR_REPLAYED"
                         if discriminator_retry
                         else "POC_ANCHOR_REPLAYED"

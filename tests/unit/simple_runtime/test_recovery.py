@@ -903,6 +903,90 @@ async def test_exit_two_regeneration_requires_exact_clean_poc_attempt(
         assert client.calls == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("traceback_prefix", [b"Traceback: ", b"Traceback functions: "])
+async def test_bound_exit_two_records_only_closed_runtime_class_and_frames(
+    tmp_path: Path,
+    traceback_prefix: bytes,
+) -> None:
+    """A generated PoC gets the error location, never its message or paths."""
+
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts,
+        stderr=(
+            b"ValueError: private-value /workspace/pkg/source.py "
+            b"C:\\private\\source.py\n"
+            + traceback_prefix
+            + b"foreign_related_fields > related_fields > "
+            b"resolve_related_fields\n"
+        ),
+    )
+    client = DecisionClient({})
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC script did not produce a usable observation",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert client.calls == 0
+    stored = json.loads(artifacts.read(result.decision_ref))
+    assert stored["closed_runtime_policy_revision"] == 1
+    assert json.loads(stored["diagnostic_excerpt"]) == {
+        "kind": "simple_poc_runtime_diagnostic_v1",
+        "exception_class": "ValueError",
+        "phase": "POC_EXECUTION",
+        "function_frames": [
+            "foreign_related_fields",
+            "related_fields",
+            "resolve_related_fields",
+        ],
+    }
+    assert b"private-value" not in artifacts.read(result.decision_ref)
+    assert b"/workspace/pkg/source.py" not in artifacts.read(result.decision_ref)
+    assert b"C:\\private\\source.py" not in artifacts.read(result.decision_ref)
+
+
+@pytest.mark.asyncio
+async def test_bound_exit_two_invalid_traceback_records_no_freeform_diagnostic(
+    tmp_path: Path,
+) -> None:
+    """A rejected frame still marks the safe prompt policy without raw stderr."""
+
+    artifacts = SimpleArtifactRepository(tmp_path, _running_checkpoint().identity)
+    checkpoint, evidence_refs = _complete_poc_receipt(
+        artifacts,
+        stderr=(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private.py\n"
+            b"Traceback: validate > /workspace/private.py\n"
+        ),
+    )
+    client = DecisionClient({})
+
+    result = await SimpleRecoveryCoordinator(client=client, artifacts=artifacts).decide(
+        checkpoint,
+        StageFailure(
+            code="POC_EXECUTION_FAILED",
+            retryable=True,
+            safe_message="PoC script did not produce a usable observation",
+            evidence_refs=evidence_refs,
+        ),
+    )
+
+    assert result.decision.action is RecoveryAction.REGENERATE_INPUT
+    assert client.calls == 0
+    stored = json.loads(artifacts.read(result.decision_ref))
+    assert stored["closed_runtime_policy_revision"] == 1
+    assert "diagnostic_excerpt" not in stored
+    assert b"RAW_MESSAGE_VALUE_SENTINEL" not in artifacts.read(result.decision_ref)
+
+
 def test_poc_retry_stage_reuses_the_existing_poc_candidate() -> None:
     """A transient Docker failure must not spend another LLM call on a new PoC."""
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.attack_surfaces import StaticGap, SurfaceIndex
 from sastsimi.simple_runtime.models import CheckpointIdentity
@@ -54,7 +55,14 @@ def _fixture(
     files: dict[str, bytes],
     gaps: tuple[StaticGap, ...],
     excluded: list[dict[str, str]],
-) -> tuple[CheckpointIdentity, SurfaceIndex, object, object, dict[str, object], Path]:
+) -> tuple[
+    CheckpointIdentity,
+    SurfaceIndex,
+    StoredDataRef,
+    StoredDataRef,
+    dict[str, object],
+    Path,
+]:
     workspace, commit_id = _pinned_workspace(tmp_path, files)
     identity = CheckpointIdentity(
         analysis_id="scope-analysis",
@@ -110,10 +118,26 @@ def _fixture(
 
 def _certificate(
     fixture: tuple[
-        CheckpointIdentity, SurfaceIndex, object, object, dict[str, object], Path
+        CheckpointIdentity,
+        SurfaceIndex,
+        StoredDataRef,
+        StoredDataRef,
+        dict[str, object],
+        Path,
     ],
 ) -> dict[str, object]:
     return build_python_scope_certificate(*fixture)
+
+
+def _rows(payload: dict[str, object], field: str) -> list[dict[str, object]]:
+    value = payload[field]
+    assert isinstance(value, list)
+    rows: list[dict[str, object]] = []
+    for row in value:
+        assert isinstance(row, dict)
+        assert all(isinstance(key, str) for key in row)
+        rows.append(row)
+    return rows
 
 
 def test_three_pinned_js_exclusions_leave_zero_effective_gaps(tmp_path: Path) -> None:
@@ -145,10 +169,10 @@ def test_three_pinned_js_exclusions_leave_zero_effective_gaps(tmp_path: Path) ->
         {"path": path, "reason": reason} for path, reason in entries
     ]
     assert certificate["effective_static_gaps"] == []
-    assert {row["decision"] for row in certificate["file_decisions"]} == {
+    assert {row["decision"] for row in _rows(certificate, "file_decisions")} == {
         "OUT_OF_SCOPE"
     }
-    assert {row["source_sha256"] for row in certificate["file_decisions"]} == {
+    assert {row["source_sha256"] for row in _rows(certificate, "file_decisions")} == {
         hashlib.sha256(b"// source\n").hexdigest()
     }
 
@@ -172,7 +196,7 @@ def test_python_parser_gap_remains_effective(tmp_path: Path) -> None:
             "engine": "AST",
         }
     ]
-    assert certificate["file_decisions"][0]["decision"] == "IN_SCOPE"
+    assert _rows(certificate, "file_decisions")[0]["decision"] == "IN_SCOPE"
 
 
 @pytest.mark.parametrize("mutation", ("missing", "changed"))
@@ -201,8 +225,8 @@ def test_missing_or_modified_js_blob_never_passes(
             "engine": "STATIC",
         }
     ]
-    assert certificate["file_decisions"][0]["decision"] == "IN_SCOPE"
-    assert certificate["file_decisions"][0]["source_sha256"] is None
+    assert _rows(certificate, "file_decisions")[0]["decision"] == "IN_SCOPE"
+    assert _rows(certificate, "file_decisions")[0]["source_sha256"] is None
 
 
 def test_unknown_reason_and_pyi_remain_effective(tmp_path: Path) -> None:
@@ -226,11 +250,13 @@ def test_unknown_reason_and_pyi_remain_effective(tmp_path: Path) -> None:
 
     certificate = _certificate(fixture)
 
-    assert {row["path"] for row in certificate["effective_static_gaps"]} == {
+    assert {row["path"] for row in _rows(certificate, "effective_static_gaps")} == {
         "web/view.js",
         "types.pyi",
     }
-    assert {row["decision"] for row in certificate["file_decisions"]} == {"IN_SCOPE"}
+    assert {row["decision"] for row in _rows(certificate, "file_decisions")} == {
+        "IN_SCOPE"
+    }
 
 
 def test_changed_pinned_commit_rejected_before_reclassification(tmp_path: Path) -> None:
@@ -299,7 +325,9 @@ def test_unindexed_python_file_rule_gap_stays_effective(tmp_path: Path) -> None:
         identity, index, index_ref, coverage_ref, coverage, workspace
     )
 
-    assert {row["path"] for row in certificate["effective_static_gaps"]} == {"app.py"}
+    assert {row["path"] for row in _rows(certificate, "effective_static_gaps")} == {
+        "app.py"
+    }
 
 
 @pytest.mark.parametrize(
@@ -331,7 +359,7 @@ def test_unindexed_ast_error_stays_effective(
 
     assert any(
         row["path"] == "app.py" and row["reason"] == reason
-        for row in certificate["effective_static_gaps"]
+        for row in _rows(certificate, "effective_static_gaps")
     )
 
 
@@ -354,7 +382,7 @@ def test_unindexed_engine_error_stays_effective(tmp_path: Path) -> None:
 
     assert any(
         row["path"] == "" and row["reason"] == "ENGINE_ERROR:OPENGREP_SCAN_FAILED"
-        for row in certificate["effective_static_gaps"]
+        for row in _rows(certificate, "effective_static_gaps")
     )
 
 
@@ -490,5 +518,5 @@ def test_raw_scan_gap_provenance_is_preserved(tmp_path: Path) -> None:
     assert certificate["raw_coverage_gaps"] == coverage["gaps"]
     assert any(
         row["path"] == "app.py" and row["rule_id"] == "python/sink"
-        for row in certificate["effective_static_gaps"]
+        for row in _rows(certificate, "effective_static_gaps")
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -35,6 +36,7 @@ from sastsimi.simple_runtime.store import (
 )
 from sastsimi.simple_runtime.surface_contexts import SurfaceContext
 from sastsimi.simple_runtime.surface_coverage_v2 import (
+    SurfaceCoverageV2,
     evaluate_surface_coverage_v2,
 )
 from sastsimi.simple_runtime.surface_enrichment_v4 import (
@@ -43,6 +45,12 @@ from sastsimi.simple_runtime.surface_enrichment_v4 import (
 from sastsimi.simple_runtime.surface_evidence_validation_v4 import (
     validate_v4_response,
 )
+
+
+def _json_rows(value: object) -> list[dict[str, object]]:
+    assert isinstance(value, list)
+    assert all(isinstance(row, dict) for row in value)
+    return cast(list[dict[str, object]], value)
 
 
 @dataclass
@@ -58,7 +66,7 @@ class _Case:
     store: SimpleCheckpointStore
     artifacts: SimpleArtifactRepository
 
-    def evaluate(self):
+    def evaluate(self) -> SurfaceCoverageV2:
         return evaluate_surface_coverage_v2(
             self.identity,
             self.index,
@@ -246,6 +254,16 @@ def _case(
             "graph_path_id": "path-real",
         },
     ]
+    graph_paths: list[dict[str, object]] = [
+        {
+            "path_id": "path-real",
+            "kind": "call_path_v1",
+            "provenance": "python_syntax",
+            "assurance": "SYNTACTIC_REACHABILITY",
+            "steps": nodes,
+            "edge_ids": ["edge-entry", "edge-sink"],
+        }
+    ]
     graph: dict[str, object] = {
         "kind": "simple_surface_evidence_graph_v4",
         "anchor": {
@@ -270,16 +288,7 @@ def _case(
         "ast_facts": [],
         "nodes": nodes,
         "edges": edges,
-        "paths": [
-            {
-                "path_id": "path-real",
-                "kind": "call_path_v1",
-                "provenance": "python_syntax",
-                "assurance": "SYNTACTIC_REACHABILITY",
-                "steps": nodes,
-                "edge_ids": ["edge-entry", "edge-sink"],
-            }
-        ],
+        "paths": graph_paths,
         "gaps": [],
     }
     if unrelated_role:
@@ -293,7 +302,7 @@ def _case(
         ]
         graph["edges"] = [*edges, *decoy_edges]
         graph["paths"] = [
-            *graph["paths"],
+            *graph_paths,
             {
                 "path_id": "path-decoy",
                 "kind": "call_path_v1",
@@ -404,11 +413,15 @@ def _case(
             omitted_source_line_count=0,
             omitted_ast_fact_count=0,
         )
-        visible_lines = {
-            item["value"]["line"]
-            for item in part.payload["items"]
-            if item["category"] == "source_lines"
-        }
+        visible_lines: set[int] = set()
+        for item in _json_rows(part.payload["items"]):
+            if item["category"] != "source_lines":
+                continue
+            source_line = item["value"]
+            assert isinstance(source_line, dict)
+            line = source_line["line"]
+            assert isinstance(line, int)
+            visible_lines.add(line)
         reply: dict[str, object] = {
             "surface_id": surface.surface_id,
             "context_id": context.context_id,
@@ -508,12 +521,13 @@ def test_covered_only_with_connected_three_role_proof_and_no_hold(
 
     assert proof.complete is True
     payload = proof.to_json()
+    surfaces = _json_rows(payload["surfaces"])
     assert payload["kind"] == "simple_attack_surface_coverage_v2"
-    assert payload["surfaces"][0]["coverage_status"] == "COVERED"
-    assert len(payload["surfaces"][0]["verified_roles"]) == 3
-    assert payload["surfaces"][0]["path"] == "app.py"
-    assert payload["surfaces"][0]["line"] == 4
-    assert payload["surfaces"][1]["coverage_status"] == "COVERED"
+    assert surfaces[0]["coverage_status"] == "COVERED"
+    assert len(_json_rows(surfaces[0]["verified_roles"])) == 3
+    assert surfaces[0]["path"] == "app.py"
+    assert surfaces[0]["line"] == 4
+    assert surfaces[1]["coverage_status"] == "COVERED"
     assert payload["raw_static_gaps"] == []
     assert payload["effective_python_gaps"] == []
     assert case.artifacts.read(case.coverage_ref) == original_v1
@@ -525,7 +539,7 @@ def test_verified_roles_across_inconclusive_parts_can_cover_one_path(
 ) -> None:
     monkeypatch.setattr(surface_enrichment_v4, "_MAX_PART_BYTES", 3000)
     case = _case(tmp_path)
-    assert len(case.plan["expected_parts"]) > 1
+    assert len(_json_rows(case.plan["expected_parts"])) > 1
     assert all(
         row.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
         for row in case.progress.values()
@@ -548,7 +562,7 @@ def test_inconclusive_parts_without_sensitive_role_remain_insufficient(
 ) -> None:
     monkeypatch.setattr(surface_enrichment_v4, "_MAX_PART_BYTES", 3000)
     case = _case(tmp_path, omit_sensitive_role=True)
-    assert len(case.plan["expected_parts"]) > 1
+    assert len(_json_rows(case.plan["expected_parts"])) > 1
 
     proof = case.evaluate()
 
@@ -720,12 +734,11 @@ def test_crash_between_coverage_artifact_and_terminal_is_idempotent(
     assert first.to_json() == second.to_json()
     assert case.artifacts.put_json(second.to_json()) == saved_ref
     assert case.artifacts.read(case.coverage_ref) == old_bytes
-    assert (
-        case.store.require_analysis_run(
-            case.identity.analysis_id
-        ).candidate_terminal.status
-        == "PARTIAL"
-    )
+    terminal = case.store.require_analysis_run(
+        case.identity.analysis_id
+    ).candidate_terminal
+    assert terminal is not None
+    assert terminal.status == "PARTIAL"
 
 
 def test_v2_terminal_replay_verifies_exact_new_proof(

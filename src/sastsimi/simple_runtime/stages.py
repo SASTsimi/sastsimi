@@ -91,6 +91,7 @@ from .recovery import (
     RecoveryAction,
     candidate_app_replay_forbidden,
     candidate_app_replay_unsupported_app,
+    closed_poc_runtime_diagnostic,
     django_settings_replay_forbidden,
     migration_settings_replay_binding,
     relation_settings_replay_binding,
@@ -1703,10 +1704,39 @@ class PoCCandidateStage:
             for ref in prior_checkpoint.output_refs
         )
         current_repair_refs = self._current_repair_refs(checkpoint.input_refs)
+        if len(current_repair_refs) != 2 and checkpoint.recovery_decision_refs:
+            decision_ref = checkpoint.recovery_decision_refs[-1]
+            if decision_ref not in checkpoint.input_refs:
+                raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID")
+            try:
+                recovery_record = json.loads(
+                    self._artifacts.read_bounded(decision_ref, 64 * 1024)
+                )
+            except (OSError, ValueError, UnicodeError, sqlite3.Error):
+                raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID") from None
+            if not isinstance(recovery_record, dict):
+                raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID")
+            if (
+                type(recovery_record.get("closed_runtime_policy_revision")) is int
+                and recovery_record["closed_runtime_policy_revision"] == 1
+            ):
+                raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID")
+        closed_error_ref, excluded_stream_refs = (
+            self._closed_runtime_repair_context(checkpoint, *current_repair_refs)
+            if len(current_repair_refs) == 2
+            else (None, ())
+        )
         current_error_ref = (
-            self._current_repair_error_ref(current_repair_refs[1])
+            closed_error_ref
+            if excluded_stream_refs
+            else self._current_repair_error_ref(current_repair_refs[1])
             if len(current_repair_refs) == 2
             else None
+        )
+        optional_recovery_refs = (
+            ()
+            if excluded_stream_refs
+            else checkpoint.input_refs + checkpoint.recovery_decision_refs[:-1]
         )
         required_refs = tuple(
             ref
@@ -1722,17 +1752,16 @@ class PoCCandidateStage:
                 + ((current_error_ref,) if current_error_ref is not None else ())
                 + checkpoint.recovery_decision_refs[-1:]
             )
-            if ref != shared_batch_source_ref
+            if ref != shared_batch_source_ref and ref not in excluded_stream_refs
         )
         optional_refs = tuple(
             ref
             for ref in _unique_refs(
                 ((resource_facts_ref,) if resource_facts_ref is not None else ())
                 + _prior_refs(prior)
-                + checkpoint.input_refs
-                + checkpoint.recovery_decision_refs[:-1]
+                + optional_recovery_refs
             )
-            if ref != shared_batch_source_ref
+            if ref != shared_batch_source_ref and ref not in excluded_stream_refs
         )
         try:
             context = self._artifacts.prompt_context_prioritized(
@@ -2548,6 +2577,92 @@ boundary without altering the target's behavior.
         except ValueError:
             return None
         return self._artifacts.put_bytes(safe_projection, "application/json")
+
+    def _closed_runtime_repair_context(
+        self,
+        checkpoint: StageCheckpoint,
+        candidate_ref: StoredDataRef,
+        execution_ref: StoredDataRef,
+    ) -> tuple[StoredDataRef | None, tuple[StoredDataRef, ...]]:
+        """Use only verified closed labels for a bound exit-two PoC repair."""
+
+        if not checkpoint.recovery_decision_refs:
+            return None, ()
+        decision_ref = checkpoint.recovery_decision_refs[-1]
+        if decision_ref not in checkpoint.input_refs:
+            raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID")
+        try:
+            record = json.loads(self._artifacts.read_bounded(decision_ref, 64 * 1024))
+            if not isinstance(record, dict):
+                raise ValueError("invalid recovery decision record")
+            if (
+                type(record.get("closed_runtime_policy_revision")) is not int
+                or record["closed_runtime_policy_revision"] != 1
+            ):
+                return None, ()
+            original_error = StageFailure.model_validate_json(
+                canonical_bytes(record["original_error"])
+            )
+            decision = record["decision"]
+            evidence = original_error.evidence_refs
+            if (
+                record.get("kind") != "simple_recovery_decision"
+                or record.get("identity") != checkpoint.identity.model_dump(mode="json")
+                or record.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+                or record.get("decision_origin") != "RULE"
+                or original_error.code != "POC_EXECUTION_FAILED"
+                or not isinstance(decision, dict)
+                or decision.get("category") != "GENERATED_INPUT"
+                or decision.get("action") != "REGENERATE_INPUT"
+                or len(evidence) != 4
+                or evidence[0] != execution_ref
+                or any(ref not in checkpoint.input_refs for ref in evidence)
+            ):
+                raise ValueError("invalid closed runtime recovery binding")
+            execution = json.loads(
+                self._artifacts.read_bounded(execution_ref, 64 * 1024)
+            )
+            cleanup = json.loads(self._artifacts.read_bounded(evidence[3], 4 * 1024))
+            if (
+                not isinstance(execution, dict)
+                or execution.get("kind") != "simple_poc_execution"
+                or execution.get("attempt_id") != record.get("attempt_id")
+                or execution.get("candidate_ref")
+                != candidate_ref.model_dump(mode="json")
+                or execution.get("stdout_ref") != evidence[1].model_dump(mode="json")
+                or execution.get("stderr_ref") != evidence[2].model_dump(mode="json")
+                or type(execution.get("exit_code")) is not int
+                or execution.get("exit_code") != 2
+                or execution.get("timed_out") is not False
+                or not isinstance(cleanup, dict)
+                or cleanup.get("kind") != "simple_container_cleanup"
+                or cleanup.get("attempt_id") != execution.get("attempt_id")
+                or cleanup.get("container_id") != execution.get("container_id")
+                or cleanup.get("status") != "REMOVED"
+            ):
+                raise ValueError("invalid closed runtime PoC receipt")
+            streams = (evidence[1], evidence[2])
+            try:
+                stderr = self._artifacts.read_bounded(evidence[2], 1024 * 1024)
+                diagnostic = closed_poc_runtime_diagnostic(stderr)
+                excerpt = record.get("diagnostic_excerpt")
+                if (
+                    diagnostic is None
+                    or not isinstance(excerpt, str)
+                    or json.loads(excerpt) != diagnostic
+                ):
+                    return None, streams
+                projection_ref = self._artifacts.put_json(
+                    {
+                        "kind": "simple_poc_repair_diagnostic",
+                        "closed_runtime": diagnostic,
+                    }
+                )
+            except (OSError, TypeError, ValueError, UnicodeError, sqlite3.Error):
+                return None, streams
+            return projection_ref, streams
+        except (KeyError, OSError, TypeError, ValueError, UnicodeError, sqlite3.Error):
+            raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID") from None
 
     def _requested_source_ref(
         self,

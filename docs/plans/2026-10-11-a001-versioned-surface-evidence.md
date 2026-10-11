@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3, Pydantic contracts, SQLite checkpoint store, content-addressed JSON artifacts, pytest/pytest-asyncio, Ruff, Windows PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-10-11-a001-versioned-surface-evidence-design.md`
+**Spec:** `docs/plans/2026-10-11-a001-versioned-surface-evidence-design.md`
 
 ## Global Constraints
 
@@ -149,7 +149,7 @@ All commands below are single-line PowerShell commands run from `build/codex-a00
 
 ### Task 9: Regression gate, documentation and separately approved A-001 rollout
 
-**Files:** Modify `README.md` and `docs/architecture/runtime-and-recovery.md`; test no new product module. Preserve the approved design and this plan in `docs/superpowers`.
+**Files:** Modify `README.md` and `docs/architecture/runtime-and-recovery.md`; test no new product module. Preserve the approved design and this plan in `docs/plans`.
 
 **Interfaces:** Document the exact PowerShell one-line `resume A-001 --enrich-saved-surface-evidence` invocation and status interpretation: effective Python scope does not erase raw exclusions; `PARTIAL` can be a correct terminal result; a covered surface is not a confirmed Finding or permission to disclose.
 

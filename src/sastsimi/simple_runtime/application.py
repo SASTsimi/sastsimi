@@ -73,6 +73,7 @@ from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
     RecoveryAction,
     RecoveryCoordinator,
+    closed_poc_runtime_diagnostic,
 )
 from .run_lease import AnalysisRunBusy, analysis_run_lease
 from .runner import RunOutcome, SimpleRuntimeRunner, StageBlocked, StageFailed
@@ -1845,9 +1846,20 @@ class SimpleAnalysisApplication:
                         stopped, artifacts
                     )
                 else:
-                    self._store.prepare_poc_extract_exhaustion_replay(
-                        stopped, artifacts
-                    )
+                    try:
+                        stderr = artifacts.read_bounded(
+                            stopped.output_refs[2], 1024 * 1024
+                        )
+                    except (IndexError, OSError, ValueError):
+                        stderr = b""
+                    if closed_poc_runtime_diagnostic(stderr) is not None:
+                        self._store.prepare_poc_closed_runtime_exhaustion_replay(
+                            stopped, artifacts
+                        )
+                    else:
+                        self._store.prepare_poc_extract_exhaustion_replay(
+                            stopped, artifacts
+                        )
             else:
                 self._store.prepare_fallback_poc_stop_replan(stopped, artifacts)
         elif mode == "placeholder":

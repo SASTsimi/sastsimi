@@ -15,11 +15,13 @@ from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageStatus,
     input_reference_hash,
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.recovery import closed_poc_runtime_diagnostic
 from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
 from sastsimi.simple_runtime.stages import (
     PoCCandidateStage,
@@ -343,10 +345,8 @@ async def test_poc_candidate_receives_pinned_pro_con_source_without_path_request
         attempt_id="attempt-1",
     )
     client = _SourceRecordingClient()
-
-    await PoCCandidateStage(client=client, artifacts=artifacts)(
-        checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}
-    )
+    stage = PoCCandidateStage(client=client, artifacts=artifacts)
+    await stage(checkpoint, {SimpleStage.PRO_CON_DONE: pro_con})
 
     assert b"aiosqlite.connect(database='fixture.db')" in client.prompt
 
@@ -804,6 +804,397 @@ async def test_poc_candidate_keeps_current_repair_metadata_when_history_is_large
     stored = json.loads(artifacts.read(result.output_refs[0]))
     assert old_refs[1].model_dump(mode="json") not in stored["source_refs"]
     assert old_refs[4].model_dump(mode="json") not in stored["source_refs"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "stderr",
+        "expected_frame",
+        "tampered_binding",
+        "missing_pair",
+        "replay_marker_variant",
+    ),
+    [
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback functions: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > /workspace/private/source.py\n",
+            False,
+            False,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback functions: foreign_related_fields > "
+            b"/workspace/private/source.py\n",
+            False,
+            False,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            True,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            True,
+            "none",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "closed_attempt4",
+            id="closed-runtime-attempt-four-is-not-django-relation",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "spoofed_attempt4",
+            id="untyped-revision-one-still-rejected",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "mixed_attempt4",
+            id="mixed-closed-and-django-relation-still-rejected",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "relation_attempt4",
+            id="malformed-django-relation-marker-still-rejected",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "ambiguous_false_attempt4",
+            id="false-django-relation-field-cannot-mask-closed-replay",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "closed_attempt5",
+            id="closed-runtime-attempt-five-is-not-django-migration",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "spoofed_attempt5",
+            id="untyped-revision-one-attempt-five-still-rejected",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "mixed_migration_attempt5",
+            id="mixed-closed-and-django-migration-still-rejected",
+        ),
+    ],
+)
+async def test_bound_closed_runtime_diagnostic_excludes_raw_output_from_repair_prompt(
+    tmp_path: Path,
+    stderr: bytes,
+    expected_frame: bool,
+    tampered_binding: bool,
+    missing_pair: bool,
+    replay_marker_variant: str,
+) -> None:
+    """A verified exit-two repair sees only class/frames, not output values."""
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "path": "main.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": "b" * 64,
+            "source_lines": [{"line": 1, "text": "route_marker = True"}],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["main.py:1"]},
+        }
+    )
+    pro_ref = artifacts.put_json(
+        {"kind": "simple_pro_evidence", "result": {"requested_paths": []}}
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref, source_ref),
+        input_hash=input_reference_hash((proposal_ref, source_ref)),
+        output_refs=(pro_ref,),
+    )
+    content = b"#!/bin/sh\nprintf 'fixture'\n"
+    content_ref = artifacts.put_bytes(content, "text/x-shellscript")
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "attempt_id": "old-attempt",
+            "content_ref": content_ref.model_dump(mode="json"),
+            "content_digest": hashlib.sha256(content).hexdigest(),
+        }
+    )
+    stdout_ref = artifacts.put_bytes(b"RAW_STDOUT_VALUE_SENTINEL", "text/plain")
+    stderr_ref = artifacts.put_bytes(stderr, "text/plain")
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "candidate_ref": candidate_ref.model_dump(mode="json"),
+            "content_ref": content_ref.model_dump(mode="json"),
+            "stdout_ref": stdout_ref.model_dump(mode="json"),
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+            "exit_code": 2,
+            "timed_out": False,
+            "container_id": "owned-container-1",
+            "image_digest": "sha256:" + "c" * 64,
+            "attempt_id": "old-attempt",
+        }
+    )
+    cleanup_ref = artifacts.put_json(
+        {
+            "kind": "simple_container_cleanup",
+            "attempt_id": "old-attempt",
+            "container_id": "owned-container-1",
+            "status": "REMOVED",
+        }
+    )
+    evidence_refs = (execution_ref, stdout_ref, stderr_ref, cleanup_ref)
+    decision_ref = artifacts.put_json(
+        {
+            "kind": (
+                "simple_poc_django_migration_settings_candidate_replay"
+                if replay_marker_variant == "mixed_migration_attempt5"
+                else "simple_recovery_decision"
+            ),
+            "identity": (
+                {
+                    **identity.model_dump(mode="json"),
+                    "hypothesis_id": "other-hypothesis",
+                }
+                if tampered_binding
+                else identity.model_dump(mode="json")
+            ),
+            "stage": SimpleStage.POC_EXECUTION_DONE.value,
+            "attempt": 3 if replay_marker_variant != "none" else 1,
+            "attempt_id": "old-attempt",
+            "decision_origin": "RULE",
+            "closed_runtime_policy_revision": 1,
+            **(
+                {"explicit_exhaustion_replay": True}
+                if replay_marker_variant != "none"
+                else {}
+            ),
+            **(
+                {
+                    "recovery_revision": 1,
+                    **(
+                        {"closed_runtime_replay": True}
+                        if replay_marker_variant
+                        in {
+                            "closed_attempt4",
+                            "mixed_attempt4",
+                            "ambiguous_false_attempt4",
+                            "closed_attempt5",
+                            "mixed_migration_attempt5",
+                        }
+                        else {}
+                    ),
+                    **(
+                        {"relation_settings_replay": True}
+                        if replay_marker_variant
+                        in {"mixed_attempt4", "relation_attempt4"}
+                        else {}
+                    ),
+                    **(
+                        {"relation_settings_replay": False}
+                        if replay_marker_variant == "ambiguous_false_attempt4"
+                        else {}
+                    ),
+                }
+                if replay_marker_variant != "none"
+                else {}
+            ),
+            "original_error": StageFailure(
+                code="POC_EXECUTION_FAILED",
+                retryable=True,
+                safe_message="PoC execution could not complete",
+                evidence_refs=evidence_refs,
+            ).model_dump(mode="json"),
+            "decision": {
+                "category": "GENERATED_INPUT",
+                "action": "REGENERATE_INPUT",
+                "diagnosis": "PoC execution failed",
+                "guidance": "Regenerate the PoC candidate",
+                "environment_patch": "",
+            },
+            **(
+                {
+                    "diagnostic_excerpt": json.dumps(
+                        closed_poc_runtime_diagnostic(stderr)
+                    )
+                }
+                if expected_frame
+                else {}
+            ),
+        }
+    )
+    older_refs: list[StoredDataRef] = []
+    for index in (1, 2):
+        old_attempt = f"older-attempt-{index}"
+        old_candidate_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_candidate",
+                "attempt_id": old_attempt,
+                "content_ref": content_ref.model_dump(mode="json"),
+                "content_digest": hashlib.sha256(content).hexdigest(),
+            }
+        )
+        old_stdout_ref = artifacts.put_bytes(
+            f"OLDER_STDOUT_VALUE_SENTINEL_{index}".encode(), "text/plain"
+        )
+        old_stderr_ref = artifacts.put_bytes(
+            f"OLDER_STDERR_VALUE_SENTINEL_{index}".encode(), "text/plain"
+        )
+        old_execution_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_execution",
+                "attempt_id": old_attempt,
+                "candidate_ref": old_candidate_ref.model_dump(mode="json"),
+                "content_ref": content_ref.model_dump(mode="json"),
+                "stdout_ref": old_stdout_ref.model_dump(mode="json"),
+                "stderr_ref": old_stderr_ref.model_dump(mode="json"),
+                "exit_code": 2,
+                "timed_out": False,
+            }
+        )
+        older_refs.extend(
+            (old_candidate_ref, old_execution_ref, old_stdout_ref, old_stderr_ref)
+        )
+    inputs = (
+        *older_refs,
+        candidate_ref,
+        content_ref,
+        *((execution_ref,) if not missing_pair else ()),
+        stdout_ref,
+        stderr_ref,
+        cleanup_ref,
+        decision_ref,
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=inputs,
+        input_hash=input_reference_hash(inputs),
+        attempt_id="new-attempt",
+        attempt_number=(
+            5
+            if replay_marker_variant.endswith("attempt5")
+            else 4
+            if replay_marker_variant != "none"
+            else 2
+        ),
+        recovery_decision_refs=(decision_ref,),
+        recovery_origin_stage=(
+            SimpleStage.POC_EXECUTION_DONE if replay_marker_variant != "none" else None
+        ),
+    )
+    client = _SourceRecordingClient()
+    stage = PoCCandidateStage(client=client, artifacts=artifacts)
+    if (
+        tampered_binding
+        or missing_pair
+        or replay_marker_variant
+        in {
+            "spoofed_attempt4",
+            "mixed_attempt4",
+            "relation_attempt4",
+            "ambiguous_false_attempt4",
+            "spoofed_attempt5",
+            "mixed_migration_attempt5",
+        }
+    ):
+        with pytest.raises(StageFailed) as exc:
+            await stage(checkpoint, {SimpleStage.PRO_CON_DONE: pro_con})
+        assert exc.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
+        assert client.prompt == b""
+        return
+
+    await stage(checkpoint, {SimpleStage.PRO_CON_DONE: pro_con})
+
+    assert (b'"closed_runtime":' in client.prompt) is expected_frame
+    assert (b"resolve_related_fields" in client.prompt) is expected_frame
+    assert b"RAW_MESSAGE_VALUE_SENTINEL" not in client.prompt
+    assert b"RAW_STDOUT_VALUE_SENTINEL" not in client.prompt
+    assert b"/workspace/private/source.py" not in client.prompt
+    for index in (1, 2):
+        assert f"OLDER_STDOUT_VALUE_SENTINEL_{index}".encode() not in client.prompt
+        assert f"OLDER_STDERR_VALUE_SENTINEL_{index}".encode() not in client.prompt
 
 
 @pytest.mark.asyncio

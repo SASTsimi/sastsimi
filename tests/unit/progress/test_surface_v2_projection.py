@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -53,6 +54,13 @@ def _ref(payload: object) -> StoredDataRef:
         commit_id=CommitId("c" * 40),
         record_id=None,
     )
+
+
+def _surface_rows(payload: dict[str, object]) -> list[dict[str, object]]:
+    rows = payload["surfaces"]
+    assert isinstance(rows, list)
+    assert all(isinstance(row, dict) for row in rows)
+    return cast(list[dict[str, object]], rows)
 
 
 def _proof(
@@ -240,12 +248,11 @@ def test_v2_referenced_scope_cas_loss_never_shows_complete(
 ) -> None:
     index, certificate, proof, terminal = _proof()
     artifacts = _review_artifacts(tmp_path, index, certificate)
-    assert (
-        verified_surface_coverage_counts(
-            proof, index, terminal, certificate_payload=certificate, artifacts=artifacts
-        )["COVERED"]
-        == 1
+    counts = verified_surface_coverage_counts(
+        proof, index, terminal, certificate_payload=certificate, artifacts=artifacts
     )
+    assert counts is not None
+    assert counts["COVERED"] == 1
     payload_by_asset: dict[str, object] = {
         "index": index.to_json(),
         "certificate": certificate,
@@ -303,7 +310,7 @@ def test_v2_child_hold_or_wrong_proof_version_cannot_show_complete(
         "pending_child_count": 1,
         "surfaces": [
             {
-                **proof["surfaces"][0],
+                **_surface_rows(proof)[0],
                 "coverage_status": "INSUFFICIENT",
                 "unresolved_reason_codes": ["CHILD_HOLD"],
             }
@@ -452,16 +459,21 @@ def test_v4_running_marker_needs_active_lease(tmp_path: Path) -> None:
         )
     )
     projector = ProgressProjector(store)
-    kwargs = {
-        "candidate_pipeline_version": 2,
-        "candidate_counts": {},
-        "surface_enrichment_status": "RUNNING",
-    }
-    active = projector.snapshot(identity.analysis_id, analysis_active=True, **kwargs)
+    active = projector.snapshot(
+        identity.analysis_id,
+        analysis_active=True,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        surface_enrichment_status="RUNNING",
+    )
     assert active.status == "RUNNING"
     assert active.error_code is None
     interrupted = projector.snapshot(
-        identity.analysis_id, analysis_active=False, **kwargs
+        identity.analysis_id,
+        analysis_active=False,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        surface_enrichment_status="RUNNING",
     )
     assert interrupted.status == "PAUSED"
     assert interrupted.error_code == "SURFACE_ENRICHMENT_INTERRUPTED"
@@ -672,7 +684,7 @@ def test_cli_and_dashboard_v2_readers_require_exact_certificate(
         **proof,
         "surfaces": [
             {
-                **proof["surfaces"][0],
+                **_surface_rows(proof)[0],
                 "coverage_status": "INSUFFICIENT",
                 "unresolved_reason_codes": reasons,
             }

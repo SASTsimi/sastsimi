@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
     SimpleAnalysisApplication,
@@ -20,7 +21,9 @@ from sastsimi.simple_runtime.models import (
     SimpleStage,
 )
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.simple_runtime.surface_contexts import SurfaceContext
 from sastsimi.simple_runtime.surface_enrichment_v4 import (
+    V4Part,
     prepare_surface_enrichment_v4,
     read_saved_coverage_v1,
 )
@@ -298,13 +301,20 @@ async def test_prepare_pins_plan_and_certificate_before_writing_contexts(
     async def static_scope(*_: object) -> None:
         observed.append("scope")
 
-    def calculate(*_: object) -> tuple:
+    def calculate(
+        *_: object,
+    ) -> tuple[
+        dict[str, object],
+        tuple[V4Part, ...],
+        dict[str, object],
+        dict[str, dict[str, object]],
+    ]:
         observed.append("calculate")
         return plan, parts, certificate, graphs
 
     original_put = SimpleArtifactRepository.put_json
 
-    def tracked_put(self: SimpleArtifactRepository, value: object):
+    def tracked_put(self: SimpleArtifactRepository, value: object) -> StoredDataRef:
         if isinstance(value, dict):
             observed.append(str(value.get("kind")))
             if value.get("kind") == "simple_surface_context_v4":
@@ -319,6 +329,8 @@ async def test_prepare_pins_plan_and_certificate_before_writing_contexts(
     await app._prepare_surface_enrichment_locked(identity.analysis_id)
     saved = store.require_analysis_run(identity.analysis_id)
     artifacts = SimpleArtifactRepository(app._data_dir, identity)
+    assert saved.surface_enrichment_plan_ref is not None
+    assert saved.python_scope_certificate_ref is not None
     assert json.loads(artifacts.read(saved.surface_enrichment_plan_ref)) == plan
     assert json.loads(artifacts.read(saved.python_scope_certificate_ref)) == certificate
     assert observed[:4] == [
@@ -377,7 +389,9 @@ async def test_reprepare_restores_only_missing_unreviewed_part(
     original_put = SimpleArtifactRepository.put_json
     interrupted = False
 
-    def interrupt_context_write(self: SimpleArtifactRepository, value: object):
+    def interrupt_context_write(
+        self: SimpleArtifactRepository, value: object
+    ) -> StoredDataRef:
         nonlocal interrupted
         if (
             not interrupted
@@ -456,7 +470,9 @@ async def test_pinned_v4_run_skips_legacy_candidate_producer(
     )
     observed: list[str] = []
 
-    def saved(*_: object) -> tuple[dict[str, object], tuple]:
+    def saved(
+        *_: object,
+    ) -> tuple[dict[str, object], tuple[SurfaceContext, ...]]:
         observed.append("saved-v4")
         return {"kind": "simple_surface_enrichment_plan_v4"}, ()
 
