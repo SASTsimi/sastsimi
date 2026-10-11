@@ -3413,6 +3413,103 @@ def migration_settings_blocked_replay_binding(
     )
 
 
+def late_fixture_replay_binding(
+    checkpoint: StageCheckpoint, artifacts: SimpleArtifactRepository
+) -> dict[str, object] | None:
+    """Verify an attempt-seven marker against the saved attempt-six fixture stop."""
+
+    if checkpoint.attempt_number != MAX_RECOVERY_ATTEMPTS + 4:
+        return None
+    try:
+        if (
+            checkpoint.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or checkpoint.status
+            not in {StageStatus.PENDING, StageStatus.RUNNING, StageStatus.SUCCEEDED}
+            or not checkpoint.recovery_decision_refs
+            or checkpoint.input_hash != input_reference_hash(checkpoint.input_refs)
+            or checkpoint.container_id is not None
+            or checkpoint.validated_poc_ref is not None
+        ):
+            raise ValueError("invalid late fixture checkpoint")
+        marker_ref = checkpoint.recovery_decision_refs[-1]
+        marker = json.loads(artifacts.read_bounded(marker_ref, 64 * 1024))
+        if not isinstance(marker, dict) or set(marker) != {
+            "kind", "identity", "stage", "attempt", "decision_origin",
+            "explicit_exhaustion_replay", "late_fixture_replay_revision",
+            "parent_fixture_decision_ref", "old_attempt_id", "old_attempt_number",
+            "old_checkpoint_ref", "old_checkpoint_hash", "diagnostic_ref",
+            "source_projection_hash", "historical_rejection_reason", "guidance",
+        }:
+            raise ValueError("invalid late fixture marker")
+        old_ref = StoredDataRef.model_validate(marker["old_checkpoint_ref"])
+        old = StageCheckpoint.model_validate_json(
+            artifacts.read_bounded(old_ref, 256 * 1024)
+        )
+        parent_ref = StoredDataRef.model_validate(
+            marker["parent_fixture_decision_ref"]
+        )
+        parent = json.loads(artifacts.read_bounded(parent_ref, 64 * 1024))
+        expected = tuple(
+            dict.fromkeys((*old.input_refs, *old.output_refs, old_ref, marker_ref))
+        )
+        if (
+            marker["kind"] != "simple_recovery_decision"
+            or marker["identity"] != checkpoint.identity.model_dump(mode="json")
+            or marker["stage"] != SimpleStage.POC_CANDIDATE_DONE.value
+            or marker["attempt"] != MAX_RECOVERY_ATTEMPTS + 3
+            or marker["decision_origin"] != "RULE"
+            or marker["explicit_exhaustion_replay"] is not True
+            or marker["late_fixture_replay_revision"] != 2
+            or marker["historical_rejection_reason"] != "UNKNOWN"
+            or marker["old_attempt_id"] != old.attempt_id
+            or marker["old_attempt_number"] != old.attempt_number
+            or marker["old_checkpoint_hash"]
+            != hashlib.sha256(canonical_bytes(old.model_dump(mode="json"))).hexdigest()
+            or marker["diagnostic_ref"] != old.output_refs[0].model_dump(mode="json")
+            or old.identity != checkpoint.identity
+            or old.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or old.status is not StageStatus.BLOCKED
+            or old.error_code != "RECOVERY_EXHAUSTED"
+            or old.retryable
+            or old.attempt_number != MAX_RECOVERY_ATTEMPTS + 3
+            or old.input_hash != input_reference_hash(old.input_refs)
+            or len(old.output_refs) != 1
+            or old.recovery_decision_refs[-1] != parent_ref
+            or not isinstance(parent, dict)
+            or parent.get("kind") != "simple_recovery_decision"
+            or parent.get("identity") != checkpoint.identity.model_dump(mode="json")
+            or parent.get("migration_fixture_replay") is not True
+            or parent.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+            or parent.get("attempt") != MAX_RECOVERY_ATTEMPTS + 2
+            or marker["source_projection_hash"]
+            != hashlib.sha256(
+                canonical_bytes(parent.get("fixture_source_projection"))
+            ).hexdigest()
+            or checkpoint.input_refs != expected
+            or checkpoint.recovery_decision_refs
+            != (*old.recovery_decision_refs, marker_ref)
+            or checkpoint.recipe_ref != old.recipe_ref
+            or checkpoint.image_digest != old.image_digest
+            or checkpoint.gate_revision_count != old.gate_revision_count
+            or checkpoint.recovery_lineage_id != old.recovery_lineage_id
+            or checkpoint.recovery_origin_stage != old.recovery_origin_stage
+            or (
+                checkpoint.status is StageStatus.PENDING
+                and checkpoint.attempt_id is not None
+            )
+            or (
+                checkpoint.status is not StageStatus.PENDING
+                and not checkpoint.attempt_id
+            )
+        ):
+            raise ValueError("unbound late fixture marker")
+        return {"old": old, "parent": parent, "parent_ref": parent_ref}
+    except (
+        KeyError, IndexError, OSError, TypeError, ValueError, UnicodeError
+    ) as error:
+        raise ValueError("POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAY_UNBOUND") from error
+
+
 def _migration_settings_candidate_replay_binding(
     checkpoint: StageCheckpoint, artifacts: SimpleArtifactRepository
 ) -> tuple[str, StageCheckpoint]:

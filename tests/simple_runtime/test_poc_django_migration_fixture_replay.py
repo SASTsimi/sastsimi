@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -12,6 +13,7 @@ import pytest
 from sastsimi.observability.agent_activity import ActivityKind
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
+    MAX_RECOVERY_ATTEMPTS,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
@@ -20,7 +22,10 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected
 from sastsimi.simple_runtime.provider import SimpleLLMClient
-from sastsimi.simple_runtime.recovery import migration_settings_replay_binding
+from sastsimi.simple_runtime.recovery import (
+    late_fixture_replay_binding,
+    migration_settings_replay_binding,
+)
 from sastsimi.simple_runtime.stages import (
     PoCCandidateStage,
     _reject_migration_settings_replay_content,
@@ -170,6 +175,154 @@ def _attempt_five_migration_failure(
         StageStatus.BLOCKED,
     )
     return store, artifacts, exhausted
+
+
+def _attempt_six_fixture_rejection(
+    tmp_path: Path,
+) -> tuple[SimpleCheckpointStore, SimpleArtifactRepository, StageCheckpoint]:
+    store, artifacts, fifth = _attempt_five_migration_failure(tmp_path)
+    pending = store.prepare_poc_django_migration_settings_exhaustion_replay(
+        fifth, artifacts
+    )
+    running = store.mark_running(
+        pending.identity,
+        pending.stage,
+        pending.input_refs,
+        attempt_id="fixture-candidate-attempt-6",
+    )
+    diagnostic_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate_rejection_diagnostic",
+            "reason": "OTHER_VALIDATOR_REJECTION",
+            "line_count": 29,
+            "branch_count": 0,
+            "inconclusive_line_count": 0,
+            "exit_two_line_count": 0,
+            "exit_zero_line_count": 0,
+        }
+    )
+    rejected = store.mark_failure(
+        running,
+        StageFailure(
+            code="POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED",
+            retryable=True,
+            safe_message="PoC candidate is not self-contained",
+            evidence_refs=(diagnostic_ref,),
+        ),
+        StageStatus.BLOCKED,
+    )
+    exhausted = store.mark_recovery_exhausted(rejected)
+    root_id = exhausted.identity.model_copy(update={"hypothesis_id": None})
+    root = store.require(root_id, SimpleStage.HYPOTHESIS_DONE)
+    running_root = store.mark_running(
+        root_id,
+        SimpleStage.HYPOTHESIS_DONE,
+        root.input_refs,
+        attempt_id="fixture-root-attempt-6",
+    )
+    store.mark_failure(
+        running_root,
+        StageFailure(
+            code=(
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{exhausted.identity.hypothesis_id}:{exhausted.attempt_id}"
+            ),
+            retryable=False,
+            safe_message="Child PoC exhausted automatic recovery",
+        ),
+        StageStatus.BLOCKED,
+    )
+    return store, artifacts, exhausted
+
+
+def test_attempt_six_fixture_rejection_queues_only_one_late_candidate(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, exhausted = _attempt_six_fixture_rejection(tmp_path)
+    root_id = exhausted.identity.model_copy(update={"hypothesis_id": None})
+    static_before = store.require(root_id, SimpleStage.STATIC_DONE)
+    old_data = tuple(artifacts.read(ref) for ref in exhausted.output_refs)
+    old_refs = exhausted.recovery_decision_refs
+
+    pending = store.prepare_poc_django_migration_settings_exhaustion_replay(
+        exhausted, artifacts
+    )
+
+    assert pending.status is StageStatus.PENDING
+    assert pending.stage is SimpleStage.POC_CANDIDATE_DONE
+    assert pending.attempt_number == MAX_RECOVERY_ATTEMPTS + 3
+    assert pending.recovery_decision_refs[:-1] == old_refs
+    assert store.require(root_id, SimpleStage.STATIC_DONE) == static_before
+    assert tuple(artifacts.read(ref) for ref in exhausted.output_refs) == old_data
+    marker = json.loads(artifacts.read(pending.recovery_decision_refs[-1]))
+    assert marker["historical_rejection_reason"] == "UNKNOWN"
+    assert marker["parent_fixture_decision_ref"] == old_refs[-1].model_dump(mode="json")
+    with pytest.raises(ValueError):
+        store.prepare_poc_django_migration_settings_exhaustion_replay(
+            exhausted, artifacts
+        )
+
+    running = store.mark_running(
+        pending.identity,
+        pending.stage,
+        pending.input_refs,
+        attempt_id="fixture-candidate-attempt-7",
+    )
+    assert running.attempt_number == MAX_RECOVERY_ATTEMPTS + 4
+    binding = late_fixture_replay_binding(running, artifacts)
+    assert binding is not None
+    assert binding["old"] == exhausted
+
+
+def test_late_fixture_replay_precommit_crash_does_not_consume_one_shot(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, exhausted = _attempt_six_fixture_rejection(tmp_path)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        store.prepare_poc_django_migration_settings_exhaustion_replay(
+            exhausted, artifacts, fail_before_commit=True
+        )
+    assert store.require(exhausted.identity, exhausted.stage) == exhausted
+    pending = store.prepare_poc_django_migration_settings_exhaustion_replay(
+        exhausted, artifacts
+    )
+    assert pending.status is StageStatus.PENDING
+
+
+def test_late_fixture_replay_refuses_changed_pinned_source(tmp_path: Path) -> None:
+    store, artifacts, exhausted = _attempt_six_fixture_rejection(tmp_path)
+    source = tmp_path / "data/workspaces/workspace-1/demodesk/config/settings.py"
+    source.write_bytes(source.read_bytes() + b"\nDEBUG = True\n")
+    with pytest.raises(ValueError, match="LATE_REPLAY_EVIDENCE_INVALID"):
+        store.prepare_poc_django_migration_settings_exhaustion_replay(
+            exhausted, artifacts
+        )
+    assert store.require(exhausted.identity, exhausted.stage) == exhausted
+
+
+def test_late_fixture_replay_refuses_unresolved_codex_call(tmp_path: Path) -> None:
+    store, artifacts, exhausted = _attempt_six_fixture_rejection(tmp_path)
+    assert store.begin_codex_call("active-fixture-call", exhausted.identity.analysis_id)
+    with pytest.raises(ValueError, match="LATE_REPLAY_CODEX_UNRESOLVED"):
+        store.prepare_poc_django_migration_settings_exhaustion_replay(
+            exhausted, artifacts
+        )
+    assert store.require(exhausted.identity, exhausted.stage) == exhausted
+
+
+def test_late_fixture_replay_refuses_unexited_child(tmp_path: Path) -> None:
+    store, artifacts, exhausted = _attempt_six_fixture_rejection(tmp_path)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "INSERT INTO simple_codex_child_spawns "
+            "(call_id, analysis_id, phase, status) VALUES (?, ?, 'EXEC', 'SPAWNING')",
+            ("unexited-fixture-child", exhausted.identity.analysis_id),
+        )
+    with pytest.raises(ValueError, match="LATE_REPLAY_CODEX_UNRESOLVED"):
+        store.prepare_poc_django_migration_settings_exhaustion_replay(
+            exhausted, artifacts
+        )
+    assert store.require(exhausted.identity, exhausted.stage) == exhausted
 
 
 def test_source_bound_attempt_five_replays_once_without_claiming_missing_node(

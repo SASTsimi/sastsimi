@@ -9236,6 +9236,10 @@ class SimpleCheckpointStore:
         """Replay one pinned Django migration-graph setting omission."""
 
         if exhausted.stage is SimpleStage.POC_CANDIDATE_DONE:
+            if exhausted.attempt_number == MAX_RECOVERY_ATTEMPTS + 3:
+                return self._prepare_poc_django_migration_fixture_candidate_retry(
+                    exhausted, artifacts, fail_before_commit=fail_before_commit
+                )
             return self._prepare_poc_django_migration_settings_candidate_replay(
                 exhausted, artifacts, fail_before_commit=fail_before_commit
             )
@@ -9292,6 +9296,349 @@ class SimpleCheckpointStore:
                     )
                 ) from error
             raise
+
+    def _prepare_poc_django_migration_fixture_candidate_retry(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one exact fixture-guarded attempt, preserving its old evidence."""
+
+        prefix = "POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAY_"
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or stopped.stage_version != STAGE_VERSION[stopped.stage]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.error_code != "RECOVERY_EXHAUSTED"
+            or stopped.retryable
+            or stopped.attempt_number != MAX_RECOVERY_ATTEMPTS + 3
+            or not stopped.attempt_id
+            or len(stopped.output_refs) != 1
+            or not stopped.recovery_decision_refs
+            or stopped.input_hash != input_reference_hash(stopped.input_refs)
+            or stopped.recipe_ref is None
+            or stopped.image_digest is None
+            or stopped.container_id is not None
+            or stopped.validated_poc_ref is not None
+            or stopped.recovery_origin_stage is not SimpleStage.POC_EXECUTION_DONE
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError(prefix + "INVALID")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    stopped.stage.value,
+                ),
+            ).fetchone()
+            if row is None or StageCheckpoint.model_validate_json(row[0]) != stopped:
+                raise ValueError(prefix + "STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError(prefix + "RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row[0])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses WHERE analysis_id = ? "
+                    "AND workspace_id = ? AND commit_id = ? AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id, identity.workspace_id,
+                        identity.commit_id, identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.candidate_terminal is not None
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError(prefix + "RUN_INVALID")
+            all_rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?", (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(value[0]).status
+                in {StageStatus.RUNNING, StageStatus.PENDING}
+                for value in all_rows
+            ):
+                raise ValueError(prefix + "RUN_ACTIVE")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError(prefix + "CODEX_UNRESOLVED")
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            root = self.get(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            bound_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            static = self.get(root_identity, SimpleStage.STATIC_DONE)
+            initial = self.get(identity, SimpleStage.VERIFICATION_INITIAL_DONE)
+            if (
+                root is None or root.status is not StageStatus.BLOCKED
+                or root.error_code != bound_code or root.retryable
+                or not root.attempt_id
+                or static is None or static.status is not StageStatus.SUCCEEDED
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+                or initial is None or initial.status is not StageStatus.SUCCEEDED
+                or initial.recipe_ref != stopped.recipe_ref
+                or initial.image_digest != stopped.image_digest
+                or self.get(identity, SimpleStage.POC_EXECUTION_DONE) is not None
+                or any(
+                    self.get(identity, stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.VERIFICATION_FINAL_DONE):
+                    ]
+                )
+            ):
+                raise ValueError(prefix + "LINEAGE_INVALID")
+            try:
+                parent_ref = stopped.recovery_decision_refs[-1]
+                parent = json.loads(artifacts.read_bounded(parent_ref, 64 * 1024))
+                diagnostic = json.loads(
+                    artifacts.read_bounded(stopped.output_refs[0], 64 * 1024)
+                )
+                candidate_ref = StoredDataRef.model_validate(
+                    parent["settings_candidate_checkpoint_ref"]
+                )
+                execution_ref = StoredDataRef.model_validate(
+                    parent["settings_execution_checkpoint_ref"]
+                )
+                candidate = StageCheckpoint.model_validate_json(
+                    artifacts.read_bounded(candidate_ref, 256 * 1024)
+                )
+                execution = StageCheckpoint.model_validate_json(
+                    artifacts.read_bounded(execution_ref, 256 * 1024)
+                )
+                content = artifacts.read_bounded(candidate.output_refs[1], 1024 * 1024)
+                stdout = artifacts.read_bounded(execution.output_refs[1], 1024 * 1024)
+                stderr = artifacts.read_bounded(execution.output_refs[2], 1024 * 1024)
+                proof = self._pinned_django_migration_graph_omission(
+                    artifacts=artifacts, run=run, identity=identity,
+                    stderr=stderr, stdout=stdout, candidate_content=content,
+                    fixture_gap=True,
+                )
+                app_path = proof[1][1] if proof is not None else ""
+                app_name = app_path.removeprefix("src/").removesuffix(
+                    "/settings.py"
+                ).replace("/", ".")
+                projection = (
+                    django_migration_fixture_source_projection(
+                        flag=proof[0], app_name=app_name,
+                        project_sources=proof[4], app_settings=proof[2][1],
+                        migration=proof[2][2],
+                    )
+                    if proof is not None else None
+                )
+                source_refs = tuple(
+                    StoredDataRef.model_validate(value)
+                    for value in parent["settings_source_refs"]
+                )
+                project_refs = tuple(
+                    (entry["path"], artifacts.read_bounded(
+                        StoredDataRef.model_validate(entry["ref"]), 128 * 1024,
+                    ))
+                    for entry in parent["settings_project_candidates"]
+                )
+                reachable_refs = tuple(
+                    (entry["path"], artifacts.read_bounded(
+                        StoredDataRef.model_validate(entry["ref"]), 128 * 1024,
+                    ))
+                    for entry in parent["settings_reachable_sources"]
+                )
+                numeric = (
+                    "line_count", "branch_count", "inconclusive_line_count",
+                    "exit_two_line_count", "exit_zero_line_count",
+                )
+                if (
+                    proof is None or projection is None
+                    or not isinstance(parent, dict)
+                    or parent.get("kind") != "simple_recovery_decision"
+                    or parent.get("identity") != identity.model_dump(mode="json")
+                    or parent.get("migration_fixture_replay") is not True
+                    or parent.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+                    or parent.get("attempt") != MAX_RECOVERY_ATTEMPTS + 2
+                    or parent.get("decision_origin") != "RULE"
+                    or parent.get("explicit_exhaustion_replay") is not True
+                    or parent_ref not in stopped.input_refs
+                    or candidate.identity != identity
+                    or candidate.status is not StageStatus.SUCCEEDED
+                    or candidate.attempt_number != MAX_RECOVERY_ATTEMPTS + 2
+                    or execution.identity != identity
+                    or execution.stage is not SimpleStage.POC_EXECUTION_DONE
+                    or execution.attempt_number != candidate.attempt_number
+                    or execution.attempt_id != candidate.attempt_id
+                    or parent["fixture_source_projection"] != projection
+                    or parent["fixture_risk_flag"] != proof[0]
+                    or tuple(parent["settings_source_paths"]) != proof[1]
+                    or tuple(artifacts.read_bounded(ref, 128 * 1024)
+                             for ref in source_refs) != proof[2]
+                    or project_refs != proof[4]
+                    or reachable_refs != proof[6]
+                    or StoredDataRef.model_validate(
+                        parent["settings_tracked_manifest_ref"]
+                    ) != proof[5]
+                    or not isinstance(diagnostic, dict)
+                    or set(diagnostic) != {"kind", "reason", *numeric}
+                    or diagnostic.get("kind")
+                    != "simple_poc_candidate_rejection_diagnostic"
+                    or diagnostic.get("reason") != "OTHER_VALIDATOR_REJECTION"
+                    or any(type(diagnostic.get(key)) is not int
+                           or diagnostic[key] < 0 for key in numeric)
+                ):
+                    raise ValueError("unbound fixture source or diagnostic")
+            except (KeyError, IndexError, OSError, TypeError, ValueError) as error:
+                raise ValueError(prefix + "EVIDENCE_INVALID") from error
+            events = tuple(
+                AgentActivityEvent.model_validate_json(value[0])
+                for value in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid", (identity.analysis_id,),
+                )
+            )
+            stage_events = tuple(
+                event for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stopped.stage.value
+                and event.attempt_id == stopped.attempt_id
+            )
+            prior_events = tuple(
+                event for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "POC_DJANGO_MIGRATION_FIXTURE_REPLAYED"
+                and event.output_refs == (parent_ref,)
+            )
+            root_events = tuple(
+                event for event in events
+                if event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.kind is ActivityKind.STAGE_BLOCKED
+                and event.error_code == bound_code
+            )
+            if (
+                len(stage_events) != 3
+                or tuple((event.kind, event.error_code) for event in stage_events)
+                != (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED,
+                     "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED"),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                or any(event.input_refs != stopped.input_refs for event in stage_events)
+                or any(event.output_refs != stopped.output_refs
+                       for event in stage_events[1:])
+                or len(prior_events) != 1
+                or events.index(prior_events[0]) >= events.index(stage_events[0])
+                or len(root_events) != 1
+                or events.index(root_events[0]) < events.index(stage_events[-1])
+                or any(
+                    event.hypothesis_id == identity.hypothesis_id
+                    and event.error_code
+                    == "POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAYED"
+                    for event in events
+                )
+            ):
+                raise ValueError(prefix + "EVENT_INVALID")
+            old_ref = artifacts.put_json(stopped.model_dump(mode="json"))
+            marker_ref = artifacts.put_json({
+                "kind": "simple_recovery_decision",
+                "identity": identity.model_dump(mode="json"),
+                "stage": stopped.stage.value,
+                "attempt": stopped.attempt_number,
+                "decision_origin": "RULE",
+                "explicit_exhaustion_replay": True,
+                "late_fixture_replay_revision": 2,
+                "parent_fixture_decision_ref": parent_ref.model_dump(mode="json"),
+                "old_attempt_id": stopped.attempt_id,
+                "old_attempt_number": stopped.attempt_number,
+                "old_checkpoint_ref": old_ref.model_dump(mode="json"),
+                "old_checkpoint_hash": hashlib.sha256(
+                    canonical_bytes(stopped.model_dump(mode="json"))
+                ).hexdigest(),
+                "diagnostic_ref": stopped.output_refs[0].model_dump(mode="json"),
+                "source_projection_hash": hashlib.sha256(
+                    canonical_bytes(projection)
+                ).hexdigest(),
+                "historical_rejection_reason": "UNKNOWN",
+                "guidance": (
+                    "Use only the pinned native Django project settings; run top-level "
+                    "django.setup() before top-level call_command('migrate'), then "
+                    "invoke the intended local route. Do not suppress migrations."
+                ),
+            })
+            refs = tuple(dict.fromkeys(
+                (*stopped.input_refs, *stopped.output_refs, old_ref, marker_ref)
+            ))
+            pending = StageCheckpoint(
+                identity=identity, stage=stopped.stage,
+                stage_version=STAGE_VERSION[stopped.stage],
+                status=StageStatus.PENDING, input_refs=refs,
+                input_hash=input_reference_hash(refs),
+                attempt_number=stopped.attempt_number,
+                gate_revision_count=stopped.gate_revision_count,
+                recovery_lineage_id=stopped.recovery_lineage_id,
+                recovery_origin_stage=stopped.recovery_origin_stage,
+                recovery_decision_refs=(*stopped.recovery_decision_refs, marker_ref),
+                recipe_ref=stopped.recipe_ref, image_digest=stopped.image_digest,
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped, ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 103),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "고정 근거를 검증한 Django PoC 후보만 한 번 재생성합니다."
+                    ),
+                    output_refs=(marker_ref,),
+                    error_code="POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def _prepare_poc_django_migration_settings_candidate_replay(
         self,
