@@ -58,6 +58,8 @@ from .attack_surfaces import SurfaceIndex, surface_index_from_json
 from .attempt_owner import AttemptOwner, PromptByteCounts
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .django_migration_graph_omission import (
+    django_migration_fixture_closed_diagnostic,
+    django_migration_fixture_replay_forbidden,
     django_migration_settings_replay_forbidden,
 )
 from .django_migration_poc_patch import (
@@ -227,6 +229,127 @@ def _reject_migration_settings_replay_content(
         content, binding[0]
     ):
         raise PoCCandidateRejected("POC_DJANGO_MIGRATION_SETTINGS_REPLAY_UNSUPPORTED")
+    if not checkpoint.recovery_decision_refs:
+        return
+    marker_ref = checkpoint.recovery_decision_refs[-1]
+    try:
+        marker = json.loads(artifacts.read_bounded(marker_ref, 64 * 1024))
+    except (OSError, TypeError, ValueError) as error:
+        raise PoCCandidateRejected(
+            "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND"
+        ) from error
+    if (
+        not isinstance(marker, dict)
+        or marker.get("migration_fixture_replay") is not True
+    ):
+        return
+    try:
+        old_candidate_ref = StoredDataRef.model_validate(
+            marker["settings_candidate_checkpoint_ref"]
+        )
+        old_candidate = StageCheckpoint.model_validate_json(
+            artifacts.read_bounded(old_candidate_ref, 256 * 1024)
+        )
+        previous_content = artifacts.read_bounded(
+            old_candidate.output_refs[1], 1024 * 1024
+        )
+        source_paths = marker["settings_source_paths"]
+        flag = marker["fixture_risk_flag"]
+        project_candidates = marker["settings_project_candidates"]
+        reachable_sources = marker["settings_reachable_sources"]
+        source_refs = marker["settings_source_refs"]
+        projection = marker["fixture_source_projection"]
+    except (KeyError, IndexError, OSError, TypeError, ValueError) as error:
+        raise PoCCandidateRejected(
+            "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND"
+        ) from error
+    app_match = (
+        re.fullmatch(
+            r"(?:src/)?([A-Za-z_]\w*(?:/[A-Za-z_]\w*)*)/settings\.py",
+            source_paths[1],
+        )
+        if isinstance(source_paths, list)
+        and len(source_paths) == 3
+        and all(isinstance(path, str) for path in source_paths)
+        else None
+    )
+    project_paths = (
+        tuple(entry["path"] for entry in project_candidates)
+        if isinstance(project_candidates, list)
+        and 1 <= len(project_candidates) <= 16
+        and all(
+            isinstance(entry, dict) and isinstance(entry.get("path"), str)
+            for entry in project_candidates
+        )
+        else ()
+    )
+    all_project_modules = tuple(
+        path.removeprefix("src/").removesuffix(".py").replace("/", ".")
+        for path in project_paths
+    )
+    projected_modules = (
+        projection.get("verified_project_modules")
+        if isinstance(projection, dict)
+        else None
+    )
+    project_modules = (
+        tuple(projected_modules)
+        if isinstance(projected_modules, list)
+        and all(isinstance(module, str) for module in projected_modules)
+        else ()
+    )
+    reachable_app_ref = (
+        next(
+            (
+                entry.get("ref")
+                for entry in reachable_sources
+                if isinstance(entry, dict) and entry.get("path") == source_paths[1]
+            ),
+            None,
+        )
+        if isinstance(reachable_sources, list) and app_match is not None
+        else None
+    )
+    if (
+        checkpoint.stage is not SimpleStage.POC_CANDIDATE_DONE
+        or checkpoint.attempt_number != MAX_RECOVERY_ATTEMPTS + 3
+        or marker_ref not in checkpoint.input_refs
+        or marker.get("kind") != "simple_recovery_decision"
+        or marker.get("identity") != checkpoint.identity.model_dump(mode="json")
+        or marker.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+        or marker.get("attempt") != MAX_RECOVERY_ATTEMPTS + 2
+        or marker.get("decision_origin") != "RULE"
+        or marker.get("explicit_exhaustion_replay") is not True
+        or old_candidate.identity != checkpoint.identity
+        or old_candidate.stage is not SimpleStage.POC_CANDIDATE_DONE
+        or old_candidate.attempt_number != MAX_RECOVERY_ATTEMPTS + 2
+        or not isinstance(flag, str)
+        or app_match is None
+        or not project_modules
+        or len(project_modules) != len(set(project_modules))
+        or not set(project_modules).issubset(all_project_modules)
+        or source_paths[0] not in project_paths
+        or any(
+            re.fullmatch(r"(?:src/)?[A-Za-z_]\w*(?:/[A-Za-z_]\w*)*/settings\.py", path)
+            is None
+            for path in project_paths
+        )
+        or not isinstance(source_refs, list)
+        or len(source_refs) != 3
+        or reachable_app_ref != source_refs[1]
+        or not isinstance(projection, dict)
+        or projection.get("kind") != "simple_django_migration_fixture_source_projection"
+        or projection.get("project_flag") != flag
+        or projection.get("app_name") != app_match.group(1).replace("/", ".")
+    ):
+        raise PoCCandidateRejected("POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND")
+    if content == previous_content or django_migration_fixture_replay_forbidden(
+        content,
+        flag=flag,
+        app_name=app_match.group(1).replace("/", "."),
+        project_modules=project_modules,
+    ):
+        raise PoCCandidateRejected("POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED")
 
 
 _PRO_CON_BATCH_MAX_SIZE = 8
@@ -2644,6 +2767,33 @@ boundary without altering the target's behavior.
             streams = (evidence[1], evidence[2])
             try:
                 stderr = self._artifacts.read_bounded(evidence[2], 1024 * 1024)
+                if record.get("migration_fixture_replay") is True:
+                    projection = record.get("fixture_source_projection")
+                    fixture_diagnostic = django_migration_fixture_closed_diagnostic(
+                        stderr
+                    )
+                    if (
+                        record.get("diagnostic_excerpt")
+                        != (
+                            "source-bound synthetic Django migration fixture gap; "
+                            "missing node unknown"
+                        )
+                        or not isinstance(projection, dict)
+                        or projection.get("kind")
+                        != "simple_django_migration_fixture_source_projection"
+                        or fixture_diagnostic is None
+                    ):
+                        raise ValueError("invalid source-bound migration diagnostic")
+                    safe = redact_projected_json(
+                        canonical_bytes(
+                            {
+                                "kind": "simple_poc_repair_diagnostic",
+                                "closed_runtime": fixture_diagnostic,
+                                "pinned_source_facts": projection,
+                            }
+                        )
+                    ).data
+                    return self._artifacts.put_bytes(safe, "application/json"), streams
                 diagnostic = closed_poc_runtime_diagnostic(stderr)
                 excerpt = record.get("diagnostic_excerpt")
                 if (

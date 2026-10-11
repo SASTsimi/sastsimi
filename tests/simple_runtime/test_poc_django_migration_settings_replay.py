@@ -38,7 +38,11 @@ from tests.unit.simple_runtime.test_django_migration_graph_omission import (
 
 
 def _exhausted_migration_attempt(
-    tmp_path: Path, *, exit_code: int = 2
+    tmp_path: Path,
+    *,
+    exit_code: int = 2,
+    stderr: bytes = ERROR,
+    candidate_content: bytes = CANDIDATE,
 ) -> tuple[SimpleCheckpointStore, SimpleArtifactRepository, StageCheckpoint]:
     """Seed an exhausted attempt with a tracked migration and two project settings."""
 
@@ -88,10 +92,10 @@ def _exhausted_migration_attempt(
     store, artifacts, exhausted = _exhausted_extract(
         tmp_path,
         seed_commit_id=commit,
-        stderr=ERROR,
+        stderr=stderr,
         stdout=OUTPUT,
         execution_patch={"exit_code": exit_code},
-        candidate_content=CANDIDATE,
+        candidate_content=candidate_content,
     )
     run = store.require_analysis_run(exhausted.identity.analysis_id)
     assert run.static_coverage_ref is not None

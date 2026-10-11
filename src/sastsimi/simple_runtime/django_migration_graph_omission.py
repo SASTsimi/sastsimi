@@ -20,6 +20,10 @@ _GRAPH_ERROR = re.compile(
     rb"NodeNotFoundError\r?\ntraceback: handle > __init__ > __init__ > "
     rb"build_graph > validate_consistency > raise_error\r?\n?"
 )
+_GRAPH_FRAME_ERROR = re.compile(
+    rb"NodeNotFoundError\r?\nTraceback \(most recent call last\):\r?\n"
+    rb"(?:  (?:at [A-Za-z_][A-Za-z_0-9]*:[0-9]+|in [A-Za-z_][A-Za-z_0-9]*)\r?\n){2,20}"
+)
 
 
 def _name(node: ast.AST | None, value: str) -> bool:
@@ -827,8 +831,647 @@ def django_migration_settings_replay_forbidden(content: bytes, flag: str) -> boo
     return tree is None or not _candidate_omits(tree, flag, require_explicit_false=True)
 
 
+def _synthetic_fixture_scan(
+    tree: ast.Module, flag: str, app_name: str
+) -> tuple[str, ...] | None:
+    """Recognize bounded source selection without executing the PoC."""
+
+    def named_assignments(name: str) -> list[ast.Assign]:
+        return [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and _name(node.targets[0], name)
+        ]
+
+    roots = named_assignments("root")
+    if (
+        len(roots) != 1
+        or not isinstance(roots[0].value, ast.Call)
+        or not _name(roots[0].value.func, "Path")
+        or len(roots[0].value.args) != 1
+        or not isinstance(roots[0].value.args[0], ast.Constant)
+        or roots[0].value.args[0].value != "/workspace"
+        or not any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "pathlib"
+            and any(
+                alias.name == "Path" and alias.asname is None for alias in node.names
+            )
+            for node in ast.walk(tree)
+        )
+    ):
+        return None
+    scans = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.For)
+        and isinstance(node.iter, ast.Call)
+        and _attr(node.iter.func, "root", "rglob")
+        and len(node.iter.args) == 1
+        and isinstance(node.iter.args[0], ast.Constant)
+        and node.iter.args[0].value == "settings.py"
+    ]
+    if len(scans) != 1 or not any(
+        isinstance(node, ast.Break) for node in ast.walk(scans[0])
+    ):
+        return None
+    flags = named_assignments("project_flags")
+    if (
+        len(flags) != 1
+        or not isinstance(flags[0].value, ast.Dict)
+        or flags[0].value.keys
+    ):
+        return None
+    collectors = [
+        node
+        for node in ast.walk(scans[0])
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Subscript)
+        and _name(node.targets[0].value, "project_flags")
+        and isinstance(node.value, ast.Call)
+        and _attr(node.value.func, "ast", "literal_eval")
+        and len(node.value.args) == 1
+    ]
+    if len(collectors) != 1:
+        return None
+    prefixes = [
+        node.args[0].value
+        for node in ast.walk(scans[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "startswith"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ]
+    if len(prefixes) != 1 or not flag.startswith(prefixes[0]):
+        return None
+    if any(
+        isinstance(node, ast.Name)
+        and node.id in {"root", "project_flags", "Path"}
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        and node is not roots[0].targets[0]
+        and node is not flags[0].targets[0]
+        and node not in tuple(ast.walk(collectors[0].targets[0]))
+        for node in ast.walk(tree)
+    ):
+        return None
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"eval", "exec"}
+        for node in ast.walk(tree)
+    ):
+        return None
+    if any(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in {flag, "MIGRATION_MODULES", "--fake", "--fake-initial"}
+        for node in ast.walk(tree)
+    ):
+        return None
+    configurations = named_assignments("fixture_settings")
+    if (
+        len(configurations) != 1
+        or not isinstance(configurations[0].value, ast.Call)
+        or not _name(configurations[0].value.func, "dict")
+        or configurations[0].value.args
+    ):
+        return None
+    values = {
+        keyword.arg: keyword.value for keyword in configurations[0].value.keywords
+    }
+    if len(values) != len(configurations[0].value.keywords):
+        return None
+    try:
+        apps = ast.literal_eval(values["INSTALLED_APPS"])
+    except (KeyError, TypeError, ValueError, MemoryError, RecursionError):
+        return None
+    if (
+        not isinstance(apps, (tuple, list))
+        or not 1 <= len(apps) <= 64
+        or not all(isinstance(item, str) for item in apps)
+        or app_name not in apps
+        or "MIGRATION_MODULES" in values
+    ):
+        return None
+    updates = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _attr(node.func, "fixture_settings", "update")
+    ]
+    if (
+        len(updates) != 1
+        or len(updates[0].args) != 1
+        or not _name(updates[0].args[0], "project_flags")
+        or updates[0].keywords
+    ):
+        return None
+    configures = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _attr(node.func, "settings", "configure")
+    ]
+    setups = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _attr(node.func, "django", "setup")
+    ]
+    migrations = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _name(node.func, "call_command")
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "migrate"
+    ]
+    if (
+        len(configures) != 1
+        or len(setups) != 1
+        or len(migrations) != 1
+        or configures[0].args
+        or len(configures[0].keywords) != 1
+        or configures[0].keywords[0].arg is not None
+        or not _name(configures[0].keywords[0].value, "fixture_settings")
+        or not configurations[0].lineno < updates[0].lineno < configures[0].lineno
+        or not configures[0].lineno < setups[0].lineno < migrations[0].lineno
+        or any(
+            keyword.arg in {"fake", "fake_initial"}
+            for keyword in migrations[0].keywords
+        )
+    ):
+        return None
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"get", "post", "request"}
+        and node.lineno < migrations[0].lineno
+        for node in ast.walk(tree)
+    ):
+        return None
+
+    def unrelated_key(target: ast.AST) -> bool:
+        if not isinstance(target, ast.Subscript) or not _name(
+            target.value, "fixture_settings"
+        ):
+            return False
+        key = target.slice
+        if (
+            isinstance(key, ast.BinOp)
+            and isinstance(key.op, ast.Add)
+            and isinstance(key.left, ast.Constant)
+            and isinstance(key.right, ast.Constant)
+            and isinstance(key.left.value, str)
+            and isinstance(key.right.value, str)
+        ):
+            value = key.left.value + key.right.value
+        elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+            value = key.value
+        else:
+            return True
+        return value in {flag, "INSTALLED_APPS", "MIGRATION_MODULES"}
+
+    if any(
+        isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete))
+        and any(
+            unrelated_key(target)
+            for target in (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+                else node.targets
+            )
+        )
+        for node in ast.walk(tree)
+    ):
+        return None
+    return tuple(apps)
+
+
+def django_migration_fixture_source_gap(
+    *,
+    stderr: bytes,
+    stdout: bytes,
+    candidate: bytes,
+    projects: tuple[bytes, ...],
+    app_settings: bytes,
+    migration: bytes,
+    app_name: str,
+) -> str | None:
+    """Prove a synthetic fixture risk, not the missing node or vulnerability."""
+
+    if (
+        len(stderr) > 1024
+        or _GRAPH_FRAME_ERROR.fullmatch(stderr) is None
+        or not (b"  at build_graph:" in stderr or b"  in build_graph\n" in stderr)
+        or not (
+            b"  at validate_consistency:" in stderr
+            or b"  in validate_consistency\n" in stderr
+        )
+        or stdout
+        or not 1 <= len(projects) <= 16
+        or any(
+            len(source) > 128 * 1024 for source in (*projects, app_settings, migration)
+        )
+        or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", app_name) is None
+    ):
+        return None
+    tree = _python_tree(candidate)
+    if tree is None:
+        return None
+    try:
+        project_trees = [ast.parse(source.decode("utf-8")) for source in projects]
+        app_tree = ast.parse(app_settings.decode("utf-8"))
+        migration_tree = ast.parse(migration.decode("utf-8"))
+    except (UnicodeError, SyntaxError, ValueError):
+        return None
+    matches: list[str] = []
+    for flag in (
+        node.targets[0].id
+        for node in app_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id.endswith("MODE_ENABLED")
+    ):
+        dependency = _dependency(app_tree, flag)
+        apps = _synthetic_fixture_scan(tree, flag, app_name)
+        if (
+            dependency is None
+            or apps is None
+            or not _migration_uses_dependency(migration_tree, app_name, dependency[0])
+            or not any(
+                _project_apps(project, flag, app_name) is not None
+                for project in project_trees
+            )
+            or not any(label not in apps for label, _node in dependency[1])
+        ):
+            continue
+        # The candidate's literal collector must be unable to inject this
+        # computed flag, regardless of which project settings file it visits.
+        if any(
+            any(
+                isinstance(node, ast.Assign)
+                and any(_name(target, flag) for target in node.targets)
+                and isinstance(
+                    node.value, (ast.Constant, ast.List, ast.Tuple, ast.Dict)
+                )
+                for node in project.body
+            )
+            for project in project_trees
+        ):
+            continue
+        matches.append(flag)
+    return matches[0] if len(matches) == 1 else None
+
+
+def django_migration_fixture_source_projection(
+    *,
+    flag: str,
+    app_name: str,
+    project_sources: tuple[tuple[str, bytes], ...],
+    app_settings: bytes,
+    migration: bytes,
+) -> dict[str, object] | None:
+    """Project only bounded, non-secret AST facts from pinned source blobs."""
+
+    if (
+        re.fullmatch(r"[A-Z][A-Z_0-9]*", flag) is None
+        or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", app_name) is None
+        or not 1 <= len(project_sources) <= 16
+    ):
+        return None
+    try:
+        app_tree = ast.parse(app_settings.decode("utf-8"))
+        migration_tree = ast.parse(migration.decode("utf-8"))
+        dependency = _dependency(app_tree, flag)
+        if dependency is None or not _migration_uses_dependency(
+            migration_tree, app_name, dependency[0]
+        ):
+            return None
+        if not 1 <= len(dependency[1]) <= 16 or any(
+            len(part) > 128
+            or re.fullmatch(
+                r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*" if index == 0 else r"[A-Za-z0-9_]+",
+                part,
+            )
+            is None
+            for pair in dependency[1]
+            for index, part in enumerate(pair)
+        ):
+            return None
+        modules: list[str] = []
+        for path, source in project_sources:
+            path_match = re.fullmatch(
+                r"(?:src/)?([A-Za-z_]\w*(?:/[A-Za-z_]\w*)*)/settings\.py",
+                path,
+            )
+            if path_match is None or len(source) > 128 * 1024:
+                return None
+            apps = _project_apps(ast.parse(source.decode("utf-8")), flag, app_name)
+            if apps is not None:
+                modules.append(
+                    path.removeprefix("src/").removesuffix(".py").replace("/", ".")
+                )
+        if not modules or len(modules) != len(set(modules)):
+            return None
+    except (
+        UnicodeError,
+        SyntaxError,
+        ValueError,
+        TypeError,
+        MemoryError,
+        RecursionError,
+    ):
+        return None
+    return {
+        "kind": "simple_django_migration_fixture_source_projection",
+        "verified_project_modules": modules,
+        "app_name": app_name,
+        "project_flag": flag,
+        "project_flag_default": False,
+        "app_fallback_when_flag_missing": True,
+        "gated_migration_dependency": dependency[0],
+        "optional_dependency_nodes": [list(pair) for pair in dependency[1]],
+        "missing_node": "UNKNOWN",
+    }
+
+
+def django_migration_fixture_closed_diagnostic(
+    stderr: bytes,
+) -> dict[str, object] | None:
+    """Return fixed labels only; never pass free-form migration stderr onward."""
+
+    if (
+        len(stderr) > 1024
+        or _GRAPH_FRAME_ERROR.fullmatch(stderr) is None
+        or not (b"  at build_graph:" in stderr or b"  in build_graph\n" in stderr)
+        or not (
+            b"  at validate_consistency:" in stderr
+            or b"  in validate_consistency\n" in stderr
+        )
+    ):
+        return None
+    return {
+        "kind": "simple_poc_django_migration_graph_diagnostic_v1",
+        "exception_class": "NodeNotFoundError",
+        "phase": "MIGRATION_GRAPH_SETUP",
+        "function_frames": ["build_graph", "validate_consistency"],
+        "missing_node": "UNKNOWN",
+    }
+
+
+def django_migration_fixture_replay_forbidden(
+    content: bytes,
+    *,
+    flag: str | None = None,
+    app_name: str | None = None,
+    project_modules: tuple[str, ...] | None = None,
+) -> bool:
+    """Reject migration bypasses and unbound synthetic fixture replans.
+
+    The source-bound mode permits only one native pinned project settings
+    module, with setup and migration as unconditional top-level calls. Actual
+    migration success still requires the subsequent container execution.
+    """
+
+    tree = _python_tree(content)
+    if tree is None or any(
+        marker in content
+        for marker in (b"MIGRATION_MODULES", b"--fake", b"fake_initial")
+    ):
+        return True
+    if flag is not None or app_name is not None:
+        if (
+            flag is None
+            or app_name is None
+            or re.fullmatch(r"[A-Z][A-Z_0-9]*", flag) is None
+            or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", app_name) is None
+            or _synthetic_fixture_scan(tree, flag, app_name) is not None
+        ):
+            return True
+    if project_modules is not None:
+        os_imports = [
+            alias
+            for node in tree.body
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.name == "os" and alias.asname is None
+        ]
+        django_imports = [
+            alias
+            for node in tree.body
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.name == "django" and alias.asname is None
+        ]
+        migration_imports = [
+            alias
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "django.core.management"
+            for alias in node.names
+            if alias.name == "call_command" and alias.asname is None
+        ]
+        if (
+            len(os_imports) != 1
+            or len(django_imports) != 1
+            or len(migration_imports) != 1
+            or not 1 <= len(project_modules) <= 16
+            or len(set(project_modules)) != len(project_modules)
+            or any(
+                re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", module) is None
+                for module in project_modules
+            )
+            or any(
+                isinstance(node, ast.Call) and _attr(node.func, "settings", "configure")
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Name) and node.id == "fixture_settings"
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Import)
+                and any(alias.name == "django.conf" for alias in node.names)
+                or isinstance(node, ast.ImportFrom)
+                and node.module == "django.conf"
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in {"setattr", "delattr"}
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Attribute) and node.attr == "__dict__"
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Attribute) and node.attr == "MIGRATION_MODULES"
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Name)
+                and node.id in {"os", "django", "call_command"}
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and node.name in {"os", "django", "call_command"}
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Attribute)
+                and _attr(node, "django", "setup")
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Attribute) and _attr(node, "sys", "modules")
+                for node in ast.walk(tree)
+            )
+        ):
+            return True
+
+        settings_assignments = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Subscript)
+            and isinstance(node.targets[0].value, ast.Attribute)
+            and _attr(node.targets[0].value, "os", "environ")
+            and isinstance(node.targets[0].slice, ast.Constant)
+            and node.targets[0].slice.value == "DJANGO_SETTINGS_MODULE"
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and node.value.value in project_modules
+        ]
+        if len(settings_assignments) != 1 or any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and _attr(node.func, "os", "putenv")
+            for node in ast.walk(tree)
+        ):
+            return True
+        environment_target = settings_assignments[0].targets[0]
+        assert isinstance(environment_target, ast.Subscript)
+        environment_attributes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and _attr(node, "os", "environ")
+        ]
+        if environment_attributes != [environment_target.value]:
+            return True
+        top_level_calls = [
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+        ]
+        all_setups = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and _attr(node.func, "django", "setup")
+        ]
+        all_migrations = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and _name(node.func, "call_command")
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "migrate"
+        ]
+        if (
+            len(all_setups) != 1
+            or len(all_migrations) != 1
+            or all_setups[0] not in top_level_calls
+            or all_migrations[0] not in top_level_calls
+            or not settings_assignments[0].lineno
+            < all_setups[0].lineno
+            < all_migrations[0].lineno
+            or len(all_migrations[0].args) != 1
+            or any(
+                keyword.arg
+                not in {"run_syncdb", "verbosity", "interactive", "database"}
+                or not isinstance(keyword.value, ast.Constant)
+                or (
+                    keyword.arg == "run_syncdb"
+                    and type(keyword.value.value) is not bool
+                )
+                or (
+                    keyword.arg == "verbosity"
+                    and (
+                        type(keyword.value.value) is not int
+                        or not 0 <= keyword.value.value <= 3
+                    )
+                )
+                or (keyword.arg == "interactive" and keyword.value.value is not False)
+                or (keyword.arg == "database" and keyword.value.value != "default")
+                for keyword in all_migrations[0].keywords
+            )
+        ):
+            return True
+    setups = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _attr(node.func, "django", "setup")
+    ]
+    migrations = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _name(node.func, "call_command")
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "migrate"
+    ]
+    if (
+        len(setups) != 1
+        or len(migrations) != 1
+        or setups[0].lineno >= migrations[0].lineno
+        or any(
+            keyword.arg in {"fake", "fake_initial"}
+            for keyword in migrations[0].keywords
+        )
+    ):
+        return True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or node.lineno >= migrations[0].lineno:
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr not in {
+            "get",
+            "post",
+            "put",
+            "patch",
+            "delete",
+            "request",
+            "open",
+        }:
+            continue
+        receiver = node.func.value
+        if (isinstance(receiver, ast.Call) and _name(receiver.func, "Client")) or (
+            isinstance(receiver, ast.Name)
+            and receiver.id in {"client", "browser", "session", "requests"}
+        ):
+            return True
+    return False
+
+
 __all__ = [
     "django_migration_graph_project_scan_root",
     "django_migration_graph_settings_omission",
     "django_migration_settings_replay_forbidden",
+    "django_migration_fixture_source_gap",
+    "django_migration_fixture_source_projection",
+    "django_migration_fixture_closed_diagnostic",
+    "django_migration_fixture_replay_forbidden",
 ]

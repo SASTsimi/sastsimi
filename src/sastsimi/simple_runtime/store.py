@@ -40,6 +40,8 @@ from .artifacts import LEGACY_RECOVERY_FALLBACK_STOPS, SimpleArtifactRepository
 from .attempt_owner import AttemptOwner, PromptByteCounts
 from .candidates import StaticCandidate
 from .django_migration_graph_omission import (
+    django_migration_fixture_source_gap,
+    django_migration_fixture_source_projection,
     django_migration_graph_project_scan_root,
     django_migration_graph_settings_omission,
 )
@@ -8984,6 +8986,7 @@ class SimpleCheckpointStore:
         stderr: bytes,
         stdout: bytes,
         candidate_content: bytes,
+        fixture_gap: bool = False,
     ) -> _RelationSettingsProof | None:
         """Prove one omitted migration flag against every reachable pinned setting."""
 
@@ -8993,8 +8996,11 @@ class SimpleCheckpointStore:
             or run.workspace_path is None
             or run.static_bundle_ref is None
             or re.fullmatch(r"[0-9a-f]{40}", identity.commit_id) is None
-            or django_migration_graph_project_scan_root(candidate_content)
-            != "/workspace"
+            or (
+                not fixture_gap
+                and django_migration_graph_project_scan_root(candidate_content)
+                != "/workspace"
+            )
         ):
             return None
         try:
@@ -9120,15 +9126,26 @@ class SimpleCheckpointStore:
                     migration = pinned(migration_path)
                     if migration is None:
                         return None
-                    flag = django_migration_graph_settings_omission(
-                        stderr,
-                        stdout,
-                        candidate_content,
-                        tuple(source for _, source in projects),
-                        app_source,
-                        migration,
-                        app_name=app_name,
-                    )
+                    if fixture_gap:
+                        flag = django_migration_fixture_source_gap(
+                            stderr=stderr,
+                            stdout=stdout,
+                            candidate=candidate_content,
+                            projects=tuple(source for _, source in projects),
+                            app_settings=app_source,
+                            migration=migration,
+                            app_name=app_name,
+                        )
+                    else:
+                        flag = django_migration_graph_settings_omission(
+                            stderr,
+                            stdout,
+                            candidate_content,
+                            tuple(source for _, source in projects),
+                            app_source,
+                            migration,
+                            app_name=app_name,
+                        )
                     if flag is None:
                         continue
                     matches.append(
@@ -9222,6 +9239,13 @@ class SimpleCheckpointStore:
             return self._prepare_poc_django_migration_settings_candidate_replay(
                 exhausted, artifacts, fail_before_commit=fail_before_commit
             )
+        if (
+            exhausted.stage is SimpleStage.POC_EXECUTION_DONE
+            and exhausted.attempt_number == MAX_RECOVERY_ATTEMPTS + 2
+        ):
+            return self.prepare_poc_django_migration_fixture_exhaustion_replay(
+                exhausted, artifacts, fail_before_commit=fail_before_commit
+            )
         try:
             return self.prepare_poc_extract_exhaustion_replay(
                 exhausted,
@@ -9236,6 +9260,34 @@ class SimpleCheckpointStore:
                     message.replace(
                         "POC_EXTRACT_EXHAUSTION_",
                         "POC_DJANGO_MIGRATION_SETTINGS_EXHAUSTION_",
+                        1,
+                    )
+                ) from error
+            raise
+
+    def prepare_poc_django_migration_fixture_exhaustion_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Replan one post-anchor synthetic migration fixture without a verdict."""
+
+        try:
+            return self.prepare_poc_extract_exhaustion_replay(
+                exhausted,
+                artifacts,
+                fail_before_commit=fail_before_commit,
+                _migration_fixture=True,
+            )
+        except ValueError as error:
+            message = str(error)
+            if message.startswith("POC_EXTRACT_EXHAUSTION_"):
+                raise ValueError(
+                    message.replace(
+                        "POC_EXTRACT_EXHAUSTION_",
+                        "POC_DJANGO_MIGRATION_FIXTURE_EXHAUSTION_",
                         1,
                     )
                 ) from error
@@ -10069,6 +10121,7 @@ class SimpleCheckpointStore:
         _django_settings: bool = False,
         _relation_settings: bool = False,
         _migration_settings: bool = False,
+        _migration_fixture: bool = False,
         _closed_runtime: bool = False,
     ) -> StageCheckpoint:
         """Explicitly regenerate one PoC after a bound sanitized extract failure.
@@ -10094,6 +10147,7 @@ class SimpleCheckpointStore:
                     _django_settings,
                     _relation_settings,
                     _migration_settings,
+                    _migration_fixture,
                     _closed_runtime,
                 )
             )
@@ -10121,7 +10175,7 @@ class SimpleCheckpointStore:
                         if _django_schema
                         else (
                             2
-                            if _source_gap or _urlconf
+                            if _source_gap or _urlconf or _migration_fixture
                             else (
                                 1
                                 if _fixture_dependency
@@ -10272,7 +10326,9 @@ class SimpleCheckpointStore:
                 raise ValueError("POC_EXTRACT_EXHAUSTION_ROOT_BOUND_INVALID")
             extract_replay_code = "POC_EXTRACT_EXHAUSTION_REPLAYED"
             replay_code = (
-                "POC_CLOSED_RUNTIME_EXHAUSTION_REPLAYED"
+                "POC_DJANGO_MIGRATION_FIXTURE_REPLAYED"
+                if _migration_fixture
+                else "POC_CLOSED_RUNTIME_EXHAUSTION_REPLAYED"
                 if _closed_runtime
                 else "POC_DJANGO_RELATION_SETTINGS_EXHAUSTION_REPLAYED"
                 if _relation_settings
@@ -10375,6 +10431,61 @@ class SimpleCheckpointStore:
                 )
             ):
                 raise ValueError("POC_EXTRACT_EXHAUSTION_EVENT_INVALID")
+            if _migration_fixture:
+                closed_replays = tuple(
+                    event
+                    for event in events
+                    if event.hypothesis_id == identity.hypothesis_id
+                    and event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code == "POC_CLOSED_RUNTIME_EXHAUSTION_REPLAYED"
+                )
+                anchor_replays = tuple(
+                    event
+                    for event in events
+                    if event.hypothesis_id == identity.hypothesis_id
+                    and event.kind is ActivityKind.DECISION_RECORDED
+                    and event.error_code == "POC_CLOSED_RUNTIME_ANCHOR_REPLAYED"
+                )
+                try:
+                    closed_ref = closed_replays[0].output_refs[0]
+                    closed_rule = json.loads(
+                        artifacts.read_bounded(closed_ref, 64 * 1024)
+                    )
+                    anchor_ref = anchor_replays[0].output_refs[0]
+                    anchor_rule = json.loads(
+                        artifacts.read_bounded(anchor_ref, 64 * 1024)
+                    )
+                except (IndexError, OSError, TypeError, ValueError) as error:
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID") from error
+                if (
+                    len(closed_replays) != 1
+                    or len(anchor_replays) != 1
+                    or not isinstance(closed_rule, dict)
+                    or closed_rule.get("kind") != "simple_recovery_decision"
+                    or closed_rule.get("identity") != identity.model_dump(mode="json")
+                    or closed_rule.get("stage") != SimpleStage.POC_EXECUTION_DONE.value
+                    or closed_rule.get("attempt") != MAX_RECOVERY_ATTEMPTS
+                    or closed_rule.get("attempt_id") != closed_replays[0].attempt_id
+                    or closed_rule.get("decision_origin") != "RULE"
+                    or closed_rule.get("closed_runtime_replay") is not True
+                    or closed_rule.get("closed_runtime_policy_revision") != 1
+                    or closed_rule.get("explicit_exhaustion_replay") is not True
+                    or not isinstance(closed_rule.get("original_error"), dict)
+                    or closed_rule["original_error"].get("code")
+                    != "POC_EXECUTION_FAILED"
+                    or not isinstance(anchor_rule, dict)
+                    or anchor_rule.get("kind")
+                    != "simple_poc_closed_runtime_anchor_replay"
+                    or anchor_rule.get("identity") != identity.model_dump(mode="json")
+                    or anchor_rule.get("old_attempt_number")
+                    != MAX_RECOVERY_ATTEMPTS + 1
+                    or anchor_rule.get("old_attempt_id") != anchor_replays[0].attempt_id
+                    or closed_ref != exhausted.recovery_decision_refs[-1]
+                    or events.index(closed_replays[0])
+                    >= events.index(anchor_replays[0])
+                    or events.index(anchor_replays[0]) >= events.index(stage_events[0])
+                ):
+                    raise ValueError("POC_EXTRACT_EXHAUSTION_PRIOR_INVALID")
             prior_marker = None
             if (
                 _fixture_dependency
@@ -10946,6 +11057,7 @@ class SimpleCheckpointStore:
                 raise ValueError("POC_EXTRACT_EXHAUSTION_EVIDENCE_INVALID") from error
             settings_proof: _SettingsProof | _RelationSettingsProof | None = None
             relation_proof: _RelationSettingsProof | None = None
+            fixture_projection: dict[str, object] | None = None
             if _local_import:
                 # Earlier diagnostics may precede the failing import. They are
                 # not proof of this failure, and a competing import traceback
@@ -11086,6 +11198,46 @@ class SimpleCheckpointStore:
                     else None
                 )
                 settings_proof = relation_proof
+            elif _migration_fixture:
+                local_import = None
+                relation_proof = self._pinned_django_migration_graph_omission(
+                    artifacts=artifacts,
+                    run=run,
+                    identity=identity,
+                    stderr=stderr,
+                    stdout=stdout,
+                    candidate_content=candidate_content,
+                    fixture_gap=True,
+                )
+                if relation_proof is not None:
+                    app_path = relation_proof[1][1]
+                    app_name = (
+                        app_path.removeprefix("src/")
+                        .removesuffix("/settings.py")
+                        .replace("/", ".")
+                    )
+                    fixture_projection = django_migration_fixture_source_projection(
+                        flag=relation_proof[0],
+                        app_name=app_name,
+                        project_sources=relation_proof[4],
+                        app_settings=relation_proof[2][1],
+                        migration=relation_proof[2][2],
+                    )
+                    if fixture_projection is not None:
+                        projection_bytes = canonical_bytes(fixture_projection)
+                        if (
+                            len(projection_bytes) > 8 * 1024
+                            or redact_untrusted_text(projection_bytes).data
+                            != projection_bytes
+                        ):
+                            fixture_projection = None
+                diagnostic = (
+                    b"source-bound synthetic Django migration fixture gap; "
+                    b"missing node unknown"
+                    if relation_proof is not None and fixture_projection is not None
+                    else None
+                )
+                settings_proof = relation_proof
             elif _fixture:
                 local_import = None
                 fixture_diagnostic = django_poc_fixture_failure(
@@ -11205,6 +11357,7 @@ class SimpleCheckpointStore:
                         or _django_settings
                         or _relation_settings
                         or _migration_settings
+                        or _migration_fixture
                         or _closed_runtime
                     )
                     and execution["exit_code"] != 2
@@ -11384,6 +11537,35 @@ class SimpleCheckpointStore:
                         "execute the original route."
                     ),
                 )
+            if _migration_fixture:
+                assert fixture_projection is not None
+                verified_modules = fixture_projection["verified_project_modules"]
+                assert isinstance(verified_modules, list)
+                rule_decision = RecoveryDecision(
+                    category=RecoveryCategory.GENERATED_INPUT,
+                    action=RecoveryAction.REGENERATE_INPUT,
+                    diagnosis=(
+                        "The synthetic Django fixture may omit computed pinned "
+                        "project settings; the missing migration node is unknown"
+                    ),
+                    guidance=(
+                        "The missing migration node is unknown from the closed "
+                        "diagnostic. Regenerate only this PoC candidate using exactly "
+                        "one pinned Django project settings module from: "
+                        + ", ".join(verified_modules)
+                        + ". In the Python script, set "
+                        "os.environ['DJANGO_SETTINGS_MODULE'] = '<chosen module>' "
+                        "as a top-level assignment, then call django.setup() and "
+                        "call_command('migrate') as unconditional top-level calls "
+                        "in that order before the route. Do not call "
+                        "settings.configure or collect the first arbitrary "
+                        "settings.py with ast.literal_eval. Preserve the "
+                        "original target route and attack input. Execute the full "
+                        "Django migration graph before the route. Do not disable "
+                        "migrations, fake them, edit repository code, or treat this "
+                        "harness setup failure as a vulnerability verdict."
+                    ),
+                )
             if _closed_runtime:
                 rule_decision = RecoveryDecision(
                     category=RecoveryCategory.GENERATED_INPUT,
@@ -11480,11 +11662,19 @@ class SimpleCheckpointStore:
                 ),
                 evidence_refs=exhausted.output_refs,
             )
-            if _django_settings or _relation_settings or _migration_settings:
+            if (
+                _django_settings
+                or _relation_settings
+                or _migration_settings
+                or _migration_fixture
+            ):
                 original_error = original_error.model_copy(
                     update={
                         "safe_message": (
-                            "PoC omitted a pinned Django migration graph setting"
+                            "PoC synthetic fixture did not establish a valid "
+                            "migration graph"
+                            if _migration_fixture
+                            else "PoC omitted a pinned Django migration graph setting"
                             if _migration_settings
                             else (
                                 "PoC omitted a pinned Django relation setting"
@@ -11510,12 +11700,18 @@ class SimpleCheckpointStore:
             )
             settings_candidate_checkpoint_ref = (
                 artifacts.put_json(candidate.model_dump(mode="json"))
-                if _django_settings or _relation_settings or _migration_settings
+                if _django_settings
+                or _relation_settings
+                or _migration_settings
+                or _migration_fixture
                 else None
             )
             settings_execution_checkpoint_ref = (
                 artifacts.put_json(exhausted.model_dump(mode="json"))
-                if _django_settings or _relation_settings or _migration_settings
+                if _django_settings
+                or _relation_settings
+                or _migration_settings
+                or _migration_fixture
                 else None
             )
             settings_source_refs = (
@@ -11524,7 +11720,12 @@ class SimpleCheckpointStore:
                     for source in settings_proof[2]
                 )
                 if (
-                    (_django_settings or _relation_settings or _migration_settings)
+                    (
+                        _django_settings
+                        or _relation_settings
+                        or _migration_settings
+                        or _migration_fixture
+                    )
                     and settings_proof is not None
                 )
                 else ()
@@ -11534,7 +11735,7 @@ class SimpleCheckpointStore:
                     artifacts.put_bytes(source, "text/x-python")
                     for _, source in relation_proof[4]
                 )
-                if (_relation_settings or _migration_settings)
+                if (_relation_settings or _migration_settings or _migration_fixture)
                 and relation_proof is not None
                 else ()
             )
@@ -11543,7 +11744,7 @@ class SimpleCheckpointStore:
                     artifacts.put_bytes(source, "text/x-python")
                     for _, source in relation_proof[6]
                 )
-                if (_relation_settings or _migration_settings)
+                if (_relation_settings or _migration_settings or _migration_fixture)
                 and relation_proof is not None
                 else ()
             )
@@ -11560,6 +11761,54 @@ class SimpleCheckpointStore:
                     "decision_origin": "RULE",
                     "diagnostic_excerpt": diagnostic.decode("ascii"),
                     "explicit_exhaustion_replay": True,
+                    **(
+                        {
+                            "migration_fixture_replay": True,
+                            "closed_runtime_policy_revision": 1,
+                            "fixture_source_projection": fixture_projection,
+                            "fixture_risk_flag": settings_proof[0],
+                            "settings_source_paths": list(settings_proof[1]),
+                            "settings_source_refs": [
+                                ref.model_dump(mode="json")
+                                for ref in settings_source_refs
+                            ],
+                            "settings_project_candidates": [
+                                {"path": path, "ref": ref.model_dump(mode="json")}
+                                for (path, _), ref in zip(
+                                    relation_proof[4],
+                                    relation_project_refs,
+                                    strict=True,
+                                )
+                            ],
+                            "settings_reachable_sources": [
+                                {"path": path, "ref": ref.model_dump(mode="json")}
+                                for (path, _), ref in zip(
+                                    relation_proof[6],
+                                    relation_reachable_refs,
+                                    strict=True,
+                                )
+                            ],
+                            "settings_tracked_manifest_ref": (
+                                relation_proof[5].model_dump(mode="json")
+                            ),
+                            "settings_candidate_checkpoint_ref": (
+                                settings_candidate_checkpoint_ref.model_dump(
+                                    mode="json"
+                                )
+                            ),
+                            "settings_execution_checkpoint_ref": (
+                                settings_execution_checkpoint_ref.model_dump(
+                                    mode="json"
+                                )
+                            ),
+                        }
+                        if _migration_fixture
+                        and settings_proof is not None
+                        and relation_proof is not None
+                        and settings_candidate_checkpoint_ref is not None
+                        and settings_execution_checkpoint_ref is not None
+                        else {}
+                    ),
                     **(
                         {
                             "closed_runtime_replay": True,
@@ -11692,7 +11941,9 @@ class SimpleCheckpointStore:
                         else {}
                     ),
                     "recovery_revision": (
-                        DJANGO_MIGRATION_GRAPH_SETTINGS_SOURCE_BOUND_REVISION
+                        1
+                        if _migration_fixture
+                        else DJANGO_MIGRATION_GRAPH_SETTINGS_SOURCE_BOUND_REVISION
                         if _migration_settings
                         else DJANGO_RELATION_SETTINGS_SOURCE_BOUND_REVISION
                         if _relation_settings
@@ -11781,7 +12032,11 @@ class SimpleCheckpointStore:
                         *relation_reachable_refs,
                         *(
                             (relation_proof[5],)
-                            if (_relation_settings or _migration_settings)
+                            if (
+                                _relation_settings
+                                or _migration_settings
+                                or _migration_fixture
+                            )
                             and relation_proof is not None
                             else ()
                         ),
@@ -11823,7 +12078,12 @@ class SimpleCheckpointStore:
                 ),
             )
             self._upsert_checkpoint_connection(connection, pending)
-            if _closed_runtime:
+            if _migration_fixture:
+                replay_summary_ko = (
+                    "고정 소스의 Django 설정·migration 근거를 보존하고 "
+                    "합성 PoC 후보만 한 번 다시 생성합니다."
+                )
+            elif _closed_runtime:
                 replay_summary_ko = (
                     "종료된 PoC 실행의 안전한 오류 유형만 보존하고 "
                     "후보를 정확히 한 번 다시 생성합니다."
