@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -20,7 +21,7 @@ from sastsimi.simple_runtime.surface_enrichment_v4 import (
 )
 
 
-def _case(tmp_path: Path, *, line_count: int = 3) -> tuple:
+def _case(tmp_path: Path, *, line_count: int = 3) -> tuple[Any, ...]:
     identity = CheckpointIdentity(
         analysis_id="analysis-v4",
         workspace_id="workspace-v4",
@@ -138,7 +139,7 @@ def _case(tmp_path: Path, *, line_count: int = 3) -> tuple:
     )
 
 
-def _prepare(case: tuple):
+def _prepare(case: tuple[Any, ...]) -> tuple[Any, ...]:
     (
         identity,
         index,

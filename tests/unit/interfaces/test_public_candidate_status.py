@@ -152,6 +152,35 @@ def test_v2_text_status_discloses_uncovered_surface_limit() -> None:
     assert "부분 분석: 보안 surface 검토 범위가 남아 있습니다" in rendered
 
 
+def test_v2_scope_status_keeps_raw_and_effective_gaps_separate() -> None:
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-001",
+            "status": "COMPLETE",
+            "percentage_kind": "known_checkpoint_fraction",
+            "phase_counts": {
+                "surface": {
+                    "total": 1,
+                    "covered": 1,
+                    "uncovered": 0,
+                    "insufficient": 0,
+                    "raw_static_gap_count": 4,
+                    "effective_python_gap_count": 0,
+                    "unresolved_reason_count": 0,
+                }
+            },
+        },
+    )
+    rendered = output.getvalue()
+    assert "원본 정적 공백: 4건" in rendered
+    assert "재인증 후 Python 공백: 0건" in rendered
+    assert "원본 정적 공백은 삭제되지 않았습니다" in rendered
+
+
 def test_text_paused_without_usage_shows_telemetry_action() -> None:
     output = StringIO()
     emit_public(

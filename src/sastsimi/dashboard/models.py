@@ -332,6 +332,8 @@ class AnalysisDetailView(AnalysisSummaryView):
     kpis: DashboardKpiView = Field(default_factory=DashboardKpiView)
     artifact_projection_complete: bool = True
     artifact_omitted_count: int = 0
+    surface_unresolved_reason_count: int | None = None
+    surface_unresolved_reason_preview: tuple[dict[str, str], ...] = ()
     static_coverage_expected: int | None = None
     static_coverage_verified: int | None = None
     static_coverage_gap_count: int | None = None

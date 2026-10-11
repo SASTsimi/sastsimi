@@ -35,6 +35,11 @@ class CoverageDisclosure:
     unavailable_file_count: int | None = None
     unavailable_reasons: tuple[tuple[str, int], ...] = ()
     unavailable_preview: tuple[tuple[str, str], ...] = ()
+    surface_proof_version: int | None = None
+    surface_scope_certificate_hash: str | None = None
+    surface_raw_static_gap_count: int | None = None
+    surface_effective_python_gap_count: int | None = None
+    surface_unresolved_reason_count: int | None = None
 
     @property
     def partial(self) -> bool:

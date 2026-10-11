@@ -247,6 +247,30 @@ def coverage_report_lines(
         f"- {'범위 증거 SHA-256' if korean else 'Coverage artifact SHA-256'}: "
         f"`{coverage.ref.content_hash}`",
     ]
+    if coverage.surface_proof_version == 2:
+        lines.extend(
+            [
+                f"- {'원본 정적 공백' if korean else 'Raw static gaps'}: "
+                f"{coverage.surface_raw_static_gap_count}",
+                "- "
+                + (
+                    "재인증 후 Python 공백"
+                    if korean
+                    else "Effective Python gaps after recertification"
+                )
+                + f": {coverage.surface_effective_python_gap_count}",
+                "- "
+                + ("미해결 보안 표면 사유" if korean else "Unresolved surface reasons")
+                + f": {coverage.surface_unresolved_reason_count}",
+                "- "
+                + (
+                    "재인증 범위 증거 SHA-256"
+                    if korean
+                    else "Recertification proof SHA-256"
+                )
+                + f": `{coverage.surface_scope_certificate_hash}`",
+            ]
+        )
     if coverage.unavailable_file_count is not None:
         label = (
             "미검증 Python 소스 파일" if korean else "Unavailable Python source files"
@@ -520,6 +544,25 @@ def render_bundle_files(
                 "unavailable_reasons": dict(facts.coverage.unavailable_reasons),
                 "unavailable_preview": facts.coverage.unavailable_preview,
                 "engine_errors": facts.coverage.engine_errors,
+                **(
+                    {
+                        "surface_proof_version": 2,
+                        "surface_scope_certificate_hash": (
+                            facts.coverage.surface_scope_certificate_hash
+                        ),
+                        "raw_static_gap_count": (
+                            facts.coverage.surface_raw_static_gap_count
+                        ),
+                        "effective_python_gap_count": (
+                            facts.coverage.surface_effective_python_gap_count
+                        ),
+                        "unresolved_reason_count": (
+                            facts.coverage.surface_unresolved_reason_count
+                        ),
+                    }
+                    if facts.coverage.surface_proof_version == 2
+                    else {}
+                ),
             }
             if facts.coverage is not None
             else None

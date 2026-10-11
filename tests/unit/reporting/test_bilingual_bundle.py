@@ -317,6 +317,48 @@ def test_partial_coverage_is_disclosed_equally_without_embedding_ledger() -> Non
     assert provenance["static_coverage"]["ref"]["content_hash"] == "d" * 64
 
 
+def test_verified_v2_scope_discloses_raw_and_effective_gaps_separately() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [{"path": "app.py", "rule_id": "r1", "reason": "scan_timeout"}],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+        disposition="PARTIAL",
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=2,
+        surface_scope_certificate_hash="f" * 64,
+        surface_raw_static_gap_count=1,
+        surface_effective_python_gap_count=0,
+        surface_unresolved_reason_count=0,
+    )
+    files = _render(facts=_facts(coverage=scoped))
+    english = files["report_en.md"].body.decode()
+    korean = files["report_kr.md"].body.decode()
+    assert "Static scan status: `PARTIAL`" in english
+    assert "Raw static gaps: 1" in english
+    assert "Effective Python gaps after recertification: 0" in english
+    assert "원본 정적 공백: 1" in korean
+    assert "재인증 후 Python 공백: 0" in korean
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["surface_proof_version"] == 2
+    assert provenance["static_coverage"]["surface_scope_certificate_hash"] == "f" * 64
+    assert provenance["static_coverage"]["gap_count"] == 1
+
+
 def test_bilingual_report_discloses_excluded_tests_and_out_of_scope_code() -> None:
     coverage = coverage_disclosure(
         {

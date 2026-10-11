@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, Protocol
 
 from sastsimi.simple_runtime.artifacts import verified_terminal_projection
-from sastsimi.simple_runtime.attack_surfaces import SurfaceIndex
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     CandidateTerminal,
@@ -27,6 +27,11 @@ from sastsimi.simple_runtime.poc_currentness import (
 from sastsimi.simple_runtime.report_currentness import (
     candidate_integrity_blocked_scopes,
 )
+from sastsimi.simple_runtime.surface_proof_read import (
+    SURFACE_STATUSES,
+    read_surface_scope_certificate,
+    verified_surface_coverage_counts,
+)
 
 from .models import ProgressSnapshot
 
@@ -40,7 +45,7 @@ _DEEP_STATUSES = (
     "INCONCLUSIVE",
     "ERROR",
 )
-_SURFACE_STATUSES = ("COVERED", "UNCOVERED", "INSUFFICIENT")
+_SURFACE_STATUSES = SURFACE_STATUSES
 _BUDGET_CODES = frozenset(
     {
         "LLM_TOKEN_BUDGET_EXHAUSTED",
@@ -117,56 +122,6 @@ def _normalized_counts(
     return {status: counts.get(status, 0) for status in statuses}
 
 
-def verified_surface_coverage_counts(
-    payload: object, index: SurfaceIndex, terminal: CandidateTerminal
-) -> dict[str, int] | None:
-    """Count only a scope-bound coverage artifact that agrees with terminal proof."""
-
-    if not isinstance(payload, dict):
-        return None
-    if (
-        payload.get("kind") != "simple_attack_surface_coverage_v1"
-        or payload.get("scope_fingerprint") != index.scope_fingerprint
-        or payload.get("static_bundle_hash") != index.static_bundle_hash
-        or payload.get("ast_manifest_hash") != index.ast_manifest_hash
-        or payload.get("candidate_inventory_hash") != index.candidate_inventory_hash
-        or payload.get("candidate_count") != index.candidate_count
-        or payload.get("static_gaps") != index.to_json()["static_gaps"]
-    ):
-        return None
-    rows = payload.get("surfaces")
-    if not isinstance(rows, list):
-        return None
-    indexed_ids = {surface.surface_id for surface in index.surfaces}
-    seen: set[str] = set()
-    counts = {status: 0 for status in _SURFACE_STATUSES}
-    for row in rows:
-        if not isinstance(row, dict):
-            return None
-        surface_id = row.get("surface_id")
-        status = row.get("coverage_status")
-        if (
-            not isinstance(surface_id, str)
-            or surface_id not in indexed_ids
-            or surface_id in seen
-            or not isinstance(status, str)
-            or status not in counts
-        ):
-            return None
-        seen.add(surface_id)
-        counts[status] += 1
-    complete = not index.static_gaps and counts["COVERED"] == len(indexed_ids)
-    if (
-        seen != indexed_ids
-        or payload.get("complete") is not complete
-        or counts != terminal.surface_counts
-        or terminal.status == "COMPLETE"
-        and not complete
-    ):
-        return None
-    return counts
-
-
 class CheckpointQuery(Protocol):
     def list_checkpoints(self, analysis_id: str) -> tuple[StageCheckpoint, ...]: ...
 
@@ -193,6 +148,11 @@ class ProgressProjector:
         surface_counts: Mapping[str, int] | None = None,
         surface_index_hash: str | None = None,
         analysis_active: bool = False,
+        surface_enrichment_status: Literal[
+            "RUNNING", "BLOCKED", "FAILED", "PAUSED", "PARTIAL", "COMPLETE"
+        ]
+        | None = None,
+        surface_enrichment_error_code: str | None = None,
     ) -> ProgressSnapshot:
         checkpoints = verified_terminal_projection(
             self._store.list_checkpoints(analysis_id), self._artifact_data_dir
@@ -377,6 +337,9 @@ class ProgressProjector:
                     "CONTEXT_RECORDS",
                     "CONTEXT_SURFACES",
                     "TOTAL",
+                    "RAW_STATIC_GAP_COUNT",
+                    "EFFECTIVE_PYTHON_GAP_COUNT",
+                    "UNRESOLVED_REASON_COUNT",
                 }
                 or type(value) is not int
                 or value < 0
@@ -392,6 +355,19 @@ class ProgressProjector:
             }
             if "CONTEXT_SURFACES" in surface_counts:
                 surface_phase["recorded_surfaces"] = surface_counts["CONTEXT_SURFACES"]
+            if (
+                "RAW_STATIC_GAP_COUNT" in surface_counts
+                and "EFFECTIVE_PYTHON_GAP_COUNT" in surface_counts
+            ):
+                surface_phase["raw_static_gap_count"] = surface_counts[
+                    "RAW_STATIC_GAP_COUNT"
+                ]
+                surface_phase["effective_python_gap_count"] = surface_counts[
+                    "EFFECTIVE_PYTHON_GAP_COUNT"
+                ]
+                surface_phase["unresolved_reason_count"] = surface_counts.get(
+                    "UNRESOLVED_REASON_COUNT", 0
+                )
             known += total
         if candidate_pipeline_version >= 2:
             producer_output_hashes = {
@@ -430,7 +406,15 @@ class ProgressProjector:
                 and (
                     candidate_terminal.status != "COMPLETE"
                     or (
-                        static_disposition == "FULL"
+                        (
+                            static_disposition == "FULL"
+                            and candidate_terminal.surface_proof_version == 1
+                            or candidate_terminal.surface_proof_version == 2
+                            and surface_counts is not None
+                            and surface_counts.get("EFFECTIVE_PYTHON_GAP_COUNT") == 0
+                            and "RAW_STATIC_GAP_COUNT" in surface_counts
+                            and candidate_terminal.scope_certificate_hash is not None
+                        )
                         and terminal_surface_counts.get("UNCOVERED", 0) == 0
                         and terminal_surface_counts.get("INSUFFICIENT", 0) == 0
                     )
@@ -496,6 +480,23 @@ class ProgressProjector:
         if revalidation_pending:
             status = "PAUSED"
             current = max(stale_pocs, key=lambda item: item.updated_at)
+        enrichment_failure = surface_enrichment_status in {
+            "BLOCKED",
+            "FAILED",
+            "PAUSED",
+        }
+        enrichment_interrupted = (
+            surface_enrichment_status == "RUNNING" and not analysis_active
+        )
+        if enrichment_failure and surface_enrichment_status is not None:
+            status = surface_enrichment_status
+            revalidation_pending = False
+        elif enrichment_interrupted:
+            status = "PAUSED"
+            revalidation_pending = False
+        elif surface_enrichment_status == "RUNNING" and analysis_active:
+            status = "RUNNING"
+            revalidation_pending = False
         credited = completed + skipped
         percent = (
             100
@@ -505,6 +506,15 @@ class ProgressProjector:
         error_code = (
             "POC_REVALIDATION_REQUIRED" if revalidation_pending else current.error_code
         )
+        if enrichment_failure:
+            error_code = (
+                surface_enrichment_error_code
+                if surface_enrichment_error_code is not None
+                and re.fullmatch(r"[A-Z0-9_:.]{1,128}", surface_enrichment_error_code)
+                else "SURFACE_ENRICHMENT_FAILURE"
+            )
+        elif enrichment_interrupted:
+            error_code = "SURFACE_ENRICHMENT_INTERRUPTED"
         if status == "BLOCKED" and error_code is None:
             if decisions.get("ERROR", 0):
                 error_code = "CANDIDATE_DISCOVERY_ERROR"
@@ -589,6 +599,8 @@ class ProgressProjector:
             resume_action=(
                 "REVALIDATE_POC"
                 if revalidation_pending
+                else "RESUME_INTERRUPTED"
+                if (enrichment_failure or enrichment_interrupted) and status == "PAUSED"
                 else "CHECK_USAGE_TELEMETRY"
                 if status == "PAUSED"
                 and error_code
@@ -725,4 +737,8 @@ class ProgressProjector:
         return "RUNNING", current
 
 
-__all__ = ["ProgressProjector", "verified_surface_coverage_counts"]
+__all__ = [
+    "ProgressProjector",
+    "read_surface_scope_certificate",
+    "verified_surface_coverage_counts",
+]

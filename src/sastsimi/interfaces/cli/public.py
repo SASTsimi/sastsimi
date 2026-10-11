@@ -123,6 +123,15 @@ def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
                 )
         else:
             stream.write("보안 surface: coverage 확인 불가\n")
+    raw_gaps = surface.get("raw_static_gap_count")
+    effective_gaps = surface.get("effective_python_gap_count")
+    if type(raw_gaps) is int and type(effective_gaps) is int:
+        stream.write(f"원본 정적 공백: {raw_gaps}건\n")
+        stream.write(f"재인증 후 Python 공백: {effective_gaps}건\n")
+        stream.write("원본 정적 공백은 삭제되지 않았습니다.\n")
+        reasons = surface.get("unresolved_reason_count")
+        if type(reasons) is int:
+            stream.write(f"미해결 보안 표면 사유: {reasons}건\n")
 
 
 def emit_public(

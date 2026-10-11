@@ -25,6 +25,34 @@
 재개합니다. `HYPOTHESIS_DONE`은 v2에서 모든 가설 공급원과 등록된 자식 검증,
 최종 Chaining 확인을 마친 시점이며 자식 실행의 시작 조건이 아닙니다.
 
+## 저장된 분석의 보안 표면 근거 보강
+
+`sastsimi resume A-001 --enrich-saved-surface-evidence`는 이미 저장된 Python 분석의
+근거 부족(`INSUFFICIENT`) 표면만 다시 검토하는 명시적 경로입니다. 일반 `resume`과
+달리 먼저 분석 잠금을 획득하고 고정 커밋·추적 파일의 SHA-256·기존 정적 결과·AST·
+표면 인덱스·후보 범위와 이전 결과 참조를 대조합니다. 범위가 달라졌거나 참조가
+손상됐으면 새 분석처럼 다시 계획하지 않고 차단합니다. 범위가 일치하면 변경할 수 없는
+v4 계획과 Python 검사 범위 인증서를 저장하고, 최대 64 KiB의 코드·AST·호출 경로
+문맥 조각마다 결과를 원자적으로 기록합니다. 재개 시 유효한 조각과 완료된 자식 작업은
+재사용하고 누락된 조각만 처리합니다. 기존 정적 검사, v1–v3 표면 결과, Finding,
+PoC, Scope Gate 기록은 덮어쓰지 않습니다.
+
+검사 범위 인증서는 원본 제외 목록과 정적 검사 공백을 그대로 보존하고 **유효한 Python
+범위**를 별도로 표시합니다. 고정 커밋의 파일 내용과 제외 사유가 확인된 비Python
+제품 파일만 Python 전용 검사 범위 밖으로 판정할 수 있습니다. Python 파싱·규칙 오류,
+출처 불명의 제외, 누락된 파일은 완료로 바꾸지 않습니다. v2 보안 표면 증거에서는
+같은 그래프 경로의 입력 지점·신뢰 경계·위험 동작을 실제 코드 위치와 간선에 대조하고,
+모든 문맥 조각과 연결된 자식 가설의 상태를 확인합니다. 한 조각에서 가설을 만들지
+못했다는 사실만으로 검증 실패나 취약점 부재로 판정하지 않으며, 서로 무관한 경로의
+역할 증거를 합쳐 `COVERED`로 만들지도 않습니다.
+
+모든 보강 호출이 끝나도 근거 부족, 실제 Python 검사 공백, 미해결 자식 `HOLD`가
+남으면 `PARTIAL`은 올바른 최종 상태입니다. 인증서·저장 근거 손상이나 Agent 실행
+실패는 `PARTIAL`로 덮지 않고 `BLOCKED`·`FAILED` 또는 한도에 따른 `PAUSED`로
+기록합니다. 별도 보강 상태와 오류 코드는 원래 성공한 v1 종료 근거를 손상시키지
+않고 저장됩니다. v2의 `COVERED`는 정해진 검사 범위의 표면 검토 근거이지 취약점
+`TRUE`, 제보 가능한 Finding, Scope Gate 승인 또는 저장소 전체 보안 보증이 아닙니다.
+
 재시도 가능한 오류는 LLM 복구 결정으로 도구 재시도, 생성 입력 재작성 또는 일회용
 Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 artifact와 checkpoint에
 남고 `status`와 대시보드에는 현재 복구 시도 횟수가 표시됩니다. 한 계보가 소진되면
@@ -90,6 +118,10 @@ Gate 결정은 최대 세 번입니다. `ACCEPT`는 이후 단계로 진행하�
 - 실행기: `src/sastsimi/simple_runtime/runner.py`
 - checkpoint 저장: `src/sastsimi/simple_runtime/store.py`
 - 분석 단위 제어: `src/sastsimi/simple_runtime/application.py`
+- 저장된 Python 범위 재인증: `src/sastsimi/simple_runtime/surface_scope_recertification.py`
+- v4 그래프·조각·검증: `src/sastsimi/simple_runtime/surface_evidence_graph_v4.py`,
+  `surface_enrichment_v4.py`, `surface_evidence_validation_v4.py`
+- 보안 표면 v2 증거: `src/sastsimi/simple_runtime/surface_coverage_v2.py`
 - 분석별 LLM 예산·호출 원장: `src/sastsimi/simple_runtime/call_queue.py`
 - 이전 실행 자료 연결: `src/sastsimi/simple_runtime/migration.py`
 - 진행률 계산: `src/sastsimi/progress/projector.py`

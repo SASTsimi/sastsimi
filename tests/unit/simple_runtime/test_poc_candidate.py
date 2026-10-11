@@ -159,6 +159,36 @@ class _AlwaysSensitiveClient(_RepairClient):
         )
 
 
+class _AlwaysUnknownAuthClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        return SimpleLLMCallResult(
+            value={
+                "content": (
+                    "#!/bin/sh\npython3 - <<'PY'\nfixture = {auth: fixture_value}\nPY\n"
+                )
+            },
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+class _CredentialRepairClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        content = (
+            "#!/bin/sh\npython3 - <<'PY'\n"
+            "client.login(password='never-print-this-value')\nPY\n"
+            if len(self.prompts) == 1
+            else "#!/bin/sh\nprintf 'inconclusive\\n'\n"
+        )
+        return SimpleLLMCallResult(
+            value={"content": content},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
 class _SourceRecordingClient:
     def __init__(self) -> None:
         self.prompt = b""
@@ -1313,11 +1343,230 @@ async def test_sensitive_candidate_repair_explains_secret_shaped_names(
     assert result.output_refs
     assert len(client.prompts) == 2
     assert b"concise error type and traceback to stderr" in client.prompts[0]
+    assert b"2026-10-11-a002-sensitive-1" in client.prompts[0]
+    assert b"including comments and embedded Python" in client.prompts[0]
     assert b"secret-shaped identifiers" in client.prompts[1]
     assert b"cookie, session, token" in client.prompts[1]
     assert b"COOKIE" in client.prompts[1]
+    assert b"COOKIE_ASSIGNMENT" in client.prompts[1]
     assert b"line 2" in client.prompts[1]
     assert b"never-print-this-cookie" not in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_sensitive_repair_explains_closed_keyword_shape_without_value(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _CredentialRepairClient()
+    stage = PoCCandidateStage(
+        client=client,
+        artifacts=SimpleArtifactRepository(tmp_path, identity),
+    )
+
+    result = await stage(checkpoint, {})
+
+    assert result.output_refs
+    assert len(client.prompts) == 2
+    assert b"synthetic local fixture" in client.prompts[0]
+    assert b"PASSWORD" in client.prompts[1]
+    assert b"KEYWORD_ARGUMENT" in client.prompts[1]
+    assert b"never-print-this-value" not in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_sensitive_exhaustion_replay_passes_only_closed_diagnostic_to_prompt(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    diagnostic_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate_rejection_diagnostic",
+            "reason": "SENSITIVE_CONTENT",
+            "line_count": 210,
+            "branch_count": 1,
+            "inconclusive_line_count": 1,
+            "exit_two_line_count": 0,
+            "exit_zero_line_count": 0,
+            "sensitive_category": "MULTIPLE_RULES",
+            "sensitive_line": 64,
+        }
+    )
+    marker_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_sensitive_exhaustion_replay",
+            "identity": identity.model_dump(mode="json"),
+            "old_attempt_id": "attempt-6",
+            "old_attempt_number": 6,
+            "old_checkpoint_hash": "b" * 64,
+            "diagnostic_ref": diagnostic_ref.model_dump(mode="json"),
+            "prompt_revision": "2026-10-11-a002-sensitive-1",
+        }
+    )
+    refs = (diagnostic_ref, marker_ref)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-7",
+        attempt_number=7,
+    )
+    client = _RepairClient()
+
+    result = await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert result.output_refs
+    assert b"MULTIPLE_RULES" in client.prompts[0]
+    assert b"line 64" in client.prompts[0]
+    assert b"never-print-this-cookie" not in client.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_auth_transport_replay_uses_only_closed_prior_diagnostic(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    prior_diagnostic = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate_rejection_diagnostic",
+            "reason": "SENSITIVE_CONTENT",
+            "line_count": 210,
+            "branch_count": 1,
+            "inconclusive_line_count": 1,
+            "exit_two_line_count": 0,
+            "exit_zero_line_count": 0,
+            "sensitive_category": "MULTIPLE_RULES",
+            "sensitive_line": 64,
+        }
+    )
+    prior_marker = artifacts.put_json(
+        {
+            "kind": "simple_poc_sensitive_exhaustion_replay",
+            "identity": identity.model_dump(mode="json"),
+            "old_attempt_id": "attempt-6",
+            "old_attempt_number": 6,
+            "old_checkpoint_hash": "b" * 64,
+            "diagnostic_ref": prior_diagnostic.model_dump(mode="json"),
+            "prompt_revision": "2026-10-11-a002-sensitive-1",
+        }
+    )
+    diagnostic = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate_rejection_diagnostic",
+            "reason": "SENSITIVE_CONTENT",
+            "line_count": 182,
+            "branch_count": 1,
+            "inconclusive_line_count": 0,
+            "exit_two_line_count": 0,
+            "exit_zero_line_count": 0,
+            "sensitive_category": "CREDENTIAL",
+            "sensitive_line": 80,
+            "sensitive_rule_id": "CREDENTIAL_ASSIGNMENT",
+        }
+    )
+    marker = artifacts.put_json(
+        {
+            "kind": "simple_poc_sensitive_auth_transport_replay",
+            "identity": identity.model_dump(mode="json"),
+            "old_attempt_id": "attempt-7",
+            "old_attempt_number": 7,
+            "old_checkpoint_hash": "c" * 64,
+            "diagnostic_ref": diagnostic.model_dump(mode="json"),
+            "prior_replay_ref": prior_marker.model_dump(mode="json"),
+            "prior_diagnostic_ref": prior_diagnostic.model_dump(mode="json"),
+            "prior_attempt_id": "attempt-6",
+            "prompt_revision": "2026-10-11-a002-auth-transport-2",
+        }
+    )
+    refs = (prior_diagnostic, prior_marker, diagnostic, marker)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-8",
+        attempt_number=8,
+    )
+    client = _RepairClient()
+
+    result = await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert result.output_refs
+    assert b"2026-10-11-a002-auth-transport-2" in client.prompts[0]
+    assert b"CREDENTIAL_ASSIGNMENT" in client.prompts[0]
+    assert b"line 80" in client.prompts[0]
+    assert b"synthetic local fixture" in client.prompts[0]
+    assert b"never-print-this" not in client.prompts[0]
+    for prompt in client.prompts:
+        assert prompt.count(b"</UNTRUSTED_EXACT_INPUTS>\n") == 1
+        tail = prompt.split(b"</UNTRUSTED_EXACT_INPUTS>\n", 1)[1]
+        assert b"<POC_SAFETY_RECAP>" in tail
+        assert b"neutral fixture" in tail
+        assert b"never-print-this" not in tail
+        assert prompt.endswith(b"</POC_SAFETY_RECAP>\n")
+
+
+@pytest.mark.asyncio
+async def test_unknown_auth_assignment_repair_is_closed_and_bounded(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-unknown-auth",
+        workspace_id="workspace-unknown-auth",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-unknown-auth",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-unknown-auth",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    client = _AlwaysUnknownAuthClient()
+
+    with pytest.raises(StageBlocked) as blocked:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert blocked.value.failure.code == "POC_SENSITIVE_CONTENT"
+    assert len(client.prompts) == 2
+    assert b"AUTH/UNKNOWN" in client.prompts[1]
+    assert b"mapping entries" in client.prompts[1]
+    assert all(b"fixture = {auth: fixture_value}" not in p for p in client.prompts)
+    diagnostic = json.loads(artifacts.read(blocked.value.failure.evidence_refs[0]))
+    assert diagnostic["sensitive_field_kind"] == "AUTH"
+    assert diagnostic["sensitive_site_kind"] == "UNKNOWN"
+    assert "fixture" not in json.dumps(diagnostic)
 
 
 @pytest.mark.asyncio

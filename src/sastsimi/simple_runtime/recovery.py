@@ -20,6 +20,8 @@ from pydantic import ValidationError
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.prompt_redaction import (
+    POC_SENSITIVE_RULE_CATEGORY,
+    POC_SENSITIVE_RULE_IDS,
     redact_projected_json,
     redact_untrusted_text,
 )
@@ -69,6 +71,353 @@ SQLITE_IN_MEMORY_STORAGE_RECOVERY_REVISION = 1
 DJANGO_CANDIDATE_APP_RECOVERY_REVISION = 1
 DJANGO_URLCONF_RECOVERY_REVISION = 1
 POC_REPLAY_GUARD_REVISION = 1
+POC_CANDIDATE_PROMPT_REVISION = "2026-10-11-a002-sensitive-1"
+POC_CANDIDATE_AUTH_TRANSPORT_PROMPT_REVISION = "2026-10-11-a002-auth-transport-2"
+POC_CANDIDATE_AUTH_RECAP_PROMPT_REVISION = "2026-10-11-poc-safety-recap-1"
+
+
+def closed_poc_sensitive_diagnostic(
+    ref: StoredDataRef, artifacts: SimpleArtifactRepository
+) -> dict[str, str | int] | None:
+    """Return only closed, bounded metadata from a CAS-verified rejection."""
+
+    try:
+        value = json.loads(artifacts.read_bounded(ref, 4 * 1024))
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return None
+    numeric = {
+        "line_count",
+        "branch_count",
+        "inconclusive_line_count",
+        "exit_two_line_count",
+        "exit_zero_line_count",
+    }
+    legacy = numeric | {"kind", "reason"}
+    current = legacy | {"sensitive_category", "sensitive_line"}
+    ruled = current | {"sensitive_rule_id"}
+    field_site = {"sensitive_field_kind", "sensitive_site_kind"}
+    field_kinds = {
+        "AUTH",
+        "PASSWORD",
+        "SECRET",
+        "API_KEY",
+        "CREDENTIAL",
+        "CONNECTION",
+        "TOKEN",
+        "OTHER",
+    }
+    site_kinds = {"KEYWORD_ARGUMENT", "ASSIGNMENT", "COMMENT", "UNKNOWN"}
+    categories = {
+        "UNCLASSIFIED",
+        "COOKIE",
+        "TOKEN",
+        "CREDENTIAL",
+        "HOST_ABSOLUTE_PATH",
+        "MULTIPLE_RULES",
+        "REDACTION_MISMATCH",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value)
+        not in (legacy, current, ruled, current | field_site, ruled | field_site)
+        or value.get("kind") != "simple_poc_candidate_rejection_diagnostic"
+        or value.get("reason") != "SENSITIVE_CONTENT"
+        or not all(type(value[field]) is int and value[field] >= 0 for field in numeric)
+    ):
+        return None
+    if set(value) != legacy and (
+        not isinstance(value.get("sensitive_category"), str)
+        or value["sensitive_category"] not in categories
+        or type(value.get("sensitive_line")) is not int
+        or not 0 <= value["sensitive_line"] <= value["line_count"]
+    ):
+        return None
+    if field_site <= set(value) and (
+        not isinstance(value.get("sensitive_field_kind"), str)
+        or value["sensitive_field_kind"] not in field_kinds
+        or not isinstance(value.get("sensitive_site_kind"), str)
+        or value["sensitive_site_kind"] not in site_kinds
+    ):
+        return None
+    if set(value) in (ruled, ruled | field_site):
+        rule = value.get("sensitive_rule_id")
+        category = value["sensitive_category"]
+        if (
+            not isinstance(rule, str)
+            or rule not in POC_SENSITIVE_RULE_IDS
+            or not (
+                rule == "REDACTION_MISMATCH"
+                or (rule == "UNCLASSIFIED" and category == "UNCLASSIFIED")
+                or (
+                    rule not in {"UNCLASSIFIED", "REDACTION_MISMATCH"}
+                    and category
+                    in {POC_SENSITIVE_RULE_CATEGORY.get(rule), "MULTIPLE_RULES"}
+                )
+            )
+        ):
+            return None
+    return {
+        key: value[key]
+        for key in (
+            "reason",
+            "line_count",
+            "sensitive_category",
+            "sensitive_line",
+            "sensitive_rule_id",
+            "sensitive_field_kind",
+            "sensitive_site_kind",
+        )
+        if key in value
+    }
+
+
+def sensitive_exhaustion_replay_binding(
+    checkpoint: StageCheckpoint, artifacts: SimpleArtifactRepository
+) -> dict[str, str | int] | None:
+    """Bind attempt seven to one prompt revision and safe attempt-six metadata."""
+
+    if (
+        checkpoint.stage is not SimpleStage.POC_CANDIDATE_DONE
+        or checkpoint.status is not StageStatus.RUNNING
+        or checkpoint.attempt_number != MAX_RECOVERY_ATTEMPTS + 4
+        or checkpoint.identity.hypothesis_id is None
+        or checkpoint.input_hash != input_reference_hash(checkpoint.input_refs)
+        or not checkpoint.input_refs
+        or artifacts.identity != checkpoint.identity
+    ):
+        return None
+    try:
+        marker = json.loads(artifacts.read_bounded(checkpoint.input_refs[-1], 4 * 1024))
+        if not isinstance(marker, dict) or set(marker) != {
+            "kind",
+            "identity",
+            "old_attempt_id",
+            "old_attempt_number",
+            "old_checkpoint_hash",
+            "diagnostic_ref",
+            "prompt_revision",
+        }:
+            return None
+        diagnostic_ref = StoredDataRef.model_validate(marker["diagnostic_ref"])
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return None
+    if (
+        marker["kind"] != "simple_poc_sensitive_exhaustion_replay"
+        or marker["identity"] != checkpoint.identity.model_dump(mode="json")
+        or not isinstance(marker["old_attempt_id"], str)
+        or not marker["old_attempt_id"]
+        or type(marker["old_attempt_number"]) is not int
+        or marker["old_attempt_number"] != MAX_RECOVERY_ATTEMPTS + 3
+        or not isinstance(marker["old_checkpoint_hash"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", marker["old_checkpoint_hash"]) is None
+        or marker["prompt_revision"] != POC_CANDIDATE_PROMPT_REVISION
+        or diagnostic_ref not in checkpoint.input_refs[:-1]
+    ):
+        return None
+    metadata = closed_poc_sensitive_diagnostic(diagnostic_ref, artifacts)
+    if metadata is None or "sensitive_category" not in metadata:
+        return None
+    return {
+        key: metadata[key]
+        for key in (
+            "reason",
+            "sensitive_category",
+            "sensitive_line",
+            "sensitive_rule_id",
+        )
+        if key in metadata
+    }
+
+
+def sensitive_auth_transport_replay_binding(
+    checkpoint: StageCheckpoint, artifacts: SimpleArtifactRepository
+) -> dict[str, str | int] | None:
+    """Bind attempt eight to the previous replay and closed rejection shape."""
+
+    if (
+        checkpoint.stage is not SimpleStage.POC_CANDIDATE_DONE
+        or checkpoint.status is not StageStatus.RUNNING
+        or checkpoint.attempt_number != MAX_RECOVERY_ATTEMPTS + 5
+        or checkpoint.identity.hypothesis_id is None
+        or checkpoint.input_hash != input_reference_hash(checkpoint.input_refs)
+        or len(checkpoint.input_refs) < 3
+        or artifacts.identity != checkpoint.identity
+    ):
+        return None
+    try:
+        marker = json.loads(artifacts.read_bounded(checkpoint.input_refs[-1], 4 * 1024))
+        if not isinstance(marker, dict) or set(marker) != {
+            "kind",
+            "identity",
+            "old_attempt_id",
+            "old_attempt_number",
+            "old_checkpoint_hash",
+            "diagnostic_ref",
+            "prior_replay_ref",
+            "prior_attempt_id",
+            "prior_diagnostic_ref",
+            "prompt_revision",
+        }:
+            return None
+        diagnostic_ref = StoredDataRef.model_validate(marker["diagnostic_ref"])
+        prior_ref = StoredDataRef.model_validate(marker["prior_replay_ref"])
+        prior_diagnostic_ref = StoredDataRef.model_validate(
+            marker["prior_diagnostic_ref"]
+        )
+        if (
+            diagnostic_ref != checkpoint.input_refs[-2]
+            or prior_ref not in checkpoint.input_refs[:-2]
+            or prior_diagnostic_ref not in checkpoint.input_refs[:-2]
+            or prior_diagnostic_ref == diagnostic_ref
+        ):
+            return None
+        prior_marker = json.loads(artifacts.read_bounded(prior_ref, 4 * 1024))
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return None
+    if (
+        marker["kind"] != "simple_poc_sensitive_auth_transport_replay"
+        or marker["identity"] != checkpoint.identity.model_dump(mode="json")
+        or not isinstance(marker["old_attempt_id"], str)
+        or not marker["old_attempt_id"]
+        or type(marker["old_attempt_number"]) is not int
+        or marker["old_attempt_number"] != MAX_RECOVERY_ATTEMPTS + 4
+        or not isinstance(marker["old_checkpoint_hash"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", marker["old_checkpoint_hash"]) is None
+        or marker["prompt_revision"] != POC_CANDIDATE_AUTH_TRANSPORT_PROMPT_REVISION
+        or not isinstance(prior_marker, dict)
+        or set(prior_marker)
+        != {
+            "kind",
+            "identity",
+            "old_attempt_id",
+            "old_attempt_number",
+            "old_checkpoint_hash",
+            "diagnostic_ref",
+            "prompt_revision",
+        }
+        or prior_marker.get("kind") != "simple_poc_sensitive_exhaustion_replay"
+        or prior_marker.get("identity") != checkpoint.identity.model_dump(mode="json")
+        or prior_marker.get("prompt_revision") != POC_CANDIDATE_PROMPT_REVISION
+        or prior_marker.get("old_attempt_number") != MAX_RECOVERY_ATTEMPTS + 3
+        or prior_marker.get("old_attempt_id") != marker["prior_attempt_id"]
+        or prior_marker.get("diagnostic_ref")
+        != prior_diagnostic_ref.model_dump(mode="json")
+        or not isinstance(prior_marker.get("old_checkpoint_hash"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", prior_marker["old_checkpoint_hash"]) is None
+    ):
+        return None
+    metadata = closed_poc_sensitive_diagnostic(diagnostic_ref, artifacts)
+    sensitive_line = metadata.get("sensitive_line") if metadata is not None else None
+    if (
+        metadata is None
+        or metadata.get("sensitive_category") != "CREDENTIAL"
+        or metadata.get("sensitive_rule_id") != "CREDENTIAL_ASSIGNMENT"
+        or not isinstance(sensitive_line, int)
+        or sensitive_line < 1
+    ):
+        return None
+    return {
+        key: metadata[key]
+        for key in (
+            "reason",
+            "sensitive_category",
+            "sensitive_line",
+            "sensitive_rule_id",
+            "sensitive_field_kind",
+            "sensitive_site_kind",
+        )
+        if key in metadata
+    }
+
+
+def sensitive_auth_recap_replay_binding(
+    checkpoint: StageCheckpoint, artifacts: SimpleArtifactRepository
+) -> dict[str, str | int] | None:
+    """Bind one ninth attempt to a CAS-verified eighth safety rejection."""
+
+    if (
+        checkpoint.stage is not SimpleStage.POC_CANDIDATE_DONE
+        or checkpoint.status is not StageStatus.RUNNING
+        or checkpoint.attempt_number != MAX_RECOVERY_ATTEMPTS + 6
+        or checkpoint.identity.hypothesis_id is None
+        or checkpoint.input_hash != input_reference_hash(checkpoint.input_refs)
+        or len(checkpoint.input_refs) < 4
+        or artifacts.identity != checkpoint.identity
+    ):
+        return None
+    try:
+        marker = json.loads(artifacts.read_bounded(checkpoint.input_refs[-1], 4 * 1024))
+        if not isinstance(marker, dict) or set(marker) != {
+            "kind",
+            "identity",
+            "old_attempt_id",
+            "old_attempt_number",
+            "old_checkpoint_hash",
+            "diagnostic_ref",
+            "prior_replay_ref",
+            "prior_attempt_id",
+            "prompt_revision",
+        }:
+            return None
+        diagnostic_ref = StoredDataRef.model_validate(marker["diagnostic_ref"])
+        prior_ref = StoredDataRef.model_validate(marker["prior_replay_ref"])
+        prior_marker = json.loads(artifacts.read_bounded(prior_ref, 4 * 1024))
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return None
+    if (
+        marker["kind"] != "simple_poc_sensitive_auth_recap_replay"
+        or marker["identity"] != checkpoint.identity.model_dump(mode="json")
+        or not isinstance(marker["old_attempt_id"], str)
+        or not marker["old_attempt_id"]
+        or marker["old_attempt_id"] == checkpoint.attempt_id
+        or type(marker["old_attempt_number"]) is not int
+        or marker["old_attempt_number"] != MAX_RECOVERY_ATTEMPTS + 5
+        or not isinstance(marker["old_checkpoint_hash"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", marker["old_checkpoint_hash"]) is None
+        or marker["prompt_revision"] != POC_CANDIDATE_AUTH_RECAP_PROMPT_REVISION
+        or diagnostic_ref != checkpoint.input_refs[-2]
+        or prior_ref != checkpoint.input_refs[-3]
+        or not isinstance(marker["prior_attempt_id"], str)
+        or not marker["prior_attempt_id"]
+        or not isinstance(prior_marker, dict)
+        or prior_marker.get("old_attempt_id") != marker["prior_attempt_id"]
+    ):
+        return None
+    prior_inputs = checkpoint.input_refs[:-2]
+    prior_checkpoint = checkpoint.model_copy(
+        update={
+            "attempt_number": MAX_RECOVERY_ATTEMPTS + 5,
+            "input_refs": prior_inputs,
+            "input_hash": input_reference_hash(prior_inputs),
+        }
+    )
+    if sensitive_auth_transport_replay_binding(prior_checkpoint, artifacts) is None:
+        return None
+    metadata = closed_poc_sensitive_diagnostic(diagnostic_ref, artifacts)
+    sensitive_line = metadata.get("sensitive_line") if metadata is not None else None
+    if (
+        metadata is None
+        or metadata.get("sensitive_category") != "CREDENTIAL"
+        or metadata.get("sensitive_rule_id") != "CREDENTIAL_ASSIGNMENT"
+        or metadata.get("sensitive_field_kind") != "AUTH"
+        or metadata.get("sensitive_site_kind") != "UNKNOWN"
+        or not isinstance(sensitive_line, int)
+        or sensitive_line < 1
+    ):
+        return None
+    return {
+        key: metadata[key]
+        for key in (
+            "reason",
+            "sensitive_category",
+            "sensitive_line",
+            "sensitive_rule_id",
+            "sensitive_field_kind",
+            "sensitive_site_kind",
+        )
+    }
+
+
 _PLAYWRIGHT_PATCH_PREFIX = (
     "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/sastsimi-playwright-browsers\n"
     "RUN python -m playwright install --with-deps "
@@ -4789,6 +5138,9 @@ class SimpleRecoveryCoordinator:
 __all__ = [
     "ALLOWED_ACTIONS",
     "MAX_RECOVERY_ATTEMPTS",
+    "POC_CANDIDATE_AUTH_TRANSPORT_PROMPT_REVISION",
+    "POC_CANDIDATE_AUTH_RECAP_PROMPT_REVISION",
+    "POC_CANDIDATE_PROMPT_REVISION",
     "TERMINAL_ERROR_CODES",
     "RecoveryAction",
     "RecoveryCategory",
@@ -4796,7 +5148,11 @@ __all__ = [
     "RecoveryDecision",
     "RecoveryResolution",
     "SimpleRecoveryCoordinator",
+    "closed_poc_sensitive_diagnostic",
     "has_python_import_failure",
     "has_python_import_traceback",
+    "sensitive_auth_transport_replay_binding",
+    "sensitive_auth_recap_replay_binding",
+    "sensitive_exhaustion_replay_binding",
     "validate_environment_patch",
 ]

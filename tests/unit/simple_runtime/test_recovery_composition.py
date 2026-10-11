@@ -339,6 +339,7 @@ def test_public_resume_forwards_explicit_repair_scope(
             repair_poc_django_relation_settings_exhaustion_hypothesis: str
             | None = None,
             supplement_saved_v2_ast_orphans: bool = False,
+            enrich_saved_surface_evidence: bool = False,
             **other_repair_hypotheses: str | None,
         ) -> SimpleAnalysisOutcome:
             del (
@@ -352,6 +353,7 @@ def test_public_resume_forwards_explicit_repair_scope(
                 other_repair_hypotheses
             )
             assert supplement_saved_v2_ast_orphans is False
+            assert enrich_saved_surface_evidence is False
             calls.append(
                 (
                     analysis_id,

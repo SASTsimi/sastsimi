@@ -36,10 +36,14 @@ class PublicCommandApplication(Protocol):
         repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_poc_sensitive_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_transport_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_recap_hypothesis: str | None = None,
         repair_poc_anchor_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
         repair_auth_required_hypothesis: str | None = None,
         supplement_saved_v2_ast_orphans: bool = False,
+        enrich_saved_surface_evidence: bool = False,
     ) -> dict[str, object]: ...
 
     def result(self, analysis_id: str) -> dict[str, object]: ...

@@ -7,15 +7,17 @@ database or artifact writes and never silently truncates a source/graph item.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 
+from .artifacts import SimpleArtifactRepository
 from .attack_surfaces import AttackSurface, SurfaceCoverage, SurfaceIndex
 from .models import CheckpointIdentity
 from .store import SurfaceExplorationProgressRecord
@@ -43,6 +45,60 @@ class V4Part:
     part_index: int
     part_count: int
     source_sha256: str | None
+
+
+def read_saved_coverage_v1(
+    artifacts: SimpleArtifactRepository,
+    index: SurfaceIndex,
+    coverage_ref: StoredDataRef,
+) -> SurfaceCoverage:
+    """Read the *original* saved v1 proof, rejecting changed surface identities."""
+
+    invalid = "SURFACE_ENRICHMENT_COVERAGE_INVALID"
+    try:
+        raw = json.loads(artifacts.read(coverage_ref))
+        if (
+            not isinstance(raw, dict)
+            or raw.get("kind") != "simple_attack_surface_coverage_v1"
+            or not isinstance(raw.get("surfaces"), list)
+            or len(raw["surfaces"]) != len(index.surfaces)
+        ):
+            raise ValueError(invalid)
+        reviewed: list[AttackSurface] = []
+        for original, row in zip(index.surfaces, raw["surfaces"], strict=True):
+            if (
+                not isinstance(row, dict)
+                or row.get("coverage_status")
+                not in {"COVERED", "UNCOVERED", "INSUFFICIENT"}
+                or not isinstance(row.get("review_evidence_refs"), list)
+            ):
+                raise ValueError(invalid)
+            refs = tuple(
+                StoredDataRef.model_validate(value)
+                for value in row["review_evidence_refs"]
+            )
+            candidate = replace(
+                original,
+                coverage_status=row["coverage_status"],
+                review_evidence_refs=refs,
+            )
+            if candidate.to_json() != row:
+                raise ValueError(invalid)
+            reviewed.append(candidate)
+        coverage = SurfaceCoverage(
+            scope_fingerprint=index.scope_fingerprint,
+            static_bundle_hash=index.static_bundle_hash,
+            ast_manifest_hash=index.ast_manifest_hash,
+            candidate_inventory_hash=index.candidate_inventory_hash,
+            candidate_count=index.candidate_count,
+            surfaces=tuple(reviewed),
+            static_gaps=index.static_gaps,
+        )
+        if coverage.to_json() != raw:
+            raise ValueError(invalid)
+        return coverage
+    except (OSError, TypeError, ValueError, KeyError) as error:
+        raise ValueError(invalid) from error
 
 
 def _sha(value: object) -> str:
@@ -211,6 +267,8 @@ def prepare_surface_enrichment_v4(
     prior_coverage: SurfaceCoverage,
     prior_progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
     graphs: Mapping[str, Mapping[str, object]],
+    *,
+    prior_coverage_ref: StoredDataRef | None = None,
 ) -> tuple[dict[str, object], tuple[V4Part, ...]]:
     """Plan exactly the saved insufficient surfaces, with bounded prompt parts."""
 
@@ -249,6 +307,12 @@ def prepare_surface_enrichment_v4(
         or certificate.get("raw_static_gaps") != index.to_json()["static_gaps"]
     ):
         raise ValueError("SURFACE_ENRICHMENT_SCOPE_INVALID")
+    if prior_coverage_ref is not None and (
+        str(prior_coverage_ref.workspace_id) != identity.workspace_id
+        or str(prior_coverage_ref.commit_id) != identity.commit_id
+        or prior_coverage_ref.content_hash != _sha(prior_coverage.to_json())
+    ):
+        raise ValueError("SURFACE_ENRICHMENT_COVERAGE_REF_INVALID")
     targets = tuple(
         surface
         for original, surface in zip(
@@ -293,6 +357,11 @@ def prepare_surface_enrichment_v4(
         "candidate_inventory_hash": index.candidate_inventory_hash,
         "certificate_hash": certificate_hash,
         "prior_coverage_hash": _sha(prior_coverage.to_json()),
+        "original_coverage_ref": (
+            prior_coverage_ref.model_dump(mode="json")
+            if prior_coverage_ref is not None
+            else None
+        ),
         "targets": bound_targets,
     }
     plan_binding_hash = _sha(binding)

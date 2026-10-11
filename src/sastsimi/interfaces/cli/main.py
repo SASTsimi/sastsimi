@@ -339,10 +339,14 @@ def main(
     resume_repair.add_argument("--repair-docker-owned-list-exhaustion")
     resume_repair.add_argument("--repair-poc-placeholder-exhaustion")
     resume_repair.add_argument("--repair-poc-sensitive-content")
+    resume_repair.add_argument("--repair-poc-sensitive-exhaustion")
+    resume_repair.add_argument("--repair-poc-sensitive-auth-transport")
+    resume_repair.add_argument("--repair-poc-sensitive-auth-recap")
     resume_repair.add_argument("--repair-poc-anchor")
     resume_repair.add_argument("--repair-report-validator")
     resume_repair.add_argument("--repair-auth-required-hypothesis")
     resume_repair.add_argument("--supplement-saved-v2-ast-orphans", action="store_true")
+    resume_repair.add_argument("--enrich-saved-surface-evidence", action="store_true")
     resume_parser.add_argument("--format", choices=["text", "json"])
     results_parser = subparsers.add_parser(
         "results", help="read one terminal production result", allow_abbrev=False
@@ -951,6 +955,30 @@ def main(
                                     args.repair_poc_sensitive_content
                                 ),
                             )
+                        elif args.repair_poc_sensitive_exhaustion is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_sensitive_exhaustion_hypothesis=(
+                                    args.repair_poc_sensitive_exhaustion
+                                ),
+                            )
+                        elif args.repair_poc_sensitive_auth_transport is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_sensitive_auth_transport_hypothesis=(
+                                    args.repair_poc_sensitive_auth_transport
+                                ),
+                            )
+                        elif args.repair_poc_sensitive_auth_recap is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_sensitive_auth_recap_hypothesis=(
+                                    args.repair_poc_sensitive_auth_recap
+                                ),
+                            )
                         elif args.repair_poc_anchor is not None:
                             data = progress_call(
                                 args.analysis_id,
@@ -978,6 +1006,12 @@ def main(
                                 args.analysis_id,
                                 renderer.render,
                                 supplement_saved_v2_ast_orphans=True,
+                            )
+                        elif args.enrich_saved_surface_evidence:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                enrich_saved_surface_evidence=True,
                             )
                         else:
                             data = progress_call(args.analysis_id, renderer.render)
@@ -1139,6 +1173,27 @@ def main(
                                 args.repair_poc_sensitive_content
                             ),
                         )
+                    elif args.repair_poc_sensitive_exhaustion is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_sensitive_exhaustion_hypothesis=(
+                                args.repair_poc_sensitive_exhaustion
+                            ),
+                        )
+                    elif args.repair_poc_sensitive_auth_transport is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_sensitive_auth_transport_hypothesis=(
+                                args.repair_poc_sensitive_auth_transport
+                            ),
+                        )
+                    elif args.repair_poc_sensitive_auth_recap is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_sensitive_auth_recap_hypothesis=(
+                                args.repair_poc_sensitive_auth_recap
+                            ),
+                        )
                     elif args.repair_poc_anchor is not None:
                         data = application.resume(
                             args.analysis_id,
@@ -1162,6 +1217,11 @@ def main(
                         data = application.resume(
                             args.analysis_id,
                             supplement_saved_v2_ast_orphans=True,
+                        )
+                    elif args.enrich_saved_surface_evidence:
+                        data = application.resume(
+                            args.analysis_id,
+                            enrich_saved_surface_evidence=True,
                         )
                     else:
                         data = application.resume(args.analysis_id)
@@ -1222,6 +1282,14 @@ def main(
                         and str(error).startswith("POC_PLACEHOLDER_EXHAUSTION_")
                         or args.repair_poc_sensitive_content is not None
                         and str(error).startswith("POC_SENSITIVE_CONTENT_REPLAY_")
+                        or args.repair_poc_sensitive_exhaustion is not None
+                        and str(error).startswith("POC_SENSITIVE_EXHAUSTION_REPLAY_")
+                        or args.repair_poc_sensitive_auth_transport is not None
+                        and str(error).startswith(
+                            "POC_SENSITIVE_AUTH_TRANSPORT_REPLAY_"
+                        )
+                        or args.repair_poc_sensitive_auth_recap is not None
+                        and str(error).startswith("POC_SENSITIVE_AUTH_RECAP_REPLAY_")
                         or args.repair_poc_anchor is not None
                         and str(error).startswith("POC_ANCHOR_REPLAY_")
                         or args.repair_report_validator is not None
@@ -1295,10 +1363,14 @@ def main(
                 or args.repair_docker_owned_list_exhaustion is not None
                 or args.repair_poc_placeholder_exhaustion is not None
                 or args.repair_poc_sensitive_content is not None
+                or args.repair_poc_sensitive_exhaustion is not None
+                or args.repair_poc_sensitive_auth_transport is not None
+                or args.repair_poc_sensitive_auth_recap is not None
                 or args.repair_poc_anchor is not None
                 or args.repair_report_validator is not None
                 or args.repair_auth_required_hypothesis is not None
                 or args.supplement_saved_v2_ast_orphans
+                or args.enrich_saved_surface_evidence
             ):
                 raise _InputError
             bootstrap.inspect_production_resume(config.data_dir, args.analysis_id)

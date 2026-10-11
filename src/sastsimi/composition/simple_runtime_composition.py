@@ -38,6 +38,7 @@ from sastsimi.ports.report_export import ReportUnavailable
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import (
     ProgressProjector,
+    read_surface_scope_certificate,
     verified_surface_coverage_counts,
 )
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
@@ -666,10 +667,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_poc_sensitive_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_transport_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_recap_hypothesis: str | None = None,
         repair_poc_anchor_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
         repair_auth_required_hypothesis: str | None = None,
         supplement_saved_v2_ast_orphans: bool = False,
+        enrich_saved_surface_evidence: bool = False,
     ) -> dict[str, object]:
         outcome = asyncio.run(
             build_analysis_application(self._config, self._profile).resume(
@@ -738,10 +743,20 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 repair_poc_sensitive_content_hypothesis=(
                     repair_poc_sensitive_content_hypothesis
                 ),
+                repair_poc_sensitive_exhaustion_hypothesis=(
+                    repair_poc_sensitive_exhaustion_hypothesis
+                ),
+                repair_poc_sensitive_auth_transport_hypothesis=(
+                    repair_poc_sensitive_auth_transport_hypothesis
+                ),
+                repair_poc_sensitive_auth_recap_hypothesis=(
+                    repair_poc_sensitive_auth_recap_hypothesis
+                ),
                 repair_poc_anchor_hypothesis=repair_poc_anchor_hypothesis,
                 repair_report_validator_hypothesis=(repair_report_validator_hypothesis),
                 repair_auth_required_hypothesis=repair_auth_required_hypothesis,
                 supplement_saved_v2_ast_orphans=supplement_saved_v2_ast_orphans,
+                enrich_saved_surface_evidence=enrich_saved_surface_evidence,
             )
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
@@ -777,10 +792,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_poc_sensitive_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_transport_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_recap_hypothesis: str | None = None,
         repair_poc_anchor_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
         repair_auth_required_hypothesis: str | None = None,
         supplement_saved_v2_ast_orphans: bool = False,
+        enrich_saved_surface_evidence: bool = False,
     ) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
 
@@ -852,12 +871,22 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                     repair_poc_sensitive_content_hypothesis=(
                         repair_poc_sensitive_content_hypothesis
                     ),
+                    repair_poc_sensitive_exhaustion_hypothesis=(
+                        repair_poc_sensitive_exhaustion_hypothesis
+                    ),
+                    repair_poc_sensitive_auth_transport_hypothesis=(
+                        repair_poc_sensitive_auth_transport_hypothesis
+                    ),
+                    repair_poc_sensitive_auth_recap_hypothesis=(
+                        repair_poc_sensitive_auth_recap_hypothesis
+                    ),
                     repair_poc_anchor_hypothesis=repair_poc_anchor_hypothesis,
                     repair_report_validator_hypothesis=(
                         repair_report_validator_hypothesis
                     ),
                     repair_auth_required_hypothesis=repair_auth_required_hypothesis,
                     supplement_saved_v2_ast_orphans=supplement_saved_v2_ast_orphans,
+                    enrich_saved_surface_evidence=enrich_saved_surface_evidence,
                 )
             )
             return await self._track(task, [exact], callback)
@@ -937,6 +966,8 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 analysis_run_lease_active(self._config.data_dir, run.analysis_id)
                 is True
             ),
+            surface_enrichment_status=run.surface_enrichment_status,
+            surface_enrichment_error_code=run.surface_enrichment_error_code,
         )
 
     def _surface_metrics(
@@ -1013,6 +1044,17 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                         ),
                         index,
                         terminal,
+                        certificate_payload=(
+                            read_surface_scope_certificate(
+                                repository,
+                                run.python_scope_certificate_ref,
+                                run.static_coverage_ref,
+                                terminal,
+                            )
+                            if terminal.surface_proof_version == 2
+                            else None
+                        ),
+                        artifacts=repository,
                     )
                     if coverage_ref is not None
                     else None

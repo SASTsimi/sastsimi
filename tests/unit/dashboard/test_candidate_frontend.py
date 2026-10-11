@@ -134,6 +134,23 @@ for (const expected of [
 const listText = text(vm.runInContext("analysisButton(state.detail)", context));
 assert.ok(listText.includes("현재 알려진 checkpoint 비율"), listText);
 const previousSurface = detail.phase_counts.surface;
+detail.phase_counts.surface = {
+  total: 1, covered: 1, uncovered: 0, insufficient: 0,
+  raw_static_gap_count: 3, effective_python_gap_count: 0,
+  unresolved_reason_count: 1,
+};
+detail.surface_unresolved_reason_count = 1;
+detail.surface_unresolved_reason_preview = [
+  { surface_id: "surface-1", path: "app.py", reason: "SOURCE_UNAVAILABLE" },
+];
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "원본 정적 공백", "3건", "재인증 후 Python 공백", "0건",
+  "미해결 보안 표면 사유 1건", "surface-1 · app.py · SOURCE_UNAVAILABLE",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+delete detail.surface_unresolved_reason_count;
+delete detail.surface_unresolved_reason_preview;
 detail.status = "PARTIAL";
 detail.progress_percent = 96;
 detail.phase_counts.surface = {

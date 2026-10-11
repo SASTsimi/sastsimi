@@ -313,6 +313,10 @@ function renderOverview(shell) {
       else if (Number.isInteger(surface.recorded_contexts)) legacyMetrics.push(["보안 surface", `저장된 context ${surface.recorded_contexts}건 · 인덱스 ${surface.total}개 · coverage 확인 전`]);
       else legacyMetrics.push(["보안 surface", "coverage 확인 불가"]);
     } else legacyMetrics.push(["보안 surface", "coverage 확인 불가"]);
+    if (Number.isInteger(surface?.raw_static_gap_count) && Number.isInteger(surface?.effective_python_gap_count)) {
+      legacyMetrics.push(["원본 정적 공백", `${surface.raw_static_gap_count}건`], ["재인증 후 Python 공백", `${surface.effective_python_gap_count}건`]);
+      if (Number.isInteger(surface?.unresolved_reason_count)) legacyMetrics.push(["미해결 근거 사유", `${surface.unresolved_reason_count}건`]);
+    }
     box.append(el("div", "현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
     if (shell.status === "PARTIAL") {
       const countsKnown = Number.isInteger(surface?.total) && ["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key])) && surface.covered + surface.uncovered + surface.insufficient === surface.total;
@@ -434,6 +438,16 @@ function renderFindingTraces(items = []) { document.getElementById("finding-pin-
 function staticCoverageNodes(detail) {
   if (detail.static_coverage_expected == null || detail.static_coverage_verified == null) return [el("div", "정적 검사 커버리지: — (검증된 기록 없음)", "empty")];
   const nodes = [el("div", `검증 ${detail.static_coverage_verified}/${detail.static_coverage_expected} · 미검증 ${detail.static_coverage_gap_count ?? "—"}`, "coverage-lead")];
+  const scoped = detail.phase_counts?.surface;
+  if (Number.isInteger(scoped?.raw_static_gap_count) && Number.isInteger(scoped?.effective_python_gap_count)) nodes.push(el("div", `원본 정적 공백 ${scoped.raw_static_gap_count}건 · 재인증 후 Python 공백 ${scoped.effective_python_gap_count}건 (원본 기록 유지)`, "coverage-lead"));
+  if (Number.isInteger(detail.surface_unresolved_reason_count)) {
+    nodes.push(el("div", `미해결 보안 표면 사유 ${detail.surface_unresolved_reason_count}건`, "meta"));
+    if (detail.surface_unresolved_reason_preview?.length) {
+      const details = el("details"); details.append(el("summary", `사유 보기 (${detail.surface_unresolved_reason_count}건 중 최대 100건)`));
+      detail.surface_unresolved_reason_preview.forEach((item) => details.append(el("div", `${item.surface_id} · ${item.path} · ${item.reason}`, "meta")));
+      nodes.push(details);
+    }
+  }
   const engines = Object.entries(detail.static_coverage_engines || {}).map(([name, count]) => `${name} ${count}`).join(" · "); if (engines) nodes.push(el("div", `검증 엔진: ${engines}`, "meta"));
   if (detail.static_ast_parse_error_count != null) nodes.push(el("div", `Python AST 파싱 오류 ${detail.static_ast_parse_error_count} · 사실 수 제한 ${detail.static_ast_truncated ? "도달" : "미도달"}`, "meta"));
   if (detail.static_coverage_unsupported?.length) nodes.push(el("div", `규칙 범위 밖: ${detail.static_coverage_unsupported.map(([ext, count]) => `${ext} ${count}개`).join(" · ")}`, "meta"));

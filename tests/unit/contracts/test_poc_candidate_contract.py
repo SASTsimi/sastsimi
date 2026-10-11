@@ -103,6 +103,31 @@ def test_sensitive_rejection_records_first_rule_without_values() -> None:
     assert b"never-print-this" not in str(diagnostic).encode()
 
 
+@pytest.mark.parametrize(
+    ("line", "field_kind", "site_kind"),
+    [
+        (
+            b"client.login(password=never-print-this-value)",
+            "PASSWORD",
+            "KEYWORD_ARGUMENT",
+        ),
+        (b"auth = never-print-this-value", "AUTH", "ASSIGNMENT"),
+        (b"# secret = never-print-this-value", "SECRET", "COMMENT"),
+    ],
+)
+def test_sensitive_rejection_reports_only_closed_assignment_shape(
+    line: bytes, field_kind: str, site_kind: str
+) -> None:
+    script = b"#!/bin/sh\nfixture_value = 'never-print-neutral-value'\n" + line + b"\n"
+
+    diagnostic = candidate_rejection_diagnostic(script, "POC_SENSITIVE_CONTENT")
+
+    assert diagnostic["sensitive_field_kind"] == field_kind
+    assert diagnostic["sensitive_site_kind"] == site_kind
+    assert "never-print" not in str(diagnostic)
+    assert "fixture_value" not in str(diagnostic)
+
+
 def test_rule_diagnostic_does_not_relax_sensitive_candidate_block() -> None:
     with pytest.raises(PoCCandidateRejected, match="POC_SENSITIVE_CONTENT"):
         validate_candidate(
