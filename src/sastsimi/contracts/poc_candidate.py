@@ -112,7 +112,9 @@ def _sensitive_assignment_shape(source: str, offset: int) -> tuple[str, str]:
 
 
 class PoCCandidateRejected(ValueError):
-    pass
+    def __init__(self, code: str, *, reason_code: str | None = None) -> None:
+        super().__init__(code)
+        self.reason_code = reason_code
 
 
 def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str | int]:

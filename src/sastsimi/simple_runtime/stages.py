@@ -59,7 +59,7 @@ from .attempt_owner import AttemptOwner, PromptByteCounts
 from .chaining import PrimitiveAdmissionStage, SimpleChainingStage
 from .django_migration_graph_omission import (
     django_migration_fixture_closed_diagnostic,
-    django_migration_fixture_replay_forbidden,
+    django_migration_fixture_replay_rejection,
     django_migration_settings_replay_forbidden,
 )
 from .django_migration_poc_patch import (
@@ -95,6 +95,7 @@ from .recovery import (
     candidate_app_replay_unsupported_app,
     closed_poc_runtime_diagnostic,
     django_settings_replay_forbidden,
+    late_fixture_replay_binding,
     migration_settings_replay_binding,
     relation_settings_replay_binding,
     sensitive_auth_recap_replay_binding,
@@ -220,6 +221,20 @@ def _reject_migration_settings_replay_content(
     content: bytes,
 ) -> None:
     try:
+        late = late_fixture_replay_binding(checkpoint, artifacts)
+    except ValueError as error:
+        raise PoCCandidateRejected(
+            "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND"
+        ) from error
+    if late is not None:
+        old = late["old"]
+        if not isinstance(old, StageCheckpoint):
+            raise PoCCandidateRejected(
+                "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND"
+            )
+        _reject_migration_settings_replay_content(old, artifacts, content)
+        return
+    try:
         binding = migration_settings_replay_binding(checkpoint, artifacts)
     except ValueError as error:
         raise PoCCandidateRejected(
@@ -343,13 +358,48 @@ def _reject_migration_settings_replay_content(
         or projection.get("app_name") != app_match.group(1).replace("/", ".")
     ):
         raise PoCCandidateRejected("POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND")
-    if content == previous_content or django_migration_fixture_replay_forbidden(
+    if content == previous_content:
+        raise PoCCandidateRejected(
+            "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED",
+            reason_code="UNCHANGED_CANDIDATE",
+        )
+    reason = django_migration_fixture_replay_rejection(
         content,
         flag=flag,
         app_name=app_match.group(1).replace("/", "."),
         project_modules=project_modules,
-    ):
-        raise PoCCandidateRejected("POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED")
+    )
+    if reason is not None:
+        raise PoCCandidateRejected(
+            "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED",
+            reason_code=reason,
+        )
+
+
+_FIXTURE_REPLAY_REASON_CODES = frozenset(
+    {
+        "UNCHANGED_CANDIDATE",
+        "INVALID_PYTHON_OR_MIGRATION_BYPASS",
+        "SYNTHETIC_SETTINGS_OR_MUTATION",
+        "PINNED_PROJECT_BOOTSTRAP_MISSING",
+        "SETUP_MIGRATE_ORDER_INVALID",
+        "REQUEST_BEFORE_MIGRATION",
+    }
+)
+
+
+def _fixture_repair_guidance(reason_code: str | None) -> str:
+    """Only closed rule names and fixed native-bootstrap guidance enter prompts."""
+
+    if reason_code not in _FIXTURE_REPLAY_REASON_CODES:
+        return ""
+    return (
+        " The closed fixture rejection reason was " + reason_code + ". "
+        "Regenerate from pinned native Django project settings. Put top-level "
+        "django.setup() before top-level call_command('migrate'), then make "
+        "the intended local request. Do not suppress or fake migrations, mutate "
+        "settings, or reuse the rejected candidate."
+    )
 
 
 _PRO_CON_BATCH_MAX_SIZE = 8
@@ -1777,6 +1827,9 @@ class PoCCandidateStage:
             migration_binding = migration_settings_replay_binding(
                 checkpoint, self._artifacts
             )
+            late_fixture_binding = late_fixture_replay_binding(
+                checkpoint, self._artifacts
+            )
         except ValueError as error:
             raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID") from error
         if migration_binding is not None:
@@ -2215,6 +2268,17 @@ boundary without altering the target's behavior.
                 + " after configuration or classify setup failure as a "
                 "vulnerability verdict."
             )
+        if late_fixture_binding is not None:
+            instructions += (
+                "\nThe preceding migration-fixture candidate was rejected before "
+                "execution; its historical internal reason is UNKNOWN. Generate "
+                "a new self-contained script from the pinned native Django "
+                "project settings. Set DJANGO_SETTINGS_MODULE to a verified "
+                "project module, call top-level django.setup(), then top-level "
+                "call_command('migrate'), and only afterward invoke the intended "
+                "local route. Do not reuse the rejected script, configure synthetic "
+                "settings, skip migrations, or infer a vulnerability verdict."
+            )
         schema = _object_schema({"content": _string()}, ["content"])
         result = await self._client.call(
             prompt=_poc_candidate_prompt(instructions, context),
@@ -2416,6 +2480,8 @@ boundary without altering the target's behavior.
                     "settings.configure(**settings_values). Do not make "
                     "a post-configure assignment or change product source."
                 )
+            elif str(error) == "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED":
+                repair_detail = _fixture_repair_guidance(error.reason_code)
             repaired = await self._client.call(
                 prompt=_poc_candidate_prompt(
                     instructions
@@ -2453,12 +2519,20 @@ boundary without altering the target's behavior.
                 _require_independent_poc_fixture(content)
                 _require_django_complete_schema(content)
             except PoCCandidateRejected as second_error:
-                diagnostic_ref = self._artifacts.put_json(
-                    {
-                        "kind": "simple_poc_candidate_rejection_diagnostic",
-                        **candidate_rejection_diagnostic(content, str(second_error)),
-                    }
-                )
+                diagnostic = {
+                    "kind": "simple_poc_candidate_rejection_diagnostic",
+                    **candidate_rejection_diagnostic(content, str(second_error)),
+                }
+                if (
+                    str(second_error)
+                    == "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED"
+                    and second_error.reason_code in _FIXTURE_REPLAY_REASON_CODES
+                    and late_fixture_binding is not None
+                ):
+                    diagnostic["fixture_replay_reason_code"] = (
+                        second_error.reason_code
+                    )
+                diagnostic_ref = self._artifacts.put_json(diagnostic)
                 raise StageBlocked(
                     StageFailure(
                         code=str(second_error),

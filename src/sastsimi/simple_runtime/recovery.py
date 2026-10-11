@@ -3421,6 +3421,19 @@ def late_fixture_replay_binding(
     if checkpoint.attempt_number != MAX_RECOVERY_ATTEMPTS + 4:
         return None
     try:
+        records = [
+            json.loads(artifacts.read_bounded(ref, 64 * 1024))
+            for ref in checkpoint.recovery_decision_refs
+        ]
+        if not any(
+            isinstance(record, dict)
+            and (
+                record.get("migration_fixture_replay") is True
+                or record.get("late_fixture_replay_revision") is not None
+            )
+            for record in records
+        ):
+            return None
         if (
             checkpoint.stage is not SimpleStage.POC_CANDIDATE_DONE
             or checkpoint.status

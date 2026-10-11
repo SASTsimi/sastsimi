@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 
+import sastsimi.simple_runtime.stages as stages
 from sastsimi.observability.agent_activity import ActivityKind
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
@@ -19,6 +20,7 @@ from sastsimi.simple_runtime.models import (
     StageFailure,
     StageResult,
     StageStatus,
+    input_reference_hash,
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected
 from sastsimi.simple_runtime.provider import SimpleLLMClient
@@ -323,6 +325,75 @@ def test_late_fixture_replay_refuses_unexited_child(tmp_path: Path) -> None:
             exhausted, artifacts
         )
     assert store.require(exhausted.identity, exhausted.stage) == exhausted
+
+
+def test_attempt_seven_keeps_original_fixture_guard_and_closed_feedback(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, exhausted = _attempt_six_fixture_rejection(tmp_path)
+    pending = store.prepare_poc_django_migration_settings_exhaustion_replay(
+        exhausted, artifacts
+    )
+    running = store.mark_running(
+        pending.identity, pending.stage, pending.input_refs,
+        attempt_id="fixture-guard-attempt-7",
+    )
+    original = CANDIDATE.replace(b"FORUM_", b"HELPDESK_").replace(
+        b"forum", b"helpdesk"
+    )
+    with pytest.raises(
+        PoCCandidateRejected,
+        match="POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED",
+    ) as caught:
+        _reject_migration_settings_replay_content(running, artifacts, original)
+    assert caught.value.reason_code == "UNCHANGED_CANDIDATE"
+    guidance = stages._fixture_repair_guidance(caught.value.reason_code)
+    assert "UNCHANGED_CANDIDATE" in guidance
+    assert "django.setup()" in guidance
+    assert "call_command('migrate')" in guidance
+    assert "HELPDESK_" not in guidance
+    for rejected in (
+        original.replace(b"fixture_settings.update(project_flags)",
+                         b"fixture_settings['MIGRATION_MODULES'] = {}\n"
+                         b"fixture_settings.update(project_flags)"),
+        NATIVE_REPLAN.replace(b"demodesk.config.settings",
+                              b"other.config.settings"),
+        NATIVE_REPLAN.replace(b"django.setup()\n", b""),
+    ):
+        with pytest.raises(PoCCandidateRejected) as blocked:
+            _reject_migration_settings_replay_content(running, artifacts, rejected)
+        assert blocked.value.reason_code in {
+            "INVALID_PYTHON_OR_MIGRATION_BYPASS",
+            "SYNTHETIC_SETTINGS_OR_MUTATION",
+            "SETUP_MIGRATE_ORDER_INVALID",
+        }
+    _reject_migration_settings_replay_content(running, artifacts, NATIVE_REPLAN)
+
+
+def test_attempt_seven_rejects_forged_parent_marker(tmp_path: Path) -> None:
+    store, artifacts, exhausted = _attempt_six_fixture_rejection(tmp_path)
+    pending = store.prepare_poc_django_migration_settings_exhaustion_replay(
+        exhausted, artifacts
+    )
+    running = store.mark_running(
+        pending.identity, pending.stage, pending.input_refs,
+        attempt_id="fixture-forged-attempt-7",
+    )
+    marker = json.loads(artifacts.read(running.recovery_decision_refs[-1]))
+    marker["parent_fixture_decision_ref"] = exhausted.output_refs[0].model_dump(
+        mode="json"
+    )
+    forged_ref = artifacts.put_json(marker)
+    forged_inputs = (*running.input_refs[:-1], forged_ref)
+    forged = running.model_copy(update={
+        "input_refs": forged_inputs,
+        "input_hash": input_reference_hash(forged_inputs),
+        "recovery_decision_refs": (*running.recovery_decision_refs[:-1], forged_ref),
+    })
+    with pytest.raises(
+        PoCCandidateRejected, match="POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND"
+    ):
+        _reject_migration_settings_replay_content(forged, artifacts, NATIVE_REPLAN)
 
 
 def test_source_bound_attempt_five_replays_once_without_claiming_missing_node(
