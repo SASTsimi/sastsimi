@@ -113,6 +113,20 @@ Gate 결정은 최대 세 번입니다. `ACCEPT`는 이후 단계로 진행하�
 출력은 기존의 제한된 실행 오류 복구 경로를 따르며 분석을 `BLOCKED` 또는
 `FAILED`로 남깁니다. 완료된 가설과 운영 오류가 섞이면 분석 전체도 완료가 아닙니다.
 
+## 저장된 Django PoC의 마지막 후보 재개
+
+`POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED`로 여섯 번째 후보가
+차단된 경우, 저장소의 고정 커밋·정적 검사·기존 PoC 근거와 하위 Codex 프로세스
+종료를 다시 확인한 뒤 기존 `resume --repair-poc-django-migration-settings-exhaustion`
+명령으로 후보 생성만 한 번 더 재개할 수 있습니다. 기존 시도와 아티팩트는
+보존하며 같은 복구를 두 번 적용하지 않습니다. 과거에 거절된 후보 원문이
+저장되지 않았으므로 그 당시의 세부 거절 이유는 `UNKNOWN`입니다.
+
+새 후보에도 동일한 Docker·비밀정보·Django 마이그레이션 안전 검사를 적용합니다.
+같은 후보를 반복하거나 합성 설정으로 마이그레이션을 우회하면 닫힌 사유 코드만
+기록하고 제한된 횟수에서 멈춥니다. 재개 자체가 취약점 확인이나 분석 완료를
+뜻하지 않으며, 새 PoC가 실패하면 `BLOCKED`를 그대로 유지합니다.
+
 ## 코드 위치
 
 - 실행기: `src/sastsimi/simple_runtime/runner.py`

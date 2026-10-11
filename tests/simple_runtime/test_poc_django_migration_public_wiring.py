@@ -24,6 +24,9 @@ from sastsimi.simple_runtime.models import (
     StageStatus,
 )
 from tests.simple_runtime.test_legacy_import_stop_replan import _PinnedStaticStub
+from tests.simple_runtime.test_poc_django_migration_fixture_replay import (
+    _attempt_six_fixture_rejection,
+)
 from tests.simple_runtime.test_poc_django_migration_settings_replay import (
     _blocked_migration_candidate_attempt,
     _exhausted_migration_attempt,
@@ -310,3 +313,53 @@ def test_application_routes_second_migration_replay_to_blocked_candidate(
     pending = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
     assert pending.status is StageStatus.PENDING
     assert pending.attempt_number == stopped.attempt_number
+
+
+def test_application_routes_late_fixture_replay_once_with_unknown_old_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, artifacts, stopped = _attempt_six_fixture_rejection(tmp_path)
+    identity = stopped.identity
+    AnalysisDisplayIdStore(store.database_path).get_or_allocate(identity.analysis_id)
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path / "data",
+        store=store,
+        static_bootstrap=_PinnedStaticStub(tmp_path / "data" / "workspaces"),
+        hypothesis_bootstrap=None,  # type: ignore[arg-type]
+        runner_factory=None,  # type: ignore[arg-type]
+    )
+
+    async def static_scope(*_args: object) -> None:
+        return None
+
+    async def resume_locked(_analysis_id: str) -> SimpleAnalysisOutcome:
+        return SimpleAnalysisOutcome(
+            identity=identity.model_copy(update={"hypothesis_id": None}),
+            display_analysis_id="A-001",
+            status="RUNNING",
+            current_stage=SimpleStage.POC_CANDIDATE_DONE,
+        )
+
+    monkeypatch.setattr(application, "_assert_completed_static_scope", static_scope)
+    monkeypatch.setattr(application, "_resume_locked", resume_locked)
+    monkeypatch.setattr(
+        application, "_verify_registered_candidate_proposals", lambda _root: None
+    )
+    asyncio.run(application.resume(
+        identity.analysis_id,
+        repair_poc_django_migration_settings_exhaustion_hypothesis=(
+            identity.hypothesis_id
+        ),
+    ))
+    pending = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+    assert pending.status is StageStatus.PENDING
+    assert pending.attempt_number == stopped.attempt_number
+    marker = artifacts.read(pending.recovery_decision_refs[-1])
+    assert b'"historical_rejection_reason":"UNKNOWN"' in marker
+    with pytest.raises(ValueError):
+        asyncio.run(application.resume(
+            identity.analysis_id,
+            repair_poc_django_migration_settings_exhaustion_hypothesis=(
+                identity.hypothesis_id
+            ),
+        ))
