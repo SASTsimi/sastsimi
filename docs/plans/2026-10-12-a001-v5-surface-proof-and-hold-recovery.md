@@ -124,4 +124,3 @@ being rerun on an LLM assertion alone. A graph saved under the earlier v5
 extractor also lacks the current proof-semantics revision and cannot promote a
 path to `COVERED`; the original artifact is preserved. The live final status
 must be reported separately after the same-ID run ends, not inferred here.
-

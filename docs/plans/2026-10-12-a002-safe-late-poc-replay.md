@@ -98,4 +98,3 @@ must not be reconstructed from later diagnostics. No attempt 8 is planned or
 authorized by this document. The wrapper parser now rejects shell statements
 before the inspected Python heredoc, including an `exit 0` that would otherwise
 look like a successful execution without running Django migration.
-
