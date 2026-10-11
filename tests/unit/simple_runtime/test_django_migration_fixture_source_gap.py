@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+import pytest
+
 from sastsimi.simple_runtime import django_migration_graph_omission
 
 
@@ -103,6 +105,62 @@ from django.test import Client
 response = Client().get('/target/')
 PY
 """
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (NATIVE_REPLAN, None),
+        (
+            b"#!/bin/sh\npython3 - <<'PY'\nnot python(\nPY\n",
+            "INVALID_PYTHON_OR_MIGRATION_BYPASS",
+        ),
+        (
+            NATIVE_REPLAN.replace(b"run_syncdb=True", b"fake=True"),
+            "INVALID_PYTHON_OR_MIGRATION_BYPASS",
+        ),
+        (CANDIDATE, "SYNTHETIC_SETTINGS_OR_MUTATION"),
+        (
+            NATIVE_REPLAN.replace(
+                b"demodesk.config.settings", b"other.config.settings"
+            ),
+            "SYNTHETIC_SETTINGS_OR_MUTATION",
+        ),
+        (
+            NATIVE_REPLAN.replace(b"import django\n", b""),
+            "PINNED_PROJECT_BOOTSTRAP_MISSING",
+        ),
+        (
+            NATIVE_REPLAN.replace(
+                b"django.setup()\n", b""
+            ),
+            "SETUP_MIGRATE_ORDER_INVALID",
+        ),
+        (
+            NATIVE_REPLAN.replace(
+                b"call_command('migrate', run_syncdb=True)",
+                b"Client().get('/target/')\ncall_command('migrate', run_syncdb=True)",
+            ),
+            "REQUEST_BEFORE_MIGRATION",
+        ),
+    ],
+)
+def test_fixture_replay_reason_preserves_closed_guard(
+    content: bytes, expected: str | None
+) -> None:
+    reason = django_migration_graph_omission.django_migration_fixture_replay_rejection(
+        content,
+        flag="FORUM_TEAMS_MODE_ENABLED",
+        app_name="forum",
+        project_modules=("demodesk.config.settings",),
+    )
+    assert reason == expected
+    assert django_migration_graph_omission.django_migration_fixture_replay_forbidden(
+        content,
+        flag="FORUM_TEAMS_MODE_ENABLED",
+        app_name="forum",
+        project_modules=("demodesk.config.settings",),
+    ) is (expected is not None)
 
 
 def classify(**overrides: object) -> str | None:

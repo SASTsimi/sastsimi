@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import re
+from typing import Literal
 
 from .django_project_defaults import _django_project_default_false
 from .django_relation_settings_omission import (
@@ -1226,14 +1227,23 @@ def django_migration_fixture_closed_diagnostic(
     }
 
 
-def django_migration_fixture_replay_forbidden(
+FixtureReplayReason = Literal[
+    "INVALID_PYTHON_OR_MIGRATION_BYPASS",
+    "SYNTHETIC_SETTINGS_OR_MUTATION",
+    "PINNED_PROJECT_BOOTSTRAP_MISSING",
+    "SETUP_MIGRATE_ORDER_INVALID",
+    "REQUEST_BEFORE_MIGRATION",
+]
+
+
+def django_migration_fixture_replay_rejection(
     content: bytes,
     *,
     flag: str | None = None,
     app_name: str | None = None,
     project_modules: tuple[str, ...] | None = None,
-) -> bool:
-    """Reject migration bypasses and unbound synthetic fixture replans.
+) -> FixtureReplayReason | None:
+    """Classify rejected fixture replans without disclosing source values.
 
     The source-bound mode permits only one native pinned project settings
     module, with setup and migration as unconditional top-level calls. Actual
@@ -1245,7 +1255,7 @@ def django_migration_fixture_replay_forbidden(
         marker in content
         for marker in (b"MIGRATION_MODULES", b"--fake", b"fake_initial")
     ):
-        return True
+        return "INVALID_PYTHON_OR_MIGRATION_BYPASS"
     if flag is not None or app_name is not None:
         if (
             flag is None
@@ -1254,7 +1264,7 @@ def django_migration_fixture_replay_forbidden(
             or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", app_name) is None
             or _synthetic_fixture_scan(tree, flag, app_name) is not None
         ):
-            return True
+            return "SYNTHETIC_SETTINGS_OR_MUTATION"
     if project_modules is not None:
         os_imports = [
             alias
@@ -1339,7 +1349,7 @@ def django_migration_fixture_replay_forbidden(
                 for node in ast.walk(tree)
             )
         ):
-            return True
+            return "PINNED_PROJECT_BOOTSTRAP_MISSING"
 
         settings_assignments = [
             node
@@ -1361,7 +1371,7 @@ def django_migration_fixture_replay_forbidden(
             and _attr(node.func, "os", "putenv")
             for node in ast.walk(tree)
         ):
-            return True
+            return "SYNTHETIC_SETTINGS_OR_MUTATION"
         environment_target = settings_assignments[0].targets[0]
         assert isinstance(environment_target, ast.Subscript)
         environment_attributes = [
@@ -1370,7 +1380,7 @@ def django_migration_fixture_replay_forbidden(
             if isinstance(node, ast.Attribute) and _attr(node, "os", "environ")
         ]
         if environment_attributes != [environment_target.value]:
-            return True
+            return "SYNTHETIC_SETTINGS_OR_MUTATION"
         top_level_calls = [
             node.value
             for node in tree.body
@@ -1390,6 +1400,12 @@ def django_migration_fixture_replay_forbidden(
             and isinstance(node.args[0], ast.Constant)
             and node.args[0].value == "migrate"
         ]
+        if any(
+            keyword.arg in {"fake", "fake_initial"}
+            for node in all_migrations
+            for keyword in node.keywords
+        ):
+            return "INVALID_PYTHON_OR_MIGRATION_BYPASS"
         if (
             len(all_setups) != 1
             or len(all_migrations) != 1
@@ -1419,7 +1435,7 @@ def django_migration_fixture_replay_forbidden(
                 for keyword in all_migrations[0].keywords
             )
         ):
-            return True
+            return "SETUP_MIGRATE_ORDER_INVALID"
     setups = [
         node
         for node in ast.walk(tree)
@@ -1434,16 +1450,18 @@ def django_migration_fixture_replay_forbidden(
         and isinstance(node.args[0], ast.Constant)
         and node.args[0].value == "migrate"
     ]
+    if any(
+        keyword.arg in {"fake", "fake_initial"}
+        for node in migrations
+        for keyword in node.keywords
+    ):
+        return "INVALID_PYTHON_OR_MIGRATION_BYPASS"
     if (
         len(setups) != 1
         or len(migrations) != 1
         or setups[0].lineno >= migrations[0].lineno
-        or any(
-            keyword.arg in {"fake", "fake_initial"}
-            for keyword in migrations[0].keywords
-        )
     ):
-        return True
+        return "SETUP_MIGRATE_ORDER_INVALID"
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or node.lineno >= migrations[0].lineno:
             continue
@@ -1462,8 +1480,28 @@ def django_migration_fixture_replay_forbidden(
             isinstance(receiver, ast.Name)
             and receiver.id in {"client", "browser", "session", "requests"}
         ):
-            return True
-    return False
+            return "REQUEST_BEFORE_MIGRATION"
+    return None
+
+
+def django_migration_fixture_replay_forbidden(
+    content: bytes,
+    *,
+    flag: str | None = None,
+    app_name: str | None = None,
+    project_modules: tuple[str, ...] | None = None,
+) -> bool:
+    """Preserve the historical Boolean guard for all existing callers."""
+
+    return (
+        django_migration_fixture_replay_rejection(
+            content,
+            flag=flag,
+            app_name=app_name,
+            project_modules=project_modules,
+        )
+        is not None
+    )
 
 
 __all__ = [
@@ -1474,4 +1512,6 @@ __all__ = [
     "django_migration_fixture_source_projection",
     "django_migration_fixture_closed_diagnostic",
     "django_migration_fixture_replay_forbidden",
+    "django_migration_fixture_replay_rejection",
+    "FixtureReplayReason",
 ]
