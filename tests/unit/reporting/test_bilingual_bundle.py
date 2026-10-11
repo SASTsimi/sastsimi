@@ -359,6 +359,107 @@ def test_verified_v2_scope_discloses_raw_and_effective_gaps_separately() -> None
     assert provenance["static_coverage"]["gap_count"] == 1
 
 
+def test_verified_v3_scope_reports_reviewed_and_covered_separately() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [{"path": "app.py", "rule_id": "r1", "reason": "scan_timeout"}],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+        disposition="PARTIAL",
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=3,
+        surface_scope_certificate_hash="f" * 64,
+        surface_raw_static_gap_count=1,
+        surface_effective_python_gap_count=0,
+        surface_unresolved_reason_count=2,
+        surface_unresolved_reasons=(
+            ("CHILD_HOLD", 1),
+            ("CONNECTED_ROLE_PROOF_MISSING", 1),
+        ),
+        surface_reviewed_count=1,
+        surface_covered_count=0,
+        surface_uncovered_count=0,
+        surface_insufficient_count=1,
+    )
+    files = _render(facts=_facts(coverage=scoped))
+    english = files["report_en.md"].body.decode()
+    korean = files["report_kr.md"].body.decode()
+    assert "Static scan status: `PARTIAL`" in english
+    assert "V5 reviewed surfaces: 1/1" in english
+    assert "Proven covered surfaces: 0/1" in english
+    assert "Insufficient surfaces: 1" in english
+    assert "v5 검토 완료: 1/1" in korean
+    assert "증명된 경로: 0/1" in korean
+    assert "미증명 표면: 0" in korean
+    assert "근거 부족 표면: 1" in korean
+    assert "Unresolved surface reasons: 2" in english
+    assert (
+        "Unresolved surface reason codes: CHILD_HOLD (1), "
+        "CONNECTED_ROLE_PROOF_MISSING (1)" in english
+    )
+    assert (
+        "미해결 보안 표면 사유 코드: CHILD_HOLD (1), CONNECTED_ROLE_PROOF_MISSING (1)"
+        in korean
+    )
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    static = provenance["static_coverage"]
+    assert static["surface_proof_version"] == 3
+    assert static["surface_reviewed_count"] == 1
+    assert static["surface_covered_count"] == 0
+    assert static["surface_insufficient_count"] == 1
+    assert static["unresolved_reason_codes"] == {
+        "CHILD_HOLD": 1,
+        "CONNECTED_ROLE_PROOF_MISSING": 1,
+    }
+
+
+def test_v3_report_does_not_emit_untrusted_reason_payload() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=3,
+        surface_unresolved_reason_count=1,
+        surface_unresolved_reasons=cast(Any, ((["C:/secret/token"], 1),)),
+    )
+
+    files = _render(facts=_facts(coverage=scoped))
+    assert "C:/secret/token" not in files["report_en.md"].body.decode()
+    assert "C:/secret/token" not in files["report_kr.md"].body.decode()
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["unresolved_reason_codes"] == {}
+
+
 def test_bilingual_report_discloses_excluded_tests_and_out_of_scope_code() -> None:
     coverage = coverage_disclosure(
         {

@@ -233,14 +233,7 @@ class _ReadOnlyCheckpointStore(SimpleCheckpointStore):
     """Reuse exact cleanup audit checks without initializing or writing the DB."""
 
     def __init__(self, database_path: Path) -> None:
-        self._database_path = database_path
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            f"file:{self._database_path.as_posix()}?mode=ro", uri=True
-        )
-        connection.row_factory = sqlite3.Row
-        return connection
+        super().__init__(database_path, read_only=True)
 
 
 class DashboardQuery:
@@ -3966,12 +3959,22 @@ class DashboardQuery:
                                 run.static_coverage_ref,
                                 terminal,
                             )
-                            if terminal.surface_proof_version == 2
+                            if terminal.surface_proof_version in (2, 3)
                             else None
                         ),
                         artifacts=repository,
+                        coverage_ref=coverage_ref,
+                        store=(
+                            SimpleCheckpointStore(
+                                self._database,
+                                artifact_data_dir=self._data_dir,
+                                read_only=True,
+                            )
+                            if terminal.surface_proof_version == 3
+                            else None
+                        ),
                     )
-                except (OSError, ValueError, TypeError, sqlite3.Error):
+                except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error):
                     verified = None
                 if verified is not None:
                     counts.update(verified)
@@ -3983,12 +3986,12 @@ class DashboardQuery:
         checkpoints: list[StageCheckpoint],
         verified_counts: dict[str, int] | None,
     ) -> tuple[int | None, tuple[dict[str, str], ...]]:
-        """Expose only bounded reason codes from an already verified v2 proof."""
+        """Expose bounded reasons from an already verified v2/v3 proof."""
 
         if (
             run is None
             or run.candidate_terminal is None
-            or run.candidate_terminal.surface_proof_version != 2
+            or run.candidate_terminal.surface_proof_version not in (2, 3)
             or verified_counts is None
             or "UNRESOLVED_REASON_COUNT" not in verified_counts
         ):

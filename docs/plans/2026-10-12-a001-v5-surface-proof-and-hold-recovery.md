@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 AST, bounded XML parsing, Git pinned blobs, Pydantic, SQLite/CAS, pytest, Ruff, mypy, Windows PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-10-12-live-analysis-proof-recovery-design.md` (A-001 section).
+**Spec:** `docs/plans/2026-10-12-live-analysis-proof-recovery-design.md` (A-001 section).
 
 ## Global Constraints
 
@@ -112,4 +112,16 @@
 - [ ] **Step 4: Run GREEN**, full `& '..\..\.venv\Scripts\python.exe' -m pytest tests -q -p no:cacheprovider`, `& '..\..\.venv\Scripts\python.exe' -m ruff check src tests`, `& '..\..\.venv\Scripts\python.exe' -m mypy src`; expected exit 0 and recorded skip count.
 - [ ] **Step 5: Commit named changes** as `docs: explain v5 surface and HOLD evidence`.
 - [ ] **Step 6: Snapshot A-001 refs/status and live processes before writes.** Under normal lease, prepare and resume exact ID `d01477b233df4d82bae5b727390484a9`; compare the 85/85 static checks, 56 surface IDs, 33 saved v4 parts, child attempts, CAS hashes, new coverage counts, PoC/Finding status and LLM use. Run only incomplete v5 parts/eligible children. If any of the 36 surfaces remains insufficient, retain `PARTIAL` and show its exact reason; never paint 100% or claim a new confirmed finding without its own evidence.
+
+## Implementation self-review
+
+The versioned evidence reader, same-ID v5 review, and conservative `HOLD`
+eligibility/checkpoint machinery were implemented and regression-tested. The
+positive replay path in Task 5 is **not enabled for the live analysis**: current
+v5 review output does not independently contradict the saved `HOLD` reason or
+provide a new source-bound PoC input. Its children remain `HOLD` instead of
+being rerun on an LLM assertion alone. A graph saved under the earlier v5
+extractor also lacks the current proof-semantics revision and cannot promote a
+path to `COVERED`; the original artifact is preserved. The live final status
+must be reported separately after the same-ID run ends, not inferred here.
 

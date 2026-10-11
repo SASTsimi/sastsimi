@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from sastsimi.simple_runtime.attack_surfaces import AttackSurface
+from sastsimi.simple_runtime.call_path_facts import CandidateCallPaths
 from sastsimi.simple_runtime.http_route_facts_v5 import verified_http_paths
 
 
@@ -32,12 +34,23 @@ def _fixture(tmp_path: Path, lines: list[str]) -> tuple[Path, dict[str, str]]:
     return workspace, {"server.py": hashlib.sha256(raw).hexdigest()}
 
 
-def _roles(result: object) -> list[tuple[str, str, int]]:
-    paths = result.paths  # type: ignore[attr-defined]
-    assert len(paths) == 1
-    steps = paths[0]["steps"]
+def _path_steps(path: dict[str, object]) -> list[dict[str, object]]:
+    steps = path["steps"]
     assert isinstance(steps, list)
-    return [(step["role"], step["symbol"], step["line"]) for step in steps]
+    assert all(isinstance(step, dict) for step in steps)
+    return cast(list[dict[str, object]], steps)
+
+
+def _roles(result: CandidateCallPaths) -> list[tuple[str, str, int]]:
+    assert len(result.paths) == 1
+    roles: list[tuple[str, str, int]] = []
+    for step in _path_steps(result.paths[0]):
+        role, symbol, line = step["role"], step["symbol"], step["line"]
+        assert isinstance(role, str)
+        assert isinstance(symbol, str)
+        assert isinstance(line, int)
+        roles.append((role, symbol, line))
+    return roles
 
 
 def test_imported_handler_binds_three_request_reads_and_local_constructor(
@@ -78,7 +91,7 @@ def test_imported_handler_binds_three_request_reads_and_local_constructor(
     assert roles[-1] == ("SINK", "Worker.run", 13)
     assert all(
         step["path"] == "server.py" and step["source_sha256"] == hashes["server.py"]
-        for step in result.paths[0]["steps"]
+        for step in _path_steps(result.paths[0])
     )
 
 
@@ -234,6 +247,79 @@ def test_branch_assignments_are_not_merged_into_a_direct_call(tmp_path: Path) ->
 
     assert result.paths == ()
     assert "HTTP_BRANCH_ASSIGNMENT_UNRESOLVED" in result.gaps
+
+
+def test_literal_false_branch_cannot_supply_sink_or_request_read(
+    tmp_path: Path,
+) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        if False:",
+        "            dangerous(self.path)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 5))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
+def test_literal_false_branch_same_line_sink_is_unreachable(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        if False: dangerous(self.path)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 4))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
+def test_literal_true_branch_cannot_add_else_call_edge(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        if True:",
+        "            pass",
+        "        else:",
+        "            self.run()",
+        "    def run(self):",
+        "        dangerous(self.path)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 9))
+
+    assert result.paths == ()
+    assert "HTTP_ROUTE_TO_SURFACE_UNAVAILABLE" in result.gaps
+
+
+def test_literal_true_branch_preserves_executed_call_edge(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        if True:",
+        "            self.run()",
+        "        else:",
+        "            pass",
+        "    def run(self):",
+        "        dangerous(self.path)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 9))
+
+    assert result.status == "AVAILABLE"
+    assert ("CALL", "Endpoint.run", 5) in _roles(result)
 
 
 def test_reassigned_local_does_not_resolve_a_method_call(tmp_path: Path) -> None:
@@ -425,6 +511,186 @@ def test_uninvoked_lambda_does_not_add_a_call_edge(tmp_path: Path) -> None:
     assert "HTTP_ROUTE_TO_SURFACE_UNAVAILABLE" in result.gaps
 
 
+def test_unconsumed_generator_body_is_not_a_sink(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        route = self.path",
+        "        unused = (dangerous(route) for _ in [])",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 5))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
+def test_unconsumed_generator_body_does_not_add_a_call_edge(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        unused = (self.run(self.path) for _ in [])",
+        "    def run(self, route):",
+        "        dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.paths == ()
+    assert "HTTP_ROUTE_TO_SURFACE_UNAVAILABLE" in result.gaps
+
+
+def test_later_read_in_same_expression_cannot_precede_a_call(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        pair = (self.run(), self.path)",
+        "    def run(self):",
+        "        dangerous()",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.status == "PARTIAL"
+    assert "HTTP_REQUEST_INPUT_UNPROVEN" in result.gaps
+    assert not any(path["status"] == "AVAILABLE" for path in result.paths)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["(self.path, self.run())", "self.run(self.path)"],
+)
+def test_read_evaluated_before_call_remains_request_context(
+    tmp_path: Path, expression: str
+) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        f"        pair = {expression}",
+        "    def run(self, *args):",
+        "        dangerous()",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.status == "AVAILABLE"
+    assert ("REQUEST_CONTEXT", "Endpoint.do_GET", 4) in _roles(result)
+
+
+def test_dict_later_key_read_cannot_precede_earlier_value_call(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        unused = {1: self.run(), self.path: 2}",
+        "    def run(self):",
+        "        dangerous()",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.status == "PARTIAL"
+    assert "HTTP_REQUEST_INPUT_UNPROVEN" in result.gaps
+    assert not any(path["status"] == "AVAILABLE" for path in result.paths)
+
+
+def test_dict_earlier_key_read_precedes_later_value_call(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        unused = {self.path: 1, 2: self.run()}",
+        "    def run(self):",
+        "        dangerous()",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.status == "AVAILABLE"
+    assert ("REQUEST_CONTEXT", "Endpoint.do_GET", 4) in _roles(result)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "[self.run(self.path) for _ in [1]]",
+        "{self.run(self.path) for _ in [1]}",
+        "{1: self.run(self.path) for _ in [1]}",
+    ],
+)
+def test_comprehension_inner_call_is_unresolved(
+    tmp_path: Path, expression: str
+) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        f"        unused = {expression}",
+        "    def run(self, route):",
+        "        dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.paths == ()
+    assert "HTTP_COMPREHENSION_EVALUATION_UNRESOLVED" in result.gaps
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "False and self.run(self.path)",
+        "True or self.run(self.path)",
+        "self.run(self.path) if False else None",
+        "None if True else self.run(self.path)",
+    ],
+)
+def test_literal_short_circuit_or_ternary_does_not_add_dead_call(
+    tmp_path: Path, expression: str
+) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        f"        unused = {expression}",
+        "    def run(self, route):",
+        "        dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.paths == ()
+    assert "HTTP_ROUTE_TO_SURFACE_UNAVAILABLE" in result.gaps
+
+
+def test_literal_short_circuit_same_line_sink_is_unreachable(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        route = self.path",
+        "        unused = False and dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 5))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
 def test_call_after_unconditional_return_is_not_a_route_edge(tmp_path: Path) -> None:
     lines = [
         "from http.server import BaseHTTPRequestHandler",
@@ -444,6 +710,224 @@ def test_call_after_unconditional_return_is_not_a_route_edge(tmp_path: Path) -> 
 
     assert result.paths == ()
     assert "HTTP_ROUTE_TO_SURFACE_UNAVAILABLE" in result.gaps
+
+
+def test_sink_after_return_in_called_method_is_not_available(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        route = self.path",
+        "        self.run(route)",
+        "    def run(self, route):",
+        "        return",
+        "        dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 8))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
+def test_sink_after_return_on_same_line_is_not_available(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        route = self.path",
+        "        return; dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 5))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
+def test_sink_inside_uncalled_nested_function_is_not_available(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        route = self.path",
+        "        self.run(route)",
+        "    def run(self, route):",
+        "        def deferred():",
+        "            dangerous(route)",
+        "        return None",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 8))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
+def test_sink_inside_uncalled_lambda_is_not_available(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        route = self.path",
+        "        self.run(route)",
+        "    def run(self, route):",
+        "        deferred = lambda: dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 7))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
+def test_sink_in_reachable_conditional_branch_stays_available(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        route = self.path",
+        "        self.run(route)",
+        "    def run(self, route):",
+        "        if route:",
+        "            dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 8))
+
+    assert result.status == "AVAILABLE"
+    assert _roles(result)[-1] == ("SINK", "Endpoint.run", 8)
+
+
+@pytest.mark.parametrize(
+    "terminal_block",
+    [
+        ["        while True:", "            return"],
+        ["        for _ in (1,):", "            return"],
+        ["        try:", "            return", "        finally:", "            pass"],
+        ["        match 1:", "            case _:", "                return"],
+        ["        with self.rfile:", "            return"],
+    ],
+)
+def test_sink_after_proven_terminal_structured_block_is_unreachable(
+    tmp_path: Path, terminal_block: list[str]
+) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        *terminal_block,
+        "        dangerous(self.path)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", len(lines)))
+
+    assert result.paths == ()
+    assert "HTTP_SURFACE_LINE_UNREACHABLE" in result.gaps
+
+
+@pytest.mark.parametrize(
+    "maybe_continuing_block",
+    [
+        ["        while should_stop():", "            return"],
+        ["        for _ in ():", "            return"],
+        ["        match 1:", "            case 2:", "                return"],
+        [
+            "        try:",
+            "            return maybe_fails()",
+            "        except Exception:",
+            "            pass",
+        ],
+    ],
+)
+def test_sink_after_possibly_continuing_structured_block_stays_available(
+    tmp_path: Path, maybe_continuing_block: list[str]
+) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        *maybe_continuing_block,
+        "        dangerous(self.path)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", len(lines)))
+
+    assert result.status == "AVAILABLE"
+    assert _roles(result)[-1] == ("SINK", "Endpoint.do_GET", len(lines))
+
+
+@pytest.mark.parametrize("attribute", ["path", "headers", "rfile"])
+@pytest.mark.parametrize(
+    "mutation", ["self.{attribute} = object()", "del self.{attribute}"]
+)
+def test_request_attribute_mutation_before_read_is_not_trusted(
+    tmp_path: Path, attribute: str, mutation: str
+) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        f"        {mutation.format(attribute=attribute)}",
+        f"        route = self.{attribute}",
+        "        dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.status == "PARTIAL"
+    assert "HTTP_REQUEST_ATTRIBUTE_REBOUND" in result.gaps
+    assert not any(path["status"] == "AVAILABLE" for path in result.paths)
+
+
+def test_called_helper_effect_before_request_read_is_a_gap(tmp_path: Path) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        self.rewrite()",
+        "        route = self.path",
+        "        dangerous(route)",
+        "    def rewrite(self):",
+        "        self.path = '/fixed'",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 6))
+
+    assert result.status == "PARTIAL"
+    assert "HTTP_REQUEST_ATTRIBUTE_EFFECT_UNPROVEN" in result.gaps
+    assert not any(path["status"] == "AVAILABLE" for path in result.paths)
+
+
+def test_request_attribute_rebound_before_helper_read_is_not_trusted(
+    tmp_path: Path,
+) -> None:
+    lines = [
+        "from http.server import BaseHTTPRequestHandler",
+        "class Endpoint(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        self.path = '/fixed'",
+        "        self.inspect()",
+        "    def inspect(self):",
+        "        route = self.path",
+        "        dangerous(route)",
+    ]
+    workspace, hashes = _fixture(tmp_path, lines)
+
+    result = verified_http_paths(workspace, hashes, _surface("server.py", 8))
+
+    assert result.status == "PARTIAL"
+    assert "HTTP_REQUEST_ATTRIBUTE_REBOUND" in result.gaps
+    assert not any(path["status"] == "AVAILABLE" for path in result.paths)
 
 
 def test_request_read_in_direct_handler_helper_keeps_handler_identity(
@@ -468,6 +952,12 @@ def test_request_read_in_direct_handler_helper_keeps_handler_identity(
 
     assert result.status == "AVAILABLE"
     assert ("REQUEST_CONTEXT", "Endpoint.inspect", 6) in _roles(result)
+    roles = _roles(result)
+    assert (
+        roles.index(("CALL", "Endpoint.inspect", 4))
+        < roles.index(("REQUEST_CONTEXT", "Endpoint.inspect", 6))
+        < roles.index(("CALL", "Endpoint.run", 7))
+    )
 
 
 def test_namesake_request_read_in_local_worker_is_not_a_trust_boundary(
@@ -493,7 +983,7 @@ def test_namesake_request_read_in_local_worker_is_not_a_trust_boundary(
     assert not any(
         step["role"] == "REQUEST_CONTEXT"
         for path in result.paths
-        for step in path["steps"]
+        for step in _path_steps(path)
     )
 
 

@@ -1051,10 +1051,12 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                                 run.static_coverage_ref,
                                 terminal,
                             )
-                            if terminal.surface_proof_version == 2
+                            if terminal.surface_proof_version in (2, 3)
                             else None
                         ),
                         artifacts=repository,
+                        coverage_ref=coverage_ref,
+                        store=self._store,
                     )
                     if coverage_ref is not None
                     else None
@@ -1702,6 +1704,9 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         commit: str,
     ) -> dict[str, object]:
         data = self._outcome(outcome.display_analysis_id, repository, commit)
+        if outcome.recovery_notice == "LATE_FIXTURE_ONE_SHOT":
+            data["recovery_notice"] = "LATE_FIXTURE_ONE_SHOT"
+            data["historical_rejection_reason"] = "UNKNOWN"
         if outcome.error_code == "MODEL_ROUTE_PROVIDER_MISMATCH":
             # This preflight intentionally leaves the saved run unchanged. Surface the
             # refusal from this invocation, not the previous persisted status.

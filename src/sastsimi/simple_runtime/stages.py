@@ -229,9 +229,7 @@ def _reject_migration_settings_replay_content(
     if late is not None:
         old = late["old"]
         if not isinstance(old, StageCheckpoint):
-            raise PoCCandidateRejected(
-                "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND"
-            )
+            raise PoCCandidateRejected("POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND")
         _reject_migration_settings_replay_content(old, artifacts, content)
         return
     try:
@@ -400,6 +398,34 @@ def _fixture_repair_guidance(reason_code: str | None) -> str:
         "the intended local request. Do not suppress or fake migrations, mutate "
         "settings, or reuse the rejected candidate."
     )
+
+
+def _late_fixture_candidate_context_exclusions(
+    checkpoint: StageCheckpoint, artifacts: SimpleArtifactRepository
+) -> frozenset[StoredDataRef]:
+    """Keep prior candidate records and script bodies out of attempt-seven prompts."""
+
+    excluded: set[StoredDataRef] = set()
+    for ref in checkpoint.input_refs:
+        try:
+            value = json.loads(artifacts.read_bounded(ref, 64 * 1024))
+        except (OSError, ValueError, UnicodeError):
+            continue  # A source blob or script is not a candidate record.
+        if not isinstance(value, dict) or value.get("kind") != "simple_poc_candidate":
+            continue
+        try:
+            content_ref = StoredDataRef.model_validate(value["content_ref"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("LATE_FIXTURE_CANDIDATE_REF_INVALID") from error
+        excluded.update((ref, content_ref))
+    if not excluded:
+        raise ValueError("LATE_FIXTURE_CANDIDATE_REF_MISSING")
+    return frozenset(excluded)
+
+
+def _raise_if_candidate_integrity_error(error: PoCCandidateRejected) -> None:
+    if str(error) == "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNBOUND":
+        raise _anchor_failure(str(error)) from error
 
 
 _PRO_CON_BATCH_MAX_SIZE = 8
@@ -1880,6 +1906,14 @@ class PoCCandidateStage:
             for ref in prior_checkpoint.output_refs
         )
         current_repair_refs = self._current_repair_refs(checkpoint.input_refs)
+        try:
+            late_hidden_refs = (
+                _late_fixture_candidate_context_exclusions(checkpoint, self._artifacts)
+                if late_fixture_binding is not None
+                else frozenset()
+            )
+        except ValueError as error:
+            raise _anchor_failure("HYPOTHESIS_ANCHOR_INVALID") from error
         if len(current_repair_refs) != 2 and checkpoint.recovery_decision_refs:
             decision_ref = checkpoint.recovery_decision_refs[-1]
             if decision_ref not in checkpoint.input_refs:
@@ -1928,7 +1962,9 @@ class PoCCandidateStage:
                 + ((current_error_ref,) if current_error_ref is not None else ())
                 + checkpoint.recovery_decision_refs[-1:]
             )
-            if ref != shared_batch_source_ref and ref not in excluded_stream_refs
+            if ref != shared_batch_source_ref
+            and ref not in excluded_stream_refs
+            and ref not in late_hidden_refs
         )
         optional_refs = tuple(
             ref
@@ -1937,7 +1973,9 @@ class PoCCandidateStage:
                 + _prior_refs(prior)
                 + optional_recovery_refs
             )
-            if ref != shared_batch_source_ref and ref not in excluded_stream_refs
+            if ref != shared_batch_source_ref
+            and ref not in excluded_stream_refs
+            and ref not in late_hidden_refs
         )
         try:
             context = self._artifacts.prompt_context_prioritized(
@@ -2308,6 +2346,7 @@ boundary without altering the target's behavior.
             _require_independent_poc_fixture(content)
             _require_django_complete_schema(content)
         except PoCCandidateRejected as error:
+            _raise_if_candidate_integrity_error(error)
             repair_detail = ""
             if str(error) == "POC_SENSITIVE_CONTENT":
                 diagnostic = candidate_rejection_diagnostic(content, str(error))
@@ -2519,6 +2558,7 @@ boundary without altering the target's behavior.
                 _require_independent_poc_fixture(content)
                 _require_django_complete_schema(content)
             except PoCCandidateRejected as second_error:
+                _raise_if_candidate_integrity_error(second_error)
                 diagnostic = {
                     "kind": "simple_poc_candidate_rejection_diagnostic",
                     **candidate_rejection_diagnostic(content, str(second_error)),
@@ -2529,9 +2569,7 @@ boundary without altering the target's behavior.
                     and second_error.reason_code in _FIXTURE_REPLAY_REASON_CODES
                     and late_fixture_binding is not None
                 ):
-                    diagnostic["fixture_replay_reason_code"] = (
-                        second_error.reason_code
-                    )
+                    diagnostic["fixture_replay_reason_code"] = second_error.reason_code
                 diagnostic_ref = self._artifacts.put_json(diagnostic)
                 raise StageBlocked(
                     StageFailure(
@@ -5810,20 +5848,34 @@ this local route requires citations=[].
         terminal = run.candidate_terminal
         if (
             terminal is None
-            or terminal.surface_proof_version != 2
+            or terminal.surface_proof_version not in (2, 3)
             or not run.candidate_scope_fingerprint
             or not terminal.surface_coverage_hash
         ):
             return disclosure
         try:
+            proof_identity = (
+                checkpoint.identity.model_copy(update={"hypothesis_id": None})
+                if terminal.surface_proof_version == 3
+                else checkpoint.identity
+            )
+            proof_artifacts = (
+                SimpleArtifactRepository(
+                    self._artifacts.data_dir,
+                    proof_identity,
+                    create_dirs=False,
+                )
+                if terminal.surface_proof_version == 3
+                else self._artifacts
+            )
             index_record = self._store.get_attack_surface_index(
-                checkpoint.identity, run.candidate_scope_fingerprint
+                proof_identity, run.candidate_scope_fingerprint
             )
             if index_record is None:
                 return disclosure
             index = surface_index_from_json(
                 json.loads(
-                    self._artifacts.read_bounded(
+                    proof_artifacts.read_bounded(
                         index_record.index_ref, 2 * 1024 * 1024
                     )
                 )
@@ -5843,17 +5895,19 @@ this local route requires citations=[].
             if coverage_ref is None:
                 return disclosure
             proof = json.loads(
-                self._artifacts.read_bounded(coverage_ref, 2 * 1024 * 1024)
+                proof_artifacts.read_bounded(coverage_ref, 2 * 1024 * 1024)
             )
             certificate = read_surface_scope_certificate(
-                self._artifacts, run.python_scope_certificate_ref, ref, terminal
+                proof_artifacts, run.python_scope_certificate_ref, ref, terminal
             )
             counts = verified_surface_coverage_counts(
                 proof,
                 index,
                 terminal,
                 certificate_payload=certificate,
-                artifacts=self._artifacts,
+                artifacts=proof_artifacts,
+                coverage_ref=coverage_ref,
+                store=self._store,
             )
         except (OSError, ValueError, TypeError, LookupError):
             return disclosure
@@ -5861,11 +5915,30 @@ this local route requires citations=[].
             return disclosure
         return replace(
             disclosure,
-            surface_proof_version=2,
+            surface_proof_version=terminal.surface_proof_version,
             surface_scope_certificate_hash=terminal.scope_certificate_hash,
             surface_raw_static_gap_count=counts["RAW_STATIC_GAP_COUNT"],
             surface_effective_python_gap_count=counts["EFFECTIVE_PYTHON_GAP_COUNT"],
             surface_unresolved_reason_count=counts["UNRESOLVED_REASON_COUNT"],
+            surface_unresolved_reasons=tuple(
+                sorted(
+                    (key.removeprefix("REASON_CODE_"), value)
+                    for key, value in counts.items()
+                    if key.startswith("REASON_CODE_")
+                )
+            )
+            if terminal.surface_proof_version == 3
+            else (),
+            surface_reviewed_count=counts.get("REVIEWED"),
+            surface_covered_count=(
+                counts["COVERED"] if terminal.surface_proof_version == 3 else None
+            ),
+            surface_uncovered_count=(
+                counts["UNCOVERED"] if terminal.surface_proof_version == 3 else None
+            ),
+            surface_insufficient_count=(
+                counts["INSUFFICIENT"] if terminal.surface_proof_version == 3 else None
+            ),
         )
 
     def _validated_poc(

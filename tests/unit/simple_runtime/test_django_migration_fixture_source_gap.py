@@ -116,6 +116,16 @@ PY
             "INVALID_PYTHON_OR_MIGRATION_BYPASS",
         ),
         (
+            NATIVE_REPLAN.replace(b"#!/bin/sh\n", b"#!/bin/sh\nexit 0\n"),
+            "INVALID_PYTHON_OR_MIGRATION_BYPASS",
+        ),
+        (
+            NATIVE_REPLAN.replace(
+                b"#!/bin/sh\n", b"#!/bin/sh\npython3() { exit 0; }\n"
+            ),
+            "INVALID_PYTHON_OR_MIGRATION_BYPASS",
+        ),
+        (
             NATIVE_REPLAN.replace(b"run_syncdb=True", b"fake=True"),
             "INVALID_PYTHON_OR_MIGRATION_BYPASS",
         ),
@@ -131,9 +141,7 @@ PY
             "PINNED_PROJECT_BOOTSTRAP_MISSING",
         ),
         (
-            NATIVE_REPLAN.replace(
-                b"django.setup()\n", b""
-            ),
+            NATIVE_REPLAN.replace(b"django.setup()\n", b""),
             "SETUP_MIGRATE_ORDER_INVALID",
         ),
         (
@@ -458,6 +466,82 @@ def test_source_bound_replan_rejects_cosmetic_changes_and_nonexecuting_migration
             **bound,
         )
         is True
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        b"globals()['call_command'] = lambda *_a, **_kw: None",
+        b"locals()['call_command'] = lambda *_a, **_kw: None",
+        b"vars()['call_command'] = lambda *_a, **_kw: None",
+        b"globals().update(call_command=lambda *_a, **_kw: None)",
+        b"exec('call_command = lambda *_a, **_kw: None')",
+        b"from builtins import globals as namespace\n"
+        b"namespace()['call_command'] = lambda *_a, **_kw: None",
+        b"from logging import warning as call_command",
+        b"import logging as call_command",
+        b"import sys\n"
+        b"getattr(getattr(sys, 'modules')['__main__'], '__dict__')"
+        b"['call_command'] = lambda *_a, **_kw: None",
+        b"unrelated_setup = 1",
+    ],
+)
+def test_source_bound_replan_rejects_dynamic_migration_binding_mutation(
+    mutation: bytes,
+) -> None:
+    candidate = NATIVE_REPLAN.replace(
+        b"call_command('migrate', run_syncdb=True)",
+        mutation + b"\ncall_command('migrate', run_syncdb=True)",
+    )
+    assert (
+        django_migration_graph_omission.django_migration_fixture_replay_rejection(
+            candidate,
+            flag="FORUM_TEAMS_MODE_ENABLED",
+            app_name="forum",
+            project_modules=("demodesk.config.settings",),
+        )
+        == "PINNED_PROJECT_BOOTSTRAP_MISSING"
+    )
+
+
+def test_source_bound_replan_allows_other_work_after_real_migration() -> None:
+    candidate = NATIVE_REPLAN.replace(
+        b"from django.test import Client",
+        b"unrelated_setup = 1\nfrom django.test import Client",
+    )
+    assert (
+        django_migration_graph_omission.django_migration_fixture_replay_rejection(
+            candidate,
+            flag="FORUM_TEAMS_MODE_ENABLED",
+            app_name="forum",
+            project_modules=("demodesk.config.settings",),
+        )
+        is None
+    )
+
+
+def test_source_bound_replan_preserves_safe_imports_first_order() -> None:
+    candidate = b"""#!/bin/sh
+python3 - <<'PY'
+import os
+import django
+from django.core.management import call_command
+os.environ['DJANGO_SETTINGS_MODULE'] = 'demodesk.config.settings'
+django.setup()
+call_command('migrate', run_syncdb=True)
+from django.test import Client
+response = Client().get('/target/')
+PY
+"""
+    assert (
+        django_migration_graph_omission.django_migration_fixture_replay_rejection(
+            candidate,
+            flag="FORUM_TEAMS_MODE_ENABLED",
+            app_name="forum",
+            project_modules=("demodesk.config.settings",),
+        )
+        is None
     )
 
 

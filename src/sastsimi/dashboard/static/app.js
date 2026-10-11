@@ -308,7 +308,12 @@ function renderOverview(shell) {
     const poc = phases.poc; if (Number.isInteger(poc?.attempted) && Number.isInteger(poc?.completed)) legacyMetrics.push(["PoC 시도", `${poc.attempted}건 · 완료 ${poc.completed}건`]);
     const surface = phases.surface;
     if (Number.isInteger(surface?.total)) {
-      if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) legacyMetrics.push(["보안 surface", `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`]);
+      if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) {
+        const label = Number.isInteger(surface.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
+          ? `v5 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`
+          : `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`;
+        legacyMetrics.push(["보안 surface", label]);
+      }
       else if (Number.isInteger(surface.recorded_contexts) && Number.isInteger(surface.recorded_surfaces)) legacyMetrics.push(["보안 surface", `context가 저장된 surface ${surface.recorded_surfaces}/${surface.total}개 · 저장된 context ${surface.recorded_contexts}건 (확장 포함) · coverage 확인 전`]);
       else if (Number.isInteger(surface.recorded_contexts)) legacyMetrics.push(["보안 surface", `저장된 context ${surface.recorded_contexts}건 · 인덱스 ${surface.total}개 · coverage 확인 전`]);
       else legacyMetrics.push(["보안 surface", "coverage 확인 불가"]);
@@ -320,7 +325,10 @@ function renderOverview(shell) {
     box.append(el("div", "현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
     if (shell.status === "PARTIAL") {
       const countsKnown = Number.isInteger(surface?.total) && ["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key])) && surface.covered + surface.uncovered + surface.insufficient === surface.total;
-      const scope = countsKnown ? ` · 보안 표면 근거 충족 ${surface.covered}/${surface.total} · 근거 부족 ${surface.insufficient}${surface.uncovered ? ` · 미검토 ${surface.uncovered}` : ""}` : " · 보안 표면 근거 미확인";
+      const proven = Number.isInteger(surface?.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
+        ? `v5 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total}`
+        : `보안 표면 근거 충족 ${surface.covered}/${surface.total}`;
+      const scope = countsKnown ? ` · ${proven} · 근거 부족 ${surface.insufficient}${surface.uncovered ? ` · 미검토 ${surface.uncovered}` : ""}` : " · 보안 표면 근거 미확인";
       box.append(el("div", `실행 종료${scope} · 전체 분석은 PARTIAL`, "warning"));
     }
     if ((shell.phase_counts?.surface?.uncovered || 0) > 0 || (shell.phase_counts?.surface?.insufficient || 0) > 0) box.append(el("div", "부분 분석: 보안 surface 검토 범위가 남아 있습니다.", "warning"));

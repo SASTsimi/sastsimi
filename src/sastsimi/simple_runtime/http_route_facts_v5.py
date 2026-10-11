@@ -11,7 +11,7 @@ import hashlib
 import os
 import re
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -68,6 +68,7 @@ class _State:
     instances: dict[str, _Instance | str] = field(default_factory=dict)
     assigned: set[str] = field(default_factory=set)
     reads: list[tuple[int, str]] = field(default_factory=list)
+    invalid_request_attrs: dict[str, str] = field(default_factory=dict)
     branch: tuple[tuple[int, int], ...] = ()
 
     def fork(self, branch: tuple[int, int]) -> _State:
@@ -75,6 +76,7 @@ class _State:
             instances=dict(self.instances),
             assigned=set(self.assigned),
             reads=list(self.reads),
+            invalid_request_attrs=dict(self.invalid_request_attrs),
             branch=(*self.branch, branch),
         )
 
@@ -86,6 +88,7 @@ class _Call:
     constructor_line: int | None
     constructor_symbol: str | None
     request_reads: tuple[tuple[int, str], ...]
+    invalid_request_attrs: tuple[tuple[str, str], ...]
     receiver_is_self: bool
 
 
@@ -93,6 +96,8 @@ class _Call:
 class _MethodFacts:
     calls: tuple[_Call, ...]
     reads_at_line: Mapping[int, tuple[tuple[int, str], ...]]
+    reachable_lines: frozenset[int]
+    deferred_spans: tuple[tuple[int, int], ...]
     gaps: tuple[str, ...]
 
 
@@ -293,6 +298,8 @@ class _MethodAnalyzer:
         self.request_self = request_self
         self.calls: list[_Call] = []
         self.reads_at_line: dict[int, tuple[tuple[int, str], ...]] = {}
+        self.reachable_lines: set[int] = set()
+        self.deferred_spans: list[tuple[int, int]] = []
         self.gaps: set[str] = set()
 
     def analyze(self) -> _MethodFacts:
@@ -323,17 +330,83 @@ class _MethodAnalyzer:
                 )
             ),
             self.reads_at_line,
+            frozenset(self.reachable_lines),
+            tuple(self.deferred_spans),
             tuple(sorted(self.gaps)),
         )
 
     def _expression(self, expression: ast.AST, state: _State) -> None:
-        # Nested functions/lambdas are not executed by the enclosing method.
-        calls: list[ast.Call] = []
+        def defer(node: ast.expr) -> None:
+            self.deferred_spans.append((node.lineno, node.end_lineno or node.lineno))
 
         def visit(node: ast.AST) -> None:
+            # Nested functions/lambdas are not executed by the enclosing method.
             if isinstance(
                 node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
+                self.deferred_spans.append(
+                    (node.lineno, node.end_lineno or node.lineno)
+                )
+                return
+            if isinstance(node, ast.GeneratorExp):
+                # Constructing a generator evaluates only its outer iterable.
+                # Its element, filters, and later iterables need consumption.
+                defer(node)
+                visit(node.generators[0].iter)
+                return
+            line = getattr(node, "lineno", None)
+            if isinstance(line, int):
+                self.reachable_lines.add(line)
+            if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
+                # Their AST child order does not prove repeated evaluation
+                # order, so no internal read or call is a positive path fact.
+                self.gaps.add("HTTP_COMPREHENSION_EVALUATION_UNRESOLVED")
+                defer(node)
+                return
+            if isinstance(node, ast.Dict):
+                # Python evaluates each key immediately before its value;
+                # ast.iter_child_nodes instead groups every key first.
+                for key, value in zip(node.keys, node.values, strict=True):
+                    if key is not None:
+                        visit(key)
+                    visit(value)
+                return
+            if isinstance(node, ast.BoolOp):
+                for index, value in enumerate(node.values):
+                    visit(value)
+                    if index == len(node.values) - 1:
+                        break
+                    constant = (
+                        value.value
+                        if isinstance(value, ast.Constant) and type(value.value) is bool
+                        else None
+                    )
+                    stops = (
+                        constant is False
+                        if isinstance(node.op, ast.And)
+                        else constant is True
+                    )
+                    if stops or constant is None:
+                        if constant is None:
+                            self.gaps.add("HTTP_BOOLEAN_BRANCH_UNRESOLVED")
+                        for skipped in node.values[index + 1 :]:
+                            defer(skipped)
+                        break
+                return
+            if isinstance(node, ast.IfExp):
+                visit(node.test)
+                if (
+                    isinstance(node.test, ast.Constant)
+                    and type(node.test.value) is bool
+                ):
+                    selected = node.body if node.test.value else node.orelse
+                    skipped = node.orelse if node.test.value else node.body
+                    defer(skipped)
+                    visit(selected)
+                else:
+                    self.gaps.add("HTTP_CONDITIONAL_EXPRESSION_UNRESOLVED")
+                    defer(node.body)
+                    defer(node.orelse)
                 return
             if (
                 self.request_self
@@ -343,20 +416,21 @@ class _MethodAnalyzer:
                 and node.value.id == "self"
                 and node.attr in _REQUEST_ATTRIBUTES
             ):
-                read = (node.lineno, node.attr)
-                if read not in state.reads:
-                    state.reads.append(read)
-            if isinstance(node, ast.Call):
-                calls.append(node)
+                invalid_reason = state.invalid_request_attrs.get(node.attr)
+                if invalid_reason is not None:
+                    self.gaps.add(invalid_reason)
+                else:
+                    read = (node.lineno, node.attr)
+                    if read not in state.reads:
+                        state.reads.append(read)
             for child in ast.iter_child_nodes(node):
                 visit(child)
+            if isinstance(node, ast.Call):
+                # Function and arguments are evaluated before the call.  A
+                # later request read cannot retroactively enter this edge.
+                self._call(node, state)
 
         visit(expression)
-        for node in sorted(
-            calls,
-            key=lambda item: (item.lineno, item.col_offset),
-        ):
-            self._call(node, state)
 
     def _call(self, node: ast.Call, state: _State) -> None:
         func = node.func
@@ -406,9 +480,47 @@ class _MethodAnalyzer:
                 constructor_line,
                 constructor_symbol,
                 tuple(sorted(state.reads)),
+                tuple(sorted(state.invalid_request_attrs.items())),
                 receiver == "self",
             )
         )
+        if receiver == "self":
+            # A local helper may change handler request attributes. Its
+            # effects are not proven by this intraprocedural read model.
+            self._invalidate_request_attrs(
+                state, _REQUEST_ATTRIBUTES, "HTTP_REQUEST_ATTRIBUTE_EFFECT_UNPROVEN"
+            )
+
+    def _invalidate_request_attrs(
+        self, state: _State, attributes: Iterable[str], reason: str
+    ) -> None:
+        changed = set(attributes)
+        if not changed:
+            return
+        state.reads = [read for read in state.reads if read[1] not in changed]
+        state.invalid_request_attrs.update({attribute: reason for attribute in changed})
+
+    def _mutate_request_targets(self, target: ast.AST, state: _State) -> None:
+        if not self.request_self:
+            return
+        attributes = {
+            node.attr
+            for node in ast.walk(target)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and node.attr in _REQUEST_ATTRIBUTES
+        }
+        self._invalidate_request_attrs(
+            state, attributes, "HTTP_REQUEST_ATTRIBUTE_REBOUND"
+        )
+
+    def _defer_statements(self, statements: Sequence[ast.stmt]) -> None:
+        for statement in statements:
+            self.deferred_spans.append(
+                (statement.lineno, statement.end_lineno or statement.lineno)
+            )
 
     def _bind(self, target: ast.expr, value: ast.expr | None, state: _State) -> None:
         if not isinstance(target, ast.Name):
@@ -432,20 +544,42 @@ class _MethodAnalyzer:
             state.instances.pop(name, None)
 
     def _block(self, statements: Sequence[ast.stmt], state: _State) -> bool:
-        for statement in statements:
+        for position, statement in enumerate(statements):
             if isinstance(statement, ast.If):
+                self.reachable_lines.add(statement.lineno)
                 self._expression(statement.test, state)
                 self.reads_at_line[statement.lineno] = tuple(sorted(state.reads))
-                body_continues = self._block(
-                    statement.body, state.fork((statement.lineno, 0))
-                )
-                else_continues = self._block(
-                    statement.orelse, state.fork((statement.lineno, 1))
-                )
+                if (
+                    isinstance(statement.test, ast.Constant)
+                    and type(statement.test.value) is bool
+                ):
+                    selected = (
+                        statement.body if statement.test.value else statement.orelse
+                    )
+                    skipped = (
+                        statement.orelse if statement.test.value else statement.body
+                    )
+                    self._defer_statements(skipped)
+                    if not self._block(selected, state):
+                        self._defer_statements(statements[position + 1 :])
+                        return False
+                    continue
+                body_state = state.fork((statement.lineno, 0))
+                else_state = state.fork((statement.lineno, 1))
+                body_continues = self._block(statement.body, body_state)
+                else_continues = self._block(statement.orelse, else_state)
+                for continued, branch_state in (
+                    (body_continues, body_state),
+                    (else_continues, else_state),
+                ):
+                    if continued:
+                        for attr, reason in branch_state.invalid_request_attrs.items():
+                            self._invalidate_request_attrs(state, (attr,), reason)
                 for name in _assigned_in_block((*statement.body, *statement.orelse)):
                     state.instances[name] = "BRANCH"
                     state.assigned.add(name)
                 if not body_continues and not else_continues:
+                    self._defer_statements(statements[position + 1 :])
                     return False
                 continue
             if isinstance(
@@ -460,6 +594,7 @@ class _MethodAnalyzer:
                     ast.AsyncWith,
                 ),
             ):
+                self.reachable_lines.add(statement.lineno)
                 # Calls inside a structured branch can be shown; assignments
                 # leaving it have no unique branch-local constructor identity.
                 for child in ast.iter_child_nodes(statement):
@@ -467,31 +602,51 @@ class _MethodAnalyzer:
                         self._expression(child, state)
                     elif isinstance(child, list):
                         pass
+                block_continues: list[bool] = []
                 for index, block in enumerate(_statement_blocks(statement)):
-                    self._block(block, state.fork((statement.lineno, index)))
+                    branch_state = state.fork((statement.lineno, index))
+                    block_continues.append(self._block(block, branch_state))
+                    for attr, reason in branch_state.invalid_request_attrs.items():
+                        self._invalidate_request_attrs(state, (attr,), reason)
+                self._mutate_request_targets(statement, state)
                 for name in _bound_names(statement):
                     state.instances[name] = "BRANCH"
                     state.assigned.add(name)
+                if not _structured_may_fall_through(statement, block_continues):
+                    self._defer_statements(statements[position + 1 :])
+                    return False
                 continue
             if isinstance(
                 statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
+                self.deferred_spans.append(
+                    (statement.lineno, statement.end_lineno or statement.lineno)
+                )
                 continue
+            self.reachable_lines.add(statement.lineno)
             if isinstance(statement, ast.Assign):
                 self._expression(statement.value, state)
                 for target in statement.targets:
                     self._bind(target, statement.value, state)
+                    self._mutate_request_targets(target, state)
             elif isinstance(statement, ast.AnnAssign):
                 if statement.value is not None:
                     self._expression(statement.value, state)
                 self._bind(statement.target, statement.value, state)
+                self._mutate_request_targets(statement.target, state)
             elif isinstance(statement, ast.AugAssign):
                 self._expression(statement.value, state)
                 self._bind(statement.target, None, state)
+                self._mutate_request_targets(statement.target, state)
+            elif isinstance(statement, ast.Delete):
+                self._expression(statement, state)
+                for target in statement.targets:
+                    self._mutate_request_targets(target, state)
             else:
                 self._expression(statement, state)
             self.reads_at_line[statement.lineno] = tuple(sorted(state.reads))
             if isinstance(statement, (ast.Return, ast.Raise)):
+                self._defer_statements(statements[position + 1 :])
                 return False
         return True
 
@@ -507,6 +662,55 @@ def _statement_blocks(statement: ast.stmt) -> tuple[list[ast.stmt], ...]:
     if isinstance(statement, ast.Match):
         blocks.extend(case.body for case in statement.cases)
     return tuple(blocks)
+
+
+def _structured_may_fall_through(
+    statement: ast.stmt, block_continues: Sequence[bool]
+) -> bool:
+    """Prove only narrow terminal cases; unknown control flow can continue."""
+
+    if isinstance(statement, ast.While):
+        return not (
+            isinstance(statement.test, ast.Constant)
+            and statement.test.value is True
+            and not block_continues[0]
+        )
+    if isinstance(statement, (ast.For, ast.AsyncFor)):
+        literal = statement.iter
+        nonempty = (
+            isinstance(literal, (ast.Tuple, ast.List, ast.Set))
+            and bool(literal.elts)
+            and not any(isinstance(item, ast.Starred) for item in literal.elts)
+        )
+        return not (nonempty and not block_continues[0])
+    if isinstance(statement, ast.Try):
+        body_continues, else_continues, finally_continues, *handlers = block_continues
+        if not finally_continues:
+            return False
+        # A break/continue in finally can override a pending return and
+        # reach code after an enclosing loop; keep that case unresolved.
+        if any(
+            isinstance(node, (ast.Break, ast.Continue))
+            for item in statement.finalbody
+            for node in ast.walk(item)
+        ):
+            return True
+        return (body_continues and else_continues) or any(handlers)
+    if isinstance(statement, ast.Match):
+        exhaustive = bool(statement.cases) and (
+            statement.cases[-1].guard is None
+            and isinstance(statement.cases[-1].pattern, ast.MatchAs)
+            and statement.cases[-1].pattern.pattern is None
+        )
+        return not (exhaustive and not any(block_continues))
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        # __exit__ may suppress an exception, but cannot cancel a bare return.
+        return not (
+            len(statement.body) == 1
+            and isinstance(statement.body[0], ast.Return)
+            and statement.body[0].value is None
+        )
+    return True
 
 
 def _step(
@@ -604,7 +808,38 @@ def verified_http_paths(
         gaps.add("HTTP_SURFACE_METHOD_UNRESOLVED")
         return CandidateCallPaths("PARTIAL", (), tuple(sorted(gaps)))
     sink = sink_candidates[0]
+    if surface.line not in facts[sink.key].reachable_lines or any(
+        start <= surface.line <= end for start, end in facts[sink.key].deferred_spans
+    ):
+        gaps.add("HTTP_SURFACE_LINE_UNREACHABLE")
+        return CandidateCallPaths("PARTIAL", (), tuple(sorted(gaps)))
     paths: list[dict[str, object]] = []
+
+    def append_context(
+        method: _Method,
+        candidates: tuple[tuple[int, str], ...],
+        invalid_request_attrs: Mapping[str, str],
+        steps: list[dict[str, object]],
+        reads: tuple[_ReadSite, ...],
+    ) -> tuple[_ReadSite, ...]:
+        for line, attr in candidates:
+            if attr in invalid_request_attrs:
+                gaps.add(invalid_request_attrs[attr])
+                continue
+            site = (method.key, line, attr)
+            if site in reads:
+                continue
+            steps.append(
+                _step(
+                    method,
+                    "REQUEST_CONTEXT",
+                    line,
+                    method.symbol,
+                    request_attribute=attr,
+                )
+            )
+            reads += (site,)
+        return reads
 
     def walk(
         entry: _Method,
@@ -614,32 +849,24 @@ def verified_http_paths(
         visited: frozenset[tuple[str, str, str]],
         hops: int,
         trusted_request_self: bool,
+        invalid_request_attrs: Mapping[str, str],
     ) -> None:
         if len(paths) > path_limit:
             return
         gaps.update(facts[current.key].gaps)
         if current.key == sink.key:
+            path_steps = list(steps)
             selected_reads = reads
             if trusted_request_self:
-                selected_reads += tuple(
-                    (current.key, line, attr)
-                    for line, attr in facts[current.key].reads_at_line.get(
-                        surface.line, ()
-                    )
+                selected_reads = append_context(
+                    current,
+                    facts[current.key].reads_at_line.get(surface.line, ()),
+                    invalid_request_attrs,
+                    path_steps,
+                    selected_reads,
                 )
             if not selected_reads:
                 gaps.add("HTTP_REQUEST_INPUT_UNPROVEN")
-            context = [
-                _step(
-                    methods[key],
-                    "REQUEST_CONTEXT",
-                    line,
-                    methods[key].symbol,
-                    request_attribute=attr,
-                )
-                for key, line, attr in dict.fromkeys(selected_reads)
-            ]
-            path_steps = [steps[0], *context, *steps[1:]]
             path_steps.append(_step(sink, "SINK", surface.line, sink.symbol))
             paths.append(
                 {
@@ -665,6 +892,15 @@ def verified_http_paths(
                 gaps.add("HTTP_HOP_LIMIT")
                 continue
             next_steps = list(steps)
+            next_reads = reads
+            if trusted_request_self:
+                next_reads = append_context(
+                    current,
+                    call.request_reads,
+                    invalid_request_attrs,
+                    next_steps,
+                    next_reads,
+                )
             if (
                 call.constructor_line is not None
                 and call.constructor_symbol is not None
@@ -679,11 +915,8 @@ def verified_http_paths(
                     )
                 )
             next_steps.append(_step(current, "CALL", call.line, target.symbol))
-            next_reads = reads
-            if trusted_request_self:
-                next_reads += tuple(
-                    (current.key, line, attr) for line, attr in call.request_reads
-                )
+            next_invalid_request_attrs = dict(invalid_request_attrs)
+            next_invalid_request_attrs.update(call.invalid_request_attrs)
             walk(
                 entry,
                 target,
@@ -694,6 +927,7 @@ def verified_http_paths(
                 trusted_request_self
                 and call.receiver_is_self
                 and target.key in request_self_methods,
+                next_invalid_request_attrs,
             )
 
     for entry, import_line in sorted(entries, key=lambda item: item[0].key):
@@ -707,7 +941,7 @@ def verified_http_paths(
             stdlib_handler="http.server.BaseHTTPRequestHandler",
             import_line=import_line,
         )
-        walk(entry, entry, [route], (), frozenset({entry.key}), 0, True)
+        walk(entry, entry, [route], (), frozenset({entry.key}), 0, True, {})
     if len(paths) > path_limit:
         gaps.add("HTTP_PATH_LIMIT")
     selected = tuple(paths[:path_limit])

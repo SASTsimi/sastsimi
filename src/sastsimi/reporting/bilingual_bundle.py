@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Literal, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.poc_candidate import validate_candidate
@@ -20,7 +20,10 @@ from sastsimi.contracts.reporting import (
     validate_report_content,
 )
 from sastsimi.contracts.static import CodeLocation
-from sastsimi.reporting.coverage_disclosure import CoverageDisclosure
+from sastsimi.reporting.coverage_disclosure import (
+    CoverageDisclosure,
+    visible_surface_reason_distribution,
+)
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -247,7 +250,7 @@ def coverage_report_lines(
         f"- {'범위 증거 SHA-256' if korean else 'Coverage artifact SHA-256'}: "
         f"`{coverage.ref.content_hash}`",
     ]
-    if coverage.surface_proof_version == 2:
+    if coverage.surface_proof_version in (2, 3):
         lines.extend(
             [
                 f"- {'원본 정적 공백' if korean else 'Raw static gaps'}: "
@@ -271,6 +274,38 @@ def coverage_report_lines(
                 + f": `{coverage.surface_scope_certificate_hash}`",
             ]
         )
+    if coverage.surface_proof_version == 3:
+        surface_reasons = visible_surface_reason_distribution(coverage)
+        if surface_reasons:
+            label = (
+                "미해결 보안 표면 사유 코드"
+                if korean
+                else "Unresolved surface reason codes"
+            )
+            lines.append(
+                f"- {label}: "
+                + ", ".join(f"{code} ({count})" for code, count in surface_reasons)
+            )
+        counts = (
+            coverage.surface_covered_count,
+            coverage.surface_uncovered_count,
+            coverage.surface_insufficient_count,
+        )
+        if all(type(count) is int and count >= 0 for count in counts):
+            total = sum(cast(int, count) for count in counts)
+            if total > 0 and type(coverage.surface_reviewed_count) is int:
+                lines.extend(
+                    [
+                        f"- {'v5 검토 완료' if korean else 'V5 reviewed surfaces'}: "
+                        f"{coverage.surface_reviewed_count}/{total}",
+                        f"- {'증명된 경로' if korean else 'Proven covered surfaces'}: "
+                        f"{coverage.surface_covered_count}/{total}",
+                        f"- {'미증명 표면' if korean else 'Uncovered surfaces'}: "
+                        f"{coverage.surface_uncovered_count}",
+                        f"- {'근거 부족 표면' if korean else 'Insufficient surfaces'}: "
+                        f"{coverage.surface_insufficient_count}",
+                    ]
+                )
     if coverage.unavailable_file_count is not None:
         label = (
             "미검증 Python 소스 파일" if korean else "Unavailable Python source files"
@@ -546,7 +581,7 @@ def render_bundle_files(
                 "engine_errors": facts.coverage.engine_errors,
                 **(
                     {
-                        "surface_proof_version": 2,
+                        "surface_proof_version": facts.coverage.surface_proof_version,
                         "surface_scope_certificate_hash": (
                             facts.coverage.surface_scope_certificate_hash
                         ),
@@ -559,8 +594,35 @@ def render_bundle_files(
                         "unresolved_reason_count": (
                             facts.coverage.surface_unresolved_reason_count
                         ),
+                        **(
+                            {
+                                "unresolved_reason_codes": dict(
+                                    visible_surface_reason_distribution(facts.coverage)
+                                )
+                            }
+                            if facts.coverage.surface_proof_version == 3
+                            else {}
+                        ),
+                        **(
+                            {
+                                "surface_reviewed_count": (
+                                    facts.coverage.surface_reviewed_count
+                                ),
+                                "surface_covered_count": (
+                                    facts.coverage.surface_covered_count
+                                ),
+                                "surface_uncovered_count": (
+                                    facts.coverage.surface_uncovered_count
+                                ),
+                                "surface_insufficient_count": (
+                                    facts.coverage.surface_insufficient_count
+                                ),
+                            }
+                            if facts.coverage.surface_proof_version == 3
+                            else {}
+                        ),
                     }
-                    if facts.coverage.surface_proof_version == 2
+                    if facts.coverage.surface_proof_version in (2, 3)
                     else {}
                 ),
             }

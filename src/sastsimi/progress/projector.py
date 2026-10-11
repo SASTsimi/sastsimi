@@ -8,6 +8,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, Protocol
 
+from sastsimi.contracts.surface_reason_codes import (
+    SURFACE_REASON_CODE_PREFIX,
+    SURFACE_REASON_CODES,
+)
 from sastsimi.simple_runtime.artifacts import verified_terminal_projection
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
@@ -331,7 +335,8 @@ class ProgressProjector:
         surface_phase: dict[str, int] | None = None
         if candidate_pipeline_version >= 2 and surface_counts is not None:
             if any(
-                key
+                not isinstance(key, str)
+                or key
                 not in {
                     *_SURFACE_STATUSES,
                     "CONTEXT_RECORDS",
@@ -340,10 +345,28 @@ class ProgressProjector:
                     "RAW_STATIC_GAP_COUNT",
                     "EFFECTIVE_PYTHON_GAP_COUNT",
                     "UNRESOLVED_REASON_COUNT",
+                    "REVIEWED",
                 }
+                and not (
+                    key.startswith(SURFACE_REASON_CODE_PREFIX)
+                    and key.removeprefix(SURFACE_REASON_CODE_PREFIX)
+                    in SURFACE_REASON_CODES
+                )
                 or type(value) is not int
                 or value < 0
                 for key, value in surface_counts.items()
+            ):
+                raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
+            reason_counts = {
+                key.removeprefix(SURFACE_REASON_CODE_PREFIX): value
+                for key, value in surface_counts.items()
+                if isinstance(key, str) and key.startswith(SURFACE_REASON_CODE_PREFIX)
+            }
+            if reason_counts and (
+                candidate_terminal is None
+                or candidate_terminal.surface_proof_version != 3
+                or sum(reason_counts.values())
+                != surface_counts.get("UNRESOLVED_REASON_COUNT")
             ):
                 raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
             total = surface_counts.get("TOTAL", 0)
@@ -355,6 +378,10 @@ class ProgressProjector:
             }
             if "CONTEXT_SURFACES" in surface_counts:
                 surface_phase["recorded_surfaces"] = surface_counts["CONTEXT_SURFACES"]
+            if "REVIEWED" in surface_counts:
+                if surface_counts["REVIEWED"] > total:
+                    raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
+                surface_phase["reviewed"] = surface_counts["REVIEWED"]
             if (
                 "RAW_STATIC_GAP_COUNT" in surface_counts
                 and "EFFECTIVE_PYTHON_GAP_COUNT" in surface_counts
@@ -409,7 +436,7 @@ class ProgressProjector:
                         (
                             static_disposition == "FULL"
                             and candidate_terminal.surface_proof_version == 1
-                            or candidate_terminal.surface_proof_version == 2
+                            or candidate_terminal.surface_proof_version in (2, 3)
                             and surface_counts is not None
                             and surface_counts.get("EFFECTIVE_PYTHON_GAP_COUNT") == 0
                             and "RAW_STATIC_GAP_COUNT" in surface_counts
@@ -421,6 +448,16 @@ class ProgressProjector:
                 )
             )
             if terminal_valid and surface_phase is not None:
+                if (
+                    candidate_terminal is not None
+                    and candidate_terminal.surface_proof_version == 3
+                ):
+                    surface_phase.update(
+                        {
+                            f"reason_code_{code}": count
+                            for code, count in reason_counts.items()
+                        }
+                    )
                 covered = terminal_surface_counts.get("COVERED", 0)
                 completed += covered
                 surface_phase.update(

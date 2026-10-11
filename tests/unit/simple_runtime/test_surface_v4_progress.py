@@ -280,6 +280,26 @@ def test_corrupt_v4_registration_or_version_blocks_replay(
         _commit(store, identity, result_ref, context_ref, registrations)
 
 
+def test_v5_progress_rejects_version_downgrade_to_v4(tmp_path: Path) -> None:
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    context_ref = artifacts.put_json({"kind": "simple_surface_context_v5"})
+    result_ref = artifacts.put_json({"kind": "simple_surface_hypothesis_result_v5"})
+
+    assert _commit(store, identity, result_ref, context_ref, (), proposal_version=5)
+    assert store.list_surface_exploration_progress(identity, "scope-v4")
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_surface_exploration_progress SET proposal_version = 4 "
+            "WHERE analysis_id = ?",
+            (identity.analysis_id,),
+        )
+
+    with pytest.raises(ValueError, match="SURFACE_EXPLORATION_"):
+        store.list_surface_exploration_progress(identity, "scope-v4")
+
+
 def test_v4_transaction_rolls_back_invalid_second_child(tmp_path: Path) -> None:
     identity = _identity()
     artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)

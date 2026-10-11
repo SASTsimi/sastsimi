@@ -11,7 +11,7 @@ from sastsimi.simple_runtime.django_project_defaults import (
 )
 
 _PYTHON_HEREDOC = re.compile(
-    rb"(?m)^[^\r\n]*\bpython(?:3(?:\.[0-9]+)?)?[ \t]+-[^\r\n]*"
+    rb"(?m)^python(?:3(?:\.[0-9]+)?)?[ \t]+-[ \t]*"
     rb"<<[ \t]*'(?P<tag>[A-Za-z_][A-Za-z_0-9]*)'[ \t]*\r?$"
 )
 
@@ -25,6 +25,11 @@ def _python_tree(content: bytes) -> ast.Module | None:
         if len(openers) != 1:
             return None
         opener = openers[0]
+        # A shell prelude can exit successfully or redefine python before the
+        # inspected heredoc runs. Only the direct, single-command wrapper is
+        # source-bound enough to treat its Python body as an executed PoC.
+        if content[: opener.start()] not in {b"#!/bin/sh\n", b"#!/bin/sh\r\n"}:
+            return None
         lines = content[opener.end() :].lstrip(b"\r\n").splitlines(keepends=True)
         ending = next(
             (

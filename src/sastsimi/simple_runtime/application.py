@@ -68,6 +68,7 @@ from .models import (
     terminal_initial_outcome,
     terminal_poc_outcome,
 )
+from .operational_config_v5 import discover_operational_route_maps
 from .provider import SimpleLLMClient
 from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
@@ -91,17 +92,32 @@ from .surface_contexts import (
     iter_uncovered_surface_contexts,
     reuse_saved_expanded_surface_contexts,
 )
-from .surface_coverage_v2 import evaluate_surface_coverage_v2
+from .surface_coverage_v2 import _related_child_ids, evaluate_surface_coverage_v2
+from .surface_coverage_v3 import (
+    evaluate_surface_coverage_v3,
+    read_saved_coverage_v2,
+    validate_surface_plan_v5,
+)
 from .surface_enrichment_v4 import (
     V4Part,
     prepare_surface_enrichment_v4,
     read_saved_coverage_v1,
 )
+from .surface_enrichment_v5 import prepare_surface_enrichment_v5
 from .surface_evidence_graph_v4 import extract_surface_graph_v4
+from .surface_evidence_graph_v5 import (
+    extract_surface_graph_v5,
+    verify_operational_routes_v5,
+)
 from .surface_evidence_validation_v4 import (
     validate_v4_context_payload,
     validate_v4_response,
 )
+from .surface_evidence_validation_v5 import (
+    validate_v5_context,
+    validate_v5_response,
+)
+from .surface_hold_signal_v5 import evaluate_v5_hold_replay_signal
 from .surface_scope_recertification import build_python_scope_certificate
 from .surface_supplemental_replay import build_saved_surface_supplement_plan
 
@@ -175,6 +191,9 @@ class SimpleAnalysisOutcome(ContractModel):
     error_code: str | None = None
     child_hypothesis_id: str | None = Field(default=None, exclude=True)
     child_attempt_id: str | None = Field(default=None, exclude=True)
+    recovery_notice: Literal["LATE_FIXTURE_ONE_SHOT"] | None = Field(
+        default=None, exclude=True
+    )
 
 
 class OfflineRepairPreflight(ContractModel):
@@ -609,6 +628,23 @@ class SimpleAnalysisApplication:
                     repair_poc_django_migration_settings_exhaustion_hypothesis
                     is not None
                 ):
+                    fixture_child = self._store.get(
+                        CheckpointIdentity(
+                            analysis_id=exact,
+                            workspace_id=saved_run.workspace_id,
+                            commit_id=saved_run.commit_id,
+                            hypothesis_id=(
+                                repair_poc_django_migration_settings_exhaustion_hypothesis
+                            ),
+                        ),
+                        SimpleStage.POC_CANDIDATE_DONE,
+                    )
+                    late_fixture_replay = (
+                        fixture_child is not None
+                        and fixture_child.status is StageStatus.BLOCKED
+                        and fixture_child.error_code == "RECOVERY_EXHAUSTED"
+                        and fixture_child.attempt_number == MAX_RECOVERY_ATTEMPTS + 3
+                    )
                     await self._prepare_poc_django_migration_settings_exhaustion_locked(
                         exact,
                         repair_poc_django_migration_settings_exhaustion_hypothesis,
@@ -708,7 +744,18 @@ class SimpleAnalysisApplication:
                                 ),
                             ),
                         )
-                return await self._resume_locked(exact)
+                outcome = await self._resume_locked(exact)
+                return (
+                    outcome.model_copy(
+                        update={"recovery_notice": "LATE_FIXTURE_ONE_SHOT"}
+                    )
+                    if (
+                        repair_poc_django_migration_settings_exhaustion_hypothesis
+                        is not None
+                        and late_fixture_replay
+                    )
+                    else outcome
+                )
         except AnalysisRunBusy:
             run = self._store.require_analysis_run(exact)
             checkpoints = self._store.list_checkpoints(exact)
@@ -983,6 +1030,16 @@ class SimpleAnalysisApplication:
         )
         await self._assert_completed_static_scope(run, identity)
         artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        if run.surface_enrichment_v5_plan_ref is not None:
+            self._saved_surface_enrichment_v5(run, identity, artifacts)
+            return
+        if (
+            run.surface_enrichment_plan_ref is not None
+            and run.candidate_terminal is not None
+            and run.candidate_terminal.surface_proof_version == 2
+        ):
+            self._prepare_v5_surface_enrichment(run, identity, artifacts)
+            return
         plan, parts, certificate, graphs = self._calculate_saved_surface_enrichment(
             run, identity, artifacts
         )
@@ -1002,6 +1059,174 @@ class SimpleAnalysisApplication:
         for part in parts:
             if artifacts.put_json(part.payload).content_hash != part.context_hash:
                 raise ValueError("SURFACE_ENRICHMENT_PART_CHANGED")
+
+    def _prepare_v5_surface_enrichment(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+    ) -> None:
+        """Create one v5 plan from the exact saved v2/v4 evidence, never v4 replay."""
+
+        terminal = run.candidate_terminal
+        if (
+            run.surface_enrichment_v5_plan_ref is not None
+            or run.surface_enrichment_plan_ref is None
+            or run.python_scope_certificate_ref is None
+            or run.static_bundle_ref is None
+            or run.static_coverage_ref is None
+            or run.repository_profile_ref is None
+            or run.workspace_path is None
+            or run.candidate_scope_fingerprint is None
+            or terminal is None
+            or terminal.status != "PARTIAL"
+            or terminal.surface_proof_version != 2
+            or terminal.surface_index_hash is None
+            or terminal.surface_coverage_hash is None
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_ANALYSIS_INVALID")
+        root = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if (
+            root is None
+            or root.status is not StageStatus.SUCCEEDED
+            or len(root.output_refs) != 2
+            or root.output_refs[0].content_hash != terminal.surface_index_hash
+            or root.output_refs[1].content_hash != terminal.surface_coverage_hash
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_ROOT_INVALID")
+        index_ref, prior_ref = root.output_refs
+        index_payload = json.loads(artifacts.read(index_ref))
+        if not isinstance(index_payload, dict):
+            raise ValueError("SURFACE_ENRICHMENT_V5_INDEX_INVALID")
+        index = surface_index_from_json(index_payload)
+        if (
+            index.index_version != 2
+            or index.workspace_id != identity.workspace_id
+            or index.commit_id != identity.commit_id
+            or index.scope_fingerprint != run.candidate_scope_fingerprint
+            or index.static_bundle_hash != run.static_bundle_ref.content_hash
+            or terminal.bundle_hash != index.static_bundle_hash
+            or index_ref.content_hash
+            != hashlib.sha256(canonical_bytes(index.to_json())).hexdigest()
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_INDEX_INVALID")
+        prior = read_saved_coverage_v2(artifacts, index, prior_ref)
+        if (
+            prior.scope_certificate_ref != run.python_scope_certificate_ref
+            or terminal.scope_certificate_hash
+            != prior.scope_certificate_ref.content_hash
+            or prior.pending_candidate_count
+            or prior.pending_child_count
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_PRIOR_INVALID")
+        raw_v4 = json.loads(artifacts.read(run.surface_enrichment_plan_ref))
+        if not isinstance(raw_v4, dict):
+            raise ValueError("SURFACE_ENRICHMENT_V5_V4_PLAN_INVALID")
+        bundle = json.loads(artifacts.read(run.static_bundle_ref))
+        if not isinstance(bundle, dict):
+            raise ValueError("SURFACE_ENRICHMENT_V5_STATIC_INVALID")
+        ast_summary = bundle.get("ast_summary")
+        if (
+            not isinstance(ast_summary, dict)
+            or hashlib.sha256(canonical_bytes(ast_summary)).hexdigest()
+            != index.ast_manifest_hash
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_AST_INVALID")
+        manifest = index_ast_manifest(artifacts, ast_summary)
+        source_hashes = tuple(
+            (path, str(entry["source_sha256"]))
+            for path, entry in sorted(manifest.items())
+        )
+        if index.ast_source_hashes != source_hashes:
+            raise ValueError("SURFACE_ENRICHMENT_V5_AST_SOURCE_CHANGED")
+        progress = self._store.list_surface_exploration_progress(
+            identity, index.scope_fingerprint
+        )
+        targets = tuple(
+            surface
+            for surface, proof in zip(index.surfaces, prior.surfaces, strict=True)
+            if proof.coverage_status == "INSUFFICIENT"
+        )
+        related_children = set().union(
+            *(
+                _related_child_ids(
+                    identity,
+                    surface,
+                    progress,
+                    self._store,
+                    index.scope_fingerprint,
+                )
+                for surface in targets
+            )
+        )
+        checkpoint_rows: dict[str, list[dict[str, object]]] = {
+            hypothesis_id: [] for hypothesis_id in related_children
+        }
+        for checkpoint in self._store.list_checkpoints(identity.analysis_id):
+            hypothesis_id = checkpoint.identity.hypothesis_id
+            if hypothesis_id in checkpoint_rows:
+                for ref in (
+                    *checkpoint.input_refs,
+                    *checkpoint.output_refs,
+                    *checkpoint.recovery_decision_refs,
+                ):
+                    artifacts.read(ref)
+                checkpoint_rows[hypothesis_id].append(
+                    checkpoint.model_dump(mode="json")
+                )
+        if any(not rows for rows in checkpoint_rows.values()):
+            raise ValueError("SURFACE_ENRICHMENT_V5_CHILD_MISSING")
+        child_hashes = {
+            hypothesis_id: hashlib.sha256(
+                canonical_bytes(sorted(rows, key=lambda row: str(row["stage"])))
+            ).hexdigest()
+            for hypothesis_id, rows in checkpoint_rows.items()
+        }
+        route_map = discover_operational_route_maps(
+            run.workspace_path, identity.commit_id, dict(source_hashes)
+        )
+        verified_routes = verify_operational_routes_v5(
+            index, run.workspace_path, route_map
+        )
+        call_index = build_python_call_path_index(
+            run.workspace_path, tuple(path for path, _ in source_hashes)
+        )
+        graphs = {
+            surface.surface_id: extract_surface_graph_v5(
+                index,
+                surface,
+                ast_summary,
+                manifest,
+                run.workspace_path,
+                artifacts,
+                route_map,
+                call_index=call_index,
+                verified_routes=verified_routes,
+            )
+            for surface in targets
+        }
+        plan, parts = prepare_surface_enrichment_v5(
+            identity,
+            "candidate",
+            index,
+            index_ref,
+            run.surface_enrichment_plan_ref,
+            prior_ref,
+            prior,
+            progress,
+            graphs,
+            v4_plan=raw_v4,
+            child_checkpoint_hashes=child_hashes,
+        )
+        for graph in graphs.values():
+            artifacts.put_json(graph)
+        for part in parts:
+            if artifacts.put_json(part.payload).content_hash != part.context_hash:
+                raise ValueError("SURFACE_ENRICHMENT_V5_PART_CHANGED")
+        plan_ref = artifacts.put_json(plan)
+        self._store.save_analysis_run(
+            run.model_copy(update={"surface_enrichment_v5_plan_ref": plan_ref})
+        )
 
     def _saved_surface_enrichment(
         self,
@@ -1035,6 +1260,154 @@ class SimpleAnalysisApplication:
                     omitted_ast_fact_count=None,
                 )
             )
+        return plan, tuple(contexts)
+
+    def _saved_surface_enrichment_v5(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+    ) -> tuple[dict[str, object], tuple[SurfaceContext, ...]]:
+        """Read an immutable v5 manifest without recomputing legacy v4 inputs."""
+
+        plan_ref = run.surface_enrichment_v5_plan_ref
+        if (
+            plan_ref is None
+            or run.surface_enrichment_plan_ref is None
+            or run.python_scope_certificate_ref is None
+            or run.candidate_scope_fingerprint is None
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_PLAN_MISSING")
+        raw = artifacts.read(plan_ref)
+        plan = json.loads(raw)
+        if (
+            not isinstance(plan, dict)
+            or plan.get("kind") != "simple_surface_enrichment_plan_v5"
+            or plan.get("analysis_id") != identity.analysis_id
+            or plan.get("workspace_id") != identity.workspace_id
+            or plan.get("commit_id") != identity.commit_id
+            or plan.get("scope_fingerprint") != run.candidate_scope_fingerprint
+            or plan.get("v4_plan_ref")
+            != run.surface_enrichment_plan_ref.model_dump(mode="json")
+            or plan.get("v4_plan_hash") != run.surface_enrichment_plan_ref.content_hash
+            or not isinstance(plan.get("expected_parts"), list)
+            or not isinstance(plan.get("targets"), list)
+            or not isinstance(plan.get("target_surface_ids"), list)
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_PLAN_INVALID")
+        artifacts.read(run.surface_enrichment_plan_ref)
+        artifacts.read(run.python_scope_certificate_ref)
+        try:
+            v2_ref = StoredDataRef.model_validate(plan["v2_coverage_ref"])
+            index_ref = StoredDataRef.model_validate(plan["index_ref"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V5_PLAN_INVALID") from error
+        if (
+            v2_ref.content_hash != plan.get("v2_coverage_hash")
+            or index_ref.content_hash != plan.get("index_hash")
+            or str(v2_ref.workspace_id) != identity.workspace_id
+            or str(v2_ref.commit_id) != identity.commit_id
+            or str(index_ref.workspace_id) != identity.workspace_id
+            or str(index_ref.commit_id) != identity.commit_id
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_PLAN_INVALID")
+        artifacts.read(v2_ref)
+        artifacts.read(index_ref)
+        targets = plan["targets"]
+        graph_hashes: dict[str, str] = {}
+        for target in targets:
+            if (
+                not isinstance(target, dict)
+                or not isinstance(target.get("surface_id"), str)
+                or not isinstance(target.get("graph_hash"), str)
+                or target["surface_id"] in graph_hashes
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V5_TARGET_INVALID")
+            graph_hashes[target["surface_id"]] = target["graph_hash"]
+        if set(graph_hashes) != set(plan["target_surface_ids"]):
+            raise ValueError("SURFACE_ENRICHMENT_V5_TARGET_INVALID")
+        graph_payloads: dict[str, dict[str, object]] = {}
+        contexts: list[SurfaceContext] = []
+        seen: set[tuple[str, str]] = set()
+        positions: dict[str, set[int]] = {}
+        part_counts: dict[str, int] = {}
+        for row in plan["expected_parts"]:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("surface_id"), str)
+                or not isinstance(row.get("context_id"), str)
+                or not isinstance(row.get("context_hash"), str)
+                or type(row.get("part_index")) is not int
+                or type(row.get("part_count")) is not int
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V5_PART_SET_INVALID")
+            surface_id = row["surface_id"]
+            context_id = row["context_id"]
+            if (
+                surface_id not in graph_hashes
+                or (surface_id, context_id) in seen
+                or row["part_count"] < 1
+                or not 0 <= row["part_index"] < row["part_count"]
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V5_PART_SET_INVALID")
+            seen.add((surface_id, context_id))
+            positions.setdefault(surface_id, set()).add(row["part_index"])
+            if (
+                surface_id in part_counts
+                and part_counts[surface_id] != row["part_count"]
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V5_PART_SET_INVALID")
+            part_counts[surface_id] = row["part_count"]
+            graph_hash = graph_hashes[surface_id]
+            if surface_id not in graph_payloads:
+                graph_ref = self._surface_context_ref(identity, graph_hash)
+                graph = json.loads(artifacts.read(graph_ref))
+                if not isinstance(graph, dict):
+                    raise ValueError("SURFACE_ENRICHMENT_V5_GRAPH_INVALID")
+                graph_payloads[surface_id] = graph
+            context_ref = self._surface_context_ref(identity, row["context_hash"])
+            context_raw = artifacts.read(context_ref)
+            context_payload = json.loads(context_raw)
+            if (
+                not isinstance(context_payload, dict)
+                or context_payload.get("surface_id") != surface_id
+                or context_payload.get("graph_hash") != graph_hash
+                or context_payload.get("plan_binding_hash")
+                != plan.get("plan_binding_hash")
+                or context_payload.get("part_index") != row["part_index"]
+                or context_payload.get("part_count") != row["part_count"]
+                or context_payload.get("source_sha256") != row.get("source_sha256")
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V5_PART_CHANGED")
+            validate_v5_context(
+                {
+                    "context_payload": context_payload,
+                    "graph_payload": graph_payloads[surface_id],
+                    "context_hash": row["context_hash"],
+                    "context_id": context_id,
+                }
+            )
+            contexts.append(
+                SurfaceContext(
+                    surface_id=surface_id,
+                    context_id=context_id,
+                    context_hash=row["context_hash"],
+                    context_ref=context_ref,
+                    part_index=row["part_index"],
+                    part_count=row["part_count"],
+                    prompt_bytes=len(context_raw),
+                    source_sha256=row.get("source_sha256"),
+                    source_unavailable_reason=None,
+                    ast_unavailable_reason=None,
+                    omitted_source_line_count=None,
+                    omitted_ast_fact_count=None,
+                )
+            )
+        if set(positions) != set(graph_hashes) or any(
+            positions[surface_id] != set(range(count))
+            for surface_id, count in part_counts.items()
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_PART_SET_INVALID")
         return plan, tuple(contexts)
 
     async def _prepare_surface_supplement_locked(self, exact: str) -> None:
@@ -3197,6 +3570,28 @@ class SimpleAnalysisApplication:
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
+        if run.surface_enrichment_v5_plan_ref is not None:
+            try:
+                artifacts = SimpleArtifactRepository(self._data_dir, identity)
+                plan, contexts = self._saved_surface_enrichment_v5(
+                    run, identity, artifacts
+                )
+                return await self._run_v5_surface_enrichment(
+                    run, identity, static, artifacts, plan, contexts
+                )
+            except Exception as error:
+                return self._v4_failure_outcome(
+                    run,
+                    SimpleAnalysisOutcome(
+                        identity=identity,
+                        display_analysis_id=run.display_analysis_id,
+                        status="BLOCKED",
+                        current_stage=SimpleStage.HYPOTHESIS_DONE,
+                        error_code=self._safe_error_code(
+                            error, "SURFACE_ENRICHMENT_V5_REPLAY_INVALID"
+                        ),
+                    ),
+                )
         if run.surface_enrichment_plan_ref is not None:
             try:
                 artifacts = SimpleArtifactRepository(self._data_dir, identity)
@@ -3555,6 +3950,404 @@ class SimpleAnalysisApplication:
             status=status,
             current_stage=SimpleStage.HYPOTHESIS_DONE,
         )
+
+    async def _run_v5_surface_enrichment(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        artifacts: SimpleArtifactRepository,
+        plan: Mapping[str, object],
+        contexts: tuple[SurfaceContext, ...],
+    ) -> SimpleAnalysisOutcome:
+        """Replay only missing pinned v5 parts and certify the exact v2 delta."""
+
+        if (
+            run.surface_enrichment_v5_plan_ref is None
+            or run.surface_enrichment_plan_ref is None
+            or run.python_scope_certificate_ref is None
+            or run.candidate_scope_fingerprint is None
+            or run.candidate_terminal is None
+            or plan.get("scope_fingerprint") != run.candidate_scope_fingerprint
+            or plan.get("static_bundle_hash") != static.static_bundle_ref.content_hash
+            or plan.get("v4_plan_ref")
+            != run.surface_enrichment_plan_ref.model_dump(mode="json")
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_SCOPE_INVALID")
+        scope = run.candidate_scope_fingerprint
+        index_ref = StoredDataRef.model_validate(plan["index_ref"])
+        v2_ref = StoredDataRef.model_validate(plan["v2_coverage_ref"])
+        index_payload = json.loads(artifacts.read(index_ref))
+        if not isinstance(index_payload, dict):
+            raise ValueError("SURFACE_ENRICHMENT_V5_INDEX_INVALID")
+        index = surface_index_from_json(index_payload)
+        if (
+            index_ref.content_hash
+            != hashlib.sha256(canonical_bytes(index.to_json())).hexdigest()
+            or index.scope_fingerprint != scope
+            or index.static_bundle_hash != static.static_bundle_ref.content_hash
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_INDEX_INVALID")
+        prior_v2 = read_saved_coverage_v2(artifacts, index, v2_ref)
+        expected_parts = plan.get("expected_parts")
+        if (
+            not isinstance(expected_parts, list)
+            or len(expected_parts) != len(contexts)
+            or any(
+                not isinstance(row, dict)
+                or row.get("surface_id") != context.surface_id
+                or row.get("context_id") != context.context_id
+                or row.get("context_hash") != context.context_hash
+                for row, context in zip(expected_parts, contexts, strict=True)
+            )
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V5_PART_SET_INVALID")
+        propose_surface = getattr(self._candidate_hypotheses, "propose_surface", None)
+        if not callable(propose_surface):
+            raise ValueError("HYPOTHESIS_SURFACE_UNAVAILABLE")
+        progress = self._store.list_surface_exploration_progress(identity, scope)
+        # Check saved plan/part integrity before any LLM call. Child errors may
+        # still be recoverable by the drain below, so certify them afterward.
+        validate_surface_plan_v5(
+            identity, index, prior_v2, plan, progress, self._store, artifacts
+        )
+        self._store.save_analysis_run(
+            run.model_copy(
+                update={
+                    "surface_enrichment_status": "RUNNING",
+                    "surface_enrichment_error_code": None,
+                }
+            )
+        )
+        attempted: set[str] = set()
+        turn_id = uuid4().hex
+        for context in contexts:
+            prior = progress.get((context.surface_id, context.context_id))
+            if prior is not None:
+                if (
+                    prior.proposal_version != 5
+                    or prior.static_bundle_hash != static.static_bundle_ref.content_hash
+                    or prior.index_hash != index_ref.content_hash
+                    or prior.context_hash != context.context_hash
+                    or prior.source_sha256 != context.source_sha256
+                ):
+                    raise ValueError("SURFACE_EXPLORATION_SCOPE_CHANGED")
+                self._surface_result_valid(
+                    artifacts,
+                    context,
+                    prior.status,
+                    prior.result_ref,
+                    static.static_bundle_ref.content_hash,
+                    analysis_id=identity.analysis_id,
+                    expected_seed_ids=prior.hypothesis_ids,
+                )
+                for hypothesis_id in prior.hypothesis_ids:
+                    child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                    saved = self._store.require(child, SimpleStage.PRO_CON_DONE)
+                    if not saved.input_refs:
+                        raise ValueError("SURFACE_EXPLORATION_PROPOSAL_INVALID")
+                    self._surface_proposal_valid(
+                        artifacts,
+                        identity,
+                        context,
+                        static,
+                        prior.result_ref,
+                        hypothesis_id,
+                        saved.input_refs[0],
+                    )
+            else:
+                pending = self._store.list_incomplete_hypotheses(
+                    identity, limit=self._max_pending_candidate_children + 1
+                )
+                if len(pending) + 4 > self._max_pending_candidate_children:
+                    return self._v4_failure_outcome(
+                        run,
+                        SimpleAnalysisOutcome(
+                            identity=identity,
+                            display_analysis_id=run.display_analysis_id,
+                            status="BLOCKED",
+                            current_stage=SimpleStage.HYPOTHESIS_DONE,
+                            error_code="CANDIDATE_BACKPRESSURE_BLOCKED",
+                        ),
+                    )
+                result = await propose_surface(identity, static, context)
+                if isinstance(result, StageFailure):
+                    return self._v4_failure_outcome(
+                        run,
+                        SimpleAnalysisOutcome(
+                            identity=identity,
+                            display_analysis_id=run.display_analysis_id,
+                            status="PAUSED"
+                            if result.code in BUDGET_PAUSE_CODES
+                            else "BLOCKED",
+                            current_stage=SimpleStage.HYPOTHESIS_DONE,
+                            error_code=(
+                                "HYPOTHESIS_SURFACE_PROVIDER_FAILED"
+                                if result.code == "FAILED"
+                                else result.code
+                            ),
+                        ),
+                    )
+                self._surface_result_valid(
+                    artifacts,
+                    context,
+                    result.status,
+                    result.result_ref,
+                    static.static_bundle_ref.content_hash,
+                    analysis_id=identity.analysis_id,
+                    expected_seed_ids=tuple(
+                        seed.hypothesis_id for seed in result.seeds
+                    ),
+                    expected_reviewed_parts=result.reviewed_parts,
+                    expected_locations=result.evidence_locations,
+                )
+                registrations: list[tuple[str, StoredDataRef, StageCheckpoint]] = []
+                for seed in result.seeds:
+                    self._surface_proposal_valid(
+                        artifacts,
+                        identity,
+                        context,
+                        static,
+                        result.result_ref,
+                        seed.hypothesis_id,
+                        seed.proposal_ref,
+                    )
+                    artifacts.prompt_context_strict(
+                        (seed.proposal_ref, context.context_ref)
+                    )
+                    inputs = (seed.proposal_ref, context.context_ref)
+                    registrations.append(
+                        (
+                            seed.hypothesis_id,
+                            seed.proposal_ref,
+                            StageCheckpoint(
+                                identity=identity.model_copy(
+                                    update={"hypothesis_id": seed.hypothesis_id}
+                                ),
+                                stage=SimpleStage.PRO_CON_DONE,
+                                status=StageStatus.PENDING,
+                                input_refs=inputs,
+                                input_hash=input_reference_hash(inputs),
+                            ),
+                        )
+                    )
+                self._store.commit_surface_exploration(
+                    identity,
+                    scope,
+                    context.surface_id,
+                    context.context_id,
+                    static_bundle_hash=static.static_bundle_ref.content_hash,
+                    index_hash=index_ref.content_hash,
+                    context_hash=context.context_hash,
+                    source_sha256=context.source_sha256,
+                    status=result.status,
+                    result_ref=result.result_ref,
+                    registrations=registrations,
+                    proposal_version=5,
+                )
+            drained = await self._drain_candidate_children(
+                run,
+                identity,
+                static,
+                attempted_in_turn=attempted,
+                turn_id=turn_id,
+                max_runnable=self._max_pending_candidate_children,
+            )
+            if drained is not None:
+                return self._v4_failure_outcome(
+                    run,
+                    SimpleAnalysisOutcome(
+                        identity=identity,
+                        display_analysis_id=run.display_analysis_id,
+                        status=(
+                            "PAUSED"
+                            if drained.error_code in BUDGET_PAUSE_CODES
+                            else "FAILED"
+                            if drained.status is StageStatus.FAILED
+                            else "BLOCKED"
+                        ),
+                        current_stage=drained.current_stage,
+                        error_code=drained.error_code,
+                        child_hypothesis_id=drained.hypothesis_id,
+                        child_attempt_id=drained.attempt_id,
+                    ),
+                )
+        progress = self._store.list_surface_exploration_progress(identity, scope)
+        self._review_v5_hold_children(
+            run, identity, index, plan, contexts, progress, artifacts
+        )
+        proof = evaluate_surface_coverage_v3(
+            identity, index, prior_v2, plan, progress, self._store, artifacts
+        )
+        if proof.pending_candidate_count or proof.pending_child_count:
+            return self._v4_failure_outcome(
+                run,
+                SimpleAnalysisOutcome(
+                    identity=identity,
+                    display_analysis_id=run.display_analysis_id,
+                    status="BLOCKED",
+                    current_stage=SimpleStage.HYPOTHESIS_DONE,
+                    error_code="SURFACE_ENRICHMENT_WORK_INCOMPLETE",
+                ),
+            )
+        coverage_ref = artifacts.put_json(proof.to_json())
+        status: Literal["COMPLETE", "PARTIAL"] = (
+            "COMPLETE" if proof.complete else "PARTIAL"
+        )
+        counts = {
+            item: sum(surface.coverage_status == item for surface in proof.surfaces)
+            for item in ("COVERED", "UNCOVERED", "INSUFFICIENT")
+        }
+        terminal = run.candidate_terminal.model_copy(
+            update={
+                "status": status,
+                "hypothesis_count": self._store.hypothesis_count(identity),
+                "surface_coverage_hash": coverage_ref.content_hash,
+                "surface_counts": counts,
+                "surface_proof_version": 3,
+                "scope_certificate_hash": proof.scope_certificate_ref.content_hash,
+                "pending_child_count": 0,
+            }
+        )
+        root = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if root is None:
+            raise ValueError("SURFACE_ENRICHMENT_ROOT_MISSING")
+        outputs = (index_ref, coverage_ref)
+        if root.status is not StageStatus.SUCCEEDED or root.output_refs != outputs:
+            root = self._store.mark_running(
+                identity,
+                SimpleStage.HYPOTHESIS_DONE,
+                root.input_refs or (static.static_bundle_ref,),
+                attempt_id=uuid4().hex,
+            )
+            self._store.complete(root, self._stage_result(*outputs))
+        self._store.save_analysis_run(
+            run.model_copy(
+                update={
+                    "candidate_terminal": terminal,
+                    "surface_enrichment_status": status,
+                    "surface_enrichment_error_code": None,
+                }
+            )
+        )
+        return SimpleAnalysisOutcome(
+            identity=identity,
+            display_analysis_id=run.display_analysis_id,
+            status=status,
+            current_stage=SimpleStage.HYPOTHESIS_DONE,
+        )
+
+    def _review_v5_hold_children(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        index: SurfaceIndex,
+        plan: Mapping[str, object],
+        contexts: tuple[SurfaceContext, ...],
+        progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
+        artifacts: SimpleArtifactRepository,
+    ) -> None:
+        """Record source-bound v5 review of linked HOLDs without reopening them.
+
+        The v5 response proves navigation roles, not a contradiction of the
+        child's original HOLD evidence. A positive replay therefore needs a
+        different trusted proof producer; this pass can only record KEEP_HOLD.
+        """
+
+        plan_ref = run.surface_enrichment_v5_plan_ref
+        if plan_ref is None or plan.get("kind") != "simple_surface_enrichment_plan_v5":
+            raise ValueError("SURFACE_HOLD_REVIEW_PLAN_INVALID")
+        pinned_children = plan.get("child_checkpoint_hashes")
+        if not isinstance(pinned_children, dict) or any(
+            not isinstance(hypothesis_id, str) or not isinstance(digest, str)
+            for hypothesis_id, digest in pinned_children.items()
+        ):
+            raise ValueError("SURFACE_HOLD_REVIEW_PLAN_INVALID")
+        indexed = {surface.surface_id: surface for surface in index.surfaces}
+        reviewed: set[tuple[str, SimpleStage]] = set()
+        for context in contexts:
+            record = progress.get((context.surface_id, context.context_id))
+            if record is None:
+                continue
+            surface = indexed.get(context.surface_id)
+            if surface is None:
+                raise ValueError("SURFACE_HOLD_REVIEW_SURFACE_INVALID")
+            linked: list[StageCheckpoint] = []
+            for hypothesis_id in sorted(
+                _related_child_ids(
+                    identity, surface, progress, self._store, index.scope_fingerprint
+                )
+            ):
+                if hypothesis_id not in pinned_children:
+                    continue
+                child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+                for stage in (
+                    SimpleStage.VERIFICATION_INITIAL_DONE,
+                    SimpleStage.POC_EXECUTION_DONE,
+                ):
+                    key = (hypothesis_id, stage)
+                    if key in reviewed:
+                        continue
+                    checkpoint = self._store.get(child, stage)
+                    if (
+                        checkpoint is not None
+                        and checkpoint.status is StageStatus.SUCCEEDED
+                        and checkpoint.verdict == "HOLD"
+                    ):
+                        linked.append(checkpoint)
+            if not linked:
+                continue
+            self._surface_result_valid(
+                artifacts,
+                context,
+                record.status,
+                record.result_ref,
+                index.static_bundle_hash,
+                analysis_id=identity.analysis_id,
+                expected_seed_ids=record.hypothesis_ids,
+            )
+            context_payload = json.loads(artifacts.read(context.context_ref))
+            saved_result = json.loads(artifacts.read(record.result_ref))
+            graph_ref = StoredDataRef.model_validate(saved_result["graph_ref"])
+            graph_payload = json.loads(artifacts.read(graph_ref))
+            validated = validate_v5_response(
+                {
+                    "context_payload": context_payload,
+                    "graph_payload": graph_payload,
+                    "context_hash": context.context_hash,
+                    "context_id": context.context_id,
+                },
+                saved_result["response"],
+            )
+            for checkpoint in linked:
+                signal = evaluate_v5_hold_replay_signal(
+                    checkpoint.identity,
+                    checkpoint,
+                    record,
+                    saved_result,
+                    validated,
+                    plan_ref=plan_ref,
+                    context_ref=context.context_ref,
+                )
+                if (
+                    signal.decision.action != "KEEP_HOLD"
+                    or signal.review_result_ref != record.result_ref
+                ):
+                    raise ValueError("SURFACE_HOLD_REVIEW_UNPROVEN")
+                child_artifacts = SimpleArtifactRepository(
+                    self._data_dir, checkpoint.identity
+                )
+                self._store.prepare_surface_hold_replay(
+                    checkpoint,
+                    signal.decision,
+                    child_artifacts,
+                    review_plan_ref=signal.review_plan_ref,
+                    review_context_ref=signal.review_context_ref,
+                    review_result_ref=signal.review_result_ref,
+                )
+                reviewed.add(
+                    (checkpoint.identity.hypothesis_id or "", checkpoint.stage)
+                )
 
     def _finalize_candidate_exit(
         self, identity: CheckpointIdentity, outcome: SimpleAnalysisOutcome
@@ -5001,6 +5794,8 @@ class SimpleAnalysisApplication:
             return 3
         if kind == "simple_surface_context_v4":
             return 4
+        if kind == "simple_surface_context_v5":
+            return 5
         raise ValueError("SURFACE_EXPLORATION_CONTEXT_INVALID")
 
     @staticmethod
@@ -5652,6 +6447,7 @@ class SimpleAnalysisApplication:
                 "simple_surface_context_v2": "simple_surface_hypothesis_result_v2",
                 "simple_surface_context_v3": "simple_surface_hypothesis_result_v3",
                 "simple_surface_context_v4": "simple_surface_hypothesis_result_v4",
+                "simple_surface_context_v5": "simple_surface_hypothesis_result_v5",
             }.get(context_kind)
             if isinstance(context_kind, str)
             else None
@@ -5726,6 +6522,44 @@ class SimpleAnalysisApplication:
                     or list(checked.verified_roles) != value.get("verified_roles")
                     or set(checked.reviewed_parts) != set(parts)
                     or checked.evidence_locations != tuple(locations)
+                    or derived_ids != tuple(seed_ids)
+                    or value.get("graph_hash") != graph_ref.content_hash
+                ):
+                    raise ValueError
+            except (OSError, KeyError, TypeError, ValueError) as error:
+                raise ValueError("SURFACE_EXPLORATION_RESULT_INVALID") from error
+        if context_kind == "simple_surface_context_v5":
+            try:
+                graph_ref = StoredDataRef.model_validate(value["graph_ref"])
+                if graph_ref.content_hash != context_payload["graph_hash"]:
+                    raise ValueError
+                graph_payload = json.loads(artifacts.read(graph_ref))
+                checked_v5 = validate_v5_response(
+                    {
+                        "context_payload": context_payload,
+                        "graph_payload": graph_payload,
+                        "context_hash": context.context_hash,
+                        "context_id": context.context_id,
+                    },
+                    value["response"],
+                )
+                derived_ids = tuple(
+                    "hypothesis-"
+                    + hashlib.sha256(
+                        context.surface_id.encode("utf-8")
+                        + context.context_id.encode("utf-8")
+                        + canonical_bytes(proposal)
+                    ).hexdigest()[:32]
+                    for proposal, _ in checked_v5.qualified
+                )
+                if (
+                    value.get("validation_status") != "VALID"
+                    or checked_v5.status != status
+                    or checked_v5.reason != value.get("reason")
+                    or list(checked_v5.verified_roles) != value.get("verified_roles")
+                    or set(checked_v5.reviewed_parts) != set(parts)
+                    or checked_v5.evidence_locations != tuple(locations)
+                    or checked_v5.verified_path_id != value.get("verified_path_id")
                     or derived_ids != tuple(seed_ids)
                     or value.get("graph_hash") != graph_ref.content_hash
                 ):

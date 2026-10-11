@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from typing import cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.surface_reason_codes import (
+    SURFACE_REASON_CODE_PREFIX,
+    SURFACE_REASON_CODES,
+)
 
 from .artifacts import SimpleArtifactRepository
 from .attack_surfaces import SurfaceIndex
 from .models import CandidateTerminal
+from .store import SimpleCheckpointStore
+from .surface_coverage_v3 import verified_saved_coverage_v3
 
 SURFACE_STATUSES = ("COVERED", "UNCOVERED", "INSUFFICIENT")
 
@@ -22,10 +29,10 @@ def read_surface_scope_certificate(
     static_coverage_ref: StoredDataRef | None,
     terminal: CandidateTerminal,
 ) -> dict[str, object] | None:
-    """Load the exact v2 certificate only when it binds this saved run."""
+    """Load the exact v2 scope certificate, also retained by v3 proof."""
 
     if (
-        terminal.surface_proof_version != 2
+        terminal.surface_proof_version not in (2, 3)
         or certificate_ref is None
         or static_coverage_ref is None
         or certificate_ref.content_hash != terminal.scope_certificate_hash
@@ -220,11 +227,56 @@ def verified_surface_coverage_counts(
     *,
     certificate_payload: object | None = None,
     artifacts: SimpleArtifactRepository | None = None,
+    coverage_ref: StoredDataRef | None = None,
+    store: SimpleCheckpointStore | None = None,
 ) -> dict[str, int] | None:
     """Count only a scope-bound coverage artifact that agrees with terminal proof."""
 
     if not isinstance(payload, dict):
         return None
+    if terminal.surface_proof_version == 3:
+        if artifacts is None or coverage_ref is None or store is None:
+            return None
+        try:
+            current = verified_saved_coverage_v3(
+                artifacts.identity, index, coverage_ref, store, artifacts
+            )
+        except (OSError, TypeError, ValueError):
+            return None
+        counts = {
+            status: sum(row.coverage_status == status for row in current.surfaces)
+            for status in SURFACE_STATUSES
+        }
+        if (
+            payload != current.to_json()
+            or terminal.surface_coverage_hash != coverage_ref.content_hash
+            or terminal.surface_counts != counts
+            or terminal.status != ("COMPLETE" if current.complete else "PARTIAL")
+            or terminal.pending_child_count != current.pending_child_count
+            or terminal.scope_certificate_hash
+            != current.scope_certificate_ref.content_hash
+        ):
+            return None
+        reasons = Counter(
+            code if code in SURFACE_REASON_CODES else "OTHER"
+            for row in current.surfaces
+            for code in row.unresolved_reason_codes
+        )
+        return {
+            **counts,
+            "REVIEWED": sum(
+                row.review_classification is not None for row in current.surfaces
+            ),
+            "RAW_STATIC_GAP_COUNT": len(current.raw_static_gaps),
+            "EFFECTIVE_PYTHON_GAP_COUNT": len(current.effective_python_gaps),
+            "UNRESOLVED_REASON_COUNT": sum(
+                len(row.unresolved_reason_codes) for row in current.surfaces
+            ),
+            **{
+                f"{SURFACE_REASON_CODE_PREFIX}{code}": count
+                for code, count in reasons.items()
+            },
+        }
     if terminal.surface_proof_version == 2:
         return _verified_surface_v2_counts(
             payload, index, terminal, certificate_payload, artifacts

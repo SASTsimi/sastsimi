@@ -1263,6 +1263,11 @@ def main(
                         and str(error).startswith(
                             "POC_DJANGO_MIGRATION_SETTINGS_EXHAUSTION_"
                         )
+                        or args.repair_poc_django_migration_settings_exhaustion
+                        is not None
+                        and str(error).startswith(
+                            "POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAY_"
+                        )
                         or args.repair_poc_server_constructor_exhaustion is not None
                         and str(error).startswith("POC_SERVER_CONSTRUCTOR_EXHAUSTION_")
                         or args.repair_poc_in_memory_storage_exhaustion is not None

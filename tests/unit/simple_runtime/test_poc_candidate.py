@@ -21,7 +21,10 @@ from sastsimi.simple_runtime.models import (
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.recovery import closed_poc_runtime_diagnostic
+from sastsimi.simple_runtime.recovery import (
+    closed_poc_runtime_diagnostic,
+    late_fixture_replay_binding,
+)
 from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
 from sastsimi.simple_runtime.stages import (
     PoCCandidateStage,
@@ -1831,6 +1834,30 @@ async def test_sensitive_exhaustion_replay_passes_only_closed_diagnostic_to_prom
     assert b"MULTIPLE_RULES" in client.prompts[0]
     assert b"line 64" in client.prompts[0]
     assert b"never-print-this-cookie" not in client.prompts[0]
+
+
+def test_late_fixture_marker_without_event_store_fails_closed(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    forged_marker_ref = artifacts.put_json({"late_fixture_replay_revision": 2})
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(forged_marker_ref,),
+        input_hash=input_reference_hash((forged_marker_ref,)),
+        recovery_decision_refs=(forged_marker_ref,),
+        attempt_id="forged-attempt-7",
+        attempt_number=7,
+    )
+
+    with pytest.raises(ValueError, match="LATE_REPLAY_UNBOUND"):
+        late_fixture_replay_binding(checkpoint, artifacts)
 
 
 @pytest.mark.asyncio

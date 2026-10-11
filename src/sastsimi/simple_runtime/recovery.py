@@ -11,6 +11,7 @@ import shlex
 import sqlite3
 import tokenize
 from collections.abc import Mapping
+from contextlib import closing
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Literal, Protocol
@@ -26,8 +27,10 @@ from sastsimi.contracts.prompt_redaction import (
     redact_untrusted_text,
 )
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
 
 from .artifacts import SimpleArtifactRepository
+from .django_migration_graph_omission import django_migration_fixture_source_projection
 from .django_project_defaults import _django_project_default_false
 from .models import (
     MAX_RECOVERY_ATTEMPTS,
@@ -3421,18 +3424,62 @@ def late_fixture_replay_binding(
     if checkpoint.attempt_number != MAX_RECOVERY_ATTEMPTS + 4:
         return None
     try:
+        if artifacts.identity != checkpoint.identity:
+            raise ValueError("late fixture artifact scope mismatch")
         records = [
             json.loads(artifacts.read_bounded(ref, 64 * 1024))
             for ref in checkpoint.recovery_decision_refs
         ]
-        if not any(
+        marker_seen = any(
             isinstance(record, dict)
             and (
                 record.get("migration_fixture_replay") is True
                 or record.get("late_fixture_replay_revision") is not None
             )
             for record in records
-        ):
+        )
+        if not marker_seen:
+            # A stripped recovery_decision_refs tuple must not turn an input-bound
+            # late marker into an ordinary, less restricted attempt-seven run.
+            for ref in checkpoint.input_refs:
+                try:
+                    input_record = json.loads(artifacts.read_bounded(ref, 64 * 1024))
+                except (OSError, TypeError, ValueError, UnicodeError):
+                    continue
+                if (
+                    isinstance(input_record, dict)
+                    and input_record.get("late_fixture_replay_revision") is not None
+                ):
+                    marker_seen = True
+                    break
+        if not marker_seen:
+            try:
+                artifacts.paths.database.stat()
+            except FileNotFoundError:
+                # An unrelated attempt-seven unit run may have no event store.
+                return None
+        with closing(
+            sqlite3.connect(
+                f"file:{artifacts.paths.database.resolve().as_posix()}?mode=ro",
+                uri=True,
+            )
+        ) as connection:
+            late_events = tuple(
+                event
+                for (raw,) in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? "
+                    "AND event_json LIKE ?",
+                    (
+                        checkpoint.identity.analysis_id,
+                        checkpoint.identity.hypothesis_id,
+                        "%POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAYED%",
+                    ),
+                )
+                if (event := AgentActivityEvent.model_validate_json(raw)).error_code
+                == "POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAYED"
+            )
+        if not late_events and not marker_seen:
             return None
         if (
             checkpoint.stage is not SimpleStage.POC_CANDIDATE_DONE
@@ -3447,21 +3494,32 @@ def late_fixture_replay_binding(
         marker_ref = checkpoint.recovery_decision_refs[-1]
         marker = json.loads(artifacts.read_bounded(marker_ref, 64 * 1024))
         if not isinstance(marker, dict) or set(marker) != {
-            "kind", "identity", "stage", "attempt", "decision_origin",
-            "explicit_exhaustion_replay", "late_fixture_replay_revision",
-            "parent_fixture_decision_ref", "old_attempt_id", "old_attempt_number",
-            "old_checkpoint_ref", "old_checkpoint_hash", "diagnostic_ref",
-            "source_projection_hash", "historical_rejection_reason", "guidance",
+            "kind",
+            "identity",
+            "stage",
+            "attempt",
+            "decision_origin",
+            "explicit_exhaustion_replay",
+            "late_fixture_replay_revision",
+            "parent_fixture_decision_ref",
+            "old_attempt_id",
+            "old_attempt_number",
+            "old_checkpoint_ref",
+            "old_checkpoint_hash",
+            "diagnostic_ref",
+            "source_projection_hash",
+            "historical_rejection_reason",
+            "guidance",
         }:
             raise ValueError("invalid late fixture marker")
         old_ref = StoredDataRef.model_validate(marker["old_checkpoint_ref"])
         old = StageCheckpoint.model_validate_json(
             artifacts.read_bounded(old_ref, 256 * 1024)
         )
-        parent_ref = StoredDataRef.model_validate(
-            marker["parent_fixture_decision_ref"]
-        )
+        parent_ref = StoredDataRef.model_validate(marker["parent_fixture_decision_ref"])
         parent = json.loads(artifacts.read_bounded(parent_ref, 64 * 1024))
+        if not isinstance(parent, dict):
+            raise ValueError("invalid late fixture parent marker")
         expected = tuple(
             dict.fromkeys((*old.input_refs, *old.output_refs, old_ref, marker_ref))
         )
@@ -3506,6 +3564,18 @@ def late_fixture_replay_binding(
             or checkpoint.gate_revision_count != old.gate_revision_count
             or checkpoint.recovery_lineage_id != old.recovery_lineage_id
             or checkpoint.recovery_origin_stage != old.recovery_origin_stage
+            or parent_ref not in old.input_refs
+            or len(late_events) != 1
+            or late_events[0].kind is not ActivityKind.DECISION_RECORDED
+            or late_events[0].analysis_id != checkpoint.identity.analysis_id
+            or late_events[0].workspace_id != checkpoint.identity.workspace_id
+            or late_events[0].commit_id != checkpoint.identity.commit_id
+            or late_events[0].hypothesis_id != checkpoint.identity.hypothesis_id
+            or late_events[0].stage != SimpleStage.POC_CANDIDATE_DONE.value
+            or late_events[0].attempt_id != old.attempt_id
+            or late_events[0].status != StageStatus.BLOCKED.value
+            or late_events[0].input_refs != old.input_refs
+            or late_events[0].output_refs != (marker_ref,)
             or (
                 checkpoint.status is StageStatus.PENDING
                 and checkpoint.attempt_id is not None
@@ -3516,11 +3586,185 @@ def late_fixture_replay_binding(
             )
         ):
             raise ValueError("unbound late fixture marker")
+        _verify_late_fixture_source_chain(checkpoint, old, parent, artifacts)
         return {"old": old, "parent": parent, "parent_ref": parent_ref}
     except (
-        KeyError, IndexError, OSError, TypeError, ValueError, UnicodeError
+        KeyError,
+        IndexError,
+        OSError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        sqlite3.Error,
+        ValidationError,
     ) as error:
         raise ValueError("POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAY_UNBOUND") from error
+
+
+def _verify_late_fixture_source_chain(
+    checkpoint: StageCheckpoint,
+    old: StageCheckpoint,
+    parent: dict[str, object],
+    artifacts: SimpleArtifactRepository,
+) -> None:
+    """Resolve the original execution, cleanup, and source CAS before the LLM."""
+
+    paths = parent["settings_source_paths"]
+    source_values = parent["settings_source_refs"]
+    flag = parent["fixture_risk_flag"]
+    if (
+        not isinstance(paths, list)
+        or len(paths) != 3
+        or not all(isinstance(path, str) for path in paths)
+        or not isinstance(source_values, list)
+        or len(source_values) != 3
+        or not isinstance(flag, str)
+    ):
+        raise ValueError("invalid late fixture source list")
+    app_match = re.fullmatch(
+        r"(?:src/)?([A-Za-z_]\w*(?:/[A-Za-z_]\w*)*)/settings\.py", paths[1]
+    )
+    if app_match is None:
+        raise ValueError("invalid late fixture app source path")
+    source_refs = tuple(StoredDataRef.model_validate(value) for value in source_values)
+    sources = tuple(artifacts.read_bounded(ref, 128 * 1024) for ref in source_refs)
+
+    def source_entries(
+        name: str, *, maximum: int
+    ) -> tuple[tuple[str, StoredDataRef, bytes], ...]:
+        values = parent[name]
+        if not isinstance(values, list) or not 1 <= len(values) <= maximum:
+            raise ValueError("invalid late fixture source entries")
+        entries: list[tuple[str, StoredDataRef, bytes]] = []
+        for value in values:
+            if not isinstance(value, dict) or set(value) != {"path", "ref"}:
+                raise ValueError("invalid late fixture source entry")
+            path = value["path"]
+            if not isinstance(path, str):
+                raise ValueError("invalid late fixture source path")
+            ref = StoredDataRef.model_validate(value["ref"])
+            entries.append((path, ref, artifacts.read_bounded(ref, 128 * 1024)))
+        if len({path for path, _, _ in entries}) != len(entries):
+            raise ValueError("duplicate late fixture source path")
+        return tuple(entries)
+
+    project_entries = source_entries("settings_project_candidates", maximum=16)
+    reachable_entries = source_entries("settings_reachable_sources", maximum=128)
+    project_sources = tuple((path, source) for path, _, source in project_entries)
+    app_name = app_match.group(1).replace("/", ".")
+    projection = django_migration_fixture_source_projection(
+        flag=flag,
+        app_name=app_name,
+        project_sources=project_sources,
+        app_settings=sources[1],
+        migration=sources[2],
+    )
+    if (
+        projection is None
+        or parent.get("fixture_source_projection") != projection
+        or not any(
+            path == paths[0] and source == sources[0]
+            for path, _, source in project_entries
+        )
+        or not any(
+            path == paths[1] and ref == source_refs[1]
+            for path, ref, _ in reachable_entries
+        )
+    ):
+        raise ValueError("unbound late fixture source projection")
+    manifest_ref = StoredDataRef.model_validate(parent["settings_tracked_manifest_ref"])
+    artifacts.read_bounded(manifest_ref, 8 * 1024 * 1024)
+
+    candidate_ref = StoredDataRef.model_validate(
+        parent["settings_candidate_checkpoint_ref"]
+    )
+    execution_ref = StoredDataRef.model_validate(
+        parent["settings_execution_checkpoint_ref"]
+    )
+    candidate = StageCheckpoint.model_validate_json(
+        artifacts.read_bounded(candidate_ref, 256 * 1024)
+    )
+    execution = StageCheckpoint.model_validate_json(
+        artifacts.read_bounded(execution_ref, 256 * 1024)
+    )
+    if (
+        candidate.identity != checkpoint.identity
+        or candidate.stage is not SimpleStage.POC_CANDIDATE_DONE
+        or candidate.status is not StageStatus.SUCCEEDED
+        or candidate.attempt_number != MAX_RECOVERY_ATTEMPTS + 2
+        or candidate.recipe_ref != old.recipe_ref
+        or candidate.image_digest != old.image_digest
+        or len(candidate.output_refs) < 2
+        or execution.identity != checkpoint.identity
+        or execution.stage is not SimpleStage.POC_EXECUTION_DONE
+        or execution.status is not StageStatus.BLOCKED
+        or execution.error_code != "RECOVERY_EXHAUSTED"
+        or execution.attempt_number != candidate.attempt_number
+        or execution.attempt_id != candidate.attempt_id
+        or execution.recipe_ref != candidate.recipe_ref
+        or execution.image_digest != candidate.image_digest
+        or len(execution.output_refs) != 4
+        or parent.get("attempt_id") != execution.attempt_id
+    ):
+        raise ValueError("unbound late fixture execution checkpoints")
+    candidate_record = json.loads(
+        artifacts.read_bounded(candidate.output_refs[0], 64 * 1024)
+    )
+    content = artifacts.read_bounded(candidate.output_refs[1], 1024 * 1024)
+    execution_record = json.loads(
+        artifacts.read_bounded(execution.output_refs[0], 64 * 1024)
+    )
+    artifacts.read_bounded(execution.output_refs[1], 1024 * 1024)
+    artifacts.read_bounded(execution.output_refs[2], 1024 * 1024)
+    cleanup = json.loads(artifacts.read_bounded(execution.output_refs[3], 64 * 1024))
+    diagnostic = json.loads(artifacts.read_bounded(old.output_refs[0], 64 * 1024))
+    numeric = (
+        "line_count",
+        "branch_count",
+        "inconclusive_line_count",
+        "exit_two_line_count",
+        "exit_zero_line_count",
+    )
+    if (
+        not isinstance(candidate_record, dict)
+        or candidate_record.get("kind") != "simple_poc_candidate"
+        or candidate_record.get("attempt_id") != candidate.attempt_id
+        or candidate_record.get("content_ref")
+        != candidate.output_refs[1].model_dump(mode="json")
+        or candidate_record.get("content_digest") != hashlib.sha256(content).hexdigest()
+        or not isinstance(execution_record, dict)
+        or execution_record.get("kind") != "simple_poc_execution"
+        or execution_record.get("attempt_id") != execution.attempt_id
+        or execution_record.get("candidate_ref")
+        != candidate.output_refs[0].model_dump(mode="json")
+        or execution_record.get("content_ref")
+        != candidate.output_refs[1].model_dump(mode="json")
+        or execution_record.get("stdout_ref")
+        != execution.output_refs[1].model_dump(mode="json")
+        or execution_record.get("stderr_ref")
+        != execution.output_refs[2].model_dump(mode="json")
+        or execution_record.get("image_digest") != execution.image_digest
+        or execution_record.get("exit_code") != 2
+        or execution_record.get("timed_out") is not False
+        or not isinstance(execution_record.get("container_id"), str)
+        or not execution_record["container_id"]
+        or execution.container_id is not None
+        and execution.container_id != execution_record["container_id"]
+        or not isinstance(cleanup, dict)
+        or cleanup.get("kind") != "simple_container_cleanup"
+        or cleanup.get("attempt_id") != execution.attempt_id
+        or cleanup.get("container_id") != execution_record["container_id"]
+        or cleanup.get("status") != "REMOVED"
+        or not isinstance(diagnostic, dict)
+        or set(diagnostic) != {"kind", "reason", *numeric}
+        or diagnostic.get("kind") != "simple_poc_candidate_rejection_diagnostic"
+        or diagnostic.get("reason") != "OTHER_VALIDATOR_REJECTION"
+        or any(
+            type(diagnostic.get(key)) is not int or diagnostic[key] < 0
+            for key in numeric
+        )
+    ):
+        raise ValueError("unbound late fixture execution evidence")
 
 
 def _migration_settings_candidate_replay_binding(

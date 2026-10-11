@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ import pytest
 import sastsimi.composition.simple_runtime_composition as composition
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.main import main
+from sastsimi.interfaces.cli.public import emit_public
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.simple_runtime.application import (
@@ -89,6 +91,31 @@ def test_cli_forwards_migration_replay_in_plain_and_progress_modes(
         ) == int(ExitCode.OK)
         assert application.seen[-1] == (route, "hypothesis-1")
         capsys.readouterr()
+
+
+def test_cli_late_fixture_refusal_is_not_internal_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Application(_PublicApplication):
+        def resume(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            raise ValueError("POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAY_STALE")
+
+    code = main(
+        [
+            "resume",
+            "A-001",
+            "--format",
+            "json",
+            "--repair-poc-django-migration-settings-exhaustion",
+            "hypothesis-1",
+        ],
+        public_application=Application(),
+        user_config_store=_config(tmp_path),
+    )
+    assert code == int(ExitCode.INTEGRITY_ERROR)
+    output = capsys.readouterr().err
+    assert "POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAY_STALE" in output
+    assert "INTERNAL_ERROR" not in output
 
 
 @pytest.mark.parametrize("with_progress", [False, True])
@@ -345,21 +372,59 @@ def test_application_routes_late_fixture_replay_once_with_unknown_old_reason(
     monkeypatch.setattr(
         application, "_verify_registered_candidate_proposals", lambda _root: None
     )
-    asyncio.run(application.resume(
-        identity.analysis_id,
-        repair_poc_django_migration_settings_exhaustion_hypothesis=(
-            identity.hypothesis_id
-        ),
-    ))
+    outcome = asyncio.run(
+        application.resume(
+            identity.analysis_id,
+            repair_poc_django_migration_settings_exhaustion_hypothesis=(
+                identity.hypothesis_id
+            ),
+        )
+    )
+    assert outcome.recovery_notice == "LATE_FIXTURE_ONE_SHOT"
     pending = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
     assert pending.status is StageStatus.PENDING
     assert pending.attempt_number == stopped.attempt_number
     marker = artifacts.read(pending.recovery_decision_refs[-1])
     assert b'"historical_rejection_reason":"UNKNOWN"' in marker
     with pytest.raises(ValueError):
-        asyncio.run(application.resume(
-            identity.analysis_id,
-            repair_poc_django_migration_settings_exhaustion_hypothesis=(
-                identity.hypothesis_id
-            ),
-        ))
+        asyncio.run(
+            application.resume(
+                identity.analysis_id,
+                repair_poc_django_migration_settings_exhaustion_hypothesis=(
+                    identity.hypothesis_id
+                ),
+            )
+        )
+
+
+def test_late_fixture_notice_is_visible_but_not_a_success_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    public = composition.PublicSimpleRuntimeApplication(
+        _composition_config(tmp_path), _profile(tmp_path)
+    )
+    monkeypatch.setattr(
+        public,
+        "_outcome",
+        lambda *_args: {"analysis_id": "A-001", "status": "BLOCKED"},
+    )
+    outcome = SimpleAnalysisOutcome(
+        identity=CheckpointIdentity(
+            analysis_id="analysis-1",
+            workspace_id="workspace-1",
+            commit_id="a" * 40,
+            hypothesis_id=None,
+        ),
+        display_analysis_id="A-001",
+        status="BLOCKED",
+        current_stage=SimpleStage.POC_CANDIDATE_DONE,
+        recovery_notice="LATE_FIXTURE_ONE_SHOT",
+    )
+    data = public._resume_outcome(outcome, "https://example.invalid/repo", "a" * 40)
+    assert data["recovery_notice"] == "LATE_FIXTURE_ONE_SHOT"
+    assert data["historical_rejection_reason"] == "UNKNOWN"
+    stream = io.StringIO()
+    emit_public("plain", stream, command="resume", data=data)
+    assert "1회" in stream.getvalue()
+    assert "UNKNOWN" in stream.getvalue()
+    assert "확정" not in stream.getvalue()

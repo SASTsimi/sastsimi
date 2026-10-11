@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TextIO
 
+from sastsimi.contracts.surface_reason_codes import SURFACE_REASON_CODES
 from sastsimi.interfaces.cli.output import emit_data
 from sastsimi.ports.public_commands import PublicCommandApplication
 
@@ -100,10 +101,19 @@ def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
         type(surface.get(key)) is int
         for key in ("covered", "uncovered", "insufficient")
     ):
-        stream.write(
-            f"보안 surface: 검토 근거 충족 {surface['covered']}/{total} · "
-            f"미검토 {surface['uncovered']} · 근거 부족 {surface['insufficient']}\n"
-        )
+        reviewed = surface.get("reviewed")
+        if type(reviewed) is int and 0 <= reviewed <= total:
+            stream.write(
+                f"보안 surface: v5 검토 완료 {reviewed}/{total} · "
+                f"증명된 경로 {surface['covered']}/{total} · "
+                f"미검토 {surface['uncovered']} · "
+                f"근거 부족 {surface['insufficient']}\n"
+            )
+        else:
+            stream.write(
+                f"보안 surface: 검토 근거 충족 {surface['covered']}/{total} · "
+                f"미검토 {surface['uncovered']} · 근거 부족 {surface['insufficient']}\n"
+            )
         if surface["uncovered"] or surface["insufficient"]:
             stream.write("부분 분석: 보안 surface 검토 범위가 남아 있습니다.\n")
     else:
@@ -132,6 +142,23 @@ def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
         reasons = surface.get("unresolved_reason_count")
         if type(reasons) is int:
             stream.write(f"미해결 보안 표면 사유: {reasons}건\n")
+            if type(surface.get("reviewed")) is int:
+                distribution = tuple(
+                    sorted(
+                        (key.removeprefix("reason_code_"), value)
+                        for key, value in surface.items()
+                        if key.startswith("reason_code_")
+                        and key.removeprefix("reason_code_") in SURFACE_REASON_CODES
+                        and type(value) is int
+                        and value > 0
+                    )
+                )
+                if distribution and sum(count for _, count in distribution) == reasons:
+                    stream.write(
+                        "미해결 보안 표면 사유 코드: "
+                        + ", ".join(f"{code} ({count})" for code, count in distribution)
+                        + "\n"
+                    )
 
 
 def emit_public(
@@ -202,6 +229,11 @@ def emit_public(
         stream.write(f"복구 시도: {attempt_number}/{attempt_limit}\n")
     if data.get("error_code"):
         stream.write(f"오류: {data['error_code']}\n")
+    if data.get("recovery_notice") == "LATE_FIXTURE_ONE_SHOT":
+        stream.write(
+            "Django PoC 후보: 기존 기록을 보존하고 1회만 재개했습니다. "
+            "이전 세부 거절 사유는 원문이 없어 UNKNOWN입니다.\n"
+        )
     if command == "resume" and data.get("resume_skipped_reason") == (
         "ANALYSIS_ALREADY_RUNNING"
     ):

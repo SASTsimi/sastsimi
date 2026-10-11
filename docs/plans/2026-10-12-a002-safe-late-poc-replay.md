@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Pydantic models, SQLite, content-addressed artifacts, pytest, Ruff, mypy, Windows PowerShell.
 
-**Spec:** `docs/superpowers/specs/2026-10-12-live-analysis-proof-recovery-design.md` (A-002 section).
+**Spec:** `docs/plans/2026-10-12-live-analysis-proof-recovery-design.md` (A-002 section).
 
 ## Global Constraints
 
@@ -87,4 +87,15 @@
 - [ ] **Step 4: Run GREEN**, then `& '..\..\.venv\Scripts\python.exe' -m pytest tests -q -p no:cacheprovider`, `& '..\..\.venv\Scripts\python.exe' -m ruff check src tests`, and `& '..\..\.venv\Scripts\python.exe' -m mypy src`; expected exit 0 (record any pre-existing skip count).
 - [ ] **Step 5: Commit only the test, docs, and any changed public-wiring file** as `docs: explain guarded late PoC recovery`.
 - [ ] **Step 6: Before touching live data, record A-002 checkpoint/CAS hashes, process identity and command output.** Under its normal lease, invoke the existing repair command exactly once against analysis ID `f83c319e988b488d83d09dc1928d755b`, then ordinary same-ID resume. Compare static 1802/1802, prior artifacts, final candidate/PoC/verdict/status, LLM calls and attempt count. An unproven or newly rejected PoC stays `BLOCKED`; do not queue attempt 8 or report `confirmed` from a synthetic fixture.
+
+## Implementation self-review
+
+The closed rejection reasons, one-shot marker binding, and candidate guards
+were implemented and tested. The approved live attempt 7 did not produce a
+validated PoC; A-002 remains `BLOCKED / RECOVERY_EXHAUSTED`. The rejected
+historical candidate bytes were not saved, so their exact internal subreason
+must not be reconstructed from later diagnostics. No attempt 8 is planned or
+authorized by this document. The wrapper parser now rejects shell statements
+before the inspected Python heredoc, including an `exit 0` that would otherwise
+look like a successful execution without running Django migration.
 

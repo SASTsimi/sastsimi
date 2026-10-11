@@ -11,6 +11,7 @@ from typing import Literal
 
 from sastsimi.contracts.python_coverage_scope import out_of_scope_limits_python_coverage
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.surface_reason_codes import SURFACE_REASON_CODES
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +41,11 @@ class CoverageDisclosure:
     surface_raw_static_gap_count: int | None = None
     surface_effective_python_gap_count: int | None = None
     surface_unresolved_reason_count: int | None = None
+    surface_unresolved_reasons: tuple[tuple[str, int], ...] = ()
+    surface_reviewed_count: int | None = None
+    surface_covered_count: int | None = None
+    surface_uncovered_count: int | None = None
+    surface_insufficient_count: int | None = None
 
     @property
     def partial(self) -> bool:
@@ -58,6 +64,33 @@ class CoverageDisclosure:
             or self.expected_count == 0
             or self.verified_count == 0
         )
+
+
+def visible_surface_reason_distribution(
+    coverage: CoverageDisclosure,
+) -> tuple[tuple[str, int], ...]:
+    """Expose only bounded verified v3 reason codes, never arbitrary source text."""
+
+    if coverage.surface_proof_version != 3:
+        return ()
+    reasons = coverage.surface_unresolved_reasons
+    if (
+        type(coverage.surface_unresolved_reason_count) is not int
+        or not isinstance(reasons, tuple)
+        or any(not isinstance(item, tuple) or len(item) != 2 for item in reasons)
+        or any(
+            not isinstance(code, str)
+            or code not in SURFACE_REASON_CODES
+            or type(count) is not int
+            or count <= 0
+            for code, count in reasons
+        )
+        or len({code for code, _ in reasons}) != len(reasons)
+        or sum(count for _, count in reasons)
+        != coverage.surface_unresolved_reason_count
+    ):
+        return ()
+    return tuple(sorted(reasons))
 
 
 def coverage_disclosure(

@@ -1334,6 +1334,58 @@ def django_migration_fixture_replay_rejection(
                 for node in ast.walk(tree)
             )
             or any(
+                isinstance(node, ast.Import)
+                and any(
+                    (alias.asname or alias.name.partition(".")[0])
+                    in {"os", "django", "call_command"}
+                    and (alias.name, alias.asname)
+                    not in {("os", None), ("django", None)}
+                    for alias in node.names
+                )
+                or isinstance(node, ast.ImportFrom)
+                and any(
+                    (alias.asname or alias.name) in {"os", "django", "call_command"}
+                    and (node.module, alias.name, alias.asname)
+                    != ("django.core.management", "call_command", None)
+                    for alias in node.names
+                )
+                for node in ast.walk(tree)
+            )
+            # This recovery requires the imported migration call to retain its
+            # original binding. Dynamic namespace access can replace it while
+            # leaving a syntactically valid call_command('migrate') below.
+            or any(
+                isinstance(node, ast.Name)
+                and node.id
+                in {
+                    "globals",
+                    "locals",
+                    "vars",
+                    "exec",
+                    "eval",
+                    "compile",
+                    "__import__",
+                    "__builtins__",
+                }
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Import)
+                and any(
+                    alias.name.split(".", 1)[0] in {"builtins", "importlib", "inspect"}
+                    for alias in node.names
+                )
+                or isinstance(node, ast.ImportFrom)
+                and node.module is not None
+                and node.module.split(".", 1)[0] in {"builtins", "importlib", "inspect"}
+                for node in ast.walk(tree)
+            )
+            or any(
+                isinstance(node, ast.Attribute)
+                and node.attr in {"__globals__", "__code__", "__closure__"}
+                for node in ast.walk(tree)
+            )
+            or any(
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                 and node.name in {"os", "django", "call_command"}
                 for node in ast.walk(tree)
@@ -1481,6 +1533,71 @@ def django_migration_fixture_replay_rejection(
             and receiver.id in {"client", "browser", "session", "requests"}
         ):
             return "REQUEST_BEFORE_MIGRATION"
+    if project_modules is not None:
+        migration_statement = next(
+            (
+                statement
+                for statement in tree.body
+                if isinstance(statement, ast.Expr) and statement.value is migrations[0]
+            ),
+            None,
+        )
+        if migration_statement is None:
+            return "PINNED_PROJECT_BOOTSTRAP_MISSING"
+        prelude = tree.body[: tree.body.index(migration_statement) + 1]
+        # Before a real migration the candidate may only perform these six
+        # source-bound statements. Safe import ordering can vary, but arbitrary
+        # statements can mutate call_command through dynamic aliases.
+        if len(prelude) != 6:
+            return "PINNED_PROJECT_BOOTSTRAP_MISSING"
+        steps: list[str] = []
+        for statement in prelude:
+            if statement is settings_assignments[0]:
+                steps.append("settings")
+            elif isinstance(statement, ast.Expr) and statement.value is setups[0]:
+                steps.append("setup")
+            elif statement is migration_statement:
+                steps.append("migrate")
+            elif (
+                isinstance(statement, ast.Import)
+                and len(statement.names) == 1
+                and statement.names[0].name == "os"
+                and statement.names[0].asname is None
+            ):
+                steps.append("os")
+            elif (
+                isinstance(statement, ast.Import)
+                and len(statement.names) == 1
+                and statement.names[0].name == "django"
+                and statement.names[0].asname is None
+            ):
+                steps.append("django")
+            elif (
+                isinstance(statement, ast.ImportFrom)
+                and statement.module == "django.core.management"
+                and len(statement.names) == 1
+                and statement.names[0].name == "call_command"
+                and statement.names[0].asname is None
+            ):
+                steps.append("call_import")
+            else:
+                return "PINNED_PROJECT_BOOTSTRAP_MISSING"
+        if set(steps) != {
+            "os",
+            "settings",
+            "django",
+            "setup",
+            "call_import",
+            "migrate",
+        }:
+            return "PINNED_PROJECT_BOOTSTRAP_MISSING"
+        if not (
+            steps.index("os") < steps.index("settings") < steps.index("setup")
+            and steps.index("django") < steps.index("setup")
+            and steps.index("setup") < steps.index("migrate")
+            and steps.index("call_import") < steps.index("migrate")
+        ):
+            return "PINNED_PROJECT_BOOTSTRAP_MISSING"
     return None
 
 
