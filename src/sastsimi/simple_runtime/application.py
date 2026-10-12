@@ -94,9 +94,18 @@ from .surface_contexts import (
 )
 from .surface_coverage_v2 import _related_child_ids, evaluate_surface_coverage_v2
 from .surface_coverage_v3 import (
+    SurfaceCoverageV3,
     evaluate_surface_coverage_v3,
     read_saved_coverage_v2,
+    read_saved_coverage_v3,
     validate_surface_plan_v5,
+    verified_saved_coverage_v3,
+)
+from .surface_coverage_v4 import (
+    SurfaceCoverageV4,
+    evaluate_surface_coverage_v4,
+    validate_surface_plan_v6,
+    verified_saved_coverage_v4,
 )
 from .surface_enrichment_v4 import (
     V4Part,
@@ -104,6 +113,7 @@ from .surface_enrichment_v4 import (
     read_saved_coverage_v1,
 )
 from .surface_enrichment_v5 import prepare_surface_enrichment_v5
+from .surface_enrichment_v6 import prepare_surface_enrichment_v6
 from .surface_evidence_graph_v4 import extract_surface_graph_v4
 from .surface_evidence_graph_v5 import (
     extract_surface_graph_v5,
@@ -1018,6 +1028,28 @@ class SimpleAnalysisApplication:
                     raise ValueError("SURFACE_ENRICHMENT_CHILD_MISSING")
         return plan, parts, certificate, graphs
 
+    @staticmethod
+    def _surface_enrichment_round(run: SimpleAnalysisRun) -> Literal["v4", "v5", "v6"]:
+        """Choose an additive proof round without reinterpreting the parent."""
+
+        if run.surface_enrichment_v6_plan_ref is not None:
+            return "v6"
+        terminal = run.candidate_terminal
+        if (
+            run.surface_enrichment_v5_plan_ref is not None
+            and terminal is not None
+            and terminal.status == "PARTIAL"
+            and terminal.surface_proof_version == 3
+        ):
+            return "v6"
+        if run.surface_enrichment_v5_plan_ref is not None or (
+            run.surface_enrichment_plan_ref is not None
+            and terminal is not None
+            and terminal.surface_proof_version == 2
+        ):
+            return "v5"
+        return "v4"
+
     async def _prepare_surface_enrichment_locked(self, exact: str) -> None:
         """Pin the immutable plan before saving any graph or prompt part."""
 
@@ -1030,6 +1062,12 @@ class SimpleAnalysisApplication:
         )
         await self._assert_completed_static_scope(run, identity)
         artifacts = SimpleArtifactRepository(self._data_dir, identity)
+        if run.surface_enrichment_v6_plan_ref is not None:
+            self._saved_surface_enrichment_v6(run, identity, artifacts)
+            return
+        if self._surface_enrichment_round(run) == "v6":
+            self._prepare_v6_surface_enrichment(run, identity, artifacts)
+            return
         if run.surface_enrichment_v5_plan_ref is not None:
             self._saved_surface_enrichment_v5(run, identity, artifacts)
             return
@@ -1228,6 +1266,136 @@ class SimpleAnalysisApplication:
             run.model_copy(update={"surface_enrichment_v5_plan_ref": plan_ref})
         )
 
+    def _prepare_v6_surface_enrichment(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+    ) -> None:
+        """Pin a new review of only saved-v3 insufficient surfaces."""
+
+        terminal = run.candidate_terminal
+        prior_v5_ref = run.surface_enrichment_v5_plan_ref
+        if (
+            prior_v5_ref is None
+            or run.surface_enrichment_v6_plan_ref is not None
+            or run.surface_enrichment_plan_ref is None
+            or run.python_scope_certificate_ref is None
+            or run.static_bundle_ref is None
+            or run.static_coverage_ref is None
+            or run.repository_profile_ref is None
+            or run.workspace_path is None
+            or run.candidate_scope_fingerprint is None
+            or terminal is None
+            or terminal.status != "PARTIAL"
+            or terminal.surface_proof_version != 3
+            or terminal.surface_index_hash is None
+            or terminal.surface_coverage_hash is None
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_ANALYSIS_INVALID")
+        root = self._store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        if (
+            root is None
+            or root.status is not StageStatus.SUCCEEDED
+            or len(root.output_refs) != 2
+            or root.output_refs[0].content_hash != terminal.surface_index_hash
+            or root.output_refs[1].content_hash != terminal.surface_coverage_hash
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_ROOT_INVALID")
+        index_ref, prior_ref = root.output_refs
+        index_payload = json.loads(artifacts.read(index_ref))
+        if not isinstance(index_payload, dict):
+            raise ValueError("SURFACE_ENRICHMENT_V6_INDEX_INVALID")
+        index = surface_index_from_json(index_payload)
+        if (
+            index.index_version != 2
+            or index.workspace_id != identity.workspace_id
+            or index.commit_id != identity.commit_id
+            or index.scope_fingerprint != run.candidate_scope_fingerprint
+            or index.static_bundle_hash != run.static_bundle_ref.content_hash
+            or terminal.bundle_hash != index.static_bundle_hash
+            or index_ref.content_hash
+            != hashlib.sha256(canonical_bytes(index.to_json())).hexdigest()
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_INDEX_INVALID")
+        prior = verified_saved_coverage_v3(
+            identity, index, prior_ref, self._store, artifacts
+        )
+        if (
+            prior.v5_plan_ref != prior_v5_ref
+            or prior.scope_certificate_ref != run.python_scope_certificate_ref
+            or prior.pending_candidate_count
+            or prior.pending_child_count
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_PRIOR_INVALID")
+        raw_v5 = json.loads(artifacts.read(prior_v5_ref))
+        bundle = json.loads(artifacts.read(run.static_bundle_ref))
+        if not isinstance(raw_v5, dict) or not isinstance(bundle, dict):
+            raise ValueError("SURFACE_ENRICHMENT_V6_PARENT_INVALID")
+        ast_summary = bundle.get("ast_summary")
+        if (
+            not isinstance(ast_summary, dict)
+            or hashlib.sha256(canonical_bytes(ast_summary)).hexdigest()
+            != index.ast_manifest_hash
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_AST_INVALID")
+        manifest = index_ast_manifest(artifacts, ast_summary)
+        source_hashes = tuple(
+            (path, str(entry["source_sha256"]))
+            for path, entry in sorted(manifest.items())
+        )
+        if index.ast_source_hashes != source_hashes:
+            raise ValueError("SURFACE_ENRICHMENT_V6_AST_SOURCE_CHANGED")
+        targets = tuple(
+            surface
+            for surface, proof in zip(index.surfaces, prior.surfaces, strict=True)
+            if proof.coverage_status == "INSUFFICIENT"
+        )
+        if not targets:
+            raise ValueError("SURFACE_ENRICHMENT_V6_NO_TARGETS")
+        route_map = discover_operational_route_maps(
+            run.workspace_path, identity.commit_id, dict(source_hashes)
+        )
+        verified_routes = verify_operational_routes_v5(
+            index, run.workspace_path, route_map
+        )
+        call_index = build_python_call_path_index(
+            run.workspace_path, tuple(path for path, _ in source_hashes)
+        )
+        graphs = {
+            surface.surface_id: extract_surface_graph_v5(
+                index,
+                surface,
+                ast_summary,
+                manifest,
+                run.workspace_path,
+                artifacts,
+                route_map,
+                call_index=call_index,
+                verified_routes=verified_routes,
+            )
+            for surface in targets
+        }
+        plan, parts = prepare_surface_enrichment_v6(
+            identity,
+            "candidate",
+            index,
+            index_ref,
+            prior_ref,
+            prior,
+            prior_v5_ref,
+            raw_v5,
+            graphs,
+            required_graph_revision="v5-source-bound-3",
+        )
+        for graph in graphs.values():
+            artifacts.put_json(graph)
+        for part in parts:
+            if artifacts.put_json(part.payload).content_hash != part.context_hash:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PART_CHANGED")
+        plan_ref = artifacts.put_json(plan)
+        self._store.pin_surface_enrichment_v6_plan(run, plan_ref)
+
     def _saved_surface_enrichment(
         self,
         run: SimpleAnalysisRun,
@@ -1408,6 +1576,157 @@ class SimpleAnalysisApplication:
             for surface_id, count in part_counts.items()
         ):
             raise ValueError("SURFACE_ENRICHMENT_V5_PART_SET_INVALID")
+        return plan, tuple(contexts)
+
+    def _saved_surface_enrichment_v6(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        artifacts: SimpleArtifactRepository,
+    ) -> tuple[dict[str, object], tuple[SurfaceContext, ...]]:
+        """Replay only an immutable source-bound successor's exact graph parts."""
+
+        plan_ref = run.surface_enrichment_v6_plan_ref
+        old_ref = run.surface_enrichment_v5_plan_ref
+        if (
+            plan_ref is None
+            or old_ref is None
+            or run.surface_enrichment_plan_ref is None
+            or run.python_scope_certificate_ref is None
+            or run.candidate_scope_fingerprint is None
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_PLAN_MISSING")
+        plan = json.loads(artifacts.read(plan_ref))
+        if not isinstance(plan, dict):
+            raise ValueError("SURFACE_ENRICHMENT_V6_PLAN_INVALID")
+        try:
+            index_ref = StoredDataRef.model_validate(plan["index_ref"])
+            prior_ref = StoredDataRef.model_validate(plan["prior_v3_coverage_ref"])
+            prior_v5_ref = StoredDataRef.model_validate(plan["prior_v5_plan_ref"])
+            raw_targets = plan["targets"]
+            raw_parts = plan["expected_parts"]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V6_PLAN_INVALID") from error
+        if (
+            plan.get("kind") != "simple_surface_enrichment_plan_v6"
+            or plan.get("analysis_id") != identity.analysis_id
+            or plan.get("workspace_id") != identity.workspace_id
+            or plan.get("commit_id") != identity.commit_id
+            or plan.get("scope_fingerprint") != run.candidate_scope_fingerprint
+            or plan.get("graph_semantics_revision") != "v5-source-bound-3"
+            or plan.get("prior_v5_plan_ref") != old_ref.model_dump(mode="json")
+            or prior_v5_ref != old_ref
+            or plan.get("prior_v5_plan_hash") != old_ref.content_hash
+            or plan.get("prior_v3_coverage_hash") != prior_ref.content_hash
+            or plan.get("index_hash") != index_ref.content_hash
+            or not isinstance(raw_targets, list)
+            or not isinstance(raw_parts, list)
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_PLAN_INVALID")
+        artifacts.read(old_ref)
+        artifacts.read(prior_ref)
+        artifacts.read(index_ref)
+        artifacts.read(run.surface_enrichment_plan_ref)
+        artifacts.read(run.python_scope_certificate_ref)
+        graph_hashes: dict[str, str] = {}
+        for raw_target in raw_targets:
+            if (
+                not isinstance(raw_target, dict)
+                or not isinstance(raw_target.get("surface_id"), str)
+                or not isinstance(raw_target.get("graph_hash"), str)
+                or raw_target["surface_id"] in graph_hashes
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V6_TARGET_INVALID")
+            graph_hashes[raw_target["surface_id"]] = raw_target["graph_hash"]
+        if set(graph_hashes) != set(plan.get("target_surface_ids", [])):
+            raise ValueError("SURFACE_ENRICHMENT_V6_TARGET_INVALID")
+        contexts: list[SurfaceContext] = []
+        positions: dict[str, set[int]] = {}
+        counts: dict[str, int] = {}
+        seen: set[tuple[str, str]] = set()
+        graphs: dict[str, dict[str, object]] = {}
+        for raw_part in raw_parts:
+            if (
+                not isinstance(raw_part, dict)
+                or not isinstance(raw_part.get("surface_id"), str)
+                or not isinstance(raw_part.get("context_id"), str)
+                or not isinstance(raw_part.get("context_hash"), str)
+                or type(raw_part.get("part_index")) is not int
+                or type(raw_part.get("part_count")) is not int
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V6_PART_SET_INVALID")
+            surface_id = raw_part["surface_id"]
+            context_id = raw_part["context_id"]
+            ordinal = raw_part["part_index"]
+            count = raw_part["part_count"]
+            if (
+                surface_id not in graph_hashes
+                or (surface_id, context_id) in seen
+                or count < 1
+                or not 0 <= ordinal < count
+                or surface_id in counts
+                and counts[surface_id] != count
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V6_PART_SET_INVALID")
+            seen.add((surface_id, context_id))
+            counts[surface_id] = count
+            positions.setdefault(surface_id, set()).add(ordinal)
+            graph_hash = graph_hashes[surface_id]
+            if surface_id not in graphs:
+                graph = json.loads(
+                    artifacts.read(self._surface_context_ref(identity, graph_hash))
+                )
+                if (
+                    not isinstance(graph, dict)
+                    or graph.get("proof_semantics_revision") != "v5-source-bound-3"
+                ):
+                    raise ValueError("SURFACE_ENRICHMENT_V6_GRAPH_INVALID")
+                graphs[surface_id] = graph
+            context_ref = self._surface_context_ref(identity, raw_part["context_hash"])
+            context_raw = artifacts.read(context_ref)
+            payload = json.loads(context_raw)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("surface_id") != surface_id
+                or payload.get("graph_hash") != graph_hash
+                or payload.get("plan_binding_hash") != plan.get("plan_binding_hash")
+                or payload.get("part_index") != ordinal
+                or payload.get("part_count") != count
+                or payload.get("source_sha256") != raw_part.get("source_sha256")
+                or payload.get("prior_v3_coverage_hash") != prior_ref.content_hash
+                or payload.get("prior_v5_plan_hash") != old_ref.content_hash
+                or payload.get("graph_semantics_revision") != "v5-source-bound-3"
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V6_PART_CHANGED")
+            validate_v5_context(
+                {
+                    "context_payload": payload,
+                    "graph_payload": graphs[surface_id],
+                    "context_hash": raw_part["context_hash"],
+                    "context_id": context_id,
+                }
+            )
+            contexts.append(
+                SurfaceContext(
+                    surface_id=surface_id,
+                    context_id=context_id,
+                    context_hash=raw_part["context_hash"],
+                    context_ref=context_ref,
+                    part_index=ordinal,
+                    part_count=count,
+                    prompt_bytes=len(context_raw),
+                    source_sha256=raw_part.get("source_sha256"),
+                    source_unavailable_reason=None,
+                    ast_unavailable_reason=None,
+                    omitted_source_line_count=None,
+                    omitted_ast_fact_count=None,
+                )
+            )
+        if set(positions) != set(graph_hashes) or any(
+            positions[surface_id] != set(range(count))
+            for surface_id, count in counts.items()
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_PART_SET_INVALID")
         return plan, tuple(contexts)
 
     async def _prepare_surface_supplement_locked(self, exact: str) -> None:
@@ -3570,6 +3889,28 @@ class SimpleAnalysisApplication:
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
+        if run.surface_enrichment_v6_plan_ref is not None:
+            try:
+                artifacts = SimpleArtifactRepository(self._data_dir, identity)
+                plan, contexts = self._saved_surface_enrichment_v6(
+                    run, identity, artifacts
+                )
+                return await self._run_v6_surface_enrichment(
+                    run, identity, static, artifacts, plan, contexts
+                )
+            except Exception as error:
+                return self._v4_failure_outcome(
+                    run,
+                    SimpleAnalysisOutcome(
+                        identity=identity,
+                        display_analysis_id=run.display_analysis_id,
+                        status="BLOCKED",
+                        current_stage=SimpleStage.HYPOTHESIS_DONE,
+                        error_code=self._safe_error_code(
+                            error, "SURFACE_ENRICHMENT_V6_REPLAY_INVALID"
+                        ),
+                    ),
+                )
         if run.surface_enrichment_v5_plan_ref is not None:
             try:
                 artifacts = SimpleArtifactRepository(self._data_dir, identity)
@@ -3951,7 +4292,7 @@ class SimpleAnalysisApplication:
             current_stage=SimpleStage.HYPOTHESIS_DONE,
         )
 
-    async def _run_v5_surface_enrichment(
+    async def _run_v6_surface_enrichment(
         self,
         run: SimpleAnalysisRun,
         identity: CheckpointIdentity,
@@ -3960,7 +4301,28 @@ class SimpleAnalysisApplication:
         plan: Mapping[str, object],
         contexts: tuple[SurfaceContext, ...],
     ) -> SimpleAnalysisOutcome:
-        """Replay only missing pinned v5 parts and certify the exact v2 delta."""
+        return await self._run_v5_surface_enrichment(
+            run,
+            identity,
+            static,
+            artifacts,
+            plan,
+            contexts,
+            successor=True,
+        )
+
+    async def _run_v5_surface_enrichment(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        static: StaticBootstrapResult,
+        artifacts: SimpleArtifactRepository,
+        plan: Mapping[str, object],
+        contexts: tuple[SurfaceContext, ...],
+        *,
+        successor: bool = False,
+    ) -> SimpleAnalysisOutcome:
+        """Replay only missing pinned parts and certify the exact parent delta."""
 
         if (
             run.surface_enrichment_v5_plan_ref is None
@@ -3970,10 +4332,21 @@ class SimpleAnalysisApplication:
             or run.candidate_terminal is None
             or plan.get("scope_fingerprint") != run.candidate_scope_fingerprint
             or plan.get("static_bundle_hash") != static.static_bundle_ref.content_hash
-            or plan.get("v4_plan_ref")
-            != run.surface_enrichment_plan_ref.model_dump(mode="json")
+            or successor
+            and (
+                run.surface_enrichment_v6_plan_ref is None
+                or plan.get("kind") != "simple_surface_enrichment_plan_v6"
+                or plan.get("prior_v5_plan_ref")
+                != run.surface_enrichment_v5_plan_ref.model_dump(mode="json")
+            )
+            or not successor
+            and (
+                plan.get("kind") != "simple_surface_enrichment_plan_v5"
+                or plan.get("v4_plan_ref")
+                != run.surface_enrichment_plan_ref.model_dump(mode="json")
+            )
         ):
-            raise ValueError("SURFACE_ENRICHMENT_V5_SCOPE_INVALID")
+            raise ValueError("SURFACE_ENRICHMENT_SCOPE_INVALID")
         scope = run.candidate_scope_fingerprint
         index_ref = StoredDataRef.model_validate(plan["index_ref"])
         v2_ref = StoredDataRef.model_validate(plan["v2_coverage_ref"])
@@ -3988,7 +4361,35 @@ class SimpleAnalysisApplication:
             or index.static_bundle_hash != static.static_bundle_ref.content_hash
         ):
             raise ValueError("SURFACE_ENRICHMENT_V5_INDEX_INVALID")
+        if successor and run.candidate_terminal.surface_proof_version == 4:
+            completed_hash = run.candidate_terminal.surface_coverage_hash
+            if completed_hash is None:
+                raise ValueError("SURFACE_ENRICHMENT_V6_TERMINAL_INVALID")
+            completed_ref = self._surface_context_ref(identity, completed_hash)
+            verified_saved_coverage_v4(
+                identity, index, completed_ref, self._store, artifacts
+            )
+            return SimpleAnalysisOutcome(
+                identity=identity,
+                display_analysis_id=run.display_analysis_id,
+                status=run.candidate_terminal.status,
+                current_stage=SimpleStage.HYPOTHESIS_DONE,
+            )
         prior_v2 = read_saved_coverage_v2(artifacts, index, v2_ref)
+        prior_v3_ref: StoredDataRef | None = None
+        prior_v3 = None
+        v6_plan_ref = run.surface_enrichment_v6_plan_ref
+        if successor:
+            if v6_plan_ref is None:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PLAN_MISSING")
+            prior_v3_ref = StoredDataRef.model_validate(plan["prior_v3_coverage_ref"])
+            prior_v3 = read_saved_coverage_v3(
+                artifacts,
+                index,
+                prior_v3_ref,
+                prior_v2_ref=v2_ref,
+                v5_plan_ref=run.surface_enrichment_v5_plan_ref,
+            )
         expected_parts = plan.get("expected_parts")
         if (
             not isinstance(expected_parts, list)
@@ -4008,9 +4409,27 @@ class SimpleAnalysisApplication:
         progress = self._store.list_surface_exploration_progress(identity, scope)
         # Check saved plan/part integrity before any LLM call. Child errors may
         # still be recoverable by the drain below, so certify them afterward.
-        validate_surface_plan_v5(
-            identity, index, prior_v2, plan, progress, self._store, artifacts
-        )
+        if successor:
+            if prior_v3_ref is None or prior_v3 is None:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PRIOR_INVALID")
+            if v6_plan_ref is None:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PLAN_MISSING")
+            validate_surface_plan_v6(
+                identity,
+                index,
+                prior_v3_ref,
+                prior_v3,
+                run.surface_enrichment_v5_plan_ref,
+                v6_plan_ref,
+                plan,
+                progress,
+                self._store,
+                artifacts,
+            )
+        else:
+            validate_surface_plan_v5(
+                identity, index, prior_v2, plan, progress, self._store, artifacts
+            )
         self._store.save_analysis_run(
             run.model_copy(
                 update={
@@ -4025,7 +4444,7 @@ class SimpleAnalysisApplication:
             prior = progress.get((context.surface_id, context.context_id))
             if prior is not None:
                 if (
-                    prior.proposal_version != 5
+                    prior.proposal_version != (6 if successor else 5)
                     or prior.static_bundle_hash != static.static_bundle_ref.content_hash
                     or prior.index_hash != index_ref.content_hash
                     or prior.context_hash != context.context_hash
@@ -4143,7 +4562,7 @@ class SimpleAnalysisApplication:
                     status=result.status,
                     result_ref=result.result_ref,
                     registrations=registrations,
-                    proposal_version=5,
+                    proposal_version=6 if successor else 5,
                 )
             drained = await self._drain_candidate_children(
                 run,
@@ -4173,12 +4592,31 @@ class SimpleAnalysisApplication:
                     ),
                 )
         progress = self._store.list_surface_exploration_progress(identity, scope)
-        self._review_v5_hold_children(
-            run, identity, index, plan, contexts, progress, artifacts
-        )
-        proof = evaluate_surface_coverage_v3(
-            identity, index, prior_v2, plan, progress, self._store, artifacts
-        )
+        proof: SurfaceCoverageV3 | SurfaceCoverageV4
+        if successor:
+            if prior_v3_ref is None or prior_v3 is None:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PRIOR_INVALID")
+            if v6_plan_ref is None:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PLAN_MISSING")
+            proof = evaluate_surface_coverage_v4(
+                identity,
+                index,
+                prior_v3_ref,
+                prior_v3,
+                run.surface_enrichment_v5_plan_ref,
+                v6_plan_ref,
+                plan,
+                progress,
+                self._store,
+                artifacts,
+            )
+        else:
+            self._review_v5_hold_children(
+                run, identity, index, plan, contexts, progress, artifacts
+            )
+            proof = evaluate_surface_coverage_v3(
+                identity, index, prior_v2, plan, progress, self._store, artifacts
+            )
         if proof.pending_candidate_count or proof.pending_child_count:
             return self._v4_failure_outcome(
                 run,
@@ -4204,7 +4642,7 @@ class SimpleAnalysisApplication:
                 "hypothesis_count": self._store.hypothesis_count(identity),
                 "surface_coverage_hash": coverage_ref.content_hash,
                 "surface_counts": counts,
-                "surface_proof_version": 3,
+                "surface_proof_version": 4 if successor else 3,
                 "scope_certificate_hash": proof.scope_certificate_ref.content_hash,
                 "pending_child_count": 0,
             }
@@ -6439,6 +6877,35 @@ class SimpleAnalysisApplication:
             raise ValueError("SURFACE_EXPLORATION_PROPOSAL_INVALID")
 
     @staticmethod
+    def _surface_result_kind(payload: Mapping[str, object]) -> str:
+        kind = payload.get("kind")
+        ordinary = {
+            "simple_surface_context_v1": "simple_surface_hypothesis_result_v1",
+            "simple_surface_context_v2": "simple_surface_hypothesis_result_v2",
+            "simple_surface_context_v3": "simple_surface_hypothesis_result_v3",
+            "simple_surface_context_v4": "simple_surface_hypothesis_result_v4",
+        }
+        if isinstance(kind, str) and kind in ordinary:
+            return ordinary[kind]
+        if kind != "simple_surface_context_v5":
+            raise ValueError("SURFACE_EXPLORATION_RESULT_INVALID")
+        successor_keys = (
+            "prior_v3_coverage_hash",
+            "prior_v5_plan_hash",
+            "graph_semantics_revision",
+        )
+        if not any(key in payload for key in successor_keys):
+            return "simple_surface_hypothesis_result_v5"
+        if payload.get("graph_semantics_revision") != "v5-source-bound-3" or any(
+            not isinstance(payload.get(key), str)
+            or len(cast(str, payload[key])) != 64
+            or any(char not in "0123456789abcdef" for char in cast(str, payload[key]))
+            for key in successor_keys[:2]
+        ):
+            raise ValueError("SURFACE_EXPLORATION_RESULT_INVALID")
+        return "simple_surface_hypothesis_result_v6"
+
+    @staticmethod
     def _surface_result_valid(
         artifacts: SimpleArtifactRepository,
         context: SurfaceContext,
@@ -6453,20 +6920,10 @@ class SimpleAnalysisApplication:
     ) -> None:
         value = json.loads(artifacts.read(result_ref))
         context_payload = json.loads(artifacts.read(context.context_ref))
-        context_kind = (
-            context_payload.get("kind") if isinstance(context_payload, dict) else None
-        )
-        expected_kind = (
-            {
-                "simple_surface_context_v1": "simple_surface_hypothesis_result_v1",
-                "simple_surface_context_v2": "simple_surface_hypothesis_result_v2",
-                "simple_surface_context_v3": "simple_surface_hypothesis_result_v3",
-                "simple_surface_context_v4": "simple_surface_hypothesis_result_v4",
-                "simple_surface_context_v5": "simple_surface_hypothesis_result_v5",
-            }.get(context_kind)
-            if isinstance(context_kind, str)
-            else None
-        )
+        if not isinstance(context_payload, dict):
+            raise ValueError("SURFACE_EXPLORATION_RESULT_INVALID")
+        context_kind = context_payload.get("kind")
+        expected_kind = SimpleAnalysisApplication._surface_result_kind(context_payload)
         seed_ids = value.get("seed_ids") if isinstance(value, dict) else None
         parts = value.get("reviewed_parts") if isinstance(value, dict) else None
         locations = value.get("evidence_locations") if isinstance(value, dict) else None

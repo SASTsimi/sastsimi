@@ -250,7 +250,7 @@ def coverage_report_lines(
         f"- {'범위 증거 SHA-256' if korean else 'Coverage artifact SHA-256'}: "
         f"`{coverage.ref.content_hash}`",
     ]
-    if coverage.surface_proof_version in (2, 3):
+    if coverage.surface_proof_version in (2, 3, 4):
         lines.extend(
             [
                 f"- {'원본 정적 공백' if korean else 'Raw static gaps'}: "
@@ -274,7 +274,7 @@ def coverage_report_lines(
                 + f": `{coverage.surface_scope_certificate_hash}`",
             ]
         )
-    if coverage.surface_proof_version == 3:
+    if coverage.surface_proof_version in (3, 4):
         surface_reasons = visible_surface_reason_distribution(coverage)
         if surface_reasons:
             label = (
@@ -600,7 +600,7 @@ def render_bundle_files(
                                     visible_surface_reason_distribution(facts.coverage)
                                 )
                             }
-                            if facts.coverage.surface_proof_version == 3
+                            if facts.coverage.surface_proof_version in (3, 4)
                             else {}
                         ),
                         **(
@@ -618,11 +618,11 @@ def render_bundle_files(
                                     facts.coverage.surface_insufficient_count
                                 ),
                             }
-                            if facts.coverage.surface_proof_version == 3
+                            if facts.coverage.surface_proof_version in (3, 4)
                             else {}
                         ),
                     }
-                    if facts.coverage.surface_proof_version in (2, 3)
+                    if facts.coverage.surface_proof_version in (2, 3, 4)
                     else {}
                 ),
             }

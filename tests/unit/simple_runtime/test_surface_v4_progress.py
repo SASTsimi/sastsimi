@@ -300,6 +300,54 @@ def test_v5_progress_rejects_version_downgrade_to_v4(tmp_path: Path) -> None:
         store.list_surface_exploration_progress(identity, "scope-v4")
 
 
+def test_v6_successor_progress_coexists_with_v5_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    old_context = artifacts.put_json({"kind": "simple_surface_context_v5"})
+    old_result = artifacts.put_json({"kind": "simple_surface_hypothesis_result_v5"})
+    new_context = artifacts.put_json({"kind": "simple_surface_context_v5", "round": 2})
+    new_result = artifacts.put_json({"kind": "simple_surface_hypothesis_result_v6"})
+
+    assert _commit(store, identity, old_result, old_context, (), proposal_version=5)
+
+    def commit_v6(target: SimpleCheckpointStore) -> bool:
+        return target.commit_surface_exploration(
+            identity,
+            "scope-v4",
+            "surface-v4",
+            "surface-v4:successor-0",
+            static_bundle_hash="b" * 64,
+            index_hash="c" * 64,
+            context_hash=new_context.content_hash,
+            source_sha256="d" * 64,
+            status="NO_HYPOTHESIS",
+            result_ref=new_result,
+            registrations=(),
+            proposal_version=6,
+        )
+
+    assert commit_v6(store)
+    reopened = SimpleCheckpointStore(store.database_path)
+    progress = reopened.list_surface_exploration_progress(identity, "scope-v4")
+    assert set(progress) == {
+        ("surface-v4", "surface-v4:part-0"),
+        ("surface-v4", "surface-v4:successor-0"),
+    }
+    assert progress[("surface-v4", "surface-v4:successor-0")].proposal_version == 6
+    assert not commit_v6(reopened)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_surface_exploration_progress SET proposal_version = 5 "
+            "WHERE analysis_id = ? AND context_id = ?",
+            (identity.analysis_id, "surface-v4:successor-0"),
+        )
+    with pytest.raises(ValueError, match="SURFACE_EXPLORATION_"):
+        reopened.list_surface_exploration_progress(identity, "scope-v4")
+
+
 def test_v4_transaction_rolls_back_invalid_second_child(tmp_path: Path) -> None:
     identity = _identity()
     artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)

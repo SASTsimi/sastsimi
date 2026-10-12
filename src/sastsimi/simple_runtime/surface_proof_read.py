@@ -19,6 +19,7 @@ from .attack_surfaces import SurfaceIndex
 from .models import CandidateTerminal
 from .store import SimpleCheckpointStore
 from .surface_coverage_v3 import verified_saved_coverage_v3
+from .surface_coverage_v4 import verified_saved_coverage_v4
 
 SURFACE_STATUSES = ("COVERED", "UNCOVERED", "INSUFFICIENT")
 
@@ -32,7 +33,7 @@ def read_surface_scope_certificate(
     """Load the exact v2 scope certificate, also retained by v3 proof."""
 
     if (
-        terminal.surface_proof_version not in (2, 3)
+        terminal.surface_proof_version not in (2, 3, 4)
         or certificate_ref is None
         or static_coverage_ref is None
         or certificate_ref.content_hash != terminal.scope_certificate_hash
@@ -234,12 +235,18 @@ def verified_surface_coverage_counts(
 
     if not isinstance(payload, dict):
         return None
-    if terminal.surface_proof_version == 3:
+    if terminal.surface_proof_version in (3, 4):
         if artifacts is None or coverage_ref is None or store is None:
             return None
         try:
-            current = verified_saved_coverage_v3(
-                artifacts.identity, index, coverage_ref, store, artifacts
+            current = (
+                verified_saved_coverage_v4(
+                    artifacts.identity, index, coverage_ref, store, artifacts
+                )
+                if terminal.surface_proof_version == 4
+                else verified_saved_coverage_v3(
+                    artifacts.identity, index, coverage_ref, store, artifacts
+                )
             )
         except (OSError, TypeError, ValueError):
             return None

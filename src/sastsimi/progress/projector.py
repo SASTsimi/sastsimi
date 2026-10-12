@@ -364,7 +364,7 @@ class ProgressProjector:
             }
             if reason_counts and (
                 candidate_terminal is None
-                or candidate_terminal.surface_proof_version != 3
+                or candidate_terminal.surface_proof_version not in (3, 4)
                 or sum(reason_counts.values())
                 != surface_counts.get("UNRESOLVED_REASON_COUNT")
             ):
@@ -436,7 +436,7 @@ class ProgressProjector:
                         (
                             static_disposition == "FULL"
                             and candidate_terminal.surface_proof_version == 1
-                            or candidate_terminal.surface_proof_version in (2, 3)
+                            or candidate_terminal.surface_proof_version in (2, 3, 4)
                             and surface_counts is not None
                             and surface_counts.get("EFFECTIVE_PYTHON_GAP_COUNT") == 0
                             and "RAW_STATIC_GAP_COUNT" in surface_counts
@@ -450,7 +450,7 @@ class ProgressProjector:
             if terminal_valid and surface_phase is not None:
                 if (
                     candidate_terminal is not None
-                    and candidate_terminal.surface_proof_version == 3
+                    and candidate_terminal.surface_proof_version in (3, 4)
                 ):
                     surface_phase.update(
                         {

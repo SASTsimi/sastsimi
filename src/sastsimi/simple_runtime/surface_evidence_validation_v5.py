@@ -176,6 +176,19 @@ def _validated_graph(
             or len(edge_ids) != len(steps) - 1
         ):
             raise _error("V5_GRAPH_INVALID")
+        if (
+            graph.get("proof_semantics_revision") == "v5-source-bound-3"
+            and "blocking_gaps" in path
+        ):
+            blocking_gaps = path["blocking_gaps"]
+            if (
+                not isinstance(blocking_gaps, list)
+                or any(
+                    not isinstance(gap, str) or not gap.strip() for gap in blocking_gaps
+                )
+                or len(set(blocking_gaps)) != len(blocking_gaps)
+            ):
+                raise _error("V5_GRAPH_INVALID")
         for step in steps:
             if (
                 not isinstance(step, dict)
@@ -219,6 +232,7 @@ def _validated_context(
     Mapping[str, object],
     dict[tuple[str, int], dict[str, object]],
     bool,
+    bool,
     dict[str, dict[str, object]],
     dict[str, dict[str, object]],
 ]:
@@ -257,6 +271,20 @@ def _validated_context(
     )
     if context.get("context_id") != expected_id:
         raise _error("V5_CONTEXT_INVALID")
+    successor_fields = {
+        "prior_v3_coverage_hash",
+        "prior_v5_plan_hash",
+        "graph_semantics_revision",
+    }
+    present = successor_fields.intersection(payload)
+    if present and (
+        present != successor_fields
+        or not _hex(payload.get("prior_v3_coverage_hash"))
+        or not _hex(payload.get("prior_v5_plan_hash"))
+        or payload.get("graph_semantics_revision") != "v5-source-bound-3"
+        or graph.get("proof_semantics_revision") != payload["graph_semantics_revision"]
+    ):
+        raise _error("V5_CONTEXT_INVALID")
     paths, edges = _validated_graph(graph, payload)
     seen: set[tuple[str, int]] = set()
     visible: dict[tuple[str, int], dict[str, object]] = {}
@@ -285,14 +313,14 @@ def _validated_context(
             if key in visible:
                 raise _error("V5_CONTEXT_INVALID")
             visible[cast(tuple[str, int], key)] = value
-    complete = (
+    complete_items = (
         payload["part_count"] == 1
         and payload["unavailable_item_count"] == 0
-        and not _rows(graph, "gaps")
         and bool(visible)
         and len(seen) == sum(len(_rows(graph, category)) for category in _CATEGORIES)
     )
-    return payload, graph, visible, complete, paths, edges
+    complete = complete_items and not _rows(graph, "gaps")
+    return payload, graph, visible, complete, complete_items, paths, edges
 
 
 def validate_v5_context(context_wrapper: Mapping[str, object]) -> None:
@@ -320,9 +348,15 @@ def validate_v5_response(
 ) -> V5ValidatedResponse:
     """Accept completion only on one connected pinned entry-to-sink path."""
 
-    payload, graph, visible, complete_context, paths, edges = _validated_context(
-        context
-    )
+    (
+        payload,
+        graph,
+        visible,
+        complete_context,
+        complete_items,
+        paths,
+        edges,
+    ) = _validated_context(context)
     if set(response) != {
         "surface_id",
         "context_id",
@@ -442,7 +476,16 @@ def validate_v5_response(
             anchored.append(path_id)
     if len(anchored) > 1:
         raise _error("V5_REVIEW_PATH_AMBIGUOUS")
-    verified_path_id = anchored[0] if anchored and complete_context else None
+    verified_path_id = None
+    if anchored:
+        candidate = anchored[0]
+        if graph.get("proof_semantics_revision") == "v5-source-bound-3":
+            # Only the new extractor can attribute a gap to a claimed path.
+            # Missing or nonempty attribution never becomes positive proof.
+            if complete_items and paths[candidate].get("blocking_gaps") == []:
+                verified_path_id = candidate
+        elif complete_context:
+            verified_path_id = candidate
     if status in {"HYPOTHESES", "NO_HYPOTHESIS"} and verified_path_id is None:
         raise _error("V5_REVIEW_PATH_INCOMPLETE")
     return V5ValidatedResponse(

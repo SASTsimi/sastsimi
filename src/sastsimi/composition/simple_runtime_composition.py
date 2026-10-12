@@ -1051,7 +1051,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                                 run.static_coverage_ref,
                                 terminal,
                             )
-                            if terminal.surface_proof_version in (2, 3)
+                            if terminal.surface_proof_version in (2, 3, 4)
                             else None
                         ),
                         artifacts=repository,

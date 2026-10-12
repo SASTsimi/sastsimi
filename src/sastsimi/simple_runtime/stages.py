@@ -5860,7 +5860,7 @@ this local route requires citations=[].
         terminal = run.candidate_terminal
         if (
             terminal is None
-            or terminal.surface_proof_version not in (2, 3)
+            or terminal.surface_proof_version not in (2, 3, 4)
             or not run.candidate_scope_fingerprint
             or not terminal.surface_coverage_hash
         ):
@@ -5868,7 +5868,7 @@ this local route requires citations=[].
         try:
             proof_identity = (
                 checkpoint.identity.model_copy(update={"hypothesis_id": None})
-                if terminal.surface_proof_version == 3
+                if terminal.surface_proof_version in (3, 4)
                 else checkpoint.identity
             )
             proof_artifacts = (
@@ -5877,7 +5877,7 @@ this local route requires citations=[].
                     proof_identity,
                     create_dirs=False,
                 )
-                if terminal.surface_proof_version == 3
+                if terminal.surface_proof_version in (3, 4)
                 else self._artifacts
             )
             index_record = self._store.get_attack_surface_index(
@@ -5939,17 +5939,21 @@ this local route requires citations=[].
                     if key.startswith("REASON_CODE_")
                 )
             )
-            if terminal.surface_proof_version == 3
+            if terminal.surface_proof_version in (3, 4)
             else (),
             surface_reviewed_count=counts.get("REVIEWED"),
             surface_covered_count=(
-                counts["COVERED"] if terminal.surface_proof_version == 3 else None
+                counts["COVERED"] if terminal.surface_proof_version in (3, 4) else None
             ),
             surface_uncovered_count=(
-                counts["UNCOVERED"] if terminal.surface_proof_version == 3 else None
+                counts["UNCOVERED"]
+                if terminal.surface_proof_version in (3, 4)
+                else None
             ),
             surface_insufficient_count=(
-                counts["INSUFFICIENT"] if terminal.surface_proof_version == 3 else None
+                counts["INSUFFICIENT"]
+                if terminal.surface_proof_version in (3, 4)
+                else None
             ),
         )
 

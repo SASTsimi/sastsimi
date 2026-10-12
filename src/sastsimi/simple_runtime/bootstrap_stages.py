@@ -4602,18 +4602,68 @@ class DirectHypothesisBootstrap:
                     retryable=False,
                     safe_message="Pinned surface graph is unavailable or invalid",
                 )
-        if v5 and graph_payload is not None and graph_payload["gaps"]:
-            # A validated pinned graph gap makes complete v5 path review
-            # impossible. Record that independently observed limit instead of
-            # repeatedly asking the Agent for a positive response that the
-            # source-bound validator must reject. This never creates a seed or
-            # promotes any review role to coverage.
+        result_kind = (
+            "simple_surface_hypothesis_result_v" + payload["kind"].rsplit("v", 1)[-1]
+        )
+        if v5:
+            successor_fields = {
+                "prior_v3_coverage_hash",
+                "prior_v5_plan_hash",
+                "graph_semantics_revision",
+            }
+            present = successor_fields.intersection(payload)
+            if present:
+                hashes = (
+                    payload.get("prior_v3_coverage_hash"),
+                    payload.get("prior_v5_plan_hash"),
+                )
+                if (
+                    present != successor_fields
+                    or any(
+                        not isinstance(value, str)
+                        or len(value) != 64
+                        or any(char not in "0123456789abcdef" for char in value)
+                        for value in hashes
+                    )
+                    or payload.get("graph_semantics_revision") != "v5-source-bound-3"
+                    or graph_payload is None
+                    or graph_payload.get("proof_semantics_revision")
+                    != payload["graph_semantics_revision"]
+                ):
+                    return StageFailure(
+                        code="HYPOTHESIS_SURFACE_CONTEXT_INVALID",
+                        retryable=False,
+                        safe_message="Successor surface context is unbound",
+                    )
+                result_kind = "simple_surface_hypothesis_result_v6"
+        reviewable_rev3_path = (
+            v5
+            and graph_payload is not None
+            and graph_payload.get("proof_semantics_revision") == "v5-source-bound-3"
+            and any(
+                isinstance(path, dict) and path.get("blocking_gaps") == []
+                for path in graph_payload["paths"]
+            )
+        )
+        if (
+            v5
+            and graph_payload is not None
+            and not reviewable_rev3_path
+            and (
+                graph_payload["gaps"]
+                or graph_payload.get("proof_semantics_revision") == "v5-source-bound-3"
+            )
+        ):
+            # A rev3 graph with no clear path cannot support a positive review,
+            # even when all gaps are attached to paths rather than the graph.
+            # Record the observed limit instead of asking the Agent for a
+            # response that the source-bound validator must reject.
             assert graph_ref is not None
             response = {
                 "surface_id": context.surface_id,
                 "context_id": context.context_id,
                 "status": "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
-                "reason": "Pinned graph gaps prevent a complete surface review.",
+                "reason": "No complete source-bound path is available for review.",
                 "hypotheses": [],
                 "review_evidence": [],
             }
@@ -4628,7 +4678,7 @@ class DirectHypothesisBootstrap:
             )
             result_ref = artifacts.put_json(
                 {
-                    "kind": "simple_surface_hypothesis_result_v5",
+                    "kind": result_kind,
                     "analysis_id": identity.analysis_id,
                     "surface_id": context.surface_id,
                     "context_id": context.context_id,
@@ -4939,8 +4989,7 @@ class DirectHypothesisBootstrap:
                 for proposal, qualification in qualified
             ]
             response_record = {
-                "kind": "simple_surface_hypothesis_result_v"
-                + payload["kind"].rsplit("v", 1)[-1],
+                "kind": result_kind,
                 "analysis_id": identity.analysis_id,
                 "surface_id": context.surface_id,
                 "context_id": context.context_id,

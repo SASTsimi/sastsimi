@@ -1934,7 +1934,7 @@ class SimpleCheckpointStore:
                 "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
             }
             or (status == "HYPOTHESES") != bool(registrations)
-            or proposal_version not in {1, 2, 3, 4, 5}
+            or proposal_version not in {1, 2, 3, 4, 5, 6}
         ):
             raise ValueError("SURFACE_EXPLORATION_INVALID")
         if len({item[0] for item in registrations}) != len(registrations):
@@ -1974,7 +1974,7 @@ class SimpleCheckpointStore:
                 (*key, surface_id, context_id),
             ).fetchone()
             if prior is not None:
-                if int(prior["proposal_version"]) in {4, 5}:
+                if int(prior["proposal_version"]) in {4, 5, 6}:
                     self._assert_surface_v4_registration_connection(
                         connection, identity, prior
                     )
@@ -2012,11 +2012,11 @@ class SimpleCheckpointStore:
         identity: CheckpointIdentity,
         row: sqlite3.Row,
     ) -> None:
-        """A saved v4/v5 result is reusable only with its original child binding."""
+        """A saved versioned result is reusable only with its original child binding."""
 
         version = row["proposal_version"]
         code = f"SURFACE_EXPLORATION_V{version}_CORRUPT"
-        if version not in {4, 5}:
+        if version not in {4, 5, 6}:
             raise ValueError(code)
         try:
             result_ref = StoredDataRef.model_validate_json(row["result_ref_json"])
@@ -2291,9 +2291,9 @@ class SimpleCheckpointStore:
             ).fetchall()
             records: dict[tuple[str, str], SurfaceExplorationProgressRecord] = {}
             for row in rows:
-                if row["proposal_version"] not in {1, 2, 3, 4, 5}:
+                if row["proposal_version"] not in {1, 2, 3, 4, 5, 6}:
                     raise ValueError("SURFACE_EXPLORATION_VERSION_CORRUPT")
-                if row["proposal_version"] in {4, 5}:
+                if row["proposal_version"] in {4, 5, 6}:
                     self._assert_surface_v4_registration_connection(
                         connection, identity, row
                     )
@@ -4965,6 +4965,62 @@ class SimpleCheckpointStore:
         validated = SimpleAnalysisRun.model_validate(run)
         with self._connect() as connection:
             self._upsert_analysis_run_connection(connection, validated)
+
+    def pin_surface_enrichment_v6_plan(
+        self, expected_run: SimpleAnalysisRun, plan_ref: StoredDataRef
+    ) -> bool:
+        """Atomically add a successor ref without replacing the saved v5 proof.
+
+        A stale writer may retry only the *same* already-pinned plan. A changed
+        terminal, predecessor, or competing plan must be re-read and verified.
+        """
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = expected.candidate_terminal
+        if (
+            expected.surface_enrichment_v5_plan_ref is None
+            or expected.surface_enrichment_v6_plan_ref is not None
+            or terminal is None
+            or terminal.status != "PARTIAL"
+            or terminal.surface_proof_version != 3
+            or str(plan_ref.workspace_id) != expected.workspace_id
+            or str(plan_ref.commit_id) != expected.commit_id
+            or plan_ref.data_kind != "artifact"
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_PIN_INVALID")
+        revised = expected.model_copy(
+            update={"surface_enrichment_v6_plan_ref": plan_ref}
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (expected.analysis_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PIN_STALE")
+            current = SimpleAnalysisRun.model_validate_json(row["run_json"])
+            if current.surface_enrichment_v6_plan_ref == plan_ref:
+                if current != revised:
+                    raise ValueError("SURFACE_ENRICHMENT_V6_PIN_STALE")
+                return False
+            # Legacy rows omit fields added after the run was created. Compare
+            # their validated meaning, then use the exact stored bytes below
+            # for the transactional compare-and-swap.
+            if current != expected:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PIN_STALE")
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (
+                    revised.model_dump_json(),
+                    expected.analysis_id,
+                    row["run_json"],
+                ),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PIN_STALE")
+        return True
 
     @staticmethod
     def _upsert_analysis_run_connection(

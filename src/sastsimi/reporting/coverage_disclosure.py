@@ -71,7 +71,7 @@ def visible_surface_reason_distribution(
 ) -> tuple[tuple[str, int], ...]:
     """Expose only bounded verified v3 reason codes, never arbitrary source text."""
 
-    if coverage.surface_proof_version != 3:
+    if coverage.surface_proof_version not in (3, 4):
         return ()
     reasons = coverage.surface_unresolved_reasons
     if (
