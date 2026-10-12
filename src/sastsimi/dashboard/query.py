@@ -107,6 +107,7 @@ _MAX_ARTIFACT_BYTES = 1024 * 1024
 _MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACTS = 512
 _DEFAULT_PAGE_SIZE = 10
+_PROJECTION_SOURCE_LIMIT = 2_147_483_647
 
 
 def _page_payload(
@@ -584,6 +585,19 @@ class DashboardQuery:
             artifact_type=artifact_type,
         )
 
+    def _get_analysis_tab_for_projection(
+        self, analysis_id: str, tab: str
+    ) -> dict[str, object]:
+        """Materialize one indexed tab once for a private read-model rebuild."""
+
+        return self._get_analysis_tab_from_source(
+            analysis_id,
+            tab,
+            offset=0,
+            limit=_PROJECTION_SOURCE_LIMIT,
+            _projection_unbounded=True,
+        )
+
     def _get_analysis_tab_from_source(
         self,
         analysis_id: str,
@@ -593,6 +607,7 @@ class DashboardQuery:
         limit: int = _DEFAULT_PAGE_SIZE,
         query: str = "",
         artifact_type: str | None = None,
+        _projection_unbounded: bool = False,
     ) -> dict[str, object]:
         """Build only the selected tab's projection."""
         if tab not in {
@@ -610,7 +625,9 @@ class DashboardQuery:
             type(offset) is not int
             or type(limit) is not int
             or offset < 0
-            or not 1 <= limit <= 200
+            or not 1
+            <= limit
+            <= (_PROJECTION_SOURCE_LIMIT if _projection_unbounded else 200)
         ):
             raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
         exact = self._resolved(analysis_id)
