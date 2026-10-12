@@ -338,36 +338,26 @@ def prepare_surface_enrichment_v6(
         )
 
         upper = max(1, len(items) + 1)
-        if (
-            len(
-                canonical_bytes(
-                    payload(
-                        items=[],
-                        part_index=upper,
-                        part_count=upper,
-                        unavailable_count=upper,
-                    )
+        empty_part_bytes = len(
+            canonical_bytes(
+                payload(
+                    items=[],
+                    part_index=upper,
+                    part_count=upper,
+                    unavailable_count=upper,
                 )
             )
-            > _MAX_PART_BYTES
-        ):
+        )
+        if empty_part_bytes > _MAX_PART_BYTES:
             raise SurfaceContextOverflow(surface.surface_id)
-        available: list[dict[str, object]] = []
+        # Canonical JSON v1 has no list policy here: adding an item to the
+        # empty items array adds its encoded bytes and one comma after the
+        # first item. Avoid repeatedly encoding every growing prefix.
+        available: list[tuple[dict[str, object], int]] = []
         unavailable: list[dict[str, object]] = []
         for item in items:
-            if (
-                len(
-                    canonical_bytes(
-                        payload(
-                            items=[item],
-                            part_index=upper,
-                            part_count=upper,
-                            unavailable_count=upper,
-                        )
-                    )
-                )
-                > _MAX_PART_BYTES
-            ):
+            item_bytes = len(canonical_bytes(item))
+            if empty_part_bytes + item_bytes > _MAX_PART_BYTES:
                 unavailable.append(
                     {
                         "category": item["category"],
@@ -377,30 +367,21 @@ def prepare_surface_enrichment_v6(
                     }
                 )
             else:
-                available.append(item)
+                available.append((item, item_bytes))
         chunks: list[list[dict[str, object]]] = []
         current: list[dict[str, object]] = []
-        for item in available:
-            proposed = [*current, item]
-            if (
-                len(
-                    canonical_bytes(
-                        payload(
-                            items=proposed,
-                            part_index=upper,
-                            part_count=upper,
-                            unavailable_count=upper,
-                        )
-                    )
-                )
-                > _MAX_PART_BYTES
-            ):
+        current_bytes = empty_part_bytes
+        for item, item_bytes in available:
+            added_bytes = item_bytes + (1 if current else 0)
+            if current_bytes + added_bytes > _MAX_PART_BYTES:
                 if not current:
                     raise SurfaceContextOverflow(surface.surface_id)
                 chunks.append(current)
                 current = [item]
+                current_bytes = empty_part_bytes + item_bytes
             else:
-                current = proposed
+                current.append(item)
+                current_bytes += added_bytes
         if current or not chunks:
             chunks.append(current)
         target_rows.append(

@@ -345,6 +345,7 @@ class ProgressProjector:
                     "RAW_STATIC_GAP_COUNT",
                     "EFFECTIVE_PYTHON_GAP_COUNT",
                     "UNRESOLVED_REASON_COUNT",
+                    "COMPLETED_INCONCLUSIVE_CHILD_COUNT",
                     "REVIEWED",
                 }
                 and not (
@@ -364,7 +365,7 @@ class ProgressProjector:
             }
             if reason_counts and (
                 candidate_terminal is None
-                or candidate_terminal.surface_proof_version not in (3, 4)
+                or candidate_terminal.surface_proof_version not in (3, 4, 5, 6)
                 or sum(reason_counts.values())
                 != surface_counts.get("UNRESOLVED_REASON_COUNT")
             ):
@@ -395,6 +396,10 @@ class ProgressProjector:
                 surface_phase["unresolved_reason_count"] = surface_counts.get(
                     "UNRESOLVED_REASON_COUNT", 0
                 )
+            if "COMPLETED_INCONCLUSIVE_CHILD_COUNT" in surface_counts:
+                surface_phase["completed_inconclusive_children"] = surface_counts[
+                    "COMPLETED_INCONCLUSIVE_CHILD_COUNT"
+                ]
             known += total
         if candidate_pipeline_version >= 2:
             producer_output_hashes = {
@@ -436,7 +441,8 @@ class ProgressProjector:
                         (
                             static_disposition == "FULL"
                             and candidate_terminal.surface_proof_version == 1
-                            or candidate_terminal.surface_proof_version in (2, 3, 4)
+                            or candidate_terminal.surface_proof_version
+                            in (2, 3, 4, 5, 6)
                             and surface_counts is not None
                             and surface_counts.get("EFFECTIVE_PYTHON_GAP_COUNT") == 0
                             and "RAW_STATIC_GAP_COUNT" in surface_counts
@@ -450,7 +456,7 @@ class ProgressProjector:
             if terminal_valid and surface_phase is not None:
                 if (
                     candidate_terminal is not None
-                    and candidate_terminal.surface_proof_version in (3, 4)
+                    and candidate_terminal.surface_proof_version in (3, 4, 5, 6)
                 ):
                     surface_phase.update(
                         {

@@ -77,6 +77,7 @@ DJANGO_CANDIDATE_APP_RECOVERY_REVISION = 1
 DJANGO_URLCONF_RECOVERY_REVISION = 1
 POC_REPLAY_GUARD_REVISION = 1
 POC_CANDIDATE_PROMPT_REVISION = "2026-10-11-a002-sensitive-1"
+POC_CANDIDATE_NEUTRAL_FIXTURE_PROMPT_REVISION = "2026-10-12-a001-neutral-fixture-1"
 POC_CANDIDATE_AUTH_TRANSPORT_PROMPT_REVISION = "2026-10-11-a002-auth-transport-2"
 POC_CANDIDATE_AUTH_RECAP_PROMPT_REVISION = "2026-10-11-poc-safety-recap-1"
 
@@ -2760,6 +2761,109 @@ def _candidate_sensitive_content_replay_marker(
     )
 
 
+def _completed_sensitive_rewrite_timeout_replay_marker(
+    checkpoint: StageCheckpoint, artifacts: SimpleArtifactRepository
+) -> bool:
+    """Recognize a persisted candidate retry without weakening settings repair.
+
+    Completing a candidate-stage recovery clears its recovery decision fields.
+    Its exact input marker and the atomically recorded replay event remain, so
+    those are the durable proof that attempt four was not a relation repair.
+    """
+
+    if (
+        checkpoint.stage is not SimpleStage.POC_CANDIDATE_DONE
+        or checkpoint.status is not StageStatus.SUCCEEDED
+        or checkpoint.attempt_number != MAX_RECOVERY_ATTEMPTS + 1
+        or checkpoint.recovery_origin_stage is not None
+        or checkpoint.recovery_decision_refs
+        or checkpoint.recovery_lineage_id is not None
+        or checkpoint.input_hash != input_reference_hash(checkpoint.input_refs)
+        or not checkpoint.input_refs
+        or not checkpoint.attempt_id
+        or artifacts.identity != checkpoint.identity
+    ):
+        return False
+    marker_ref = checkpoint.input_refs[-1]
+    try:
+        marker = json.loads(artifacts.read_bounded(marker_ref, 4 * 1024))
+    except (OSError, TypeError, ValueError, UnicodeError):
+        return False
+    if not isinstance(marker, dict) or marker.get("kind") != (
+        "simple_poc_sensitive_rewrite_timeout_replay"
+    ):
+        return False
+    try:
+        diagnostic_ref = StoredDataRef.model_validate(marker["diagnostic_ref"])
+        old_attempt_id = marker["old_attempt_id"]
+        if (
+            set(marker)
+            != {
+                "kind",
+                "identity",
+                "old_attempt_id",
+                "old_attempt_number",
+                "old_checkpoint_hash",
+                "diagnostic_ref",
+                "prompt_revision",
+            }
+            or marker["identity"] != checkpoint.identity.model_dump(mode="json")
+            or marker["old_attempt_number"] != MAX_RECOVERY_ATTEMPTS
+            or not isinstance(old_attempt_id, str)
+            or not old_attempt_id
+            or old_attempt_id == checkpoint.attempt_id
+            or not isinstance(marker["old_checkpoint_hash"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", marker["old_checkpoint_hash"]) is None
+            or diagnostic_ref not in checkpoint.input_refs
+            or closed_poc_sensitive_diagnostic(diagnostic_ref, artifacts) is None
+            or marker["prompt_revision"]
+            != POC_CANDIDATE_NEUTRAL_FIXTURE_PROMPT_REVISION
+        ):
+            raise ValueError("unbound sensitive rewrite marker")
+        with closing(
+            sqlite3.connect(
+                f"file:{artifacts.paths.database.resolve().as_posix()}?mode=ro",
+                uri=True,
+            )
+        ) as connection:
+            rows = connection.execute(
+                "SELECT event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ? "
+                "ORDER BY sequence LIMIT 64",
+                (
+                    checkpoint.identity.analysis_id,
+                    checkpoint.identity.hypothesis_id,
+                    old_attempt_id,
+                ),
+            ).fetchall()
+        matching = [
+            event
+            for (raw,) in rows
+            if (event := AgentActivityEvent.model_validate_json(raw)).kind
+            is ActivityKind.DECISION_RECORDED
+            and event.error_code == "POC_SENSITIVE_REWRITE_TIMEOUT_REPLAYED"
+            and event.stage == SimpleStage.POC_CANDIDATE_DONE.value
+            and event.status == StageStatus.BLOCKED.value
+            and event.workspace_id == checkpoint.identity.workspace_id
+            and event.commit_id == checkpoint.identity.commit_id
+            and event.hypothesis_id == checkpoint.identity.hypothesis_id
+            and event.output_refs == (marker_ref,)
+        ]
+        if len(matching) != 1:
+            raise ValueError("unbound sensitive rewrite event")
+    except (
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        sqlite3.Error,
+        ValidationError,
+    ) as error:
+        raise ValueError("POC_DJANGO_RELATION_SETTINGS_REPLAY_UNBOUND") from error
+    return True
+
+
 def _closed_runtime_replay_marker(
     checkpoint: StageCheckpoint, marker: Mapping[str, object]
 ) -> bool:
@@ -2806,6 +2910,10 @@ def _settings_replay_binding(
     # an execution-stage settings repair. Only its bound recovery record may
     # exempt it from the migration/relation settings proof.
     if _candidate_sensitive_content_replay_marker(checkpoint, artifacts):
+        return None
+    if relation and _completed_sensitive_rewrite_timeout_replay_marker(
+        checkpoint, artifacts
+    ):
         return None
     try:
         if (
@@ -5613,6 +5721,7 @@ __all__ = [
     "POC_CANDIDATE_AUTH_TRANSPORT_PROMPT_REVISION",
     "POC_CANDIDATE_AUTH_RECAP_PROMPT_REVISION",
     "POC_CANDIDATE_PROMPT_REVISION",
+    "POC_CANDIDATE_NEUTRAL_FIXTURE_PROMPT_REVISION",
     "TERMINAL_ERROR_CODES",
     "RecoveryAction",
     "RecoveryCategory",

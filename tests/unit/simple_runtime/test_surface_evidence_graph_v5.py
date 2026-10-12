@@ -158,6 +158,65 @@ def _source_text(row: dict[str, object]) -> str:
     return value
 
 
+def test_graph_rev4_requires_explicit_opt_in(tmp_path: Path) -> None:
+    fixture = _fixture(
+        tmp_path,
+        {"app.py": b"import os\ndef run(value):\n    os.system(value)\n"},
+        surface_path="app.py",
+        surface_line=3,
+    )
+    routes = OperationalRouteMap((), ())
+
+    old = extract_surface_graph_v5(*fixture, route_map=routes)
+    new = extract_surface_graph_v5(
+        *fixture,
+        route_map=routes,
+        proof_semantics_revision="v5-source-bound-4",
+    )
+
+    assert old["proof_semantics_revision"] == "v5-source-bound-3"
+    assert new["proof_semantics_revision"] == "v5-source-bound-4"
+    with pytest.raises(ValueError, match="SURFACE_GRAPH_REVISION_INVALID"):
+        extract_surface_graph_v5(
+            *fixture, route_map=routes, proof_semantics_revision="untrusted"
+        )
+
+
+def test_rev4_prioritizes_pinned_request_parameter_context_not_path_step(
+    tmp_path: Path,
+) -> None:
+    lines = [
+        "from urllib.parse import urlparse, parse_qs",
+        "class Handler:",
+        "    def do_GET(self):",
+        "        parsed = urlparse(self.path)",
+        "        self.params = parse_qs(parsed.query)",
+        *(f"        filler_{number} = {number}" for number in range(25)),
+        "        sink(self.params)",
+    ]
+    fixture = _fixture(
+        tmp_path,
+        {"app.py": ("\n".join(lines) + "\n").encode()},
+        surface_path="app.py",
+        surface_line=len(lines),
+    )
+    index, _, _, _, workspace, _ = fixture
+    step = {
+        "path": "app.py",
+        "line": len(lines),
+        "source_sha256": dict(index.ast_source_hashes)["app.py"],
+    }
+
+    legacy = graph_v5._supplemental_http_locations(index, workspace, [step])
+    revised = graph_v5._supplemental_http_locations(
+        index, workspace, [step], prioritize_request_bindings=True
+    )
+
+    assert ("app.py", 4) not in legacy
+    assert ("app.py", 5) not in legacy
+    assert set(revised[:2]) == {("app.py", 4), ("app.py", 5)}
+
+
 def test_imported_http_handler_adds_one_hashed_connected_path(
     tmp_path: Path,
 ) -> None:
@@ -355,6 +414,52 @@ def test_http_path_budget_failure_does_not_leave_unbounded_lines(
     )
     assert total <= 5
     assert "CONTEXT_BUDGET_EXHAUSTED" in {row["reason"] for row in _rows(graph, "gaps")}
+
+
+def test_successor_graph_records_pinned_gap_origin_without_changing_v7_graph(
+    tmp_path: Path,
+) -> None:
+    raw = (
+        b"from http.server import BaseHTTPRequestHandler\n"
+        b"class Endpoint(BaseHTTPRequestHandler):\n"
+        b"    def do_GET(self):\n"
+        b"        route = self.path\n"
+        b"        worker = Worker()\n"
+        b"        worker.run(route)\n"
+        b"class Worker:\n"
+        b"    def run(self, route):\n"
+        b"        dangerous(route)\n"
+    )
+    fixture = _fixture(
+        tmp_path, {"server.py": raw}, surface_path="server.py", surface_line=9
+    )
+    routes = OperationalRouteMap((), ())
+    legacy = extract_surface_graph_v5(
+        *fixture,
+        route_map=routes,
+        max_nodes=5,
+        proof_semantics_revision="v5-source-bound-4",
+    )
+    successor = extract_surface_graph_v5(
+        *fixture,
+        route_map=routes,
+        max_nodes=5,
+        proof_semantics_revision="v5-source-bound-5",
+    )
+
+    assert "gap_events" not in legacy
+    assert successor["gaps"] == legacy["gaps"]
+    assert any(
+        event.get("reason") == "CONTEXT_BUDGET_EXHAUSTED"
+        and event.get("attribution") == "PINNED_PATH"
+        and isinstance((sink := event.get("sink")), dict)
+        and sink.get("line") == 9
+        for event in _rows(successor, "gap_events")
+    )
+    assert any(
+        event.get("attribution") == "UNLOCATED"
+        for event in _rows(successor, "gap_events")
+    )
 
 
 def test_source_mutation_cannot_add_a_http_graph_path(tmp_path: Path) -> None:

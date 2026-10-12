@@ -366,17 +366,25 @@ def _child_reasons(
     }
     if not checkpoints:
         return ("CHILD_PENDING",)
+    if any(
+        checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}
+        for checkpoint in checkpoints.values()
+    ):
+        return ("CHILD_ERROR",)
     for checkpoint in checkpoints.values():
-        if checkpoint.status in {StageStatus.BLOCKED, StageStatus.FAILED}:
-            return ("CHILD_ERROR",)
+        if checkpoint.status is StageStatus.SUCCEEDED:
+            for ref in checkpoint.output_refs:
+                try:
+                    artifacts.read(ref)
+                except (OSError, TypeError, ValueError):
+                    return ("CHILD_ERROR",)
+    for checkpoint in checkpoints.values():
         if checkpoint.status is not StageStatus.SUCCEEDED:
             return ("CHILD_PENDING",)
-        if checkpoint.verdict == "HOLD":
-            return ("CHILD_HOLD",)
         if checkpoint.stage_version != STAGE_VERSION[checkpoint.stage]:
             return ("CHILD_STALE",)
-        for ref in checkpoint.output_refs:
-            artifacts.read(ref)
+    if any(checkpoint.verdict == "HOLD" for checkpoint in checkpoints.values()):
+        return ("CHILD_HOLD",)
     final = checkpoints.get(SimpleStage.VERIFICATION_FINAL_DONE)
     gate = checkpoints.get(SimpleStage.TECH_GATE_DONE)
     report = checkpoints.get(SimpleStage.REPORT_DONE)

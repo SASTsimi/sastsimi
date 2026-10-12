@@ -197,18 +197,25 @@ def rebuild_analysis(
 
     query = DashboardQuery(data_dir)
     model = DashboardReadModel(data_dir)
+    indexed_id = analysis_id
     try:
-        marker, pages = collect_source_pages(query, analysis_id)
+        indexed_id = query._resolved(analysis_id)
+        marker, pages = collect_source_pages(query, indexed_id)
         source = {kind: len(data[0]) for kind, data in pages.items()}
         if dry_run:
             return RebuildResult(analysis_id, source, {}, True, "DRY_RUN")
         model.initialize()
-        indexed = model.replace(analysis_id, marker, pages)
+        indexed = model.replace(indexed_id, marker, pages)
         return RebuildResult(analysis_id, source, indexed, False, "READY")
     except Exception as error:
         if not dry_run:
+            if indexed_id == analysis_id:
+                try:
+                    indexed_id = query._resolved(analysis_id)
+                except Exception:
+                    pass
             model.mark_incomplete(
-                analysis_id, "unknown", f"{type(error).__name__}: {error}"
+                indexed_id, "unknown", f"{type(error).__name__}: {error}"
             )
         return RebuildResult(
             analysis_id, {}, {}, dry_run, "FAILED", f"{type(error).__name__}: {error}"
@@ -225,6 +232,11 @@ def rebuild_all(
         rebuild_analysis(data_dir, item.analysis_id, dry_run=dry_run)
         for item in query.list_analyses()
     )
+
+
+def initialize_empty_read_model(data_dir: Path) -> None:
+    """Prepare an empty index only for a newly created analysis database."""
+    DashboardReadModel(data_dir).initialize()
 
 
 def project_after_source_write(data_dir: str | Path, analysis_id: str) -> None:

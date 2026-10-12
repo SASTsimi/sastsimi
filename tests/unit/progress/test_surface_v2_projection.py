@@ -480,8 +480,12 @@ def test_v4_running_marker_needs_active_lease(tmp_path: Path) -> None:
     assert interrupted.resume_action == "RESUME_INTERRUPTED"
 
 
-def test_v2_certificate_loader_rejects_wrong_run_static_ref(tmp_path: Path) -> None:
+@pytest.mark.parametrize("proof_version", [2, 6])
+def test_v2_certificate_loader_rejects_wrong_run_static_ref(
+    tmp_path: Path, proof_version: int
+) -> None:
     _, certificate, _, terminal = _proof()
+    terminal = terminal.model_copy(update={"surface_proof_version": proof_version})
     identity = CheckpointIdentity(
         analysis_id="analysis-1",
         workspace_id="workspace-1",

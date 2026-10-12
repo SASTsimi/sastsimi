@@ -4,11 +4,12 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from unittest.mock import patch
 
 import pytest
 
+import sastsimi.dashboard.query as dashboard_query
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
@@ -74,6 +75,41 @@ def test_public_artifact_reader_never_loads_unbounded_cas(tmp_path: Path) -> Non
     assert media == "application/json"
     assert parsed == {"kind": "example"}
     assert raw == b'{"kind":"example"}'
+
+
+def test_surface_proof_reader_reuses_verified_bytes_only_within_one_query(
+    tmp_path: Path,
+) -> None:
+    """Repeated proof reads share a snapshot, but a later request rechecks CAS."""
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    original = SimpleArtifactRepository(tmp_path, identity)
+    artifact_ref = original.put_json({"kind": "proof"})
+    repository = dashboard_query._SurfaceProofArtifacts(
+        tmp_path, identity, create_dirs=False
+    )
+    with patch.object(
+        repository.artifacts,
+        "open_verified_bounded",
+        wraps=repository.artifacts.open_verified_bounded,
+    ) as verified_reads:
+        first = repository.read_bounded(artifact_ref, 1024)
+        assert repository.read_bounded(artifact_ref, 1024) == first
+        assert verified_reads.call_count == 1
+        with pytest.raises(ValueError, match="ARTIFACT_SIZE_OR_TYPE_INVALID"):
+            repository.read_bounded(artifact_ref, 1)
+
+    original.artifacts.path_for(artifact_ref.content_hash).write_bytes(b"tampered")
+    next_request = dashboard_query._SurfaceProofArtifacts(
+        tmp_path, identity, create_dirs=False
+    )
+    with pytest.raises(ValueError, match="HASH_MISMATCH"):
+        next_request.read_bounded(artifact_ref, 1024)
 
 
 @pytest.mark.parametrize(
@@ -1317,6 +1353,33 @@ def _two_current_reports(
             stdout=b"second-proof\n",
         )
     return DashboardQuery(tmp_path), finding_ref
+
+
+def test_overview_and_progress_do_not_replay_all_report_bundles(
+    tmp_path: Path,
+) -> None:
+    """Small dashboard tabs read one checkpoint snapshot, not one per report."""
+
+    query, _ = _two_current_reports(tmp_path)
+    with (
+        patch.object(query, "_checkpoints", wraps=query._checkpoints) as reads,
+        patch.object(query, "_report_bundle", wraps=query._report_bundle) as bundles,
+    ):
+        overview = query.get_analysis_tab("A-001", "overview")
+        assert reads.call_count == 1
+        assert bundles.call_count == 0
+        presentation = next(
+            item
+            for item in cast(list[dict[str, object]], overview["readiness"])
+            if item["key"] == "presentation-output"
+        )
+        assert "보고서 2개" in cast(str, presentation["detail_ko"])
+
+        reads.reset_mock()
+        progress = query.get_analysis_tab("A-001", "progress")
+        assert progress["pipeline"]
+        assert reads.call_count == 1
+        assert bundles.call_count == 0
 
 
 def _export_group_members(*, proven: bool) -> tuple[VerifiedFindingMember, ...]:

@@ -24,7 +24,8 @@ from .ast_facts import index_ast_manifest, read_ast_file_facts
 from .candidates import StaticCandidate
 
 SurfaceStatus = Literal["COVERED", "UNCOVERED", "INSUFFICIENT"]
-ReviewPart = Literal["ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"]
+ReviewPart = Literal["ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY", "ANCHOR"]
+SurfaceReviewContract = Literal["SINK", "SOURCE", "CONTROL", "UNKNOWN"]
 
 _REQUIRED_PARTS: frozenset[ReviewPart] = frozenset(
     {"ENTRY", "SENSITIVE_OPERATION", "TRUST_BOUNDARY"}
@@ -47,6 +48,46 @@ _RULE_TYPES = {
     "sanitizer": "SANITIZATION_CONTROL",
     "validator": "VALIDATION_CONTROL",
 }
+
+_SINK_SURFACE_TYPES = frozenset(
+    {
+        "COMMAND_EXECUTION",
+        "DESERIALIZATION",
+        "DYNAMIC_CODE_EXECUTION",
+        "FILE_ACCESS",
+        "FILE_WRITE",
+        "HTML_RENDER",
+        "OUTBOUND_REQUEST",
+        "REDIRECT",
+        "SQL_EXECUTION",
+    }
+)
+_SOURCE_SURFACE_TYPES = frozenset({"REQUEST_ENTRY", "POSSIBLE_REQUEST_INPUT"})
+_CONTROL_SURFACE_TYPES = frozenset(
+    {
+        "AUTHENTICATION",
+        "AUTHORIZATION",
+        "SANITIZATION_CONTROL",
+        "SESSION_CONTROL",
+        "VALIDATION_CONTROL",
+    }
+)
+
+
+def surface_review_contract(surface_type: str) -> SurfaceReviewContract:
+    """Choose a role-specific proof contract, never inferring a sink from a hint.
+
+    Generic flows and previously unknown types require independent path evidence.
+    This classifier does not itself establish coverage or a vulnerability.
+    """
+
+    if surface_type in _SINK_SURFACE_TYPES:
+        return "SINK"
+    if surface_type in _SOURCE_SURFACE_TYPES:
+        return "SOURCE"
+    if surface_type in _CONTROL_SURFACE_TYPES:
+        return "CONTROL"
+    return "UNKNOWN"
 
 
 @dataclass(frozen=True, slots=True)

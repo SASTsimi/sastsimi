@@ -143,6 +143,67 @@ assert.equal(card.children.filter((item) => item.tag === 'raw').length, 2);
     assert result.returncode == 0, result.stderr
 
 
+def test_missing_index_tab_shows_actionable_rebuild_guidance() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is not installed")
+    source = _STATIC / "app.js"
+    script = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync(process.argv[1], 'utf8').split(
+  'document.getElementById("log-search").addEventListener'
+)[0];
+const nodes = new Map();
+class Element {
+  constructor() {
+    this.children = [];
+    this.textContent = '';
+    this.classList = { add() {}, remove() {} };
+  }
+  replaceChildren(...children) { this.children = children; }
+  append(...children) { this.children.push(...children); }
+  addEventListener() {}
+}
+const context = {
+  window: {
+    location: { pathname: '/analyses/A-001' },
+    setTimeout() { return 1; }, clearTimeout() {},
+  },
+  document: {
+    getElementById(id) {
+      if (!nodes.has(id)) nodes.set(id, new Element());
+      return nodes.get(id);
+    },
+    createElement() { return new Element(); },
+    querySelector() { return null; },
+  },
+  fetch: async () => ({
+    ok: false, status: 409,
+    json: async () => ({ error: 'index_not_ready', action: 'dashboard-index rebuild' }),
+  }),
+  URLSearchParams, AbortController, encodeURIComponent, decodeURIComponent,
+  Promise, Map, Set, Intl, Date,
+};
+vm.createContext(context);
+vm.runInContext(source, context);
+vm.runInContext("state.activeTab = 'outputs'", context);
+vm.runInContext('loadActiveTab()', context).then(() => {
+  assert.match(nodes.get('poc').children[0].textContent, /dashboard-index rebuild/);
+  assert.match(nodes.get('notice').textContent, /dashboard-index rebuild/);
+}).catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(source)],
+        capture_output=True,
+        text=True,
+        timeout=_NODE_TIMEOUT_SECONDS,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_status_grid_is_paged_and_unknown_is_not_rendered_as_zero() -> None:
     source = (_STATIC / "app.js").read_text(encoding="utf-8")
     assert "status-cells?offset=" in source

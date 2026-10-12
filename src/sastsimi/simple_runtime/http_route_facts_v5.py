@@ -63,9 +63,22 @@ class _Instance:
     branch: tuple[tuple[int, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _BranchCandidate:
+    instance: _Instance
+    reads: tuple[tuple[int, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _BranchInstances:
+    candidates: tuple[_BranchCandidate, ...]
+
+
 @dataclass(slots=True)
 class _State:
-    instances: dict[str, _Instance | str] = field(default_factory=dict)
+    instances: dict[str, _Instance | _BranchInstances | str] = field(
+        default_factory=dict
+    )
     assigned: set[str] = field(default_factory=set)
     reads: list[tuple[int, str]] = field(default_factory=list)
     invalid_request_attrs: dict[str, str] = field(default_factory=dict)
@@ -82,6 +95,13 @@ class _State:
 
 
 @dataclass(frozen=True, slots=True)
+class _BlockFlow:
+    normal: bool
+    breaks: bool = False
+    continues: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class _Call:
     target: tuple[str, str, str]
     line: int
@@ -90,6 +110,7 @@ class _Call:
     request_reads: tuple[tuple[int, str], ...]
     invalid_request_attrs: tuple[tuple[str, str], ...]
     receiver_is_self: bool
+    branch_guard: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,11 +312,49 @@ def _assigned_in_block(statements: Sequence[ast.stmt]) -> set[str]:
     return assigned
 
 
+def _method_local_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Python treats writes anywhere in a function as local to the whole body."""
+
+    names: set[str] = set()
+    external: set[str] = set()
+
+    def visit(item: ast.AST) -> None:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(item.name)
+            return
+        if isinstance(item, ast.Lambda):
+            return
+        if isinstance(item, (ast.Global, ast.Nonlocal)):
+            external.update(item.names)
+            return
+        if isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)):
+            names.add(item.id)
+        elif isinstance(item, ast.Import):
+            names.update(
+                alias.asname or alias.name.split(".")[0] for alias in item.names
+            )
+        elif isinstance(item, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in item.names)
+        elif isinstance(item, ast.ExceptHandler) and item.name is not None:
+            names.add(item.name)
+        elif isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name is not None:
+            names.add(item.name)
+        elif isinstance(item, ast.MatchMapping) and item.rest is not None:
+            names.add(item.rest)
+        for child in ast.iter_child_nodes(item):
+            visit(child)
+
+    for statement in node.body:
+        visit(statement)
+    return names - external
+
+
 class _MethodAnalyzer:
     def __init__(self, module: _Module, method: _Method, *, request_self: bool) -> None:
         self.module = module
         self.method = method
         self.request_self = request_self
+        self.local_names = _method_local_names(method.node)
         self.calls: list[_Call] = []
         self.reads_at_line: dict[int, tuple[tuple[int, str], ...]] = {}
         self.reachable_lines: set[int] = set()
@@ -326,6 +385,7 @@ class _MethodAnalyzer:
                         call.target,
                         call.constructor_line or 0,
                         call.request_reads,
+                        call.branch_guard,
                     ),
                 )
             ),
@@ -441,17 +501,35 @@ class _MethodAnalyzer:
         ):
             self.gaps.add("HTTP_DYNAMIC_DISPATCH_UNRESOLVED")
             return
-        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+        if not isinstance(func, ast.Attribute):
             return
-        receiver = func.value.id
-        target_class: str
-        constructor_line: int | None = None
-        constructor_symbol: str | None = None
-        if receiver == "self":
+        targets: list[
+            tuple[
+                str,
+                int | None,
+                tuple[tuple[int, str], ...],
+                tuple[tuple[int, int], ...],
+            ]
+        ] = []
+        receiver_is_self = isinstance(func.value, ast.Name) and func.value.id == "self"
+        if receiver_is_self:
             if not _is_request_self(self.method):
                 return
-            target_class = self.method.class_name
+            targets.append((self.method.class_name, None, tuple(state.reads), ()))
+        elif (
+            isinstance(func.value, ast.Call)
+            and isinstance(func.value.func, ast.Name)
+            and func.value.func.id in self.module.classes
+        ):
+            target_class = func.value.func.id
+            if target_class in self.local_names or target_class in state.assigned:
+                self.gaps.add("HTTP_LOCAL_CLASS_SHADOWED")
+                return
+            targets.append((target_class, func.value.lineno, tuple(state.reads), ()))
         else:
+            if not isinstance(func.value, ast.Name):
+                return
+            receiver = func.value.id
             binding = state.instances.get(receiver)
             if binding == "BRANCH":
                 self.gaps.add("HTTP_BRANCH_ASSIGNMENT_UNRESOLVED")
@@ -459,32 +537,53 @@ class _MethodAnalyzer:
             if binding == "REASSIGNED":
                 self.gaps.add("HTTP_LOCAL_REASSIGNED")
                 return
-            if not isinstance(binding, _Instance):
+            if isinstance(binding, _BranchInstances):
+                for candidate in binding.candidates:
+                    targets.append(
+                        (
+                            candidate.instance.class_name,
+                            candidate.instance.constructor_line,
+                            tuple(sorted(set(candidate.reads) | set(state.reads))),
+                            candidate.instance.branch,
+                        )
+                    )
+            elif isinstance(binding, _Instance):
+                if state.branch[: len(binding.branch)] != binding.branch:
+                    self.gaps.add("HTTP_BRANCH_ASSIGNMENT_UNRESOLVED")
+                    return
+                targets.append(
+                    (
+                        binding.class_name,
+                        binding.constructor_line,
+                        tuple(state.reads),
+                        (),
+                    )
+                )
+            else:
                 return
-            if state.branch[: len(binding.branch)] != binding.branch:
-                self.gaps.add("HTTP_BRANCH_ASSIGNMENT_UNRESOLVED")
-                return
-            target_class = binding.class_name
-            constructor_line = binding.constructor_line
-            constructor_symbol = target_class
-        target = self.module.methods.get((target_class, func.attr))
-        if target is None:
-            # Inherited stdlib response helpers are outside this local graph.
-            if receiver != "self" or target_class not in self.module.handler_classes:
-                self.gaps.add("HTTP_LOCAL_METHOD_UNRESOLVED")
-            return
-        self.calls.append(
-            _Call(
-                target.key,
-                node.lineno,
-                constructor_line,
-                constructor_symbol,
-                tuple(sorted(state.reads)),
-                tuple(sorted(state.invalid_request_attrs.items())),
-                receiver == "self",
+        for target_class, constructor_line, reads, branch_guard in targets:
+            target = self.module.methods.get((target_class, func.attr))
+            if target is None:
+                # Inherited stdlib response helpers are outside this local graph.
+                if (
+                    not receiver_is_self
+                    or target_class not in self.module.handler_classes
+                ):
+                    self.gaps.add("HTTP_LOCAL_METHOD_UNRESOLVED")
+                continue
+            self.calls.append(
+                _Call(
+                    target.key,
+                    node.lineno,
+                    constructor_line,
+                    target_class if constructor_line is not None else None,
+                    tuple(sorted(reads)),
+                    tuple(sorted(state.invalid_request_attrs.items())),
+                    receiver_is_self,
+                    branch_guard,
+                )
             )
-        )
-        if receiver == "self":
+        if receiver_is_self:
             # A local helper may change handler request attributes. Its
             # effects are not proven by this intraprocedural read model.
             self._invalidate_request_attrs(
@@ -535,7 +634,7 @@ class _MethodAnalyzer:
             and isinstance(value.func, ast.Name)
             and value.func.id in self.module.classes
         ):
-            if value.func.id in state.assigned:
+            if value.func.id in self.local_names or value.func.id in state.assigned:
                 self.gaps.add("HTTP_LOCAL_CLASS_SHADOWED")
                 state.instances.pop(name, None)
                 return
@@ -543,7 +642,9 @@ class _MethodAnalyzer:
         else:
             state.instances.pop(name, None)
 
-    def _block(self, statements: Sequence[ast.stmt], state: _State) -> bool:
+    def _block(self, statements: Sequence[ast.stmt], state: _State) -> _BlockFlow:
+        breaks = False
+        continues = False
         for position, statement in enumerate(statements):
             if isinstance(statement, ast.If):
                 self.reachable_lines.add(statement.lineno)
@@ -560,27 +661,54 @@ class _MethodAnalyzer:
                         statement.orelse if statement.test.value else statement.body
                     )
                     self._defer_statements(skipped)
-                    if not self._block(selected, state):
+                    selected_flow = self._block(selected, state)
+                    breaks |= selected_flow.breaks
+                    continues |= selected_flow.continues
+                    if not selected_flow.normal:
                         self._defer_statements(statements[position + 1 :])
-                        return False
+                        return _BlockFlow(False, breaks, continues)
                     continue
                 body_state = state.fork((statement.lineno, 0))
                 else_state = state.fork((statement.lineno, 1))
-                body_continues = self._block(statement.body, body_state)
-                else_continues = self._block(statement.orelse, else_state)
-                for continued, branch_state in (
-                    (body_continues, body_state),
-                    (else_continues, else_state),
+                body_flow = self._block(statement.body, body_state)
+                else_flow = self._block(statement.orelse, else_state)
+                breaks |= body_flow.breaks or else_flow.breaks
+                continues |= body_flow.continues or else_flow.continues
+                for flow, branch_state in (
+                    (body_flow, body_state),
+                    (else_flow, else_state),
                 ):
-                    if continued:
+                    if flow.normal:
                         for attr, reason in branch_state.invalid_request_attrs.items():
                             self._invalidate_request_attrs(state, (attr,), reason)
                 for name in _assigned_in_block((*statement.body, *statement.orelse)):
-                    state.instances[name] = "BRANCH"
+                    alternatives = [
+                        branch_state
+                        for flow, branch_state in (
+                            (body_flow, body_state),
+                            (else_flow, else_state),
+                        )
+                        if flow.normal
+                    ]
+                    candidates = [
+                        _BranchCandidate(binding, tuple(branch_state.reads))
+                        for branch_state in alternatives
+                        if isinstance(
+                            (binding := branch_state.instances.get(name)), _Instance
+                        )
+                    ]
+                    if 0 < len(candidates) <= 2 and all(
+                        branch_state.instances.get(name) is None
+                        or isinstance(branch_state.instances.get(name), _Instance)
+                        for branch_state in alternatives
+                    ):
+                        state.instances[name] = _BranchInstances(tuple(candidates))
+                    else:
+                        state.instances[name] = "BRANCH"
                     state.assigned.add(name)
-                if not body_continues and not else_continues:
+                if not body_flow.normal and not else_flow.normal:
                     self._defer_statements(statements[position + 1 :])
-                    return False
+                    return _BlockFlow(False, breaks, continues)
                 continue
             if isinstance(
                 statement,
@@ -595,6 +723,29 @@ class _MethodAnalyzer:
                 ),
             ):
                 self.reachable_lines.add(statement.lineno)
+                skipped_loop: ast.While | ast.For | None = None
+                if (
+                    isinstance(statement, ast.While)
+                    and isinstance(statement.test, ast.Constant)
+                    and type(statement.test.value) is bool
+                    and statement.test.value is False
+                ):
+                    skipped_loop = statement
+                elif (
+                    isinstance(statement, ast.For)
+                    and isinstance(statement.iter, (ast.Tuple, ast.List, ast.Set))
+                    and not statement.iter.elts
+                ):
+                    skipped_loop = statement
+                if skipped_loop is not None:
+                    self._defer_statements(skipped_loop.body)
+                    else_flow = self._block(skipped_loop.orelse, state)
+                    breaks |= else_flow.breaks
+                    continues |= else_flow.continues
+                    if not else_flow.normal:
+                        self._defer_statements(statements[position + 1 :])
+                        return _BlockFlow(False, breaks, continues)
+                    continue
                 # Calls inside a structured branch can be shown; assignments
                 # leaving it have no unique branch-local constructor identity.
                 for child in ast.iter_child_nodes(statement):
@@ -602,19 +753,26 @@ class _MethodAnalyzer:
                         self._expression(child, state)
                     elif isinstance(child, list):
                         pass
-                block_continues: list[bool] = []
+                block_flows: list[_BlockFlow] = []
                 for index, block in enumerate(_statement_blocks(statement)):
                     branch_state = state.fork((statement.lineno, index))
-                    block_continues.append(self._block(block, branch_state))
+                    block_flows.append(self._block(block, branch_state))
                     for attr, reason in branch_state.invalid_request_attrs.items():
                         self._invalidate_request_attrs(state, (attr,), reason)
+                if not isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                    exit_flows = block_flows
+                    if isinstance(statement, ast.Try) and not block_flows[2].normal:
+                        # A terminal finally overrides pending exits from try/except.
+                        exit_flows = [block_flows[2]]
+                    breaks |= any(flow.breaks for flow in exit_flows)
+                    continues |= any(flow.continues for flow in exit_flows)
                 self._mutate_request_targets(statement, state)
                 for name in _bound_names(statement):
                     state.instances[name] = "BRANCH"
                     state.assigned.add(name)
-                if not _structured_may_fall_through(statement, block_continues):
+                if not _structured_may_fall_through(statement, block_flows):
                     self._defer_statements(statements[position + 1 :])
-                    return False
+                    return _BlockFlow(False, breaks, continues)
                 continue
             if isinstance(
                 statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
@@ -642,13 +800,20 @@ class _MethodAnalyzer:
                 self._expression(statement, state)
                 for target in statement.targets:
                     self._mutate_request_targets(target, state)
+                    for name in _bound_names(target):
+                        state.instances[name] = "REASSIGNED"
+                        state.assigned.add(name)
             else:
                 self._expression(statement, state)
             self.reads_at_line[statement.lineno] = tuple(sorted(state.reads))
-            if isinstance(statement, (ast.Return, ast.Raise)):
+            if isinstance(statement, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
                 self._defer_statements(statements[position + 1 :])
-                return False
-        return True
+                return _BlockFlow(
+                    False,
+                    breaks or isinstance(statement, ast.Break),
+                    continues or isinstance(statement, ast.Continue),
+                )
+        return _BlockFlow(True, breaks, continues)
 
 
 def _statement_blocks(statement: ast.stmt) -> tuple[list[ast.stmt], ...]:
@@ -665,26 +830,36 @@ def _statement_blocks(statement: ast.stmt) -> tuple[list[ast.stmt], ...]:
 
 
 def _structured_may_fall_through(
-    statement: ast.stmt, block_continues: Sequence[bool]
+    statement: ast.stmt, block_flows: Sequence[_BlockFlow]
 ) -> bool:
     """Prove only narrow terminal cases; unknown control flow can continue."""
 
     if isinstance(statement, ast.While):
-        return not (
-            isinstance(statement.test, ast.Constant)
-            and statement.test.value is True
-            and not block_continues[0]
-        )
+        body, orelse = block_flows
+        if isinstance(statement.test, ast.Constant):
+            if statement.test.value is True:
+                return body.breaks
+            if statement.test.value is False:
+                return orelse.normal
+        return body.breaks or orelse.normal
     if isinstance(statement, (ast.For, ast.AsyncFor)):
         literal = statement.iter
+        body, orelse = block_flows
+        if isinstance(literal, (ast.Tuple, ast.List, ast.Set)) and not literal.elts:
+            return orelse.normal
         nonempty = (
             isinstance(literal, (ast.Tuple, ast.List, ast.Set))
             and bool(literal.elts)
             and not any(isinstance(item, ast.Starred) for item in literal.elts)
         )
-        return not (nonempty and not block_continues[0])
+        return body.breaks or (
+            orelse.normal and (not nonempty or body.normal or body.continues)
+        )
     if isinstance(statement, ast.Try):
-        body_continues, else_continues, finally_continues, *handlers = block_continues
+        body, orelse, final, *handlers = block_flows
+        body_continues = body.normal
+        else_continues = orelse.normal
+        finally_continues = final.normal
         if not finally_continues:
             return False
         # A break/continue in finally can override a pending return and
@@ -695,14 +870,16 @@ def _structured_may_fall_through(
             for node in ast.walk(item)
         ):
             return True
-        return (body_continues and else_continues) or any(handlers)
+        return (body_continues and else_continues) or any(
+            handler.normal for handler in handlers
+        )
     if isinstance(statement, ast.Match):
         exhaustive = bool(statement.cases) and (
             statement.cases[-1].guard is None
             and isinstance(statement.cases[-1].pattern, ast.MatchAs)
             and statement.cases[-1].pattern.pattern is None
         )
-        return not (exhaustive and not any(block_continues))
+        return not (exhaustive and not any(flow.normal for flow in block_flows))
     if isinstance(statement, (ast.With, ast.AsyncWith)):
         # __exit__ may suppress an exception, but cannot cancel a bare return.
         return not (
@@ -905,13 +1082,21 @@ def verified_http_paths(
                 call.constructor_line is not None
                 and call.constructor_symbol is not None
             ):
+                constructor_extra: dict[str, object] = {
+                    "call_kind": "LOCAL_CONSTRUCTOR"
+                }
+                if call.branch_guard:
+                    constructor_extra["branch_guard"] = [
+                        {"line": line, "arm": "body" if arm == 0 else "else"}
+                        for line, arm in call.branch_guard
+                    ]
                 next_steps.append(
                     _step(
                         current,
                         "CALL",
                         call.constructor_line,
                         call.constructor_symbol,
-                        call_kind="LOCAL_CONSTRUCTOR",
+                        **constructor_extra,
                     )
                 )
             next_steps.append(_step(current, "CALL", call.line, target.symbol))

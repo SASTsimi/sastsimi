@@ -43,6 +43,7 @@ from .surface_evidence_graph_v4 import (
     _raw_source,
     extract_surface_graph_v4,
 )
+from .surface_graph_gap_attribution import source_bound_gap_event
 
 _REPLACEABLE_GAPS = frozenset(
     {"EXTERNAL_IMPLEMENTATION_UNAVAILABLE", "SYNTACTIC_ROUTE_TO_SINK_UNAVAILABLE"}
@@ -436,12 +437,49 @@ def _add_http_source_lines(
     return True
 
 
+def _request_binding_statement(node: ast.AST) -> bool:
+    """Select syntax context only; this does not prove parameter-to-sink flow."""
+
+    value = (
+        node.value
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+        else None
+    )
+    if not isinstance(value, ast.Call):
+        return False
+    callee = (
+        value.func.id
+        if isinstance(value.func, ast.Name)
+        else value.func.attr
+        if isinstance(value.func, ast.Attribute)
+        else None
+    )
+    if callee in {"urlparse", "urlsplit"}:
+        return any(
+            isinstance(arg, ast.Attribute)
+            and isinstance(arg.value, ast.Name)
+            and arg.value.id in {"self", "request"}
+            and arg.attr in {"path", "url", "full_path"}
+            for arg in value.args
+        )
+    if callee in {"parse_qs", "parse_qsl"}:
+        return any(
+            isinstance(argument, ast.Attribute)
+            and argument.attr in {"query", "query_string", "path", "url"}
+            for arg in value.args
+            for argument in ast.walk(arg)
+        )
+    return False
+
+
 def _supplemental_http_locations(
     index: SurfaceIndex,
     workspace: Path,
     steps: list[dict[str, object]],
+    *,
+    prioritize_request_bindings: bool = False,
 ) -> list[tuple[str, int]]:
-    """Select nearby syntax context without treating it as a path step."""
+    """Select pinned syntax context without treating it as a path step."""
 
     hashes = dict(index.ast_source_hashes)
     by_path: dict[str, set[int]] = {}
@@ -451,7 +489,7 @@ def _supplemental_http_locations(
             if step.get("source_sha256") != hashes.get(path):
                 raise ValueError("SURFACE_GRAPH_HTTP_SOURCE_MISMATCH")
             by_path.setdefault(path, set()).add(line)
-    ranked: list[tuple[int, str, int]] = []
+    ranked: list[tuple[int, int, str, int]] = []
     for path, step_lines in sorted(by_path.items()):
         expected = hashes.get(path)
         if expected is None:
@@ -469,6 +507,7 @@ def _supplemental_http_locations(
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
         candidates: set[int] = set()
+        priority: set[int] = set()
         for step_line in step_lines:
             enclosing = [
                 method
@@ -492,6 +531,9 @@ def _supplemental_http_locations(
                     line = node.lineno
                     if abs(line - step_line) <= _HTTP_CONTEXT_RADIUS:
                         candidates.add(line)
+                    if prioritize_request_bindings and _request_binding_statement(node):
+                        candidates.add(line)
+                        priority.add(line)
                     if isinstance(node, ast.If) and node.orelse:
                         marker = node.orelse[0].lineno - 1
                         if (
@@ -503,8 +545,8 @@ def _supplemental_http_locations(
                 pending.extend(ast.iter_child_nodes(node))
         for line in candidates:
             distance = min(abs(line - step_line) for step_line in step_lines)
-            ranked.append((distance, path, line))
-    return [(path, line) for _, path, line in sorted(ranked)]
+            ranked.append((0 if line in priority else 1, distance, path, line))
+    return [(path, line) for _, _, path, line in sorted(ranked)]
 
 
 def _single_assignment(statement: ast.stmt) -> tuple[str, ast.expr] | None:
@@ -2377,8 +2419,16 @@ def extract_surface_graph_v5(
     max_edges: int = 512,
     call_index: PythonCallPathIndex | None = None,
     verified_routes: VerifiedOperationalRoutes | None = None,
+    proof_semantics_revision: str = "v5-source-bound-3",
 ) -> dict[str, object]:
     """Extend a source-verified v4 graph with only independently pinned v5 facts."""
+
+    if proof_semantics_revision not in {
+        "v5-source-bound-3",
+        "v5-source-bound-4",
+        "v5-source-bound-5",
+    }:
+        raise ValueError("SURFACE_GRAPH_REVISION_INVALID")
 
     graph = extract_surface_graph_v4(
         index,
@@ -2392,19 +2442,46 @@ def extract_surface_graph_v5(
         call_index=call_index,
     )
     graph["kind"] = "simple_surface_evidence_graph_v5"
-    graph["proof_semantics_revision"] = "v5-source-bound-3"
+    graph["proof_semantics_revision"] = proof_semantics_revision
     graph["operational_routes"] = []
     gaps = {
         (cast(str, row["path"]), cast(str, row["reason"]))
         for row in cast(list[dict[str, object]], graph["gaps"])
     }
+    unlocated_gaps = set(gaps)
+    attributed_events: list[dict[str, object]] = []
     source_hashes = dict(index.ast_source_hashes)
+
+    def record_gap(
+        path: str,
+        reason: str,
+        *,
+        raw_path: Mapping[str, object] | None = None,
+    ) -> None:
+        key = (path, reason)
+        gaps.add(key)
+        if proof_semantics_revision != "v5-source-bound-5":
+            return
+        event = source_bound_gap_event(
+            path,
+            reason,
+            raw_path=raw_path,
+            source_hashes=source_hashes,
+            sink_path=surface.path,
+            sink_line=surface.line,
+        )
+        if event["attribution"] == "PINNED_PATH":
+            attributed_events.append(event)
+        else:
+            unlocated_gaps.add(key)
+
     if _stdlib_http_shadow_absent(workspace, index.commit_id, surface.path):
         http = verified_http_paths(workspace, source_hashes, surface)
-        gaps.update((surface.path, reason) for reason in http.gaps)
+        for reason in http.gaps:
+            record_gap(surface.path, reason)
         http_paths = http.paths
     else:
-        gaps.add((surface.path, "HTTP_STDLIB_SHADOW_UNRESOLVED"))
+        record_gap(surface.path, "HTTP_STDLIB_SHADOW_UNRESOLVED")
         http_paths = ()
     graph_paths = cast(list[dict[str, object]], graph["paths"])
     nodes = cast(list[dict[str, object]], graph["nodes"])
@@ -2421,7 +2498,7 @@ def extract_surface_graph_v5(
             or {"ROUTE_ENTRY", "REQUEST_CONTEXT", "SINK"}
             - {step.get("role") for step in raw_steps if isinstance(step, dict)}
         ):
-            gaps.add((surface.path, "HTTP_REQUEST_INPUT_UNPROVEN"))
+            record_gap(surface.path, "HTTP_REQUEST_INPUT_UNPROVEN")
             continue
         steps = cast(list[dict[str, object]], raw_steps)
         step_paths = tuple(step.get("path") for step in steps)
@@ -2430,7 +2507,7 @@ def extract_surface_graph_v5(
         ) or not _stdlib_http_shadow_absent(
             workspace, index.commit_id, *cast(tuple[str, ...], step_paths)
         ):
-            gaps.add((surface.path, "HTTP_STDLIB_SHADOW_UNRESOLVED"))
+            record_gap(surface.path, "HTTP_STDLIB_SHADOW_UNRESOLVED")
             continue
         locations: set[tuple[str, int]] = set()
         for step in steps:
@@ -2459,7 +2536,7 @@ def extract_surface_graph_v5(
             > max_nodes
             or len(edges) + len(steps) - 1 > max_edges
         ):
-            gaps.add((surface.path, "CONTEXT_BUDGET_EXHAUSTED"))
+            record_gap(surface.path, "CONTEXT_BUDGET_EXHAUSTED", raw_path=raw_path)
             continue
         if not _add_http_source_lines(
             graph,
@@ -2470,13 +2547,13 @@ def extract_surface_graph_v5(
             workspace,
             artifacts,
         ):
-            gaps.add((surface.path, "PATH_SOURCE_UNAVAILABLE"))
+            record_gap(surface.path, "PATH_SOURCE_UNAVAILABLE", raw_path=raw_path)
             continue
         if (
             len(nodes) + len(lines) + len(facts) + len(steps) > max_nodes
             or len(edges) + len(steps) - 1 > max_edges
         ):
-            gaps.add((surface.path, "CONTEXT_BUDGET_EXHAUSTED"))
+            record_gap(surface.path, "CONTEXT_BUDGET_EXHAUSTED", raw_path=raw_path)
             continue
         path_id = _id("v5-path", raw_path)
         path_steps = [
@@ -2542,7 +2619,7 @@ def extract_surface_graph_v5(
             )
         )
         if not proven:
-            gaps.add((surface.path, "DYNAMIC_DISPATCH_UNRESOLVED"))
+            record_gap(surface.path, "DYNAMIC_DISPATCH_UNRESOLVED")
             continue
         operational.append(binding.to_json())
         xml_path = _direct_operational_xml_path(index, surface, workspace, binding)
@@ -2551,7 +2628,7 @@ def extract_surface_graph_v5(
                 index, surface, workspace, binding
             )
         if xml_path is None:
-            gaps.add((surface.path, "DYNAMIC_DISPATCH_UNRESOLVED"))
+            record_gap(surface.path, "DYNAMIC_DISPATCH_UNRESOLVED")
             continue
         xml_steps = cast(list[dict[str, object]], xml_path["steps"])
         xml_locations = {
@@ -2569,8 +2646,8 @@ def extract_surface_graph_v5(
             > max_nodes
             or len(edges) + len(xml_steps) - 1 > max_edges
         ):
-            gaps.add((surface.path, "CONTEXT_BUDGET_EXHAUSTED"))
-            gaps.add((surface.path, "DYNAMIC_DISPATCH_UNRESOLVED"))
+            record_gap(surface.path, "CONTEXT_BUDGET_EXHAUSTED", raw_path=xml_path)
+            record_gap(surface.path, "DYNAMIC_DISPATCH_UNRESOLVED", raw_path=xml_path)
             continue
         if not _add_http_source_lines(
             graph,
@@ -2581,8 +2658,8 @@ def extract_surface_graph_v5(
             workspace,
             artifacts,
         ):
-            gaps.add((surface.path, "PATH_SOURCE_UNAVAILABLE"))
-            gaps.add((surface.path, "DYNAMIC_DISPATCH_UNRESOLVED"))
+            record_gap(surface.path, "PATH_SOURCE_UNAVAILABLE", raw_path=xml_path)
+            record_gap(surface.path, "DYNAMIC_DISPATCH_UNRESOLVED", raw_path=xml_path)
             continue
         xml_path_id = _id("v5-path", xml_path)
         path_steps = [
@@ -2627,7 +2704,8 @@ def extract_surface_graph_v5(
                 "blocking_gaps": [],
             }
         )
-    gaps.update((surface.path, reason) for reason in route_map.gaps)
+    for reason in route_map.gaps:
+        record_gap(surface.path, reason)
     verified_http_steps = [
         step
         for path in graph_paths
@@ -2643,9 +2721,18 @@ def extract_surface_graph_v5(
         existing = {(cast(str, row["path"]), cast(int, row["line"])) for row in lines}
         added = 0
         prepared_cache: dict[str, PreparedFileContext | None] = {}
-        for location in _supplemental_http_locations(
-            index, workspace, verified_http_steps
-        ):
+        if proof_semantics_revision == "v5-source-bound-4":
+            supplemental_locations = _supplemental_http_locations(
+                index,
+                workspace,
+                verified_http_steps,
+                prioritize_request_bindings=True,
+            )
+        else:
+            supplemental_locations = _supplemental_http_locations(
+                index, workspace, verified_http_steps
+            )
+        for location in supplemental_locations:
             if added == remaining:
                 break
             if location in existing:
@@ -2681,4 +2768,23 @@ def extract_surface_graph_v5(
         key=lambda row: (cast(str, row["route"]), cast(str, row["class_symbol"])),
     )
     graph["gaps"] = [{"path": path, "reason": reason} for path, reason in sorted(gaps)]
+    if proof_semantics_revision == "v5-source-bound-5":
+        raw_events: list[dict[str, object]] = [
+            {"path": path, "reason": reason, "attribution": "UNLOCATED"}
+            for path, reason in sorted(unlocated_gaps & gaps)
+        ]
+        raw_events.extend(
+            event
+            for event in attributed_events
+            if (event["path"], event["reason"]) in gaps
+        )
+        graph["gap_events"] = sorted(
+            raw_events,
+            key=lambda event: (
+                str(event["path"]),
+                str(event["reason"]),
+                str(event["attribution"]),
+                str(event.get("graph_path_id", "")),
+            ),
+        )
     return graph

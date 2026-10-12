@@ -27,7 +27,10 @@ from sastsimi.config.user_config import (
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.prompt_redaction import redact_local_file_urls
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.dashboard.projection import project_after_source_write
+from sastsimi.dashboard.projection import (
+    initialize_empty_read_model,
+    project_after_source_write,
+)
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.policy.adapters.official_http import (
     PinnedHttpsTransport,
@@ -220,6 +223,7 @@ class SimpleClientFactory:
             profile.data_dir / "db" / "sastsimi.sqlite3",
             artifact_data_dir=profile.data_dir,
             post_commit_projection=project_after_source_write,
+            new_database_initializer=initialize_empty_read_model,
         )
 
     def _budget(self, identity: CheckpointIdentity) -> RunUsageBudget:
@@ -442,6 +446,7 @@ def build_analysis_application(
         data_dir / "db" / "sastsimi.sqlite3",
         artifact_data_dir=data_dir,
         post_commit_projection=project_after_source_write,
+        new_database_initializer=initialize_empty_read_model,
     )
     client_factory = SimpleClientFactory(profile)
     docker = PortableDockerRuntime(profile)
@@ -602,6 +607,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             config.data_dir / "db" / "sastsimi.sqlite3",
             artifact_data_dir=config.data_dir,
             post_commit_projection=project_after_source_write,
+            new_database_initializer=initialize_empty_read_model,
         )
         self._display = AnalysisDisplayIdStore(self._store.database_path)
 
@@ -669,6 +675,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
         repair_poc_sensitive_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_rewrite_timeout_hypothesis: str | None = None,
         repair_poc_sensitive_auth_transport_hypothesis: str | None = None,
         repair_poc_sensitive_auth_recap_hypothesis: str | None = None,
         repair_poc_anchor_hypothesis: str | None = None,
@@ -747,6 +754,9 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 repair_poc_sensitive_exhaustion_hypothesis=(
                     repair_poc_sensitive_exhaustion_hypothesis
                 ),
+                repair_poc_sensitive_rewrite_timeout_hypothesis=(
+                    repair_poc_sensitive_rewrite_timeout_hypothesis
+                ),
                 repair_poc_sensitive_auth_transport_hypothesis=(
                     repair_poc_sensitive_auth_transport_hypothesis
                 ),
@@ -794,6 +804,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
         repair_poc_sensitive_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_rewrite_timeout_hypothesis: str | None = None,
         repair_poc_sensitive_auth_transport_hypothesis: str | None = None,
         repair_poc_sensitive_auth_recap_hypothesis: str | None = None,
         repair_poc_anchor_hypothesis: str | None = None,
@@ -874,6 +885,9 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                     ),
                     repair_poc_sensitive_exhaustion_hypothesis=(
                         repair_poc_sensitive_exhaustion_hypothesis
+                    ),
+                    repair_poc_sensitive_rewrite_timeout_hypothesis=(
+                        repair_poc_sensitive_rewrite_timeout_hypothesis
                     ),
                     repair_poc_sensitive_auth_transport_hypothesis=(
                         repair_poc_sensitive_auth_transport_hypothesis
@@ -1052,7 +1066,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                                 run.static_coverage_ref,
                                 terminal,
                             )
-                            if terminal.surface_proof_version in (2, 3, 4)
+                            if terminal.surface_proof_version in (2, 3, 4, 5, 6)
                             else None
                         ),
                         artifacts=repository,

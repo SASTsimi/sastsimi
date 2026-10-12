@@ -25,6 +25,7 @@ from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
+    CandidateTerminal,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
@@ -33,7 +34,11 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
-from sastsimi.simple_runtime.runner import SimpleRuntimeRunner, StageBlocked
+from sastsimi.simple_runtime.runner import (
+    SimpleRuntimeRunner,
+    StageBlocked,
+    StageFailed,
+)
 from sastsimi.simple_runtime.scope_policy import validate_scope_decision
 from sastsimi.simple_runtime.stages import ReporterStage
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
@@ -139,6 +144,122 @@ def test_policy_lookup_is_empty_for_a_simple_runtime_database(tmp_path: Path) ->
     )
 
     assert refs == ()
+
+
+@pytest.mark.parametrize("proof_version", [5, 6])
+def test_report_rejects_unverified_modern_surface_proof_even_when_static_scan_is_full(
+    tmp_path: Path,
+    proof_version: int,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "e" * 64,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+        }
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="example/project",
+            static_coverage_ref=coverage_ref,
+            static_disposition="FULL",
+            candidate_scope_fingerprint="s" * 64,
+            candidate_terminal=CandidateTerminal(
+                status="PARTIAL",
+                bundle_hash="b" * 64,
+                scope_fingerprint="s" * 64,
+                decision_counts={},
+                deep_counts={},
+                hypothesis_count=0,
+                surface_index_hash="i" * 64,
+                surface_coverage_hash="c" * 64,
+                surface_proof_version=proof_version,
+            ),
+        )
+    )
+
+    with pytest.raises(StageFailed) as caught:
+        ReporterStage(_ReporterClient(), artifacts, store=store)._coverage(
+            _checkpoint(identity, SimpleStage.REPORT_DONE)
+        )
+    assert caught.value.failure.code == "REPORT_SURFACE_PROOF_UNVERIFIED"
+    assert caught.value.failure.retryable is False
+
+
+def test_report_discloses_partial_run_even_if_legacy_surface_proof_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    coverage_ref = artifacts.put_json(
+        {
+            "kind": "simple_static_coverage_v1",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "fingerprint": "e" * 64,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+        }
+    )
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="example/project",
+            static_coverage_ref=coverage_ref,
+            static_disposition="FULL",
+            candidate_scope_fingerprint="s" * 64,
+            candidate_terminal=CandidateTerminal(
+                status="PARTIAL",
+                bundle_hash="b" * 64,
+                scope_fingerprint="s" * 64,
+                decision_counts={},
+                deep_counts={},
+                hypothesis_count=0,
+                surface_index_hash="i" * 64,
+                surface_coverage_hash="c" * 64,
+                surface_proof_version=3,
+            ),
+        )
+    )
+
+    disclosure = ReporterStage(_ReporterClient(), artifacts, store=store)._coverage(
+        _checkpoint(identity, SimpleStage.REPORT_DONE)
+    )
+    assert disclosure is not None
+    assert disclosure.partial is False
+    assert disclosure.analysis_status == "PARTIAL"
 
 
 def _checkpoint(

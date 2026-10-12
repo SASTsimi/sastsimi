@@ -581,6 +581,72 @@ def test_rebuild_failure_records_incomplete_reason(
         model.page("BROKEN-ANALYSIS", "findings", offset=0, limit=10)
 
 
+def test_rebuild_display_id_indexes_resolved_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exact_id = "43c654e768ad468d96c6ae2440c22674"
+
+    class Query:
+        def __init__(self, _data_dir: Path) -> None:
+            pass
+
+        def _resolved(self, analysis_id: str) -> str:
+            assert analysis_id == "A-001"
+            return exact_id
+
+    def collect(
+        _query: object, analysis_id: str
+    ) -> tuple[str, dict[str, tuple[list[dict[str, object]], dict[str, object]]]]:
+        assert analysis_id == exact_id
+        return "marker", _pages(0)
+
+    monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
+    monkeypatch.setattr(projection_module, "collect_source_pages", collect)
+
+    result = projection_module.rebuild_analysis(tmp_path, "A-001")
+
+    assert result.status == "READY"
+    assert (
+        DashboardReadModel(tmp_path).page(exact_id, "coverage", offset=0, limit=10)[
+            "total_items"
+        ]
+        == 0
+    )
+
+
+def test_rebuild_display_id_pins_exact_hold_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exact_id = "43c654e768ad468d96c6ae2440c22674"
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    with model._connect(True) as connection:
+        connection.execute(
+            "CREATE TABLE simple_surface_hold_replay_markers "
+            "(analysis_id TEXT NOT NULL, action TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO simple_surface_hold_replay_markers VALUES (?, ?)",
+            (exact_id, "KEEP_HOLD"),
+        )
+
+    class Query(DashboardQuery):
+        def _resolved(self, analysis_id: str) -> str:
+            assert analysis_id == "A-001"
+            return exact_id
+
+        def _get_analysis_tab_for_projection(
+            self, _analysis_id: str, tab: str
+        ) -> dict[str, object]:
+            return {"items": [], "total_items": 0, "tab": tab}
+
+    monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
+    result = projection_module.rebuild_analysis(tmp_path, "A-001")
+
+    assert result.status == "READY"
+    assert model.page(exact_id, "coverage", offset=0, limit=10)["total_items"] == 0
+
+
 def test_rebuild_all_continues_after_one_analysis_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

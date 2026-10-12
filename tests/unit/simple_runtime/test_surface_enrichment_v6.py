@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -190,3 +191,35 @@ def test_successor_splits_whole_items_with_every_part_bounded(tmp_path: Path) ->
     assert isinstance(target, dict)
     assert target["unavailable_items"] == []
     assert sum(len(part.payload["items"]) for part in parts) == target["item_count"]
+
+
+def test_successor_large_split_keeps_exact_bytes_without_quadratic_serialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dashboard proof replay must not re-encode every growing item prefix."""
+
+    import sastsimi.simple_runtime.surface_enrichment_v6 as enrichment
+
+    case = _saved_v3_case(tmp_path, line_count=700)
+    original = canonical_bytes
+    serialized_bytes = 0
+
+    def counting_bytes(value: object) -> bytes:
+        nonlocal serialized_bytes
+        encoded = original(value)
+        serialized_bytes += len(encoded)
+        return encoded
+
+    monkeypatch.setattr(enrichment, "canonical_bytes", counting_bytes)
+    plan, parts = _prepare(case)
+
+    assert serialized_bytes < 2_000_000
+    assert hashlib.sha256(canonical_bytes(plan)).hexdigest() == (
+        "2ffe884643aacf859d7025e9539ed519fcdcf2a494353b10becef54f419a5e51"
+    )
+    assert [part.context_hash for part in parts] == [
+        "da74d5b9a96bc6531a642d61d704bda3340c427ed253bf07e98ab41beeac9f57",
+        "10bedadf5be100d0e6ffce57b6c7bd09e18dd41b853fa9cecfa913695ebfd59d",
+        "6827dd4792e6673fcbf29c12d7a6d441140ae1c39cf1abfa5f37821e88d514ba",
+        "b255d2df32ec398a3f909aed0dfbfc462bc92950c6fb74cc9c4db0cc223fd349",
+    ]

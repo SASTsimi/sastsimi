@@ -138,6 +138,7 @@ detail.phase_counts.surface = {
   total: 1, covered: 1, uncovered: 0, insufficient: 0,
   raw_static_gap_count: 3, effective_python_gap_count: 0,
   unresolved_reason_count: 1,
+  completed_inconclusive_children: 2,
 };
 detail.surface_unresolved_reason_count = 1;
 detail.surface_unresolved_reason_preview = [
@@ -148,6 +149,7 @@ shown = text(nodes.get("overview"));
 for (const expected of [
   "원본 정적 공백", "3건", "재인증 후 Python 공백", "0건",
   "미해결 보안 표면 사유 1건", "surface-1 · app.py · SOURCE_UNAVAILABLE",
+  "취약점 근거 미확정 가설 2건", "확정·제보 가능 아님",
 ]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
 delete detail.surface_unresolved_reason_count;
 delete detail.surface_unresolved_reason_preview;

@@ -851,3 +851,14 @@ def test_failed_related_child_is_execution_error_not_partial_proof(
 
     with pytest.raises(ValueError, match="SURFACE_COVERAGE_V2_CHILD_ERROR"):
         case.evaluate()
+
+
+def test_held_child_with_damaged_output_is_integrity_error(tmp_path: Path) -> None:
+    case = _case(tmp_path, old_hold=True)
+    child = case.identity.model_copy(update={"hypothesis_id": "hypothesis-old"})
+    held = case.store.get(child, SimpleStage.VERIFICATION_INITIAL_DONE)
+    assert held is not None and held.output_refs
+    case.artifacts.artifacts.path_for(held.output_refs[0].content_hash).unlink()
+
+    with pytest.raises(ValueError, match="SURFACE_COVERAGE_V2_CHILD_ERROR"):
+        case.evaluate()
