@@ -4602,6 +4602,66 @@ class DirectHypothesisBootstrap:
                     retryable=False,
                     safe_message="Pinned surface graph is unavailable or invalid",
                 )
+        if v5 and graph_payload is not None and graph_payload["gaps"]:
+            # A validated pinned graph gap makes complete v5 path review
+            # impossible. Record that independently observed limit instead of
+            # repeatedly asking the Agent for a positive response that the
+            # source-bound validator must reject. This never creates a seed or
+            # promotes any review role to coverage.
+            assert graph_ref is not None
+            response = {
+                "surface_id": context.surface_id,
+                "context_id": context.context_id,
+                "status": "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+                "reason": "Pinned graph gaps prevent a complete surface review.",
+                "hypotheses": [],
+                "review_evidence": [],
+            }
+            gap_result = validate_v5_response(
+                {
+                    "context_payload": payload,
+                    "graph_payload": graph_payload,
+                    "context_hash": context.context_hash,
+                    "context_id": context.context_id,
+                },
+                response,
+            )
+            result_ref = artifacts.put_json(
+                {
+                    "kind": "simple_surface_hypothesis_result_v5",
+                    "analysis_id": identity.analysis_id,
+                    "surface_id": context.surface_id,
+                    "context_id": context.context_id,
+                    "part_index": context.part_index,
+                    "part_count": context.part_count,
+                    "context_hash": context.context_hash,
+                    "static_bundle_hash": static.static_bundle_ref.content_hash,
+                    "status": gap_result.status,
+                    "reason": gap_result.reason,
+                    "reviewed_parts": [],
+                    "evidence_locations": [],
+                    "verified_roles": [],
+                    "verified_path_id": None,
+                    "graph_hash": graph_ref.content_hash,
+                    "graph_ref": graph_ref.model_dump(mode="json"),
+                    "seed_ids": [],
+                    "response": response,
+                    "validation_status": "VALID",
+                    "resolution_source": "PINNED_GRAPH_GAPS",
+                }
+            )
+            return SurfaceProposalResult(
+                surface_id=context.surface_id,
+                context_id=context.context_id,
+                part_index=context.part_index,
+                part_count=context.part_count,
+                status=gap_result.status,
+                reason=gap_result.reason,
+                seeds=(),
+                result_ref=result_ref,
+                reviewed_parts=frozenset(),
+                evidence_locations=(),
+            )
         try:
             review_rows = (
                 v5_review_directory(payload, graph_payload)

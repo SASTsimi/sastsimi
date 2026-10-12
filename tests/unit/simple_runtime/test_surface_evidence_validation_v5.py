@@ -11,7 +11,10 @@ from typing import Any, cast
 import pytest
 
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.simple_runtime.application import StaticBootstrapResult
+from sastsimi.simple_runtime.application import (
+    SimpleAnalysisApplication,
+    StaticBootstrapResult,
+)
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import (
     DirectHypothesisBootstrap,
@@ -19,6 +22,7 @@ from sastsimi.simple_runtime.bootstrap_stages import (
 )
 from sastsimi.simple_runtime.models import CheckpointIdentity, StageFailure
 from sastsimi.simple_runtime.provider import SimpleLLMClient
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.simple_runtime.surface_contexts import SurfaceContext
 from tests.unit.simple_runtime.test_surface_enrichment_v5 import (
     _case as _planner_case,
@@ -233,3 +237,98 @@ async def test_v5_adapter_accepts_actual_planner_part(tmp_path: Path) -> None:
     assert saved["validation_status"] == "VALID"
     assert saved["graph_hash"] == graph_ref.content_hash
     assert saved["verified_path_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_v5_graph_gaps_checkpoint_insufficient_without_positive_agent_output(
+    tmp_path: Path,
+) -> None:
+    """A pinned graph gap must not become a positive claim or block the next part."""
+
+    case = _planner_case(tmp_path)
+    graph = next(iter(case["graphs"].values()))
+    graph["gaps"].append({"reason": "DYNAMIC_DISPATCH_UNRESOLVED"})
+    _, parts = _planner_prepare(case)
+    part = parts[0]
+    graph = case["graphs"][part.surface_id]
+    assert graph["gaps"]
+    identity = case["identity"]
+    artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)
+    graph_ref = artifacts.put_json(graph)
+    context_ref = artifacts.put_json(part.payload)
+    static_ref = artifacts.put_json({"kind": "static-bundle"})
+    static = StaticBootstrapResult(
+        repository_profile_ref=static_ref,
+        static_bundle_ref=static_ref,
+        workspace_path=tmp_path,
+    )
+    context = SurfaceContext(
+        surface_id=part.surface_id,
+        context_id=part.context_id,
+        context_hash=part.context_hash,
+        context_ref=context_ref,
+        part_index=part.part_index,
+        part_count=part.part_count,
+        prompt_bytes=len(artifacts.read(context_ref)),
+        source_sha256=part.source_sha256,
+        source_unavailable_reason=None,
+        ast_unavailable_reason=None,
+        omitted_source_line_count=0,
+        omitted_ast_fact_count=0,
+    )
+    client = _Client(
+        [
+            _reply(context.context_id, status="HYPOTHESES"),
+            _reply(context.context_id, status="HYPOTHESES"),
+        ]
+    )
+    bootstrap = DirectHypothesisBootstrap(
+        data_dir=tmp_path / "artifacts",
+        client_factory=lambda _identity, _artifacts: cast(SimpleLLMClient, client),
+    )
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert isinstance(result, SurfaceProposalResult)
+    assert result.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+    assert result.seeds == ()
+    assert result.reviewed_parts == frozenset()
+    assert result.evidence_locations == ()
+    assert client.requests == []
+    saved = json.loads(artifacts.read(result.result_ref))
+    assert saved["resolution_source"] == "PINNED_GRAPH_GAPS"
+    assert saved["validation_status"] == "VALID"
+    assert saved["response"]["hypotheses"] == []
+    assert saved["response"]["review_evidence"] == []
+    SimpleAnalysisApplication._surface_result_valid(
+        artifacts,
+        context,
+        result.status,
+        result.result_ref,
+        static_ref.content_hash,
+        analysis_id=identity.analysis_id,
+        expected_seed_ids=(),
+        expected_reviewed_parts=frozenset(),
+        expected_locations=(),
+    )
+    store = SimpleCheckpointStore(tmp_path / "checkpoint.sqlite3")
+    store.commit_surface_exploration(
+        identity,
+        case["index"].scope_fingerprint,
+        context.surface_id,
+        context.context_id,
+        static_bundle_hash=static_ref.content_hash,
+        index_hash=case["index_ref"].content_hash,
+        context_hash=context.context_hash,
+        source_sha256=context.source_sha256,
+        status=result.status,
+        result_ref=result.result_ref,
+        registrations=(),
+        proposal_version=5,
+    )
+    progress = store.list_surface_exploration_progress(
+        identity, case["index"].scope_fingerprint
+    )
+    assert progress[(context.surface_id, context.context_id)].status == result.status
+    assert progress[(context.surface_id, context.context_id)].hypothesis_ids == ()
+    assert graph_ref.content_hash == saved["graph_hash"]
