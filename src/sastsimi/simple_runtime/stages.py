@@ -391,12 +391,25 @@ def _fixture_repair_guidance(reason_code: str | None) -> str:
 
     if reason_code not in _FIXTURE_REPLAY_REASON_CODES:
         return ""
+    bootstrap_detail = (
+        " Before and including migrate, use exactly six unconditional top-level "
+        "statements: import os; assign os.environ['DJANGO_SETTINGS_MODULE'] "
+        "to one literal module from the pinned verified_project_modules; import "
+        "django; call django.setup(); import call_command without an alias "
+        "from django.core.management; call call_command('migrate') at top level. "
+        "The three imports may move earlier but must precede their uses; "
+        "include no other statements before migration. Do not rebind these "
+        "imports, configure synthetic settings, or replace the migration call."
+        if reason_code == "PINNED_PROJECT_BOOTSTRAP_MISSING"
+        else ""
+    )
     return (
         " The closed fixture rejection reason was " + reason_code + ". "
         "Regenerate from pinned native Django project settings. Put top-level "
         "django.setup() before top-level call_command('migrate'), then make "
         "the intended local request. Do not suppress or fake migrations, mutate "
         "settings, or reuse the rejected candidate."
+        + bootstrap_detail
     )
 
 

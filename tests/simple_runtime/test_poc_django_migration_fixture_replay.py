@@ -23,12 +23,12 @@ from sastsimi.simple_runtime.models import (
     input_reference_hash,
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected
-from sastsimi.simple_runtime.provider import SimpleLLMClient
+from sastsimi.simple_runtime.provider import SimpleLLMCallResult, SimpleLLMClient
 from sastsimi.simple_runtime.recovery import (
     late_fixture_replay_binding,
     migration_settings_replay_binding,
 )
-from sastsimi.simple_runtime.runner import StageFailed
+from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
 from sastsimi.simple_runtime.stages import (
     PoCCandidateStage,
     _reject_migration_settings_replay_content,
@@ -370,6 +370,65 @@ def test_attempt_seven_keeps_original_fixture_guard_and_closed_feedback(
             "SETUP_MIGRATE_ORDER_INVALID",
         }
     _reject_migration_settings_replay_content(running, artifacts, NATIVE_REPLAN)
+
+
+@pytest.mark.asyncio
+async def test_attempt_seven_bootstrap_repair_uses_bounded_prelude(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, exhausted = _attempt_six_fixture_rejection(tmp_path)
+    pending = store.prepare_poc_django_migration_settings_exhaustion_replay(
+        exhausted, artifacts
+    )
+    running = store.mark_running(
+        pending.identity,
+        pending.stage,
+        pending.input_refs,
+        attempt_id="fixture-bootstrap-feedback-attempt-7",
+    )
+    rejected = NATIVE_REPLAN.replace(
+        b"call_command('migrate', run_syncdb=True)",
+        b"fixture_probe = 'untrusted_marker_987654'\n"
+        b"call_command('migrate', run_syncdb=True)",
+    )
+
+    class _RejectedBootstrapClient:
+        def __init__(self) -> None:
+            self.prompts: list[bytes] = []
+
+        async def call(self, **kwargs: object) -> SimpleLLMCallResult:
+            self.prompts.append(cast(bytes, kwargs["prompt"]))
+            return SimpleLLMCallResult(
+                value={"content": rejected.decode("utf-8")},
+                prompt_digest="a" * 64,
+                output_digest="b" * 64,
+            )
+
+    client = _RejectedBootstrapClient()
+    with pytest.raises(StageBlocked) as blocked:
+        stage = PoCCandidateStage(
+            client=cast(SimpleLLMClient, client), artifacts=artifacts
+        )
+        await stage(running, {})
+
+    assert (
+        blocked.value.failure.code
+        == "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED"
+    )
+    assert len(client.prompts) == 2
+    retry_prompt = client.prompts[1]
+    assert b"PINNED_PROJECT_BOOTSTRAP_MISSING" in retry_prompt
+    assert b"exactly six unconditional top-level statements" in retry_prompt
+    assert b"os.environ['DJANGO_SETTINGS_MODULE']" in retry_prompt
+    assert b"no other statements before migration" in retry_prompt
+    assert b"untrusted_marker_987654" not in retry_prompt
+    assert b"untrusted_marker_987654" not in b"".join(
+        artifacts.read(ref) for ref in blocked.value.failure.evidence_refs
+    )
+
+
+def test_fixture_repair_feedback_rejects_untrusted_reason_code() -> None:
+    assert stages._fixture_repair_guidance("untrusted_marker_987654") == ""
 
 
 def test_attempt_seven_rejects_forged_parent_marker(tmp_path: Path) -> None:
