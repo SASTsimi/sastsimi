@@ -476,6 +476,98 @@ def test_keep_hold_saves_review_without_mutating_child(tmp_path: Path) -> None:
     assert len(_markers(store)) == 1
 
 
+def test_keep_hold_accepts_plan_pinned_child_without_legacy_run_id(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, run, child, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)
+    store.upsert_hypothesis(
+        child.identity.model_copy(update={"hypothesis_id": None}),
+        child.identity.hypothesis_id or "",
+    )
+    store.save_analysis_run(
+        store.require_analysis_run(run.analysis_id).model_copy(
+            update={"hypothesis_ids": ()}
+        )
+    )
+    decision = classify_hold_replay(child.identity, child, {}, artifacts)
+    assert decision.action == "KEEP_HOLD"
+
+    assert (
+        store.prepare_surface_hold_replay(
+            child,
+            decision,
+            artifacts,
+            review_plan_ref=plan_ref,
+            review_context_ref=context_ref,
+            review_result_ref=result_ref,
+        )
+        is None
+    )
+    assert store.require(child.identity, child.stage) == child
+    assert [row[0] for row in _markers(store)] == ["KEEP_HOLD"]
+
+
+def test_keep_hold_rejects_unregistered_child_without_legacy_run_id(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, run, child, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)
+    store.save_analysis_run(
+        store.require_analysis_run(run.analysis_id).model_copy(
+            update={"hypothesis_ids": ()}
+        )
+    )
+    decision = classify_hold_replay(child.identity, child, {}, artifacts)
+
+    with pytest.raises(ValueError, match="SURFACE_HOLD_REPLAY_PLAN_MISSING"):
+        store.prepare_surface_hold_replay(
+            child,
+            decision,
+            artifacts,
+            review_plan_ref=plan_ref,
+            review_context_ref=context_ref,
+            review_result_ref=result_ref,
+        )
+    assert _markers(store) == []
+    assert store.require(child.identity, child.stage) == child
+
+
+def test_keep_hold_requires_v5_child_pin_even_when_candidate_registered(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, run, child, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)
+    store.upsert_hypothesis(
+        child.identity.model_copy(update={"hypothesis_id": None}),
+        child.identity.hypothesis_id or "",
+    )
+    plan = json.loads(artifacts.read(plan_ref))
+    plan["child_checkpoint_hashes"] = {}
+    unpinned_ref = artifacts.put_json(plan)
+    store.save_analysis_run(
+        store.require_analysis_run(run.analysis_id).model_copy(
+            update={
+                "hypothesis_ids": (),
+                "surface_enrichment_v5_plan_ref": unpinned_ref,
+            }
+        )
+    )
+    decision = classify_hold_replay(child.identity, child, {}, artifacts)
+
+    with pytest.raises(ValueError, match="SURFACE_HOLD_REVIEW_UNVERIFIED"):
+        store.prepare_surface_hold_replay(
+            child,
+            decision,
+            artifacts,
+            review_plan_ref=unpinned_ref,
+            review_context_ref=context_ref,
+            review_result_ref=result_ref,
+        )
+    assert _markers(store) == []
+    assert store.require(child.identity, child.stage) == child
+
+
 def test_keep_hold_requires_exact_saved_v5_review_refs(tmp_path: Path) -> None:
     store, artifacts, run, child, _, _ = _seed(tmp_path)
     plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)

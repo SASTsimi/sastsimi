@@ -17602,6 +17602,17 @@ class SimpleCheckpointStore:
                 "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
                 (identity.analysis_id,),
             ).fetchone()
+            registered_row = read_connection.execute(
+                "SELECT 1 FROM simple_candidate_hypotheses "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ?",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    identity.hypothesis_id,
+                ),
+            ).fetchone()
         finally:
             read_connection.close()
         if run_row is None:
@@ -17614,7 +17625,12 @@ class SimpleCheckpointStore:
                 run.workspace_id != identity.workspace_id
                 or run.commit_id != identity.commit_id
                 or run.candidate_pipeline_version != 2
-                or identity.hypothesis_id not in run.hypothesis_ids
+                # Candidate-v2 registrations replace the legacy run ID list.
+                # KEEP_HOLD also requires a pinned child in the saved v5 plan.
+                or (
+                    identity.hypothesis_id not in run.hypothesis_ids
+                    and registered_row is None
+                )
                 or run.workspace_path is None
                 or not run.workspace_path.is_absolute()
                 or plan_ref is None
