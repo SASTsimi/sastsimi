@@ -548,6 +548,36 @@ def test_keep_hold_batch_marks_index_dirty_before_deferred_projection(
     assert projected == [run.analysis_id]
 
 
+def test_keep_hold_batch_without_existing_index_projects_on_exit(
+    tmp_path: Path,
+) -> None:
+    """A missing index gets an invalid-version dirty row until projection."""
+    store, artifacts, run, child, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)
+    batched, projected = _indexed_store(
+        store, tmp_path / "data", run.analysis_id, initialize_index=False
+    )
+    decision = classify_hold_replay(child.identity, child, {}, artifacts)
+    with batched.defer_surface_hold_projection(run.analysis_id):
+        batched.prepare_surface_hold_replay(
+            child,
+            decision,
+            artifacts,
+            review_plan_ref=plan_ref,
+            review_context_ref=context_ref,
+            review_result_ref=result_ref,
+        )
+        with sqlite3.connect(store.database_path) as connection:
+            assert connection.execute(
+                "SELECT status, projection_version FROM dashboard_index_state "
+                "WHERE analysis_id=?",
+                (run.analysis_id,),
+            ).fetchone() == ("INCOMPLETE", 0)
+        assert projected == []
+    assert _index_status(store, run.analysis_id) == "READY"
+    assert projected == [run.analysis_id]
+
+
 def test_multiple_keep_hold_markers_share_one_dashboard_projection(
     tmp_path: Path,
 ) -> None:

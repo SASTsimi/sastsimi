@@ -6,6 +6,8 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+from sastsimi.simple_runtime.hold_projection_generation import hold_marker_count
+
 from .query import DashboardQuery
 from .read_model import (
     _PAGE_KEYS,
@@ -16,7 +18,6 @@ from .read_model import (
     _aux,
     _dict_items,
     _integer,
-    hold_marker_count,
 )
 
 

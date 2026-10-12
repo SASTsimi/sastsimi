@@ -412,8 +412,7 @@ async def test_attempt_seven_bootstrap_repair_uses_bounded_prelude(
         await stage(running, {})
 
     assert (
-        blocked.value.failure.code
-        == "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED"
+        blocked.value.failure.code == "POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED"
     )
     assert len(client.prompts) == 2
     retry_prompt = client.prompts[1]

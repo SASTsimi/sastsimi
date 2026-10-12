@@ -52,6 +52,7 @@ from .django_relation_settings_omission import (
     django_relation_setting_mismatch,
 )
 from .facts import safe_tracked_file
+from .hold_projection_generation import hold_marker_count, marker_hold_generation
 from .models import (
     HYPOTHESIS_STAGES,
     STAGE_ORDER,
@@ -17121,20 +17122,15 @@ class SimpleCheckpointStore:
     def _hold_projection_needs_refresh(self, analysis_id: str) -> bool:
         if self._artifact_data_dir is None or self._post_commit_projection is None:
             return False
-        from sastsimi.dashboard.read_model import (
-            hold_marker_count,
-            marker_hold_generation,
-        )
-
         with self._connect() as connection:
+            current_generation = hold_marker_count(connection, analysis_id)
+            if not current_generation:
+                return False
             if not connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' "
                 "AND name='dashboard_index_state'"
             ).fetchone():
-                return False
-            current_generation = hold_marker_count(connection, analysis_id)
-            if not current_generation:
-                return False
+                return True
             index = connection.execute(
                 "SELECT status, source_marker FROM dashboard_index_state "
                 "WHERE analysis_id = ?",
@@ -18207,17 +18203,16 @@ class SimpleCheckpointStore:
                     "AND name='dashboard_index_state'"
                 ).fetchone()
             ):
-                from sastsimi.dashboard.read_model import VERSION
-
+                # Version 0 is deliberately unreadable until the projector
+                # replaces this durable dirty row with its actual version.
                 connection.execute(
                     "INSERT INTO dashboard_index_state "
                     "(analysis_id, projection_version, source_marker, status, "
-                    "last_error, indexed_at) VALUES (?, ?, ?, 'INCOMPLETE', ?, ?) "
+                    "last_error, indexed_at) VALUES (?, 0, ?, 'INCOMPLETE', ?, ?) "
                     "ON CONFLICT(analysis_id) DO UPDATE SET "
                     "status='INCOMPLETE', last_error=excluded.last_error",
                     (
                         identity.analysis_id,
-                        VERSION,
                         "surface-hold-review",
                         "SURFACE_HOLD_REVIEW_IN_PROGRESS",
                         datetime.now(UTC).isoformat(),

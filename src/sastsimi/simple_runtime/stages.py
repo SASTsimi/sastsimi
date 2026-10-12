@@ -408,8 +408,7 @@ def _fixture_repair_guidance(reason_code: str | None) -> str:
         "Regenerate from pinned native Django project settings. Put top-level "
         "django.setup() before top-level call_command('migrate'), then make "
         "the intended local request. Do not suppress or fake migrations, mutate "
-        "settings, or reuse the rejected candidate."
-        + bootstrap_detail
+        "settings, or reuse the rejected candidate." + bootstrap_detail
     )
 
 
