@@ -10,7 +10,10 @@ from sastsimi.composition.local_codex_binding import build_local_codex_binding
 from sastsimi.config.local_evaluation_profile import load_local_evaluation_profile
 from sastsimi.contracts.ids import AnalysisId, CommitId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.dashboard.projection import project_after_source_write
+from sastsimi.dashboard.projection import (
+    initialize_empty_read_model,
+    project_after_source_write,
+)
 from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
 from sastsimi.runtime.system_support import SystemClock, UUIDIds
@@ -177,6 +180,7 @@ async def resume(
         data_dir / "db" / "sastsimi.sqlite3",
         artifact_data_dir=data_dir,
         post_commit_projection=project_after_source_write,
+        new_database_initializer=initialize_empty_read_model,
     )
     identities = import_existing_analysis(data_dir, analysis_id, store)
     repair_inputs: dict[str, tuple[StoredDataRef, ...]] = {}

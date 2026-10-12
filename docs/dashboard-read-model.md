@@ -4,7 +4,7 @@
 
 ## 스키마와 안전성
 
-`dashboard_index_state`, `dashboard_list_summaries`, `dashboard_list_items` 테이블과 페이지·상태·종류 조회용 인덱스만 추가합니다. 기존 테이블, 컬럼, JSON/CAS를 삭제하거나 변환하지 않습니다. 스키마 생성과 최초 백필은 서버 시작 시 자동 수행되지 않으며 아래 명시적 명령으로만 수행합니다.
+`dashboard_index_state`, `dashboard_list_summaries`, `dashboard_list_items` 테이블과 페이지·상태·종류 조회용 인덱스만 추가합니다. 기존 테이블, 컬럼, JSON/CAS를 삭제하거나 변환하지 않습니다. 서버 시작 및 `setup` 시에는 생성·백필하지 않습니다. 새 데이터 폴더는 첫 분석 저장소 생성 시 빈 인덱스 스키마만 준비합니다. 기존 분석 DB의 최초 백필은 아래 명시적 명령으로 수행합니다.
 
 ## 사전 점검(dry-run)
 
@@ -26,7 +26,7 @@ uv run sastsimi --data-dir <DATA_DIR> dashboard-index rebuild --analysis-id <ANA
 
 ## 저장 시 투영
 
-원본 JSON/CAS 저장과 SQLite 커밋이 성공한 다음 read model을 갱신합니다. read model 갱신 실패는 이미 성공한 원본 저장을 되돌리지 않습니다. 스키마가 아직 생성되지 않은 환경에서는 투영을 건너뛰므로 실제 환경에 자동 마이그레이션이 일어나지 않습니다.
+원본 JSON/CAS 저장과 SQLite 커밋이 성공한 다음 read model을 갱신합니다. read model 갱신 실패는 이미 성공한 원본 저장을 되돌리지 않습니다. 기존 DB에서 스키마가 아직 생성되지 않았다면 투영을 건너뛰고 HTTP 409로 명시적 `dashboard-index rebuild`를 안내합니다. 서버와 기존 DB에 대한 자동 마이그레이션은 수행하지 않습니다.
 
 ## 비활성화와 임시 롤백
 

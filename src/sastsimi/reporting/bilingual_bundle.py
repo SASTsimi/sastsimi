@@ -250,7 +250,13 @@ def coverage_report_lines(
         f"- {'범위 증거 SHA-256' if korean else 'Coverage artifact SHA-256'}: "
         f"`{coverage.ref.content_hash}`",
     ]
-    if coverage.surface_proof_version in (2, 3):
+    if coverage.analysis_status is not None:
+        lines.insert(
+            1,
+            f"- {'전체 분석 상태' if korean else 'Analysis status'}: "
+            f"`{coverage.analysis_status}`",
+        )
+    if coverage.surface_proof_version in (2, 3, 4, 5, 6):
         lines.extend(
             [
                 f"- {'원본 정적 공백' if korean else 'Raw static gaps'}: "
@@ -274,7 +280,22 @@ def coverage_report_lines(
                 + f": `{coverage.surface_scope_certificate_hash}`",
             ]
         )
-    if coverage.surface_proof_version == 3:
+    if coverage.surface_proof_version in (3, 4, 5, 6):
+        if coverage.surface_completed_inconclusive_child_count is not None:
+            lines.append(
+                "- "
+                + (
+                    "완료됐지만 취약점 근거 미확정 가설"
+                    if korean
+                    else "Completed but inconclusive hypotheses"
+                )
+                + f": {coverage.surface_completed_inconclusive_child_count}"
+                + (
+                    " (확정 취약점·제보 가능 판정 아님)"
+                    if korean
+                    else " (not confirmed findings or submission clearance)"
+                )
+            )
         surface_reasons = visible_surface_reason_distribution(coverage)
         if surface_reasons:
             label = (
@@ -294,9 +315,14 @@ def coverage_report_lines(
         if all(type(count) is int and count >= 0 for count in counts):
             total = sum(cast(int, count) for count in counts)
             if total > 0 and type(coverage.surface_reviewed_count) is int:
+                reviewed_label = (
+                    ("v6 검토 완료" if korean else "V6 reviewed surfaces")
+                    if coverage.surface_proof_version == 6
+                    else ("v5 검토 완료" if korean else "V5 reviewed surfaces")
+                )
                 lines.extend(
                     [
-                        f"- {'v5 검토 완료' if korean else 'V5 reviewed surfaces'}: "
+                        f"- {reviewed_label}: "
                         f"{coverage.surface_reviewed_count}/{total}",
                         f"- {'증명된 경로' if korean else 'Proven covered surfaces'}: "
                         f"{coverage.surface_covered_count}/{total}",
@@ -363,7 +389,17 @@ def coverage_report_lines(
                 "A confirmed Finding does not mean the full repository scan completed."
             )
         )
-    else:
+    if coverage.analysis_status == "PARTIAL":
+        lines.append(
+            "- PARTIAL 경고: 보안 표면 분석이 불완전합니다. 확인된 Finding이 "
+            "있어도 저장소 전체 분석 완료를 뜻하지 않습니다."
+            if korean
+            else (
+                "- PARTIAL warning: attack-surface analysis is incomplete. "
+                "A confirmed Finding does not mean the full repository scan completed."
+            )
+        )
+    if not coverage.partial and coverage.analysis_status != "PARTIAL":
         lines.append(finding_limit)
     return lines
 
@@ -561,6 +597,11 @@ def render_bundle_files(
             {
                 "ref": facts.coverage.ref.model_dump(mode="json"),
                 "disposition": "PARTIAL" if facts.coverage.partial else "FULL",
+                **(
+                    {"analysis_status": facts.coverage.analysis_status}
+                    if facts.coverage.analysis_status is not None
+                    else {}
+                ),
                 "scope": "python_only",
                 "fingerprint": facts.coverage.fingerprint,
                 "expected_count": facts.coverage.expected_count,
@@ -600,7 +641,7 @@ def render_bundle_files(
                                     visible_surface_reason_distribution(facts.coverage)
                                 )
                             }
-                            if facts.coverage.surface_proof_version == 3
+                            if facts.coverage.surface_proof_version in (3, 4, 5, 6)
                             else {}
                         ),
                         **(
@@ -617,12 +658,15 @@ def render_bundle_files(
                                 "surface_insufficient_count": (
                                     facts.coverage.surface_insufficient_count
                                 ),
+                                "completed_inconclusive_child_count": (
+                                    facts.coverage.surface_completed_inconclusive_child_count
+                                ),
                             }
-                            if facts.coverage.surface_proof_version == 3
+                            if facts.coverage.surface_proof_version in (3, 4, 5, 6)
                             else {}
                         ),
                     }
-                    if facts.coverage.surface_proof_version in (2, 3)
+                    if facts.coverage.surface_proof_version in (2, 3, 4, 5, 6)
                     else {}
                 ),
             }

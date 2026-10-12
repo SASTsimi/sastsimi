@@ -21,11 +21,18 @@ from sastsimi.simple_runtime.call_path_facts import (
     CandidateCallPaths,
     build_python_call_path_index,
 )
+from sastsimi.simple_runtime.file_context import (
+    PreparedFileContext,
+    prepare_file_context,
+)
 from sastsimi.simple_runtime.http_route_facts_v5 import verified_http_paths
 from sastsimi.simple_runtime.models import CheckpointIdentity
 from sastsimi.simple_runtime.operational_config_v5 import (
     OperationalRouteMap,
     load_operational_routes,
+)
+from sastsimi.simple_runtime.surface_evidence_graph_v4 import (
+    _raw_source as original_raw_source,
 )
 from sastsimi.simple_runtime.surface_evidence_graph_v5 import (
     VerifiedOperationalRoutes,
@@ -151,6 +158,65 @@ def _source_text(row: dict[str, object]) -> str:
     return value
 
 
+def test_graph_rev4_requires_explicit_opt_in(tmp_path: Path) -> None:
+    fixture = _fixture(
+        tmp_path,
+        {"app.py": b"import os\ndef run(value):\n    os.system(value)\n"},
+        surface_path="app.py",
+        surface_line=3,
+    )
+    routes = OperationalRouteMap((), ())
+
+    old = extract_surface_graph_v5(*fixture, route_map=routes)
+    new = extract_surface_graph_v5(
+        *fixture,
+        route_map=routes,
+        proof_semantics_revision="v5-source-bound-4",
+    )
+
+    assert old["proof_semantics_revision"] == "v5-source-bound-3"
+    assert new["proof_semantics_revision"] == "v5-source-bound-4"
+    with pytest.raises(ValueError, match="SURFACE_GRAPH_REVISION_INVALID"):
+        extract_surface_graph_v5(
+            *fixture, route_map=routes, proof_semantics_revision="untrusted"
+        )
+
+
+def test_rev4_prioritizes_pinned_request_parameter_context_not_path_step(
+    tmp_path: Path,
+) -> None:
+    lines = [
+        "from urllib.parse import urlparse, parse_qs",
+        "class Handler:",
+        "    def do_GET(self):",
+        "        parsed = urlparse(self.path)",
+        "        self.params = parse_qs(parsed.query)",
+        *(f"        filler_{number} = {number}" for number in range(25)),
+        "        sink(self.params)",
+    ]
+    fixture = _fixture(
+        tmp_path,
+        {"app.py": ("\n".join(lines) + "\n").encode()},
+        surface_path="app.py",
+        surface_line=len(lines),
+    )
+    index, _, _, _, workspace, _ = fixture
+    step = {
+        "path": "app.py",
+        "line": len(lines),
+        "source_sha256": dict(index.ast_source_hashes)["app.py"],
+    }
+
+    legacy = graph_v5._supplemental_http_locations(index, workspace, [step])
+    revised = graph_v5._supplemental_http_locations(
+        index, workspace, [step], prioritize_request_bindings=True
+    )
+
+    assert ("app.py", 4) not in legacy
+    assert ("app.py", 5) not in legacy
+    assert set(revised[:2]) == {("app.py", 4), ("app.py", 5)}
+
+
 def test_imported_http_handler_adds_one_hashed_connected_path(
     tmp_path: Path,
 ) -> None:
@@ -172,7 +238,7 @@ def test_imported_http_handler_adds_one_hashed_connected_path(
     graph = _graph(fixture)
 
     assert graph["kind"] == "simple_surface_evidence_graph_v5"
-    assert graph["proof_semantics_revision"] == "v5-source-bound-2"
+    assert graph["proof_semantics_revision"] == "v5-source-bound-3"
     paths = [
         row
         for row in _rows(graph, "paths")
@@ -350,6 +416,52 @@ def test_http_path_budget_failure_does_not_leave_unbounded_lines(
     assert "CONTEXT_BUDGET_EXHAUSTED" in {row["reason"] for row in _rows(graph, "gaps")}
 
 
+def test_successor_graph_records_pinned_gap_origin_without_changing_v7_graph(
+    tmp_path: Path,
+) -> None:
+    raw = (
+        b"from http.server import BaseHTTPRequestHandler\n"
+        b"class Endpoint(BaseHTTPRequestHandler):\n"
+        b"    def do_GET(self):\n"
+        b"        route = self.path\n"
+        b"        worker = Worker()\n"
+        b"        worker.run(route)\n"
+        b"class Worker:\n"
+        b"    def run(self, route):\n"
+        b"        dangerous(route)\n"
+    )
+    fixture = _fixture(
+        tmp_path, {"server.py": raw}, surface_path="server.py", surface_line=9
+    )
+    routes = OperationalRouteMap((), ())
+    legacy = extract_surface_graph_v5(
+        *fixture,
+        route_map=routes,
+        max_nodes=5,
+        proof_semantics_revision="v5-source-bound-4",
+    )
+    successor = extract_surface_graph_v5(
+        *fixture,
+        route_map=routes,
+        max_nodes=5,
+        proof_semantics_revision="v5-source-bound-5",
+    )
+
+    assert "gap_events" not in legacy
+    assert successor["gaps"] == legacy["gaps"]
+    assert any(
+        event.get("reason") == "CONTEXT_BUDGET_EXHAUSTED"
+        and event.get("attribution") == "PINNED_PATH"
+        and isinstance((sink := event.get("sink")), dict)
+        and sink.get("line") == 9
+        for event in _rows(successor, "gap_events")
+    )
+    assert any(
+        event.get("attribution") == "UNLOCATED"
+        for event in _rows(successor, "gap_events")
+    )
+
+
 def test_source_mutation_cannot_add_a_http_graph_path(tmp_path: Path) -> None:
     raw = (
         b"from http.server import BaseHTTPRequestHandler\n"
@@ -364,6 +476,30 @@ def test_source_mutation_cannot_add_a_http_graph_path(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="SOURCE_HASH_MISMATCH"):
         _graph(fixture)
+
+
+def test_source_line_batch_failure_leaves_graph_unchanged(tmp_path: Path) -> None:
+    fixture = _fixture(
+        tmp_path,
+        {"a.py": b"value = 1\n", "z.py": b"#" + b"x" * 65537 + b"\n"},
+        surface_path="a.py",
+        surface_line=1,
+    )
+    index, _surface, summary, manifest, workspace, artifacts = fixture
+    graph: dict[str, object] = {"source_files": [], "source_lines": []}
+
+    added = graph_v5._add_http_source_lines(
+        graph,
+        {("a.py", 1), ("z.py", 1)},
+        index,
+        summary,
+        manifest,
+        workspace,
+        artifacts,
+    )
+
+    assert not added
+    assert graph == {"source_files": [], "source_lines": []}
 
 
 _PARSER = b"""import xml.etree.ElementTree as XML
@@ -410,6 +546,125 @@ if __name__ == '__main__':
 _DIRECT_TARGET = (
     b"class Catalog:\n    def run(self, value):\n        dangerous(value)\n"
 )
+_CLASS_REGISTRY_PARSER = b"""import xml.etree.ElementTree as XML
+import pkg.endpoints as actions
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Registry:
+    entries = []
+    for item in XML.parse('./cfg/routes.xml').findall('mapping'):
+        instance = getattr(actions, item.findtext('type'))(url=item.findtext('url'))
+        entries.append(instance)
+
+    def select(self, request):
+        for entry in self.entries:
+            if request.path == entry.url:
+                entry.execute(request)
+
+class Endpoint(BaseHTTPRequestHandler):
+    def do_GET(self):
+        Registry().select(self)
+
+if __name__ == '__main__':
+    HTTPServer(('127.0.0.1', 0), Endpoint).serve_forever()
+"""
+_INHERITED_TARGET = b"""class Operation:
+    def __init__(self, url):
+        self.url = url
+    def execute(self, request):
+        return self.run(request)
+
+class Catalog(Operation):
+    def run(self, request):
+        dangerous(request.path)
+"""
+_COMPOSITE_PARSER = b"""import pkg.endpoints as actions
+import xml.etree.ElementTree as XML
+import urllib.parse as urlparse
+from http.server import BaseHTTPRequestHandler
+
+class RequestBase:
+    def get_content(self):
+        return ''
+
+class Registry(RequestBase):
+    entries = []
+    for item in XML.parse('./cfg/routes.xml').findall('mapping'):
+        instance = getattr(actions, item.findtext('type'))(
+            url=item.findtext('url'), title=item.findtext('title'))
+        entries.append(instance)
+
+    def __init__(self, request):
+        self.request = request
+
+    def get_content(self):
+        content = ''
+        for entry in self.entries:
+            if self.request.path == entry.url:
+                content = entry.lesson(self.request) + entry.execute(self.request)
+                break
+        return content
+
+class StaticHandler(RequestBase):
+    pass
+
+class Endpoint(BaseHTTPRequestHandler):
+    routes = {}
+    for item in XML.parse('./cfg/routes.xml').findall('mapping'):
+        routes[item.findtext('url')] = {'template': item.findtext('template')}
+
+    def do_GET(self):
+        parsed = urlparse.urlparse(self.path)
+        self.path = parsed.path
+        if self.path in self.routes:
+            handler = Registry(self)
+        else:
+            handler = StaticHandler()
+        try:
+            content = handler.get_content()
+        except Exception:
+            content = ''
+"""
+_COMPOSITE_TARGET = b"""class Operation:
+    def __init__(self, url, title=''):
+        self.url = url
+        self.title = title
+
+    def lesson(self, request):
+        return ''
+
+    def execute(self, request):
+        if getattr(request, 'security_mode', 'open') == 'secure':
+            return self.run_secure(request)
+        return self.run(request)
+
+    def run_secure(self, request):
+        return ''
+
+class Catalog(Operation):
+    def run(self, request):
+        value = request.path
+        try:
+            dangerous(value)
+        except ValueError:
+            return ''
+"""
+_COMPOSITE_SERVER = b"""from http.server import ThreadingHTTPServer
+
+class Server(ThreadingHTTPServer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+"""
+_COMPOSITE_START = b"""from pkg.httpd import Server
+from pkg.dispatch import Endpoint
+
+def main():
+    httpd = Server(('127.0.0.1', 0), Endpoint)
+    httpd.serve_forever()
+
+if __name__ == '__main__':
+    main()
+"""
 _XML = (
     b"<root><mapping><url>/catalog</url><type>Catalog</type>"
     b"<good_path>private lesson</good_path><evil_path>private exploit</evil_path>"
@@ -438,6 +693,8 @@ def _git_fixture(
     entry_source: bytes | None = None,
     extra_sources: Mapping[str, bytes] | None = None,
     require_binding: bool = True,
+    surface_line: int = 3,
+    surface_symbol: str = "Catalog.run",
 ) -> tuple[GraphFixture, OperationalRouteMap]:
     sources = {
         "pkg/__init__.py": b"",
@@ -497,8 +754,8 @@ def _git_fixture(
         surface_id="surface-xml-1",
         type="COMMAND_EXECUTION",
         path="pkg/endpoints.py",
-        symbol="Catalog.run",
-        line=3,
+        symbol=surface_symbol,
+        line=surface_line,
         linked_candidate_ids=(),
         evidence_refs=(evidence_ref,),
         detector="AST",
@@ -598,6 +855,517 @@ def test_operational_xml_direct_dispatch_adds_source_bound_path(
     serialized = json.dumps(graph)
     for private in ("good_path", "evil_path", "private answer", "description"):
         assert private not in serialized
+
+
+def test_class_body_xml_registry_reaches_inherited_dispatch_override(
+    tmp_path: Path,
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_CLASS_REGISTRY_PARSER,
+        target_source=_INHERITED_TARGET,
+        surface_line=9,
+    )
+
+    graph = _graph(fixture, route_map)
+
+    paths = [
+        row
+        for row in _rows(graph, "paths")
+        if row.get("kind") == "operational_xml_call_path_v5"
+    ]
+    assert len(paths) == 1
+    path = paths[0]
+    assert path["blocking_gaps"] == []
+    assert [step["role"] for step in _rows(path, "steps")] == [
+        "ROUTE_ENTRY",
+        "CALL",
+        "CALL",
+        "REQUEST_CONTEXT",
+        "CALL",
+        "CALL",
+        "CALL",
+        "CALL",
+        "SINK",
+    ]
+    assert [(step["path"], step["line"]) for step in _rows(path, "steps")][-3:] == [
+        ("pkg/dispatch.py", 14),
+        ("pkg/endpoints.py", 5),
+        ("pkg/endpoints.py", 9),
+    ]
+    assert "DYNAMIC_DISPATCH_UNRESOLVED" not in {
+        row["reason"] for row in _rows(graph, "gaps")
+    }
+
+
+def test_imported_http_entry_reaches_class_body_registry_and_override(
+    tmp_path: Path,
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map)
+
+    paths = [
+        row
+        for row in _rows(graph, "paths")
+        if row.get("kind") == "operational_xml_call_path_v5"
+    ]
+    assert len(paths) == 1
+    assert paths[0]["blocking_gaps"] == []
+    steps = _rows(paths[0], "steps")
+    assert steps[0]["path"] == "pkg/start.py"
+    assert steps[-1]["path"] == "pkg/endpoints.py"
+    assert steps[-1]["line"] == 21
+    assert "REQUEST_CONTEXT" in {step["role"] for step in steps}
+    assert "DYNAMIC_DISPATCH_UNRESOLVED" not in {
+        row["reason"] for row in _rows(graph, "gaps")
+    }
+
+
+def test_verified_operational_http_path_adds_redacted_input_and_control_context(
+    tmp_path: Path,
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map)
+
+    path = next(
+        row
+        for row in _rows(graph, "paths")
+        if row["kind"] == "operational_xml_call_path_v5"
+    )
+    lines = {
+        row["line"]: _source_text(row)
+        for row in _rows(graph, "source_lines")
+        if row["path"] == "pkg/dispatch.py"
+    }
+    assert lines[37] == "        parsed = urlparse.urlparse(self.path)"
+    assert lines[38] == "        self.path = parsed.path"
+    assert lines[39] == "        if self.path in self.routes:"
+    assert lines[41] == "        else:"
+    steps = _rows(path, "steps")
+    assert {(step["path"], step["line"]) for step in steps}.isdisjoint(
+        {("pkg/dispatch.py", line) for line in (37, 38, 39, 41)}
+    )
+    edge_ids = path["edge_ids"]
+    assert isinstance(edge_ids, list)
+    assert len(edge_ids) == len(steps) - 1
+    assert len(_rows(graph, "edges")) == len(steps) - 1
+    assert path["assurance"] == "SYNTACTIC_REACHABILITY"
+    assert not any(
+        row["path"] == "cfg/routes.xml" for row in _rows(graph, "source_lines")
+    )
+    serialized = json.dumps(graph)
+    for private in (
+        "good_path",
+        "evil_path",
+        "private answer",
+        "private objective",
+    ):
+        assert private not in serialized
+
+
+def test_supplemental_http_context_prepares_each_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+    original_locations = graph_v5._supplemental_http_locations
+    original_prepare = prepare_file_context
+    supplemental_started = False
+    prepare_count = 0
+
+    def mark_supplemental_phase(
+        index: SurfaceIndex, workspace: Path, steps: list[dict[str, object]]
+    ) -> list[tuple[str, int]]:
+        nonlocal supplemental_started
+        supplemental_started = True
+        return original_locations(index, workspace, steps)
+
+    def count_prepared_file(
+        artifacts: SimpleArtifactRepository,
+        ast_summary: Mapping[str, object],
+        workspace: Path,
+        path: str,
+        *,
+        manifest_index: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> PreparedFileContext:
+        nonlocal prepare_count
+        if supplemental_started and path == "pkg/dispatch.py":
+            prepare_count += 1
+        return original_prepare(
+            artifacts,
+            ast_summary,
+            workspace,
+            path,
+            manifest_index=manifest_index,
+        )
+
+    monkeypatch.setattr(
+        graph_v5, "_supplemental_http_locations", mark_supplemental_phase
+    )
+    monkeypatch.setattr(graph_v5, "prepare_file_context", count_prepared_file)
+
+    graph = _graph(fixture, route_map)
+
+    assert {
+        row["line"]
+        for row in _rows(graph, "source_lines")
+        if row["path"] == "pkg/dispatch.py"
+    } >= {37, 38, 39, 41}
+    assert prepare_count == 1
+
+
+def test_supplemental_http_context_rechecks_cached_source_before_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+    original_locations = graph_v5._supplemental_http_locations
+    supplemental_started = False
+    mutated = False
+
+    def mark_supplemental_phase(
+        index: SurfaceIndex, workspace: Path, steps: list[dict[str, object]]
+    ) -> list[tuple[str, int]]:
+        nonlocal supplemental_started
+        locations = original_locations(index, workspace, steps)
+        supplemental_started = True
+        return locations
+
+    def mutate_after_first_source_verification(
+        workspace: Path, path: str, expected_hash: str
+    ) -> bytes:
+        nonlocal mutated
+        raw = original_raw_source(workspace, path, expected_hash)
+        if supplemental_started and path == "pkg/dispatch.py" and not mutated:
+            source = workspace / path
+            source.write_bytes(source.read_bytes() + b"\n# changed mid-scan\n")
+            mutated = True
+        return raw
+
+    monkeypatch.setattr(
+        graph_v5, "_supplemental_http_locations", mark_supplemental_phase
+    )
+    monkeypatch.setattr(graph_v5, "_raw_source", mutate_after_first_source_verification)
+
+    with pytest.raises(ValueError, match="SURFACE_GRAPH_SOURCE_HASH_MISMATCH"):
+        _graph(fixture, route_map)
+    assert mutated
+
+
+def test_supplemental_http_line_uses_redacted_source(tmp_path: Path) -> None:
+    parser = _COMPOSITE_PARSER.replace(
+        b"parsed = urlparse.urlparse(self.path)",
+        b"parsed = urlparse.urlparse(self.path) # Authorization: synthetic-secret",
+    )
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=parser,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map)
+
+    line = next(
+        row
+        for row in _rows(graph, "source_lines")
+        if row["path"] == "pkg/dispatch.py" and row["line"] == 37
+    )
+    assert "parsed = urlparse.urlparse(self.path)" in _source_text(line)
+    assert "synthetic-secret" not in json.dumps(graph)
+
+
+def test_invalid_supplemental_line_does_not_hide_valid_neighbor(
+    tmp_path: Path,
+) -> None:
+    parser = _COMPOSITE_PARSER.replace(
+        b"parsed = urlparse.urlparse(self.path)",
+        b"parsed = urlparse.urlparse(self.path) # " + b"x" * 65537,
+    )
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=parser,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map)
+
+    assert any(
+        row["kind"] == "operational_xml_call_path_v5" for row in _rows(graph, "paths")
+    )
+    lines = {
+        row["line"]: _source_text(row)
+        for row in _rows(graph, "source_lines")
+        if row["path"] == "pkg/dispatch.py"
+    }
+    assert 37 not in lines
+    assert lines[38] == "        self.path = parsed.path"
+    assert lines[39] == "        if self.path in self.routes:"
+
+
+def test_supplemental_http_context_never_displaces_a_verified_path(
+    tmp_path: Path,
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map, max_nodes=31)
+
+    assert any(
+        row["kind"] == "operational_xml_call_path_v5" for row in _rows(graph, "paths")
+    )
+    assert (
+        sum(
+            len(_rows(graph, category))
+            for category in ("source_lines", "ast_facts", "nodes")
+        )
+        <= 31
+    )
+    assert ("pkg/dispatch.py", 37) not in {
+        (row["path"], row["line"]) for row in _rows(graph, "source_lines")
+    }
+
+
+@pytest.mark.parametrize(
+    "parser_source,target_source,entry_source",
+    [
+        (
+            _COMPOSITE_PARSER.replace(
+                b"routes[item.findtext('url')]", b"routes['/unrelated']"
+            ),
+            _COMPOSITE_TARGET,
+            _COMPOSITE_START,
+        ),
+        (
+            _COMPOSITE_PARSER.replace(
+                b"self.request.path == entry.url", b"self.request.path != entry.url"
+            ),
+            _COMPOSITE_TARGET,
+            _COMPOSITE_START,
+        ),
+        (
+            _COMPOSITE_PARSER.replace(
+                b"entry.lesson(self.request) + entry.execute(self.request)",
+                b"entry.lesson(self.request) + entry.lesson(self.request)",
+            ),
+            _COMPOSITE_TARGET,
+            _COMPOSITE_START,
+        ),
+        (
+            _COMPOSITE_PARSER.replace(
+                b"handler = Registry(self)", b"handler = StaticHandler()"
+            ),
+            _COMPOSITE_TARGET,
+            _COMPOSITE_START,
+        ),
+        (
+            _COMPOSITE_PARSER.replace(
+                b"self.path = parsed.path", b"self.path = '/fixed'"
+            ),
+            _COMPOSITE_TARGET,
+            _COMPOSITE_START,
+        ),
+        (
+            _COMPOSITE_PARSER,
+            _COMPOSITE_TARGET.replace(b"title=''", b"title=unknown_default()"),
+            _COMPOSITE_START,
+        ),
+        (
+            _COMPOSITE_PARSER,
+            _COMPOSITE_TARGET,
+            _COMPOSITE_START.replace(
+                b"Server(('127.0.0.1', 0), Endpoint)",
+                b"Server(('127.0.0.1', 0), OtherEndpoint)",
+            ),
+        ),
+    ],
+)
+def test_imported_http_registry_rejects_broken_composite_link(
+    tmp_path: Path,
+    parser_source: bytes,
+    target_source: bytes,
+    entry_source: bytes,
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=parser_source,
+        target_source=target_source,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=entry_source,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+    )
+
+    graph = _graph(fixture, route_map)
+
+    assert not any(
+        row.get("kind") == "operational_xml_call_path_v5"
+        for row in _rows(graph, "paths")
+    )
+    assert "DYNAMIC_DISPATCH_UNRESOLVED" in {
+        row["reason"] for row in _rows(graph, "gaps")
+    }
+
+
+@pytest.mark.parametrize(
+    "parser_source,target_source",
+    [
+        (
+            _CLASS_REGISTRY_PARSER.replace(b"Registry().select(self)", b"pass"),
+            _INHERITED_TARGET,
+        ),
+        (
+            _CLASS_REGISTRY_PARSER.replace(
+                b"entry.execute(request)", b"entry.run(request)"
+            ),
+            _INHERITED_TARGET,
+        ),
+        (
+            _CLASS_REGISTRY_PARSER.replace(
+                b"request.path == entry.url", b"request.path != entry.url"
+            ),
+            _INHERITED_TARGET,
+        ),
+        (
+            _CLASS_REGISTRY_PARSER.replace(
+                b"HTTPServer(('127.0.0.1', 0), Endpoint)",
+                b"HTTPServer(('127.0.0.1', 0), OtherEndpoint)",
+            ),
+            _INHERITED_TARGET,
+        ),
+        (
+            _CLASS_REGISTRY_PARSER,
+            _INHERITED_TARGET.replace(b"class Catalog(Operation):", b"class Catalog:"),
+        ),
+        (
+            _CLASS_REGISTRY_PARSER,
+            _INHERITED_TARGET.replace(
+                b"return self.run(request)", b"return self.other(request)"
+            ),
+        ),
+        (
+            _CLASS_REGISTRY_PARSER.replace(
+                b"    def select(self, request):",
+                b"    def __init__(self):\n"
+                b"        self.entries = []\n\n"
+                b"    def select(self, request):",
+            ),
+            _INHERITED_TARGET,
+        ),
+        (
+            _CLASS_REGISTRY_PARSER.replace(
+                b"        for entry in self.entries:",
+                b"        self.entries = []\n        for entry in self.entries:",
+            ),
+            _INHERITED_TARGET,
+        ),
+        (
+            _CLASS_REGISTRY_PARSER.replace(
+                b"        for entry in self.entries:",
+                b"        del self.entries\n        for entry in self.entries:",
+            ),
+            _INHERITED_TARGET,
+        ),
+    ],
+)
+def test_class_body_xml_registry_rejects_unproven_call_chain(
+    tmp_path: Path, parser_source: bytes, target_source: bytes
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=parser_source,
+        target_source=target_source,
+        surface_line=9,
+    )
+
+    graph = _graph(fixture, route_map)
+
+    assert not any(
+        row.get("kind") == "operational_xml_call_path_v5"
+        for row in _rows(graph, "paths")
+    )
+    assert "DYNAMIC_DISPATCH_UNRESOLVED" in {
+        row["reason"] for row in _rows(graph, "gaps")
+    }
+
+
+@pytest.mark.parametrize("overwrite", [b"self.url = '/fixed'", b"del self.url"])
+def test_inherited_route_rewrite_cannot_prove_xml_dispatch(
+    tmp_path: Path, overwrite: bytes
+) -> None:
+    target = _INHERITED_TARGET.replace(
+        b"        self.url = url\n",
+        b"        self.url = url\n        " + overwrite + b"\n",
+    )
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_CLASS_REGISTRY_PARSER,
+        target_source=target,
+        surface_line=10,
+    )
+
+    graph = _graph(fixture, route_map)
+
+    assert not any(
+        row.get("kind") == "operational_xml_call_path_v5"
+        for row in _rows(graph, "paths")
+    )
+    assert "DYNAMIC_DISPATCH_UNRESOLVED" in {
+        row["reason"] for row in _rows(graph, "gaps")
+    }
 
 
 def test_operational_xml_direct_dispatch_rejects_local_http_shadow(

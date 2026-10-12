@@ -37,6 +37,7 @@ class PublicCommandApplication(Protocol):
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
         repair_poc_sensitive_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_rewrite_timeout_hypothesis: str | None = None,
         repair_poc_sensitive_auth_transport_hypothesis: str | None = None,
         repair_poc_sensitive_auth_recap_hypothesis: str | None = None,
         repair_poc_anchor_hypothesis: str | None = None,

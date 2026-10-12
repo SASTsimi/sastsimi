@@ -107,6 +107,7 @@ _MAX_ARTIFACT_BYTES = 1024 * 1024
 _MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACTS = 512
 _DEFAULT_PAGE_SIZE = 10
+_PROJECTION_SOURCE_LIMIT = 2_147_483_647
 
 
 def _page_payload(
@@ -227,6 +228,26 @@ class _CheckpointProjection:
             for item in self._checkpoints
             if item.identity.analysis_id == analysis_id
         )
+
+
+class _SurfaceProofArtifacts(SimpleArtifactRepository):
+    """One-query snapshot of exact CAS reads during successor proof replay."""
+
+    def __init__(
+        self,
+        data_dir: str | Path,
+        identity: CheckpointIdentity,
+        *,
+        create_dirs: bool = False,
+    ) -> None:
+        super().__init__(data_dir, identity, create_dirs=create_dirs)
+        self._verified_bytes: dict[tuple[str, int], bytes] = {}
+
+    def read_bounded(self, ref: StoredDataRef, max_bytes: int) -> bytes:
+        key = (ref.model_dump_json(), max_bytes)
+        if key not in self._verified_bytes:
+            self._verified_bytes[key] = super().read_bounded(ref, max_bytes)
+        return self._verified_bytes[key]
 
 
 class _ReadOnlyCheckpointStore(SimpleCheckpointStore):
@@ -584,6 +605,19 @@ class DashboardQuery:
             artifact_type=artifact_type,
         )
 
+    def _get_analysis_tab_for_projection(
+        self, analysis_id: str, tab: str
+    ) -> dict[str, object]:
+        """Materialize one indexed tab once for a private read-model rebuild."""
+
+        return self._get_analysis_tab_from_source(
+            analysis_id,
+            tab,
+            offset=0,
+            limit=_PROJECTION_SOURCE_LIMIT,
+            _projection_unbounded=True,
+        )
+
     def _get_analysis_tab_from_source(
         self,
         analysis_id: str,
@@ -593,6 +627,7 @@ class DashboardQuery:
         limit: int = _DEFAULT_PAGE_SIZE,
         query: str = "",
         artifact_type: str | None = None,
+        _projection_unbounded: bool = False,
     ) -> dict[str, object]:
         """Build only the selected tab's projection."""
         if tab not in {
@@ -610,7 +645,9 @@ class DashboardQuery:
             type(offset) is not int
             or type(limit) is not int
             or offset < 0
-            or not 1 <= limit <= 200
+            or not 1
+            <= limit
+            <= (_PROJECTION_SOURCE_LIMIT if _projection_unbounded else 200)
         ):
             raise DashboardBadRequest("DASHBOARD_PAGE_INVALID")
         exact = self._resolved(analysis_id)
@@ -638,7 +675,6 @@ class DashboardQuery:
                 reverse=True,
             )
         )
-        reports = self._reports(exact)
         coverage = self._static_coverage_projection(values)
 
         if tab == "overview":
@@ -651,12 +687,13 @@ class DashboardQuery:
                     if ref.data_kind == "artifact"
                 }
             )
+            report_count = self._verified_report_count(exact, values)
             return {
                 "tab": tab,
                 "readiness": [
                     item.model_dump(mode="json")
                     for item in self._readiness(
-                        exact, run, static_tools, artifact_count, reports
+                        exact, run, static_tools, artifact_count, report_count
                     )
                 ],
             }
@@ -675,6 +712,7 @@ class DashboardQuery:
         if tab == "logs":
             return {"tab": tab, "logs_url": f"/api/analyses/{exact}/logs/download"}
 
+        reports = self._reports(exact)
         artifacts: tuple[ArtifactView, ...] = ()
         contents: dict[str, tuple[str, str, bytes, Any | None]] = {}
         invocations: tuple[LLMInvocationView, ...] = ()
@@ -2021,7 +2059,13 @@ class DashboardQuery:
             )
         return tuple(result)
 
-    def report_path(self, analysis_id: str, display_id: str) -> Path:
+    def report_path(
+        self,
+        analysis_id: str,
+        display_id: str,
+        *,
+        checkpoints: tuple[StageCheckpoint, ...] | list[StageCheckpoint] | None = None,
+    ) -> Path:
         self._validate_analysis_id(analysis_id)
         if _DISPLAY_ID.fullmatch(display_id) is None:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
@@ -2031,7 +2075,8 @@ class DashboardQuery:
             )
         except (LookupError, OSError, sqlite3.Error, ValueError) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
-        checkpoints = self._checkpoints(analysis_id)
+        if checkpoints is None:
+            checkpoints = self._checkpoints(analysis_id)
         run = self._simple_run(analysis_id)
         if self._candidate_report_blocked(run, checkpoints):
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND")
@@ -3321,12 +3366,13 @@ class DashboardQuery:
         run: SimpleAnalysisRun | None,
         static_tools: tuple[StaticToolProgressView, ...],
         artifacts: tuple[ArtifactView, ...] | int,
-        reports: tuple[FindingReportView, ...],
+        reports: tuple[FindingReportView, ...] | int,
     ) -> tuple[ReadinessCheckView, ...]:
         def present(value: object) -> bool:
             return value is not None and str(value).strip() != ""
 
         artifact_count = artifacts if isinstance(artifacts, int) else len(artifacts)
+        report_count = reports if isinstance(reports, int) else len(reports)
         tool_status = {item.tool: item.status for item in static_tools}
         core = [tool_status.get("AST"), tool_status.get("OpenGrep")]
         if any(status in {"FAILED", "BLOCKED"} for status in core):
@@ -3418,10 +3464,12 @@ class DashboardQuery:
                 key="presentation-output",
                 label_ko="발표 결과물",
                 status=(
-                    "READY" if artifact_count and (reports or log_ready) else "WAITING"
+                    "READY"
+                    if artifact_count and (report_count or log_ready)
+                    else "WAITING"
                 ),
                 detail_ko=(
-                    f"아티팩트 {artifact_count}개·보고서 {len(reports)}개"
+                    f"아티팩트 {artifact_count}개·보고서 {report_count}개"
                     + ("·로그 있음" if log_ready else "·로그 없음")
                 ),
                 required=False,
@@ -3880,7 +3928,7 @@ class DashboardQuery:
                     commit_id=run.commit_id,
                     hypothesis_id=None,
                 )
-                repository = SimpleArtifactRepository(
+                repository = _SurfaceProofArtifacts(
                     self._data_dir, identity, create_dirs=False
                 )
                 raw = repository.read_bounded(index_ref, _MAX_SURFACE_PROGRESS_BYTES)
@@ -3959,7 +4007,7 @@ class DashboardQuery:
                                 run.static_coverage_ref,
                                 terminal,
                             )
-                            if terminal.surface_proof_version in (2, 3)
+                            if terminal.surface_proof_version in (2, 3, 4, 5, 6)
                             else None
                         ),
                         artifacts=repository,
@@ -3970,7 +4018,7 @@ class DashboardQuery:
                                 artifact_data_dir=self._data_dir,
                                 read_only=True,
                             )
-                            if terminal.surface_proof_version == 3
+                            if terminal.surface_proof_version in (3, 4, 5, 6)
                             else None
                         ),
                     )
@@ -3991,7 +4039,7 @@ class DashboardQuery:
         if (
             run is None
             or run.candidate_terminal is None
-            or run.candidate_terminal.surface_proof_version not in (2, 3)
+            or run.candidate_terminal.surface_proof_version not in (2, 3, 4, 5, 6)
             or verified_counts is None
             or "UNRESOLVED_REASON_COUNT" not in verified_counts
         ):
@@ -4150,6 +4198,32 @@ class DashboardQuery:
                 )
             )
         return tuple(reports)
+
+    def _verified_report_count(
+        self,
+        analysis_id: str,
+        checkpoints: list[StageCheckpoint],
+    ) -> int:
+        """Count current reports for readiness without building attachment bundles."""
+
+        with self._connect() as connection:
+            if not self._table_exists(connection, "finding_display_ids"):
+                return 0
+            rows = connection.execute(
+                "SELECT display_number FROM finding_display_ids "
+                "WHERE analysis_id = ? ORDER BY display_number",
+                (analysis_id,),
+            ).fetchall()
+        count = 0
+        for row in rows:
+            try:
+                self.report_path(
+                    analysis_id, f"F-{int(row[0]):03d}", checkpoints=checkpoints
+                )
+            except DashboardNotFound:
+                continue
+            count += 1
+        return count
 
     def _attachment_urls(self, analysis_id: str, display_id: str) -> dict[str, str]:
         try:

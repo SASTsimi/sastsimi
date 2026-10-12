@@ -359,6 +359,104 @@ def test_verified_v2_scope_discloses_raw_and_effective_gaps_separately() -> None
     assert provenance["static_coverage"]["gap_count"] == 1
 
 
+def test_full_static_scan_does_not_hide_partial_surface_analysis() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+        disposition="FULL",
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=5,
+        analysis_status="PARTIAL",
+        surface_scope_certificate_hash="f" * 64,
+        surface_raw_static_gap_count=0,
+        surface_effective_python_gap_count=0,
+        surface_unresolved_reason_count=1,
+        surface_unresolved_reasons=(("CHILD_HOLD", 1),),
+        surface_reviewed_count=1,
+        surface_covered_count=0,
+        surface_uncovered_count=0,
+        surface_insufficient_count=1,
+    )
+    files = _render(facts=_facts(coverage=scoped))
+    english = files["report_en.md"].body.decode()
+    korean = files["report_kr.md"].body.decode()
+    assert "Static scan status: `FULL`" in english
+    assert "Analysis status: `PARTIAL`" in english
+    assert "PARTIAL warning: attack-surface analysis is incomplete" in english
+    assert "정적 분석 상태: `FULL`" in korean
+    assert "전체 분석 상태: `PARTIAL`" in korean
+    assert "PARTIAL 경고: 보안 표면 분석이 불완전" in korean
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["analysis_status"] == "PARTIAL"
+
+
+def test_v6_partial_surface_proof_is_visible_in_both_reports_and_provenance() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+        disposition="FULL",
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=6,
+        analysis_status="PARTIAL",
+        surface_scope_certificate_hash="f" * 64,
+        surface_raw_static_gap_count=0,
+        surface_effective_python_gap_count=0,
+        surface_unresolved_reason_count=1,
+        surface_unresolved_reasons=(("LOCAL_ONLY_ATTACK_PATH_UNVERIFIED", 1),),
+        surface_reviewed_count=1,
+        surface_covered_count=0,
+        surface_uncovered_count=0,
+        surface_insufficient_count=1,
+    )
+
+    files = _render(facts=_facts(coverage=scoped))
+    english = files["report_en.md"].body.decode()
+    korean = files["report_kr.md"].body.decode()
+    assert "Analysis status: `PARTIAL`" in english
+    assert "V6 reviewed surfaces: 1/1" in english
+    assert "LOCAL_ONLY_ATTACK_PATH_UNVERIFIED (1)" in english
+    assert "전체 분석 상태: `PARTIAL`" in korean
+    assert "v6 검토 완료: 1/1" in korean
+    assert "LOCAL_ONLY_ATTACK_PATH_UNVERIFIED (1)" in korean
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["surface_proof_version"] == 6
+    assert provenance["static_coverage"]["unresolved_reason_codes"] == {
+        "LOCAL_ONLY_ATTACK_PATH_UNVERIFIED": 1
+    }
+
+
 def test_verified_v3_scope_reports_reviewed_and_covered_separately() -> None:
     coverage = coverage_disclosure(
         {

@@ -340,6 +340,7 @@ def main(
     resume_repair.add_argument("--repair-poc-placeholder-exhaustion")
     resume_repair.add_argument("--repair-poc-sensitive-content")
     resume_repair.add_argument("--repair-poc-sensitive-exhaustion")
+    resume_repair.add_argument("--repair-poc-sensitive-rewrite-timeout")
     resume_repair.add_argument("--repair-poc-sensitive-auth-transport")
     resume_repair.add_argument("--repair-poc-sensitive-auth-recap")
     resume_repair.add_argument("--repair-poc-anchor")
@@ -963,6 +964,14 @@ def main(
                                     args.repair_poc_sensitive_exhaustion
                                 ),
                             )
+                        elif args.repair_poc_sensitive_rewrite_timeout is not None:
+                            data = progress_call(
+                                args.analysis_id,
+                                renderer.render,
+                                repair_poc_sensitive_rewrite_timeout_hypothesis=(
+                                    args.repair_poc_sensitive_rewrite_timeout
+                                ),
+                            )
                         elif args.repair_poc_sensitive_auth_transport is not None:
                             data = progress_call(
                                 args.analysis_id,
@@ -1180,6 +1189,13 @@ def main(
                                 args.repair_poc_sensitive_exhaustion
                             ),
                         )
+                    elif args.repair_poc_sensitive_rewrite_timeout is not None:
+                        data = application.resume(
+                            args.analysis_id,
+                            repair_poc_sensitive_rewrite_timeout_hypothesis=(
+                                args.repair_poc_sensitive_rewrite_timeout
+                            ),
+                        )
                     elif args.repair_poc_sensitive_auth_transport is not None:
                         data = application.resume(
                             args.analysis_id,
@@ -1289,6 +1305,10 @@ def main(
                         and str(error).startswith("POC_SENSITIVE_CONTENT_REPLAY_")
                         or args.repair_poc_sensitive_exhaustion is not None
                         and str(error).startswith("POC_SENSITIVE_EXHAUSTION_REPLAY_")
+                        or args.repair_poc_sensitive_rewrite_timeout is not None
+                        and str(error).startswith(
+                            "POC_SENSITIVE_REWRITE_TIMEOUT_REPLAY_"
+                        )
                         or args.repair_poc_sensitive_auth_transport is not None
                         and str(error).startswith(
                             "POC_SENSITIVE_AUTH_TRANSPORT_REPLAY_"
@@ -1369,6 +1389,7 @@ def main(
                 or args.repair_poc_placeholder_exhaustion is not None
                 or args.repair_poc_sensitive_content is not None
                 or args.repair_poc_sensitive_exhaustion is not None
+                or args.repair_poc_sensitive_rewrite_timeout is not None
                 or args.repair_poc_sensitive_auth_transport is not None
                 or args.repair_poc_sensitive_auth_recap is not None
                 or args.repair_poc_anchor is not None

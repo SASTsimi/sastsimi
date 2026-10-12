@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,7 +12,7 @@ import pytest
 
 import sastsimi.dashboard.projection as projection_module
 import sastsimi.dashboard.query as dashboard_query_module
-from sastsimi.dashboard.query import DashboardQuery
+from sastsimi.dashboard.query import DashboardBadRequest, DashboardQuery
 from sastsimi.dashboard.read_model import (
     INDEXED_TABS,
     DashboardIndexNotReady,
@@ -18,6 +20,7 @@ from sastsimi.dashboard.read_model import (
     RebuildResult,
 )
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
+from sastsimi.simple_runtime.models import StageCheckpoint
 from sastsimi.storage.agent_activity import AgentActivityStore
 
 
@@ -237,6 +240,231 @@ def test_projection_pins_hold_generation_before_collecting_pages(
         model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
 
 
+def test_projection_materializes_each_large_tab_once(tmp_path: Path) -> None:
+    """A private rebuild must not regenerate the entire source for every page."""
+
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    source_rows = _pages(401)
+    relation = {
+        "source_artifact_id": f"{0:064x}",
+        "target_artifact_id": f"{1:064x}",
+    }
+    groups = [
+        {
+            "group_id": "DEMO-GROUP-010-011",
+            "member_ids": ("DEMO-F-010", "DEMO-F-011"),
+        },
+        {
+            "group_id": "DEMO-GROUP-199-200",
+            "member_ids": ("DEMO-F-199", "DEMO-F-200"),
+        },
+    ]
+
+    class Query(DashboardQuery):
+        def __init__(self) -> None:
+            super().__init__(tmp_path)
+            self.calls: dict[str, int] = {}
+
+        def _checkpoints(
+            self, _analysis_id: str | None = None
+        ) -> tuple[StageCheckpoint, ...]:
+            return ()
+
+        def _get_analysis_tab_from_source(
+            self,
+            analysis_id: str,
+            tab: str,
+            *,
+            offset: int = 0,
+            limit: int = 200,
+            query: str = "",
+            artifact_type: str | None = None,
+            _projection_unbounded: bool = False,
+        ) -> dict[str, object]:
+            assert analysis_id == "DEMO-ANALYSIS"
+            self.calls[tab] = self.calls.get(tab, 0) + 1
+            items, summary = source_rows[tab]
+            selected = items[offset : offset + limit]
+            page: dict[str, object] = {
+                "tab": tab,
+                "items": selected,
+                "total_items": 401,
+                "summary": summary["summary"],
+                "offset": offset,
+                "limit": limit,
+            }
+            if tab == "artifacts":
+                visible = {item["artifact_id"] for item in selected}
+                page["relations"] = (
+                    [relation]
+                    if relation["source_artifact_id"] in visible
+                    or relation["target_artifact_id"] in visible
+                    else []
+                )
+            if tab == "findings":
+                page["finding_traces"] = (
+                    [{"hypothesis_id": "DEMO-H-000", "display_id": "F-001"}]
+                    if offset == 0
+                    else []
+                )
+            if tab == "coverage":
+                page["static_tool_findings"] = selected
+            if tab == "outputs":
+                visible_reports: set[str] = set()
+                for item in selected:
+                    report = item.get("report")
+                    if isinstance(report, dict):
+                        visible_reports.add(str(report["display_id"]))
+                page["reports"] = [item["report"] for item in selected]
+                page["artifacts"] = []
+                page["finding_traces"] = (
+                    [{"display_id": "DEMO-F-000", "artifact_ids": []}]
+                    if "DEMO-F-000" in visible_reports
+                    else []
+                )
+                page["finding_groups"] = [
+                    group
+                    for group in groups
+                    if set(group["member_ids"]) <= visible_reports
+                ]
+                page["poc_artifact_ids"] = []
+                page["evidence_artifact_ids"] = []
+            return page
+
+    query = Query()
+    marker, pages = projection_module.collect_source_pages(query, "DEMO-ANALYSIS")
+
+    for tab in INDEXED_TABS:
+        items, summary = pages[tab]
+        assert len(items) == 401
+        assert items[0] != items[-1]
+        assert summary["summary"] == {"demo": 401}
+        assert query.calls[tab] == 1
+    model.replace("DEMO-ANALYSIS", marker, pages)
+    for tab in INDEXED_TABS:
+        for offset in (0, 200, 400):
+            source = query._get_analysis_tab_from_source(
+                "DEMO-ANALYSIS", tab, offset=offset, limit=200
+            )
+            indexed = model.page("DEMO-ANALYSIS", tab, offset=offset, limit=200)
+            assert indexed["items"] == source["items"]
+            assert indexed["summary"] == source["summary"]
+            for field in (
+                "finding_traces",
+                "finding_groups",
+                "relations",
+                "static_tool_findings",
+                "reports",
+                "artifacts",
+                "poc_artifact_ids",
+                "evidence_artifact_ids",
+            ):
+                if field in source:
+                    assert indexed[field] == json.loads(json.dumps(source[field]))
+    with pytest.raises(DashboardBadRequest, match="DASHBOARD_PAGE_INVALID"):
+        query.get_analysis_tab("DEMO-ANALYSIS", "llm", limit=201)
+    with pytest.raises(DashboardBadRequest, match="DASHBOARD_PAGE_INVALID"):
+        DashboardQuery(tmp_path)._get_analysis_tab_from_source(
+            "DEMO-ANALYSIS", "llm", limit=201
+        )
+
+
+@pytest.mark.parametrize(
+    ("tab", "auxiliary_key"),
+    (
+        ("findings", "finding_traces"),
+        ("artifacts", "relations"),
+        ("outputs", "finding_groups"),
+    ),
+)
+def test_large_projection_scans_auxiliary_rows_once(
+    tmp_path: Path, tab: str, auxiliary_key: str
+) -> None:
+    """A large private tab must not rescan every auxiliary row per item."""
+
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+
+    class CountedRows(list[dict[str, object]]):
+        def __init__(self, values: list[dict[str, object]]) -> None:
+            super().__init__(values)
+            self.visits = 0
+
+        def __iter__(self) -> Iterator[dict[str, object]]:
+            for row in super().__iter__():
+                self.visits += 1
+                yield row
+
+    items: list[dict[str, object]]
+    if tab == "findings":
+        items = [{"hypothesis_id": f"H-{index}"} for index in range(1001)]
+        related = CountedRows(
+            [{"hypothesis_id": f"H-{index}"} for index in range(1001)]
+        )
+    elif tab == "artifacts":
+        items = [{"artifact_id": f"A-{index}"} for index in range(1001)]
+        related = CountedRows(
+            [
+                {
+                    "source_artifact_id": f"A-{index}",
+                    "target_artifact_id": f"A-{index}",
+                }
+                for index in range(1001)
+            ]
+        )
+    else:
+        items = [
+            {"artifact": None, "report": {"display_id": f"F-{index}"}}
+            for index in range(1001)
+        ]
+        related = CountedRows(
+            [
+                {"group_id": f"G-{index}", "member_ids": [f"F-{index}"]}
+                for index in range(1001)
+            ]
+        )
+
+    class Query(DashboardQuery):
+        def _checkpoints(
+            self, _analysis_id: str | None = None
+        ) -> tuple[StageCheckpoint, ...]:
+            return ()
+
+        def _get_analysis_tab_from_source(
+            self,
+            analysis_id: str,
+            requested_tab: str,
+            *,
+            offset: int = 0,
+            limit: int = 200,
+            query: str = "",
+            artifact_type: str | None = None,
+            _projection_unbounded: bool = False,
+        ) -> dict[str, object]:
+            assert analysis_id == "DEMO-ANALYSIS"
+            selected = items if requested_tab == tab else []
+            return {
+                "tab": requested_tab,
+                "items": selected[offset : offset + limit],
+                "total_items": len(selected),
+                auxiliary_key: related if requested_tab == tab else [],
+            }
+
+    _marker, pages = projection_module.collect_source_pages(
+        Query(tmp_path), "DEMO-ANALYSIS"
+    )
+    projected = pages[tab][0]
+    assert len(projected) == 1001
+    first_aux = projected[0]["_dashboard_auxiliary"]
+    last_aux = projected[-1]["_dashboard_auxiliary"]
+    assert isinstance(first_aux, dict)
+    assert isinstance(last_aux, dict)
+    assert len(first_aux[auxiliary_key]) == 1
+    assert len(last_aux[auxiliary_key]) == 1
+    assert related.visits == 1001
+
+
 def test_dashboard_indexed_list_does_not_read_cas(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -351,6 +579,72 @@ def test_rebuild_failure_records_incomplete_reason(
     assert result.error == "ValueError: CORRUPT_SOURCE_RECORD"
     with pytest.raises(DashboardIndexNotReady):
         model.page("BROKEN-ANALYSIS", "findings", offset=0, limit=10)
+
+
+def test_rebuild_display_id_indexes_resolved_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exact_id = "43c654e768ad468d96c6ae2440c22674"
+
+    class Query:
+        def __init__(self, _data_dir: Path) -> None:
+            pass
+
+        def _resolved(self, analysis_id: str) -> str:
+            assert analysis_id == "A-001"
+            return exact_id
+
+    def collect(
+        _query: object, analysis_id: str
+    ) -> tuple[str, dict[str, tuple[list[dict[str, object]], dict[str, object]]]]:
+        assert analysis_id == exact_id
+        return "marker", _pages(0)
+
+    monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
+    monkeypatch.setattr(projection_module, "collect_source_pages", collect)
+
+    result = projection_module.rebuild_analysis(tmp_path, "A-001")
+
+    assert result.status == "READY"
+    assert (
+        DashboardReadModel(tmp_path).page(exact_id, "coverage", offset=0, limit=10)[
+            "total_items"
+        ]
+        == 0
+    )
+
+
+def test_rebuild_display_id_pins_exact_hold_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exact_id = "43c654e768ad468d96c6ae2440c22674"
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    with model._connect(True) as connection:
+        connection.execute(
+            "CREATE TABLE simple_surface_hold_replay_markers "
+            "(analysis_id TEXT NOT NULL, action TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO simple_surface_hold_replay_markers VALUES (?, ?)",
+            (exact_id, "KEEP_HOLD"),
+        )
+
+    class Query(DashboardQuery):
+        def _resolved(self, analysis_id: str) -> str:
+            assert analysis_id == "A-001"
+            return exact_id
+
+        def _get_analysis_tab_for_projection(
+            self, _analysis_id: str, tab: str
+        ) -> dict[str, object]:
+            return {"items": [], "total_items": 0, "tab": tab}
+
+    monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
+    result = projection_module.rebuild_analysis(tmp_path, "A-001")
+
+    assert result.status == "READY"
+    assert model.page(exact_id, "coverage", offset=0, limit=10)["total_items"] == 0
 
 
 def test_rebuild_all_continues_after_one_analysis_fails(

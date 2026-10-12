@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.simple_runtime import attack_surfaces
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.ast_facts import collect_python_ast
 from sastsimi.simple_runtime.attack_surfaces import (
@@ -30,6 +31,41 @@ _SOURCE = (
     "    check_permission(path)\n"
     "    Path(path).write_text('payload')\n"
 )
+
+
+@pytest.mark.parametrize(
+    ("surface_type", "expected"),
+    [
+        ("REQUEST_ENTRY", "SOURCE"),
+        ("POSSIBLE_REQUEST_INPUT", "SOURCE"),
+        ("AUTHENTICATION", "CONTROL"),
+        ("AUTHORIZATION", "CONTROL"),
+        ("SESSION_CONTROL", "CONTROL"),
+        ("SANITIZATION_CONTROL", "CONTROL"),
+        ("VALIDATION_CONTROL", "CONTROL"),
+        ("COMMAND_EXECUTION", "SINK"),
+        ("DYNAMIC_CODE_EXECUTION", "SINK"),
+        ("FILE_ACCESS", "SINK"),
+        ("FILE_WRITE", "SINK"),
+        ("SQL_EXECUTION", "SINK"),
+        ("DESERIALIZATION", "SINK"),
+        ("HTML_RENDER", "SINK"),
+        ("OUTBOUND_REQUEST", "SINK"),
+        ("REDIRECT", "SINK"),
+        ("DATA_FLOW", "UNKNOWN"),
+        ("REFLECTION", "UNKNOWN"),
+        ("STATIC_SECURITY_HINT", "UNKNOWN"),
+        ("FUTURE_SURFACE_KIND", "UNKNOWN"),
+    ],
+)
+def test_review_contract_classifies_only_known_surface_roles(
+    surface_type: str, expected: str
+) -> None:
+    """An unknown or generic hint must not be assigned a source/sink proof."""
+
+    contract = getattr(attack_surfaces, "surface_review_contract", None)
+    assert contract is not None
+    assert contract(surface_type) == expected
 
 
 def _fixture(

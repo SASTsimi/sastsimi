@@ -293,13 +293,31 @@ def _shadowed(
 ) -> bool:
     # An import only establishes identity until an assignment or parameter
     # shadows that name. Conservatively reject even a branch-local mutation.
-    direct_import_count = sum(
-        _import_bound_names(statement).count(name)
+    direct_imports = [
+        (statement, alias)
         for statement in tree.body
         if isinstance(statement, (ast.Import, ast.ImportFrom))
+        for alias in statement.names
+        if (
+            alias.asname
+            or (
+                alias.name.split(".")[0]
+                if isinstance(statement, ast.Import)
+                else alias.name
+            )
+        )
+        == name
+    ]
+    # `import package` followed by `import package.module` binds the same
+    # package root twice. It does not replace that root with another object.
+    repeated_same_root = all(
+        isinstance(statement, ast.Import)
+        and alias.name.split(".")[0] == name
+        and alias.asname in (None, name)
+        for statement, alias in direct_imports
     )
     if (
-        direct_import_count > 1
+        (len(direct_imports) > 1 and not repeated_same_root)
         or _assigns_name(tree.body, name)
         or _local_import_binds_name(tree, name)
     ):
@@ -768,9 +786,10 @@ def _launched_path(
     # A final-stage command or a second source layer can replace a pinned XML
     # or Python file. We do not model arbitrary image transformations.
     if (
-        directives.get("RUN")
-        or directives.get("ADD")
+        directives.get("ADD")
         or len(directives.get("COPY", [])) > 1
+        or directives.get("RUN")
+        and not _safe_precopy_runs(raw)
     ):
         raise _Gap("LAUNCHER_RUNTIME_CONTENT_UNPROVEN")
     workdirs = directives.get("WORKDIR", [])
@@ -863,12 +882,81 @@ def _pinned_or_checkout_paths_present(
 def _context_ignore_present(
     workspace: Path, commit_id: str, launcher_path: str
 ) -> bool:
-    return _pinned_or_checkout_paths_present(
-        workspace,
-        commit_id,
-        (".dockerignore", f"{launcher_path}.dockerignore"),
-        "LAUNCHER_BUILD_CONTEXT_UNPROVEN",
+    for path in (".dockerignore", f"{launcher_path}.dockerignore"):
+        if not _pinned_or_checkout_paths_present(
+            workspace, commit_id, (path,), "LAUNCHER_BUILD_CONTEXT_UNPROVEN"
+        ):
+            continue
+        try:
+            raw, _ = _verified_blob(workspace, commit_id, path, 8192)
+            rules = raw.decode("utf-8").splitlines()
+        except (_Gap, UnicodeError):
+            return True
+        if any(
+            line.strip()
+            and not line.lstrip().startswith("#")
+            and line.strip() not in {".git", ".git/"}
+            for line in rules
+        ):
+            return True
+    return False
+
+
+def _safe_precopy_runs(raw: bytes) -> bool:
+    """Accept only bounded read-only/package setup before the source copy."""
+
+    try:
+        physical = raw.decode("utf-8").splitlines()
+    except UnicodeError:
+        return False
+    logical: list[str] = []
+    pending = ""
+    for line in physical:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        pending += (" " if pending else "") + stripped.rstrip("\\").rstrip()
+        if stripped.endswith("\\"):
+            continue
+        logical.append(pending)
+        pending = ""
+    if pending:
+        return False
+    final_from = max(
+        (
+            index
+            for index, line in enumerate(logical)
+            if line.split(None, 1)[0].upper() == "FROM"
+        ),
+        default=-1,
     )
+    if final_from < 0:
+        return False
+    directives = [
+        (parts[0].upper(), parts[1] if len(parts) > 1 else "")
+        for line in logical[final_from + 1 :]
+        if (parts := line.split(None, 1))
+    ]
+    copies = [
+        index for index, (keyword, _) in enumerate(directives) if keyword == "COPY"
+    ]
+    if len(copies) != 1:
+        return False
+    for index, (keyword, command) in enumerate(directives):
+        if keyword != "RUN":
+            continue
+        safe_setup = (
+            command in {"python -V", "python --version"}
+            or re.fullmatch(
+                r"apt-get update\s*&&\s*apt-get install -y\s+"
+                r"[A-Za-z0-9+.\- ]+\s*&&\s*rm -rf /var/lib/apt/lists/\*",
+                command,
+            )
+            is not None
+        )
+        if index >= copies[0] or not safe_setup:
+            return False
+    return True
 
 
 def _xml_import_shadow_present(

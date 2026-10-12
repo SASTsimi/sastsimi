@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
 from dataclasses import replace
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime import surface_coverage_v2, surface_coverage_v3
 from sastsimi.simple_runtime.models import (
@@ -32,6 +34,7 @@ from sastsimi.simple_runtime.surface_evidence_validation_v5 import (
     validate_v5_response,
 )
 from tests.unit.simple_runtime.test_surface_coverage_v2 import _Case, _case
+from tests.unit.simple_runtime.test_surface_proposal import _proposal
 
 
 def test_read_saved_v2_uses_exact_existing_json(tmp_path: Path) -> None:
@@ -66,6 +69,9 @@ def _v5_case(
     old_hold: bool = False,
     python_gap: bool = False,
     trusted_graph: bool = True,
+    proof_revision: str | None = None,
+    graph_gaps: list[dict[str, str]] | None = None,
+    blocking_gaps: list[str] | None = None,
 ) -> tuple[
     _Case,
     SurfaceCoverageV2,
@@ -91,7 +97,14 @@ def _v5_case(
     graph["kind"] = "simple_surface_evidence_graph_v5"
     graph["operational_routes"] = []
     if trusted_graph:
-        graph["proof_semantics_revision"] = "v5-source-bound-2"
+        graph["proof_semantics_revision"] = proof_revision or "v5-source-bound-2"
+    if graph_gaps is not None:
+        graph["gaps"] = graph_gaps
+    if blocking_gaps is not None:
+        paths = graph["paths"]
+        assert isinstance(paths, list)
+        assert isinstance(paths[0], dict)
+        paths[0]["blocking_gaps"] = blocking_gaps
     v5_graph_ref = case.artifacts.put_json(graph)
     target = next(
         surface
@@ -165,6 +178,7 @@ def _save_verified_v5_part(
     graph_ref: StoredDataRef,
     *,
     connected: bool = True,
+    hypotheses: list[dict[str, object]] | None = None,
 ) -> None:
     context_ref = case.artifacts.put_json(part.payload)
     context = {
@@ -178,10 +192,14 @@ def _save_verified_v5_part(
         "surface_id": part.surface_id,
         "context_id": part.context_id,
         "status": (
-            "NO_HYPOTHESIS" if connected else "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+            "HYPOTHESES"
+            if hypotheses
+            else "NO_HYPOTHESIS"
+            if connected
+            else "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
         ),
         "reason": "Exact request path reviewed without a hypothesis",
-        "hypotheses": [],
+        "hypotheses": hypotheses or [],
         "review_evidence": [
             {
                 "part": role,
@@ -203,6 +221,15 @@ def _save_verified_v5_part(
     }
     checked = validate_v5_response(context, response)
     assert checked.verified_path_id == ("path-real" if connected else None)
+    seed_ids = [
+        "hypothesis-"
+        + hashlib.sha256(
+            part.surface_id.encode("utf-8")
+            + part.context_id.encode("utf-8")
+            + canonical_bytes(proposal)
+        ).hexdigest()[:32]
+        for proposal, _ in checked.qualified
+    ]
     result_ref = case.artifacts.put_json(
         {
             "kind": "simple_surface_hypothesis_result_v5",
@@ -221,7 +248,7 @@ def _save_verified_v5_part(
             "evidence_locations": list(checked.evidence_locations),
             "verified_roles": list(checked.verified_roles),
             "verified_path_id": checked.verified_path_id,
-            "seed_ids": [],
+            "seed_ids": seed_ids,
             "response": response,
             "validation_status": "VALID",
         }
@@ -236,10 +263,79 @@ def _save_verified_v5_part(
             source_sha256=part.source_sha256,
             status=checked.status,
             result_ref=result_ref,
-            hypothesis_ids=(),
+            hypothesis_ids=tuple(seed_ids),
             proposal_version=5,
         )
     )
+
+
+def test_v3_rev3_verified_path_survives_unrelated_graph_gap(tmp_path: Path) -> None:
+    case, prior, _ref, plan, parts, graph, graph_ref = _v5_case(
+        tmp_path,
+        proof_revision="v5-source-bound-3",
+        graph_gaps=[{"path": "other.py", "reason": "UNRELATED_DYNAMIC_DISPATCH"}],
+        blocking_gaps=[],
+    )
+    _save_verified_v5_part(
+        case, parts[0], graph, graph_ref, hypotheses=[_proposal("app.py:4")]
+    )
+    targets = plan["targets"]
+    expected_parts = plan["expected_parts"]
+    assert isinstance(targets, list) and isinstance(expected_parts, list)
+    target = targets[0]
+    expected = expected_parts[0]
+    assert isinstance(target, dict) and isinstance(expected, dict)
+    record = case.progress[(parts[0].surface_id, parts[0].context_id)]
+
+    _roles, _refs, path_id, status = surface_coverage_v3._validated_v5_part(
+        case.identity,
+        case.index,
+        case.index_ref.content_hash,
+        plan,
+        parts[0].surface_id,
+        target,
+        expected,
+        record,
+        case.artifacts,
+    )
+
+    assert path_id == "path-real"
+    assert status == "HYPOTHESES"
+    proof = evaluate_surface_coverage_v3(
+        case.identity,
+        case.index,
+        prior,
+        plan,
+        case.progress,
+        case.store,
+        case.artifacts,
+    )
+    assert (
+        "CONNECTED_ROLE_PROOF_MISSING" not in proof.surfaces[0].unresolved_reason_codes
+    )
+
+
+def test_v3_rev3_connected_path_keeps_old_child_hold(tmp_path: Path) -> None:
+    case, prior, _ref, plan, parts, graph, graph_ref = _v5_case(
+        tmp_path,
+        old_hold=True,
+        proof_revision="v5-source-bound-3",
+        blocking_gaps=[],
+    )
+    _save_verified_v5_part(case, parts[0], graph, graph_ref)
+
+    proof = evaluate_surface_coverage_v3(
+        case.identity,
+        case.index,
+        prior,
+        plan,
+        case.progress,
+        case.store,
+        case.artifacts,
+    )
+
+    assert proof.surfaces[0].coverage_status == "INSUFFICIENT"
+    assert "CHILD_HOLD" in proof.surfaces[0].unresolved_reason_codes
 
 
 def test_v3_new_connected_path_covers_only_non_hold_surface(tmp_path: Path) -> None:

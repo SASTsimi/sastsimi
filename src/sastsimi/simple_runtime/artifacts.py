@@ -1084,8 +1084,9 @@ class SimpleArtifactRepository:
         optional_refs: tuple[StoredDataRef, ...],
         *,
         max_bytes: int = _MAX_CONTEXT_BYTES,
+        omit_optional_kinds: frozenset[str] = frozenset(),
     ) -> bytes:
-        """Keep each required CAS object whole and identify omitted optional refs."""
+        """Keep required CAS objects whole; omit verified optional kinds."""
 
         items: list[dict[str, Any]] = []
         required = tuple(dict.fromkeys(required_refs))
@@ -1093,8 +1094,18 @@ class SimpleArtifactRepository:
             ref for ref in dict.fromkeys(optional_refs) if ref not in required
         )
 
-        def item_for(ref: StoredDataRef) -> dict[str, Any]:
+        def item_for(
+            ref: StoredDataRef, *, optional: bool = False
+        ) -> dict[str, Any] | None:
             raw = self.read(ref)
+            if optional and omit_optional_kinds:
+                try:
+                    source = json.loads(raw)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    source = None
+                kind = source.get("kind") if isinstance(source, dict) else None
+                if isinstance(kind, str) and kind in omit_optional_kinds:
+                    return None
             if not items:
                 try:
                     proposal = json.loads(raw)
@@ -1116,15 +1127,21 @@ class SimpleArtifactRepository:
             return {"reference": ref.model_dump(mode="json"), "data": data}
 
         for ref in required:
-            items.append(item_for(ref))
+            item = item_for(ref)
+            if item is None:
+                raise ValueError("SIMPLE_RUNTIME_EXACT_REFERENCE_MISMATCH")
+            items.append(item)
             if len(canonical_bytes({"exact_inputs": items})) > max_bytes:
                 raise ValueError("SIMPLE_RUNTIME_CONTEXT_TOO_LARGE")
 
         omitted = 0
         for ref in optional:
             try:
-                item = item_for(ref)
+                item = item_for(ref, optional=True)
             except (OSError, ValueError, UnicodeError, sqlite3.Error):
+                omitted += 1
+                continue
+            if item is None:
                 omitted += 1
                 continue
             proposed = canonical_bytes(

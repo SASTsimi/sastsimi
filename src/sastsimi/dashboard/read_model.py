@@ -134,7 +134,7 @@ def _dict_items(value: object) -> list[dict[str, object]]:
 
 
 def _object_items(value: object) -> list[object]:
-    return list(value) if isinstance(value, list) else []
+    return list(value) if isinstance(value, (list, tuple)) else []
 
 
 def _decoded_dict(value: str) -> dict[str, object]:
@@ -518,8 +518,19 @@ class DashboardReadModel:
             result["finding_traces"] = _unique(
                 x for aux in auxiliaries for x in _dict_items(aux.get("finding_traces"))
             )
+            page_report_ids = {
+                str(report["display_id"])
+                for report in reports
+                if "display_id" in report
+            }
             result["finding_groups"] = _unique(
-                x for aux in auxiliaries for x in _dict_items(aux.get("finding_groups"))
+                x
+                for aux in auxiliaries
+                for x in _dict_items(aux.get("finding_groups"))
+                if all(
+                    isinstance(member_id, str) and member_id in page_report_ids
+                    for member_id in _object_items(x.get("member_ids"))
+                )
             )
             result["poc_artifact_ids"] = poc_artifact_ids
             result["evidence_artifact_ids"] = evidence_artifact_ids

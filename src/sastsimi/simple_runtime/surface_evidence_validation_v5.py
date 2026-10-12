@@ -16,7 +16,7 @@ import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 
@@ -176,6 +176,20 @@ def _validated_graph(
             or len(edge_ids) != len(steps) - 1
         ):
             raise _error("V5_GRAPH_INVALID")
+        if (
+            graph.get("proof_semantics_revision")
+            in {"v5-source-bound-3", "v5-source-bound-4"}
+            and "blocking_gaps" in path
+        ):
+            blocking_gaps = path["blocking_gaps"]
+            if (
+                not isinstance(blocking_gaps, list)
+                or any(
+                    not isinstance(gap, str) or not gap.strip() for gap in blocking_gaps
+                )
+                or len(set(blocking_gaps)) != len(blocking_gaps)
+            ):
+                raise _error("V5_GRAPH_INVALID")
         for step in steps:
             if (
                 not isinstance(step, dict)
@@ -214,10 +228,13 @@ def _validated_graph(
 
 def _validated_context(
     context: Mapping[str, object],
+    *,
+    version: Literal[5, 7] = 5,
 ) -> tuple[
     Mapping[str, object],
     Mapping[str, object],
     dict[tuple[str, int], dict[str, object]],
+    bool,
     bool,
     dict[str, dict[str, object]],
     dict[str, dict[str, object]],
@@ -227,7 +244,7 @@ def _validated_context(
     if not isinstance(payload, dict) or not isinstance(graph, dict):
         raise _error("V5_CONTEXT_INVALID")
     if (
-        payload.get("kind") != "simple_surface_context_v5"
+        payload.get("kind") != f"simple_surface_context_v{version}"
         or not isinstance(payload.get("surface_id"), str)
         or not isinstance(payload.get("path"), str)
         or type(payload.get("line")) is not int
@@ -248,7 +265,7 @@ def _validated_context(
         raise _error("V5_CONTEXT_INVALID")
     expected_id = _digest(
         {
-            "kind": "simple_surface_context_id_v5",
+            "kind": f"simple_surface_context_id_v{version}",
             "plan_binding_hash": payload["plan_binding_hash"],
             "surface_id": payload["surface_id"],
             "part_index": payload["part_index"],
@@ -256,6 +273,44 @@ def _validated_context(
         }
     )
     if context.get("context_id") != expected_id:
+        raise _error("V5_CONTEXT_INVALID")
+    successor_fields = {
+        "prior_v3_coverage_hash",
+        "prior_v5_plan_hash",
+        "graph_semantics_revision",
+    }
+    present = successor_fields.intersection(payload)
+    if version == 5:
+        if present and (
+            present != successor_fields
+            or not _hex(payload.get("prior_v3_coverage_hash"))
+            or not _hex(payload.get("prior_v5_plan_hash"))
+            or payload.get("graph_semantics_revision") != "v5-source-bound-3"
+            or graph.get("proof_semantics_revision")
+            != payload["graph_semantics_revision"]
+        ):
+            raise _error("V5_CONTEXT_INVALID")
+    elif (
+        present != successor_fields
+        or any(
+            not _hex(payload.get(key))
+            for key in (
+                "prior_v3_coverage_hash",
+                "prior_v5_plan_hash",
+                "prior_v6_plan_hash",
+                "prior_v4_coverage_hash",
+                "prior_progress_hash",
+            )
+        )
+        or payload.get("graph_semantics_revision") != "v5-source-bound-4"
+        or graph.get("proof_semantics_revision") != "v5-source-bound-4"
+        or payload.get("review_mode") != "STANDARD"
+        or (
+            payload.get("target_path_id") is not None
+            and not isinstance(payload.get("target_path_id"), str)
+        )
+        or "target_path_id" not in payload
+    ):
         raise _error("V5_CONTEXT_INVALID")
     paths, edges = _validated_graph(graph, payload)
     seen: set[tuple[str, int]] = set()
@@ -285,20 +340,75 @@ def _validated_context(
             if key in visible:
                 raise _error("V5_CONTEXT_INVALID")
             visible[cast(tuple[str, int], key)] = value
-    complete = (
-        payload["part_count"] == 1
-        and payload["unavailable_item_count"] == 0
-        and not _rows(graph, "gaps")
-        and bool(visible)
-        and len(seen) == sum(len(_rows(graph, category)) for category in _CATEGORIES)
-    )
-    return payload, graph, visible, complete, paths, edges
+    if version == 7:
+        target_id = payload["target_path_id"]
+        selected = paths.get(target_id) if isinstance(target_id, str) else None
+        if isinstance(target_id, str) and selected is None:
+            raise _error("V5_CONTEXT_INVALID")
+        required: set[tuple[str, int]] = set()
+        allowed_structural: set[tuple[str, int]] = set()
+        if selected is not None:
+            steps = cast(list[dict[str, object]], selected["steps"])
+            linked_files = {step["path"] for step in steps}
+            node_ids = {step["node_id"] for step in steps}
+            edge_ids = set(cast(list[str], selected["edge_ids"]))
+            for category in ("source_files", "source_lines", "nodes", "edges", "paths"):
+                for ordinal, row in enumerate(_rows(graph, category)):
+                    needed = (
+                        category in {"source_files", "source_lines"}
+                        and row.get("path") in linked_files
+                        or category == "nodes"
+                        and row.get("node_id") in node_ids
+                        or category == "edges"
+                        and row.get("edge_id") in edge_ids
+                        or category == "paths"
+                        and row.get("path_id") == target_id
+                    )
+                    if needed:
+                        required.add((category, ordinal))
+                        if category in {"nodes", "edges", "paths"}:
+                            allowed_structural.add((category, ordinal))
+            if payload["unavailable_item_count"] == 0 and not required.issubset(seen):
+                raise _error("V5_CONTEXT_PATH_SUPPORT_INCOMPLETE")
+        if any(
+            category in {"nodes", "edges", "paths"}
+            and (category, ordinal) not in allowed_structural
+            for category, ordinal in seen
+        ):
+            raise _error("V5_CONTEXT_PATH_CONTAMINATION")
+        complete_items = (
+            selected is not None
+            and payload["unavailable_item_count"] == 0
+            and bool(visible)
+            and required.issubset(seen)
+        )
+        complete = (
+            complete_items
+            and selected is not None
+            and selected.get("blocking_gaps") == []
+        )
+    else:
+        complete_items = (
+            payload["part_count"] == 1
+            and payload["unavailable_item_count"] == 0
+            and bool(visible)
+            and len(seen)
+            == sum(len(_rows(graph, category)) for category in _CATEGORIES)
+        )
+        complete = complete_items and not _rows(graph, "gaps")
+    return payload, graph, visible, complete, complete_items, paths, edges
 
 
 def validate_v5_context(context_wrapper: Mapping[str, object]) -> None:
     """Fail closed on a moved, altered, or malformed saved v5 context and graph."""
 
     _validated_context(context_wrapper)
+
+
+def validate_v7_context(context_wrapper: Mapping[str, object]) -> None:
+    """Validate only a new v7 part bound to rev4 graph semantics."""
+
+    _validated_context(context_wrapper, version=7)
 
 
 def v5_review_directory(
@@ -310,19 +420,32 @@ def v5_review_directory(
     if not isinstance(items, list) or any(not isinstance(row, dict) for row in items):
         raise _error("V5_CONTEXT_INVALID")
     python_items = [row for row in items if row.get("category") != "operational_routes"]
-    return v4_review_directory(
+    directory = v4_review_directory(
         {**context_payload, "items": python_items}, graph_payload
     )
+    if context_payload.get("kind") == "simple_surface_context_v7":
+        target_path_id = context_payload.get("target_path_id")
+        return [row for row in directory if row.get("graph_path_id") == target_path_id]
+    return directory
 
 
-def validate_v5_response(
-    context: Mapping[str, object], response: Mapping[str, object]
+def _validate_response(
+    context: Mapping[str, object],
+    response: Mapping[str, object],
+    *,
+    version: Literal[5, 7],
 ) -> V5ValidatedResponse:
     """Accept completion only on one connected pinned entry-to-sink path."""
 
-    payload, graph, visible, complete_context, paths, edges = _validated_context(
-        context
-    )
+    (
+        payload,
+        graph,
+        visible,
+        complete_context,
+        complete_items,
+        paths,
+        edges,
+    ) = _validated_context(context, version=version)
     if set(response) != {
         "surface_id",
         "context_id",
@@ -349,7 +472,7 @@ def validate_v5_response(
         or not reason.strip()
     ):
         raise _error("V5_RESPONSE_INVALID")
-    if status == "NO_HYPOTHESIS" and not complete_context:
+    if status == "NO_HYPOTHESIS" and version == 5 and not complete_context:
         raise _error("V5_SOURCE_INCOMPLETE")
     qualified = _qualified(response["hypotheses"], status, visible)
     review = response["review_evidence"]
@@ -371,6 +494,8 @@ def validate_v5_response(
             or part not in _ROLES
             or not isinstance(path_id, str)
             or path_id not in paths
+            or version == 7
+            and path_id != payload["target_path_id"]
             or not isinstance(item["explanation"], str)
             or not item["explanation"].strip()
             or item["context_hash"] != context["context_hash"]
@@ -442,9 +567,23 @@ def validate_v5_response(
             anchored.append(path_id)
     if len(anchored) > 1:
         raise _error("V5_REVIEW_PATH_AMBIGUOUS")
-    verified_path_id = anchored[0] if anchored and complete_context else None
+    verified_path_id = None
+    if anchored:
+        candidate = anchored[0]
+        if graph.get("proof_semantics_revision") in {
+            "v5-source-bound-3",
+            "v5-source-bound-4",
+        }:
+            # Only the new extractor can attribute a gap to a claimed path.
+            # Missing or nonempty attribution never becomes positive proof.
+            if complete_items and paths[candidate].get("blocking_gaps") == []:
+                verified_path_id = candidate
+        elif complete_context:
+            verified_path_id = candidate
     if status in {"HYPOTHESES", "NO_HYPOTHESIS"} and verified_path_id is None:
         raise _error("V5_REVIEW_PATH_INCOMPLETE")
+    if status == "NO_HYPOTHESIS" and version == 7 and not complete_items:
+        raise _error("V5_SOURCE_INCOMPLETE")
     return V5ValidatedResponse(
         status=status,
         reason=reason,
@@ -458,3 +597,19 @@ def validate_v5_response(
         evidence_locations=tuple(dict.fromkeys(locations)),
         verified_path_id=verified_path_id,
     )
+
+
+def validate_v5_response(
+    context: Mapping[str, object], response: Mapping[str, object]
+) -> V5ValidatedResponse:
+    """Preserve the saved v5/v6 response contract exactly."""
+
+    return _validate_response(context, response, version=5)
+
+
+def validate_v7_response(
+    context: Mapping[str, object], response: Mapping[str, object]
+) -> V5ValidatedResponse:
+    """Require a distinct v7 context and strict rev4 path attribution."""
+
+    return _validate_response(context, response, version=7)

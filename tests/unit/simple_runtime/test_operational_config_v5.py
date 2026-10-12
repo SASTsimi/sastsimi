@@ -885,6 +885,134 @@ def test_class_body_constructor_route_and_dispatch_use_are_pinned(
         assert hidden not in payload
 
 
+def test_same_package_root_and_submodule_import_keep_class_binding(
+    tmp_path: Path,
+) -> None:
+    parser = CLASS_PARSER.replace(
+        b"import pkg.endpoints as handlers",
+        b"import pkg\nimport pkg.endpoints",
+    ).replace(b"getattr(handlers,", b"getattr(pkg.endpoints,")
+    workspace, commit = _fixture(tmp_path, parser=parser, target=CLASS_TARGET)
+
+    result = load_operational_routes(
+        workspace,
+        commit,
+        "pkg/dispatch.py",
+        parser,
+        "Dockerfile",
+        runtime_workdir="/service",
+    )
+
+    assert result.gaps == ()
+    assert [(row.route, row.class_symbol) for row in result.bindings] == [
+        ("/catalog", "Catalog"),
+        ("/ledger", "Ledger"),
+    ]
+
+
+def test_same_root_import_does_not_mask_conflicting_alias(
+    tmp_path: Path,
+) -> None:
+    parser = CLASS_PARSER.replace(
+        b"import pkg.endpoints as handlers",
+        b"import pkg\nimport pkg.endpoints\nimport decoy as pkg",
+    ).replace(b"getattr(handlers,", b"getattr(pkg.endpoints,")
+    workspace, commit = _fixture(
+        tmp_path,
+        parser=parser,
+        target=CLASS_TARGET,
+        extra_files={"decoy.py": b"# conflicting import identity\n"},
+    )
+
+    result = load_operational_routes(
+        workspace,
+        commit,
+        "pkg/dispatch.py",
+        parser,
+        "Dockerfile",
+        runtime_workdir="/service",
+    )
+
+    assert result.bindings == ()
+    assert "DYNAMIC_DISPATCH_UNRESOLVED" in result.gaps
+
+
+@pytest.mark.parametrize(
+    "run_line",
+    [
+        b"RUN python -V\n",
+        b"RUN apt-get update && apt-get install -y \\\n"
+        b"  curl \\\n"
+        b"  && rm -rf /var/lib/apt/lists/*\n",
+    ],
+)
+def test_benign_git_ignore_and_precopy_run_keep_pinned_sources_visible(
+    tmp_path: Path,
+    run_line: bytes,
+) -> None:
+    launcher = (
+        b"FROM python:3.12\nWORKDIR /service\n" + run_line + b"COPY . .\n"
+        b'CMD ["python", "-m", "pkg.dispatch"]\n'
+    )
+    workspace, commit = _fixture(
+        tmp_path,
+        launcher=launcher,
+        extra_files={".dockerignore": b".git\n"},
+    )
+
+    result = load_operational_routes(
+        workspace,
+        commit,
+        "pkg/dispatch.py",
+        PARSER,
+        "Dockerfile",
+        runtime_workdir="/service",
+    )
+
+    assert result.gaps == ()
+    assert len(result.bindings) == 2
+
+
+@pytest.mark.parametrize(
+    "launcher,ignore",
+    [
+        (
+            b"FROM python:3.12\nWORKDIR /service\nCOPY . .\n"
+            b"RUN python -V\n"
+            b'CMD ["python", "-m", "pkg.dispatch"]\n',
+            b".git\n",
+        ),
+        (LAUNCHER, b"*.py\n"),
+        (
+            b"FROM python:3.12\nWORKDIR /service\n"
+            b"RUN touch /service/xml.py\nCOPY . .\n"
+            b'CMD ["python", "-m", "pkg.dispatch"]\n',
+            b".git\n",
+        ),
+    ],
+)
+def test_postcopy_mutation_or_source_ignore_still_blocks_binding(
+    tmp_path: Path, launcher: bytes, ignore: bytes
+) -> None:
+    workspace, commit = _fixture(
+        tmp_path,
+        launcher=launcher,
+        extra_files={".dockerignore": ignore},
+    )
+
+    result = load_operational_routes(
+        workspace,
+        commit,
+        "pkg/dispatch.py",
+        PARSER,
+        "Dockerfile",
+        runtime_workdir="/service",
+    )
+
+    assert result.bindings == ()
+    assert result.gaps
+
+
 @pytest.mark.parametrize(
     "parser",
     (

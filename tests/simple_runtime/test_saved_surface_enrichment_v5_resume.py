@@ -41,7 +41,18 @@ from sastsimi.simple_runtime.store import (
 from sastsimi.simple_runtime.surface_contexts import SurfaceContext
 from sastsimi.simple_runtime.surface_enrichment_v5 import prepare_surface_enrichment_v5
 from sastsimi.simple_runtime.surface_evidence_validation_v5 import validate_v5_response
+from tests.unit.simple_runtime.test_surface_coverage_v4 import (
+    _evaluate as _evaluate_v4,
+)
+from tests.unit.simple_runtime.test_surface_coverage_v4 import (
+    _save_v6_part,
+    _successor_case,
+)
 from tests.unit.simple_runtime.test_surface_enrichment_v5 import _case
+from tests.unit.simple_runtime.test_surface_enrichment_v6 import (
+    _prepare,
+    _saved_v3_case,
+)
 from tests.unit.simple_runtime.test_surface_v4_progress import _commit
 
 
@@ -85,6 +96,169 @@ def _application(
         hypothesis_bootstrap=bootstrap,
         runner_factory=_unused_runner,
     )
+
+
+def test_saved_v6_successor_replays_only_pinned_parts(tmp_path: Path) -> None:
+    case = _saved_v3_case(tmp_path)
+    identity = case["identity"]
+    data_dir = tmp_path / "artifacts"
+    artifacts = case["artifacts"]
+    plan, parts = _prepare(case)
+    plan_ref = artifacts.put_json(plan)
+    for graph in case["successor_graphs"].values():
+        artifacts.put_json(graph)
+    for part in parts:
+        assert artifacts.put_json(part.payload).content_hash == part.context_hash
+    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    app = _application(data_dir, store)
+    run = SimpleAnalysisRun(
+        analysis_id=identity.analysis_id,
+        display_analysis_id="A-001",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        repository="https://example.invalid/repository",
+        candidate_scope_fingerprint=case["index"].scope_fingerprint,
+        surface_enrichment_plan_ref=case["v4_ref"],
+        surface_enrichment_v5_plan_ref=case["v5_ref"],
+        surface_enrichment_v6_plan_ref=plan_ref,
+        python_scope_certificate_ref=case["prior_v3"].scope_certificate_ref,
+    )
+
+    saved, contexts = app._saved_surface_enrichment_v6(run, identity, artifacts)
+
+    assert saved == plan
+    assert [(item.surface_id, item.context_id) for item in contexts] == [
+        (part.surface_id, part.context_id) for part in parts
+    ]
+
+
+def test_saved_v6_dispatch_precedes_v5_without_replaying_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _saved_v3_case(tmp_path)
+    identity = case["identity"]
+    artifacts = case["artifacts"]
+    plan, _ = _prepare(case)
+    run = SimpleAnalysisRun(
+        analysis_id=identity.analysis_id,
+        display_analysis_id="A-001",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        repository="https://example.invalid/repository",
+        candidate_scope_fingerprint=case["index"].scope_fingerprint,
+        surface_enrichment_plan_ref=case["v4_ref"],
+        surface_enrichment_v5_plan_ref=case["v5_ref"],
+        surface_enrichment_v6_plan_ref=artifacts.put_json(plan),
+        python_scope_certificate_ref=case["prior_v3"].scope_certificate_ref,
+    )
+    app = _application(
+        tmp_path / "artifacts", SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    )
+    expected = SimpleAnalysisOutcome(
+        identity=identity,
+        display_analysis_id="A-001",
+        status="PARTIAL",
+        current_stage=SimpleStage.HYPOTHESIS_DONE,
+    )
+    observed: list[str] = []
+
+    def saved_v6(
+        *_args: object,
+    ) -> tuple[dict[str, object], tuple[SurfaceContext, ...]]:
+        observed.append("v6-plan")
+        return plan, ()
+
+    async def run_v6(*_args: object) -> SimpleAnalysisOutcome:
+        observed.append("v6-run")
+        return expected
+
+    def forbidden_v5(*_args: object) -> NoReturn:
+        raise AssertionError("saved v5 must not run once v6 is pinned")
+
+    monkeypatch.setattr(app, "_saved_surface_enrichment_v6", saved_v6)
+    monkeypatch.setattr(app, "_run_v6_surface_enrichment", run_v6, raising=False)
+    monkeypatch.setattr(app, "_saved_surface_enrichment_v5", forbidden_v5)
+    static = StaticBootstrapResult(
+        repository_profile_ref=artifacts.put_json({"kind": "repository-profile"}),
+        static_bundle_ref=artifacts.put_json({"kind": "static-bundle"}),
+        workspace_path=tmp_path,
+    )
+
+    with pytest.raises(StopIteration) as done:
+        app._run_candidate_pipeline(run, identity, static).send(None)
+
+    assert done.value.value == expected
+    assert observed == ["v6-plan", "v6-run"]
+
+
+def test_completed_v6_replay_verifies_existing_certificate_without_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _successor_case(tmp_path)
+    case = data["case"]
+    _save_v6_part(data)
+    proof = _evaluate_v4(data)
+    proof_ref = case.artifacts.put_json(proof.to_json())
+    run = case.store.require_analysis_run(case.identity.analysis_id)
+    assert run.candidate_terminal is not None
+    counts = {
+        status: sum(row.coverage_status == status for row in proof.surfaces)
+        for status in ("COVERED", "UNCOVERED", "INSUFFICIENT")
+    }
+    completed = run.model_copy(
+        update={
+            "surface_enrichment_plan_ref": StoredDataRef.model_validate(
+                data["plan"]["v4_plan_ref"]
+            ),
+            "python_scope_certificate_ref": proof.scope_certificate_ref,
+            "candidate_scope_fingerprint": case.index.scope_fingerprint,
+            "candidate_terminal": run.candidate_terminal.model_copy(
+                update={
+                    "surface_proof_version": 4,
+                    "surface_coverage_hash": proof_ref.content_hash,
+                    "surface_counts": counts,
+                    "status": "COMPLETE" if proof.complete else "PARTIAL",
+                    "pending_child_count": proof.pending_child_count,
+                }
+            ),
+        }
+    )
+    case.store.save_analysis_run(completed)
+    app = _application(tmp_path / "data", case.store)
+    plan, contexts = app._saved_surface_enrichment_v6(
+        completed, case.identity, case.artifacts
+    )
+    static = StaticBootstrapResult(
+        repository_profile_ref=case.artifacts.put_json({"kind": "profile"}),
+        static_bundle_ref=case.artifacts.put_json({"kind": "static-bundle"}),
+        workspace_path=tmp_path,
+    )
+    verified: list[str] = []
+
+    def verify_existing(
+        _identity: CheckpointIdentity,
+        _index: object,
+        ref: StoredDataRef,
+        _store: SimpleCheckpointStore,
+        _artifacts: SimpleArtifactRepository,
+    ) -> object:
+        verified.append(ref.content_hash)
+        return proof
+
+    monkeypatch.setattr(
+        "sastsimi.simple_runtime.application.verified_saved_coverage_v4",
+        verify_existing,
+    )
+
+    with pytest.raises(StopIteration) as done:
+        app._run_v6_surface_enrichment(
+            completed, case.identity, static, case.artifacts, plan, contexts
+        ).send(None)
+
+    assert done.value.value.status == completed.candidate_terminal.status
+    assert verified == [proof_ref.content_hash]
+    assert case.store.require_analysis_run(case.identity.analysis_id) == completed
 
 
 def test_v5_hold_review_scopes_deferred_projection(
@@ -206,6 +380,246 @@ def test_v5_ref_requires_existing_v4_and_certificate(tmp_path: Path) -> None:
     restored = SimpleAnalysisRun.model_validate_json(run.model_dump_json())
     assert restored.surface_enrichment_v5_plan_ref == v5_ref
     assert restored.surface_enrichment_plan_ref == v4_ref
+
+
+def test_v6_successor_ref_requires_existing_v5_chain(tmp_path: Path) -> None:
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)
+    v4_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v4"})
+    v5_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v5"})
+    v6_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v6"})
+    certificate_ref = artifacts.put_json({"kind": "scope-certificate"})
+    base = dict(
+        analysis_id=identity.analysis_id,
+        display_analysis_id="A-001",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        repository="https://example.invalid/repository",
+        surface_enrichment_plan_ref=v4_ref,
+        python_scope_certificate_ref=certificate_ref,
+        surface_enrichment_v6_plan_ref=v6_ref,
+    )
+    with pytest.raises(ValueError, match="SURFACE_ENRICHMENT_V6_STATE_UNBOUND"):
+        SimpleAnalysisRun.model_validate(base)
+    restored = SimpleAnalysisRun.model_validate_json(
+        SimpleAnalysisRun.model_validate(
+            {**base, "surface_enrichment_v5_plan_ref": v5_ref}
+        ).model_dump_json()
+    )
+    assert restored.surface_enrichment_v6_plan_ref == v6_ref
+    assert restored.surface_enrichment_v5_plan_ref == v5_ref
+
+
+@pytest.mark.parametrize("legacy_json", [False, True])
+def test_v6_plan_pin_preserves_parent_run_and_rejects_stale_writer(
+    tmp_path: Path,
+    legacy_json: bool,
+) -> None:
+    identity = _identity()
+    artifacts = SimpleArtifactRepository(tmp_path / "artifacts", identity)
+    store = SimpleCheckpointStore(tmp_path / "ledger.sqlite3")
+    v4_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v4"})
+    v5_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v5"})
+    v6_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v6"})
+    other_ref = artifacts.put_json(
+        {"kind": "simple_surface_enrichment_plan_v6", "other": True}
+    )
+    certificate_ref = artifacts.put_json({"kind": "scope-certificate"})
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash="b" * 64,
+        scope_fingerprint="f" * 64,
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=0,
+        surface_proof_version=3,
+        surface_index_hash="i" * 64,
+        surface_coverage_hash="c" * 64,
+        scope_certificate_hash=certificate_ref.content_hash,
+    )
+    parent = SimpleAnalysisRun(
+        analysis_id=identity.analysis_id,
+        display_analysis_id="A-001",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        repository="https://example.invalid/repository",
+        surface_enrichment_plan_ref=v4_ref,
+        surface_enrichment_v5_plan_ref=v5_ref,
+        python_scope_certificate_ref=certificate_ref,
+        candidate_terminal=terminal,
+    )
+    store.save_analysis_run(parent)
+    if legacy_json:
+        # Existing analyses predate the optional v6 field. Their stored JSON
+        # can omit it even though parsing supplies the current None default.
+        with store._connect() as connection:
+            connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? WHERE analysis_id = ?",
+                (
+                    json.dumps(
+                        parent.model_dump(
+                            mode="json",
+                            exclude={"surface_enrichment_v6_plan_ref"},
+                        )
+                    ),
+                    parent.analysis_id,
+                ),
+            )
+
+    assert store.pin_surface_enrichment_v6_plan(parent, v6_ref)
+    saved = store.require_analysis_run(identity.analysis_id)
+    assert saved.surface_enrichment_v6_plan_ref == v6_ref
+    assert saved.candidate_terminal == terminal
+    assert saved.surface_enrichment_v5_plan_ref == v5_ref
+    assert not store.pin_surface_enrichment_v6_plan(parent, v6_ref)
+    with pytest.raises(ValueError, match="SURFACE_ENRICHMENT_V6_PIN_STALE"):
+        store.pin_surface_enrichment_v6_plan(parent, other_ref)
+
+
+def test_v6_result_kind_requires_complete_pinned_successor_marker() -> None:
+    ordinary = {"kind": "simple_surface_context_v5"}
+    successor = {
+        **ordinary,
+        "prior_v3_coverage_hash": "a" * 64,
+        "prior_v5_plan_hash": "b" * 64,
+        "graph_semantics_revision": "v5-source-bound-3",
+    }
+    assert SimpleAnalysisApplication._surface_result_kind(ordinary) == (
+        "simple_surface_hypothesis_result_v5"
+    )
+    assert SimpleAnalysisApplication._surface_result_kind(successor) == (
+        "simple_surface_hypothesis_result_v6"
+    )
+    with pytest.raises(ValueError, match="SURFACE_EXPLORATION_RESULT_INVALID"):
+        SimpleAnalysisApplication._surface_result_kind(
+            {**ordinary, "prior_v3_coverage_hash": "a" * 64}
+        )
+    with pytest.raises(ValueError, match="SURFACE_EXPLORATION_RESULT_INVALID"):
+        SimpleAnalysisApplication._surface_result_kind(
+            {**successor, "prior_v5_plan_hash": "not-a-hash"}
+        )
+
+
+def test_terminal_accepts_additive_v4_surface_certificate() -> None:
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash="b" * 64,
+        scope_fingerprint="f" * 64,
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=0,
+        surface_proof_version=4,
+        surface_index_hash="i" * 64,
+        surface_coverage_hash="c" * 64,
+        scope_certificate_hash="s" * 64,
+    )
+    assert (
+        CandidateTerminal.model_validate_json(
+            terminal.model_dump_json()
+        ).surface_proof_version
+        == 4
+    )
+
+
+def test_explicit_enrichment_routes_saved_v3_partial_to_v6_successor(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    data_dir = tmp_path / "data"
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    v4_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v4"})
+    v5_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v5"})
+    certificate_ref = artifacts.put_json({"kind": "scope-certificate"})
+    run = SimpleAnalysisRun(
+        analysis_id=identity.analysis_id,
+        display_analysis_id="A-001",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        repository="https://example.invalid/repository",
+        surface_enrichment_plan_ref=v4_ref,
+        surface_enrichment_v5_plan_ref=v5_ref,
+        python_scope_certificate_ref=certificate_ref,
+        candidate_terminal=CandidateTerminal(
+            status="PARTIAL",
+            bundle_hash="b" * 64,
+            scope_fingerprint="f" * 64,
+            decision_counts={},
+            deep_counts={},
+            hypothesis_count=0,
+            surface_proof_version=3,
+            surface_index_hash="i" * 64,
+            surface_coverage_hash="c" * 64,
+            scope_certificate_hash=certificate_ref.content_hash,
+        ),
+    )
+    assert SimpleAnalysisApplication._surface_enrichment_round(run) == "v6"
+    terminal = run.candidate_terminal
+    assert terminal is not None
+    assert (
+        SimpleAnalysisApplication._surface_enrichment_round(
+            run.model_copy(
+                update={
+                    "candidate_terminal": terminal.model_copy(
+                        update={"surface_proof_version": 2}
+                    )
+                }
+            )
+        )
+        == "v5"
+    )
+
+
+def test_explicit_saved_v3_preparation_calls_successor_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    data_dir = tmp_path / "data"
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    app = _application(data_dir, store)
+    v4_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v4"})
+    v5_ref = artifacts.put_json({"kind": "simple_surface_enrichment_plan_v5"})
+    certificate_ref = artifacts.put_json({"kind": "scope-certificate"})
+    run = SimpleAnalysisRun(
+        analysis_id=identity.analysis_id,
+        display_analysis_id="A-001",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        repository="https://example.invalid/repository",
+        surface_enrichment_plan_ref=v4_ref,
+        surface_enrichment_v5_plan_ref=v5_ref,
+        python_scope_certificate_ref=certificate_ref,
+        candidate_terminal=CandidateTerminal(
+            status="PARTIAL",
+            bundle_hash="b" * 64,
+            scope_fingerprint="f" * 64,
+            decision_counts={},
+            deep_counts={},
+            hypothesis_count=0,
+            surface_proof_version=3,
+            surface_index_hash="i" * 64,
+            surface_coverage_hash="c" * 64,
+            scope_certificate_hash=certificate_ref.content_hash,
+        ),
+    )
+    store.save_analysis_run(run)
+    observed: list[str] = []
+
+    async def verified_scope(*_args: object) -> None:
+        observed.append("scope")
+
+    def prepared(*_args: object) -> None:
+        observed.append("v6")
+
+    def forbidden(*_args: object) -> NoReturn:
+        raise AssertionError("saved v5 must not be treated as final")
+
+    monkeypatch.setattr(app, "_assert_completed_static_scope", verified_scope)
+    monkeypatch.setattr(app, "_prepare_v6_surface_enrichment", prepared)
+    monkeypatch.setattr(app, "_saved_surface_enrichment_v5", forbidden)
+    with pytest.raises(StopIteration):
+        app._prepare_surface_enrichment_locked(identity.analysis_id).send(None)
+    assert observed == ["scope", "v6"]
 
 
 def test_v5_preparation_pins_plan_without_rewriting_v4(

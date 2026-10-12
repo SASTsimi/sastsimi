@@ -354,6 +354,124 @@ async def test_poc_candidate_receives_pinned_pro_con_source_without_path_request
     assert b"aiosqlite.connect(database='fixture.db')" in client.prompt
 
 
+def test_poc_safety_recap_preserves_target_paths_with_neutral_fixture() -> None:
+    recap = stages._poc_candidate_prompt("local PoC", b"{}")
+    recap = recap.split(b"<POC_SAFETY_RECAP>\n", 1)[1]
+
+    assert b"actual target operation and transport route" in recap
+    assert b"container-local /workspace and /tmp paths" in recap
+    assert b"harmless synthetic local values" in recap
+    assert b"PoC-owned variables, arguments, mapping entries, and fixtures" in recap
+
+
+def test_poc_recovery_omits_verified_llm_history_and_rewrite_uses_required_only(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-history",
+        workspace_id="workspace-history",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-history",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "path": "main.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": "b" * 64,
+            "source_lines": [{"line": 1, "text": "def target_route(): pass"}],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["main.py:1"]},
+        }
+    )
+    pro_ref = artifacts.put_json(
+        {"kind": "simple_pro_evidence", "result": {"requested_paths": []}}
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref, source_ref),
+        input_hash=input_reference_hash((proposal_ref, source_ref)),
+        output_refs=(pro_ref,),
+    )
+    recipe_ref = artifacts.put_json({"kind": "simple_container_recipe", "local": True})
+    request_ref = artifacts.put_json(
+        {"kind": "simple_llm_request", "prompt": "OLD_OPTIONAL_LLM_HISTORY"}
+    )
+    response_ref = artifacts.put_json(
+        {"kind": "simple_llm_response", "response": "OLD_OPTIONAL_LLM_RESPONSE"}
+    )
+    other_ref = artifacts.put_json(
+        {"kind": "simple_llm_request_note", "marker": "BENIGN_OPTIONAL_MARKER"}
+    )
+    inputs = (request_ref, response_ref, other_ref)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=inputs,
+        input_hash=input_reference_hash(inputs),
+        recipe_ref=recipe_ref,
+        attempt_id="attempt-history",
+    )
+    client = _RepairClient()
+    operation = PoCCandidateStage(client=client, artifacts=artifacts)(
+        checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}
+    )
+    with pytest.raises(StopIteration):
+        operation.send(None)
+
+    assert len(client.prompts) == 2
+    first, rewrite = client.prompts
+    for prompt in (first, rewrite):
+        context = json.loads(
+            prompt.split(b"<UNTRUSTED_EXACT_INPUTS>\n", 1)[1].split(
+                b"\n</UNTRUSTED_EXACT_INPUTS>", 1
+            )[0]
+        )
+        supplied = {
+            StoredDataRef.model_validate(item["reference"])
+            for item in context["exact_inputs"]
+        }
+        assert {proposal_ref, source_ref, pro_ref, recipe_ref} <= supplied
+        assert request_ref not in supplied
+        assert response_ref not in supplied
+        assert b"OLD_OPTIONAL_LLM_HISTORY" not in prompt
+        assert b"OLD_OPTIONAL_LLM_RESPONSE" not in prompt
+    first_context = json.loads(
+        first.split(b"<UNTRUSTED_EXACT_INPUTS>\n", 1)[1].split(
+            b"\n</UNTRUSTED_EXACT_INPUTS>", 1
+        )[0]
+    )
+    rewrite_context = json.loads(
+        rewrite.split(b"<UNTRUSTED_EXACT_INPUTS>\n", 1)[1].split(
+            b"\n</UNTRUSTED_EXACT_INPUTS>", 1
+        )[0]
+    )
+    assert other_ref in {
+        StoredDataRef.model_validate(item["reference"])
+        for item in first_context["exact_inputs"]
+    }
+    assert other_ref not in {
+        StoredDataRef.model_validate(item["reference"])
+        for item in rewrite_context["exact_inputs"]
+    }
+    assert b"SENSITIVE_CONTENT" in rewrite
+
+
 @pytest.mark.asyncio
 async def test_poc_candidate_prompt_separates_target_http_failure_from_harness_failure(
     tmp_path: Path,
@@ -762,6 +880,8 @@ async def test_poc_candidate_keeps_current_repair_metadata_when_history_is_large
     def bounded_context(
         required: tuple[StoredDataRef, ...],
         optional: tuple[StoredDataRef, ...],
+        *,
+        omit_optional_kinds: frozenset[str] = frozenset(),
     ) -> bytes:
         max_bytes = 10_000
         if at_capacity:
@@ -775,7 +895,12 @@ async def test_poc_candidate_keeps_current_repair_metadata_when_history_is_large
             max_bytes = (
                 len(original_context(without_diagnostic, (), max_bytes=1_000_000)) + 100
             )
-        return original_context(required, optional, max_bytes=max_bytes)
+        return original_context(
+            required,
+            optional,
+            max_bytes=max_bytes,
+            omit_optional_kinds=omit_optional_kinds,
+        )
 
     monkeypatch.setattr(
         artifacts,
@@ -2014,6 +2139,9 @@ async def test_second_sensitive_rejection_persists_only_category_and_line(
     assert blocked.value.failure.code == "POC_SENSITIVE_CONTENT"
     assert len(client.prompts) == 2
     assert all(b"never-print-this-cookie" not in prompt for prompt in client.prompts)
+    assert b"actual target operation and transport route" in client.prompts[1]
+    assert b"container-local /workspace and /tmp paths" in client.prompts[1]
+    assert b"harmless synthetic local values" in client.prompts[1]
     assert len(blocked.value.failure.evidence_refs) == 1
     diagnostic = json.loads(artifacts.read(blocked.value.failure.evidence_refs[0]))
     assert diagnostic["reason"] == "SENSITIVE_CONTENT"

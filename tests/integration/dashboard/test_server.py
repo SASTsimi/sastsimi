@@ -15,7 +15,11 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.dashboard.projection import project_after_source_write, rebuild_analysis
+from sastsimi.dashboard.projection import (
+    initialize_empty_read_model,
+    project_after_source_write,
+    rebuild_analysis,
+)
 from sastsimi.dashboard.read_model import DashboardReadModel
 from sastsimi.dashboard.server import create_server
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
@@ -1053,3 +1057,56 @@ def test_source_commit_rebuilds_incomplete_read_model_without_duplicates(
         ).fetchone()
     assert page["total_items"] == initial.source_counts["artifacts"]
     assert count == distinct_count == initial.source_counts["artifacts"]
+
+
+def test_new_analysis_data_dir_indexes_outputs_after_source_commit(tmp_path) -> None:
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    store = SimpleCheckpointStore(
+        database,
+        artifact_data_dir=tmp_path,
+        post_commit_projection=project_after_source_write,
+        new_database_initializer=initialize_empty_read_model,
+    )
+    model = DashboardReadModel(tmp_path)
+    with model._connect() as connection:
+        assert model.schema_present(connection)
+    seed(tmp_path)
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = store.get(identity, SimpleStage.POC_CANDIDATE_DONE)
+    assert checkpoint is not None
+    store.save_success(checkpoint, outputs=checkpoint.output_refs)
+
+    page = model.page("analysis-1", "outputs", offset=0, limit=10)
+    assert isinstance(page["total_items"], int) and page["total_items"] > 0
+
+
+def test_existing_data_dir_is_not_implicitly_migrated_by_writer(tmp_path) -> None:
+    database = tmp_path / "db" / "sastsimi.sqlite3"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE existing_analysis (id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO existing_analysis VALUES ('kept')")
+
+    SimpleCheckpointStore(
+        database,
+        artifact_data_dir=tmp_path,
+        post_commit_projection=project_after_source_write,
+        new_database_initializer=initialize_empty_read_model,
+    )
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT id FROM existing_analysis").fetchone() == (
+            "kept",
+        )
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE name='dashboard_index_state'"
+            ).fetchone()
+            is None
+        )

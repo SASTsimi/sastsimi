@@ -90,6 +90,7 @@ from .recovery import (
     MAX_RECOVERY_ATTEMPTS,
     POC_CANDIDATE_AUTH_RECAP_PROMPT_REVISION,
     POC_CANDIDATE_AUTH_TRANSPORT_PROMPT_REVISION,
+    POC_CANDIDATE_NEUTRAL_FIXTURE_PROMPT_REVISION,
     POC_CANDIDATE_PROMPT_REVISION,
     POC_REPLAY_GUARD_REVISION,
     SANITIZED_EXTRACT_RECOVERY_REVISION,
@@ -503,6 +504,7 @@ class SimpleCheckpointStore:
             "candidate_deep_counts",
             "hypothesis_metadata",
             "has_hypothesis",
+            "registered_hypothesis_ref",
             "list_candidate_batch_outcomes",
             "list_candidate_batch_progress",
             "get_attack_surface_index",
@@ -567,6 +569,7 @@ class SimpleCheckpointStore:
         *,
         artifact_data_dir: str | Path | None = None,
         post_commit_projection: Callable[[Path, str], None] | None = None,
+        new_database_initializer: Callable[[Path], None] | None = None,
         read_only: bool = False,
     ) -> None:
         self._read_only = read_only
@@ -578,9 +581,22 @@ class SimpleCheckpointStore:
         self._deferred_hold_projection_ids: ContextVar[frozenset[str]] = ContextVar(
             "deferred_hold_projection_ids", default=frozenset()
         )
+        new_database = not self._database_path.is_file()
         if not read_only:
             self._database_path.parent.mkdir(parents=True, exist_ok=True)
             self._initialize()
+            if (
+                new_database
+                and self._artifact_data_dir is not None
+                and new_database_initializer is not None
+            ):
+                # Alternate --data-dir entrypoints may bypass setup. This is
+                # still a new store, so no historical rows need backfilling.
+                # A dashboard failure must not prevent source analysis writes.
+                try:
+                    new_database_initializer(self._artifact_data_dir)
+                except (OSError, sqlite3.Error):
+                    pass
 
     def _connect(self) -> sqlite3.Connection:
         if self._read_only:
@@ -1564,6 +1580,28 @@ class SimpleCheckpointStore:
             raise ValueError("CANDIDATE_HYPOTHESIS_METADATA_CORRUPT")
         return int(row["chain_depth"]), tuple(parents)
 
+    def registered_hypothesis_ref(
+        self, identity: CheckpointIdentity, hypothesis_id: str
+    ) -> StoredDataRef | None:
+        """Read the exact persisted proposal origin without changing old records."""
+
+        key = self._hypothesis_scope_key(identity)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT hypothesis_ref_json FROM simple_candidate_hypotheses "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND hypothesis_id = ?",
+                (*key, hypothesis_id),
+            ).fetchone()
+        if row is None or row["hypothesis_ref_json"] is None:
+            return None
+        try:
+            ref = StoredDataRef.model_validate_json(row["hypothesis_ref_json"])
+            self._candidate_ref_json(identity, ref)
+        except (ValueError, TypeError) as error:
+            raise ValueError("CANDIDATE_HYPOTHESIS_REF_CORRUPT") from error
+        return ref
+
     def has_hypothesis(self, identity: CheckpointIdentity, hypothesis_id: str) -> bool:
         return self.hypothesis_metadata(identity, hypothesis_id) is not None
 
@@ -1934,7 +1972,7 @@ class SimpleCheckpointStore:
                 "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
             }
             or (status == "HYPOTHESES") != bool(registrations)
-            or proposal_version not in {1, 2, 3, 4, 5}
+            or proposal_version not in {1, 2, 3, 4, 5, 6, 7, 8}
         ):
             raise ValueError("SURFACE_EXPLORATION_INVALID")
         if len({item[0] for item in registrations}) != len(registrations):
@@ -1964,6 +2002,24 @@ class SimpleCheckpointStore:
         )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if proposal_version == 8:
+                run_row = connection.execute(
+                    "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                    (identity.analysis_id,),
+                ).fetchone()
+                run = (
+                    SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+                    if run_row is not None
+                    else None
+                )
+                if (
+                    run is None
+                    or run.workspace_id != identity.workspace_id
+                    or run.commit_id != identity.commit_id
+                    or run.candidate_scope_fingerprint != scope_fingerprint
+                    or run.surface_enrichment_v8_plan_ref is None
+                ):
+                    raise ValueError("SURFACE_EXPLORATION_V8_UNPINNED")
             prior = connection.execute(
                 "SELECT static_bundle_hash, index_hash, context_hash, "
                 "source_sha256, status, proposal_version, result_ref_json, "
@@ -1974,7 +2030,7 @@ class SimpleCheckpointStore:
                 (*key, surface_id, context_id),
             ).fetchone()
             if prior is not None:
-                if int(prior["proposal_version"]) in {4, 5}:
+                if int(prior["proposal_version"]) in {4, 5, 6, 7, 8}:
                     self._assert_surface_v4_registration_connection(
                         connection, identity, prior
                     )
@@ -2012,11 +2068,11 @@ class SimpleCheckpointStore:
         identity: CheckpointIdentity,
         row: sqlite3.Row,
     ) -> None:
-        """A saved v4/v5 result is reusable only with its original child binding."""
+        """A saved versioned result is reusable only with its original child binding."""
 
         version = row["proposal_version"]
         code = f"SURFACE_EXPLORATION_V{version}_CORRUPT"
-        if version not in {4, 5}:
+        if version not in {4, 5, 6, 7, 8}:
             raise ValueError(code)
         try:
             result_ref = StoredDataRef.model_validate_json(row["result_ref_json"])
@@ -2291,9 +2347,9 @@ class SimpleCheckpointStore:
             ).fetchall()
             records: dict[tuple[str, str], SurfaceExplorationProgressRecord] = {}
             for row in rows:
-                if row["proposal_version"] not in {1, 2, 3, 4, 5}:
+                if row["proposal_version"] not in {1, 2, 3, 4, 5, 6, 7, 8}:
                     raise ValueError("SURFACE_EXPLORATION_VERSION_CORRUPT")
-                if row["proposal_version"] in {4, 5}:
+                if row["proposal_version"] in {4, 5, 6, 7, 8}:
                     self._assert_surface_v4_registration_connection(
                         connection, identity, row
                     )
@@ -3855,6 +3911,368 @@ class SimpleCheckpointStore:
             _interrupted_budget_reuse=True,
         )
 
+    def prepare_docker_daemon_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        daemon_ready: bool,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one saved Docker API outage after a fresh caller-owned health probe.
+
+        The analysis lease belongs to the caller. The failure receipt and activity
+        remain immutable; the checkpoint change and one-shot marker commit together.
+        """
+
+        identity = stopped.identity
+        stage = SimpleStage.VERIFICATION_INITIAL_DONE
+        legacy = stopped.error_code == "RECOVERY_EXHAUSTED"
+        if daemon_ready is not True:
+            raise ValueError("DOCKER_DAEMON_REPLAY_UNAVAILABLE")
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not stage
+            or stopped.stage_version != STAGE_VERSION[stage]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.retryable
+            or not stopped.attempt_id
+            or stopped.attempt_number < 1
+            or stopped.attempt_number > MAX_RECOVERY_ATTEMPTS
+            or stopped.gate_revision_count != 0
+            or stopped.recovery_lineage_id is not None
+            or stopped.recovery_origin_stage is not None
+            or stopped.recovery_decision_refs
+            or stopped.poc_stop_decision_ref is not None
+            or stopped.external_prerequisites_ref is not None
+            or stopped.environment_block_ref is not None
+            or legacy
+            and stopped.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or stopped.error_code
+            not in {"RECOVERY_EXHAUSTED", "DOCKER_API_UNAVAILABLE"}
+            or stopped.recipe_ref is not None
+            or stopped.image_digest is not None
+            or stopped.container_id is not None
+            or stopped.validated_poc_ref is not None
+            or stopped.report_ref is not None
+            or stopped.bundle_manifest_ref is not None
+            or stopped.bundle_archive_ref is not None
+            or stopped.verdict is not None
+            or stopped.gate_decision is not None
+            or stopped.markdown_path is not None
+            or len(stopped.output_refs) != 3
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("DOCKER_DAEMON_REPLAY_CHECKPOINT_INVALID")
+
+        initial_ref, attempt_ref, recipe_ref = stopped.output_refs
+        try:
+            initial = json.loads(artifacts.read_bounded(initial_ref, 256 * 1024))
+            attempt = json.loads(artifacts.read_bounded(attempt_ref, 256 * 1024))
+            recipe = json.loads(artifacts.read_bounded(recipe_ref, 256 * 1024))
+            if not all(isinstance(item, dict) for item in (initial, attempt, recipe)):
+                raise ValueError("Docker receipt is not an object")
+            dockerfile_ref = StoredDataRef.model_validate(attempt["dockerfile_ref"])
+            artifacts.read_bounded(dockerfile_ref, 256 * 1024)
+            stderr_ref = StoredDataRef.model_validate(attempt["stderr_ref"])
+            stderr = artifacts.read_bounded(stderr_ref, 64 * 1024)
+            stdout_raw = attempt.get("stdout_ref")
+            if stdout_raw is not None:
+                artifacts.read_bounded(
+                    StoredDataRef.model_validate(stdout_raw), 64 * 1024
+                )
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
+            raise ValueError("DOCKER_DAEMON_REPLAY_EVIDENCE_INVALID") from error
+        failure_code = "DOCKER_BUILD_FAILED" if legacy else "DOCKER_API_UNAVAILABLE"
+        legacy_connection_error = (
+            b"open //./pipe/dockerDesktopLinuxEngine: "
+            b"The system cannot find the file specified"
+            in stderr
+            or b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+            in stderr
+        )
+        if (
+            initial.get("kind") != "simple_initial_verification"
+            or initial.get("attempt_id") != stopped.attempt_id
+            or attempt.get("kind") != "simple_docker_build_attempt"
+            or attempt.get("identity") != identity.model_dump(mode="json")
+            or attempt.get("attempt_id") != stopped.attempt_id
+            or attempt.get("status") != "FAILED"
+            or attempt.get("error_code") != failure_code
+            or type(attempt.get("timed_out")) is not bool
+            or legacy
+            and attempt["timed_out"] is not False
+            or recipe.get("kind") != "simple_environment_recipe"
+            or recipe.get("status") != "BLOCKED"
+            or recipe.get("attempt_id") != stopped.attempt_id
+            or recipe.get("build_attempt_refs") != [attempt_ref.model_dump(mode="json")]
+            or recipe.get("dockerfile_ref") != dockerfile_ref.model_dump(mode="json")
+            or recipe.get("dockerfile_source") != attempt.get("dockerfile_source")
+            or any(
+                recipe.get(key) != getattr(identity, key)
+                for key in (
+                    "analysis_id",
+                    "workspace_id",
+                    "commit_id",
+                    "hypothesis_id",
+                )
+            )
+            or legacy
+            and not legacy_connection_error
+        ):
+            raise ValueError("DOCKER_DAEMON_REPLAY_EVIDENCE_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(
+                checkpoint_identity: CheckpointIdentity, checkpoint_stage: SimpleStage
+            ) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (
+                        checkpoint_identity.analysis_id,
+                        self._hypothesis_key(checkpoint_identity),
+                        checkpoint_stage.value,
+                    ),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            if checkpoint_at(identity, stage) != stopped:
+                raise ValueError("DOCKER_DAEMON_REPLAY_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("DOCKER_DAEMON_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            static = checkpoint_at(root_identity, SimpleStage.STATIC_DONE)
+            root = checkpoint_at(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            pro_con = checkpoint_at(identity, SimpleStage.PRO_CON_DONE)
+            if (
+                run.analysis_id != identity.analysis_id
+                or run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+                or static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+                or any(
+                    str(ref.workspace_id) != identity.workspace_id
+                    or str(ref.commit_id) != identity.commit_id
+                    for ref in (
+                        run.repository_profile_ref,
+                        run.static_bundle_ref,
+                        run.static_coverage_ref,
+                    )
+                )
+                or pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or not pro_con.output_refs
+                or not all(ref in stopped.input_refs for ref in pro_con.output_refs)
+                or any(
+                    checkpoint_at(identity, downstream) is not None
+                    for downstream in STAGE_ORDER[STAGE_ORDER.index(stage) + 1 :]
+                )
+                or root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or not root.attempt_id
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_LINEAGE_INVALID")
+            all_rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                is StageStatus.RUNNING
+                for row in all_rows
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_RUN_ACTIVE")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("DOCKER_DAEMON_REPLAY_CODEX_UNRESOLVED")
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                ).fetchall()
+            )
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "DOCKER_DAEMON_REPLAYED"
+                for event in events
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_ALREADY_USED")
+            expected_root_code = (
+                f"CANDIDATE_CHILD_ERROR_BOUND:{stopped.error_code}:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if root.status is StageStatus.BLOCKED:
+                root_event_kind = ActivityKind.STAGE_BLOCKED
+                if root.retryable or root.error_code != expected_root_code:
+                    raise ValueError("DOCKER_DAEMON_REPLAY_ROOT_INVALID")
+            elif root.status is StageStatus.SUCCEEDED:
+                root_event_kind = ActivityKind.STAGE_COMPLETED
+                terminal = run.candidate_terminal
+                if (
+                    terminal is None
+                    or terminal.status != "PARTIAL"
+                    or terminal.surface_proof_version != 3
+                    or terminal.bundle_hash != run.static_bundle_ref.content_hash
+                    or terminal.scope_fingerprint != run.candidate_scope_fingerprint
+                    or run.surface_enrichment_v6_plan_ref is None
+                ):
+                    raise ValueError("DOCKER_DAEMON_REPLAY_ROOT_INVALID")
+            else:
+                raise ValueError("DOCKER_DAEMON_REPLAY_ROOT_INVALID")
+            if not any(
+                event.kind is root_event_kind
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.input_refs == root.input_refs
+                and event.output_refs == root.output_refs
+                and event.error_code == root.error_code
+                for event in events
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_ROOT_INVALID")
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stage.value
+                and event.attempt_id == stopped.attempt_id
+            )
+            expected_sequence = (
+                (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED, "DOCKER_BUILD_FAILED"),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                if legacy
+                else (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED, "DOCKER_API_UNAVAILABLE"),
+                )
+            )
+            if (
+                tuple((event.kind, event.error_code) for event in stage_events)
+                != expected_sequence
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.input_refs != stopped.input_refs
+                    for event in stage_events
+                )
+                or stage_events[0].output_refs
+                or any(
+                    event.output_refs != stopped.output_refs
+                    for event in stage_events[1:]
+                )
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_EVENT_INVALID")
+            pending = stopped.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "attempt_number": (
+                        stopped.attempt_number if legacy else stopped.attempt_number - 1
+                    ),
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            updated = connection.execute(
+                "UPDATE simple_runtime_checkpoints SET checkpoint_json = ?, "
+                "input_hash = ?, updated_at = ? WHERE analysis_id = ? "
+                "AND hypothesis_key = ? AND stage = ? AND checkpoint_json = ?",
+                (
+                    pending.model_dump_json(),
+                    pending.input_hash,
+                    pending.updated_at.isoformat(),
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    stage.value,
+                    stopped.model_dump_json(),
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("DOCKER_DAEMON_REPLAY_STALE")
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stage, 103),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "Docker API 복구 확인 후 초기 검증 한 번의 재개를 기록했습니다."
+                    ),
+                    output_refs=stopped.output_refs,
+                    error_code="DOCKER_DAEMON_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
+
     def prepare_initial_environment_exhaustion_replay(
         self,
         exhausted: StageCheckpoint,
@@ -4965,6 +5383,477 @@ class SimpleCheckpointStore:
         validated = SimpleAnalysisRun.model_validate(run)
         with self._connect() as connection:
             self._upsert_analysis_run_connection(connection, validated)
+
+    def pin_surface_enrichment_v6_plan(
+        self, expected_run: SimpleAnalysisRun, plan_ref: StoredDataRef
+    ) -> bool:
+        """Atomically add a successor ref without replacing the saved v5 proof.
+
+        A stale writer may retry only the *same* already-pinned plan. A changed
+        terminal, predecessor, or competing plan must be re-read and verified.
+        """
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = expected.candidate_terminal
+        if (
+            expected.surface_enrichment_v5_plan_ref is None
+            or expected.surface_enrichment_v6_plan_ref is not None
+            or terminal is None
+            or terminal.status != "PARTIAL"
+            or terminal.surface_proof_version != 3
+            or str(plan_ref.workspace_id) != expected.workspace_id
+            or str(plan_ref.commit_id) != expected.commit_id
+            or plan_ref.data_kind != "artifact"
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V6_PIN_INVALID")
+        revised = expected.model_copy(
+            update={"surface_enrichment_v6_plan_ref": plan_ref}
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (expected.analysis_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PIN_STALE")
+            current = SimpleAnalysisRun.model_validate_json(row["run_json"])
+            if current.surface_enrichment_v6_plan_ref == plan_ref:
+                if current != revised:
+                    raise ValueError("SURFACE_ENRICHMENT_V6_PIN_STALE")
+                return False
+            # Legacy rows omit fields added after the run was created. Compare
+            # their validated meaning, then use the exact stored bytes below
+            # for the transactional compare-and-swap.
+            if current != expected:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PIN_STALE")
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (
+                    revised.model_dump_json(),
+                    expected.analysis_id,
+                    row["run_json"],
+                ),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V6_PIN_STALE")
+        return True
+
+    def pin_surface_enrichment_v7_plan(
+        self,
+        expected_run: SimpleAnalysisRun,
+        plan_ref: StoredDataRef,
+        prior_progress_hash: str,
+        missing_v6_parts: Sequence[Mapping[str, str]],
+    ) -> bool:
+        """Pin a v7 overlay only while its exact v6 parent is still current.
+
+        The old progress snapshot and missing v6 part set are checked under
+        the same write transaction as the run pointer. A same-plan retry is
+        idempotent, but it does not excuse changed predecessor evidence.
+        """
+
+        from .surface_enrichment_v7_bindings import (
+            missing_v6_part_set,
+            prior_progress_snapshot_hash,
+        )
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = expected.candidate_terminal
+        identity = CheckpointIdentity(
+            analysis_id=expected.analysis_id,
+            workspace_id=expected.workspace_id,
+            commit_id=expected.commit_id,
+            hypothesis_id=None,
+        )
+        if (
+            expected.surface_enrichment_v6_plan_ref is None
+            or expected.surface_enrichment_v7_plan_ref is not None
+            or expected.candidate_scope_fingerprint is None
+            or terminal is None
+            or terminal.status != "PARTIAL"
+            or terminal.surface_proof_version != 4
+            or terminal.scope_fingerprint != expected.candidate_scope_fingerprint
+            or terminal.surface_index_hash is None
+            or terminal.surface_coverage_hash is None
+            or not re.fullmatch(r"[0-9a-f]{64}", prior_progress_hash)
+            or not isinstance(missing_v6_parts, (list, tuple))
+            or any(
+                not isinstance(part, Mapping)
+                or set(part) != {"surface_id", "context_id"}
+                or not isinstance(part["surface_id"], str)
+                or not part["surface_id"]
+                or not isinstance(part["context_id"], str)
+                or not part["context_id"]
+                for part in missing_v6_parts
+            )
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V7_PIN_INVALID")
+        try:
+            self._candidate_ref_json(identity, plan_ref)
+            self._candidate_ref_json(identity, expected.surface_enrichment_v6_plan_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent = self._database_path.parent
+                if parent.name == "db":
+                    data_dir = parent.parent
+                elif (parent / "artifacts" / "artifacts").is_dir():
+                    data_dir = parent / "artifacts"
+                else:
+                    data_dir = parent
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            raw_plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+            raw_v6 = json.loads(
+                artifacts.read_bounded(
+                    expected.surface_enrichment_v6_plan_ref, 16 * 1024 * 1024
+                )
+            )
+            if not isinstance(raw_plan, dict) or not isinstance(raw_v6, dict):
+                raise ValueError("SURFACE_ENRICHMENT_V7_PIN_INVALID")
+            planned_missing = raw_plan.get("missing_v6_parts")
+            if (
+                raw_plan.get("kind") != "simple_surface_enrichment_plan_v7"
+                or raw_plan.get("analysis_id") != expected.analysis_id
+                or raw_plan.get("workspace_id") != expected.workspace_id
+                or raw_plan.get("commit_id") != expected.commit_id
+                or raw_plan.get("scope") != raw_v6.get("scope")
+                or raw_plan.get("scope_fingerprint")
+                != expected.candidate_scope_fingerprint
+                or raw_plan.get("graph_semantics_revision") != "v5-source-bound-4"
+                or raw_plan.get("static_bundle_hash") != terminal.bundle_hash
+                or raw_plan.get("prior_v6_plan_ref")
+                != expected.surface_enrichment_v6_plan_ref.model_dump(mode="json")
+                or raw_plan.get("prior_v6_plan_hash")
+                != expected.surface_enrichment_v6_plan_ref.content_hash
+                or raw_plan.get("prior_progress_hash") != prior_progress_hash
+                or planned_missing != list(missing_v6_parts)
+                or raw_v6.get("kind") != "simple_surface_enrichment_plan_v6"
+                or raw_v6.get("analysis_id") != expected.analysis_id
+                or raw_v6.get("workspace_id") != expected.workspace_id
+                or raw_v6.get("commit_id") != expected.commit_id
+                or raw_v6.get("scope_fingerprint")
+                != expected.candidate_scope_fingerprint
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V7_PIN_INVALID")
+        except (OSError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V7_PIN_INVALID") from error
+
+        revised = expected.model_copy(
+            update={"surface_enrichment_v7_plan_ref": plan_ref}
+        )
+        key = self._candidate_scope_key(identity, expected.candidate_scope_fingerprint)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (expected.analysis_id,),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    expected.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                ),
+            ).fetchone()
+            if run_row is None or root_row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V7_PIN_STALE")
+            current = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            root = StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+            if (
+                root.identity != identity
+                or root.status is not StageStatus.SUCCEEDED
+                or len(root.output_refs) != 2
+                or root.output_refs[0].content_hash != terminal.surface_index_hash
+                or root.output_refs[1].content_hash != terminal.surface_coverage_hash
+                or raw_plan.get("index_ref")
+                != root.output_refs[0].model_dump(mode="json")
+                or raw_plan.get("index_hash") != root.output_refs[0].content_hash
+                or raw_plan.get("prior_v4_coverage_ref")
+                != root.output_refs[1].model_dump(mode="json")
+                or raw_plan.get("prior_v4_coverage_hash")
+                != root.output_refs[1].content_hash
+                or current not in (expected, revised)
+                or (
+                    current.surface_enrichment_v7_plan_ref is not None
+                    and current.surface_enrichment_v7_plan_ref != plan_ref
+                )
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V7_PIN_STALE")
+            try:
+                artifacts.read_bounded(root.output_refs[0], 16 * 1024 * 1024)
+                artifacts.read_bounded(root.output_refs[1], 16 * 1024 * 1024)
+            except (OSError, ValueError) as error:
+                raise ValueError("SURFACE_ENRICHMENT_V7_PIN_INVALID") from error
+            rows = connection.execute(
+                "SELECT surface_id, context_id, static_bundle_hash, index_hash, "
+                "context_hash, source_sha256, status, proposal_version, "
+                "result_ref_json, registrations_json "
+                "FROM simple_surface_exploration_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? ORDER BY surface_id, context_id",
+                key,
+            ).fetchall()
+            progress: dict[tuple[str, str], SurfaceExplorationProgressRecord] = {}
+            for row in rows:
+                version = int(row["proposal_version"])
+                if version not in {1, 2, 3, 4, 5, 6, 7}:
+                    raise ValueError("SURFACE_ENRICHMENT_V7_PIN_STALE")
+                if version == 7:
+                    if current.surface_enrichment_v7_plan_ref is None:
+                        raise ValueError("SURFACE_ENRICHMENT_V7_PIN_STALE")
+                    self._assert_surface_v4_registration_connection(
+                        connection, identity, row
+                    )
+                    continue
+                if version in {4, 5, 6}:
+                    self._assert_surface_v4_registration_connection(
+                        connection, identity, row
+                    )
+                record = SurfaceExplorationProgressRecord(
+                    surface_id=str(row["surface_id"]),
+                    context_id=str(row["context_id"]),
+                    static_bundle_hash=str(row["static_bundle_hash"]),
+                    index_hash=str(row["index_hash"]),
+                    context_hash=str(row["context_hash"]),
+                    source_sha256=row["source_sha256"],
+                    status=str(row["status"]),
+                    result_ref=StoredDataRef.model_validate_json(
+                        row["result_ref_json"]
+                    ),
+                    hypothesis_ids=self._surface_registration_ids(
+                        identity,
+                        str(row["status"]),
+                        str(row["registrations_json"]),
+                    ),
+                    proposal_version=version,
+                )
+                progress[(record.surface_id, record.context_id)] = record
+            if (
+                prior_progress_snapshot_hash(progress) != prior_progress_hash
+                or missing_v6_part_set(raw_v6, progress) != planned_missing
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V7_PIN_STALE")
+            if current == revised:
+                return False
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (revised.model_dump_json(), expected.analysis_id, run_row["run_json"]),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V7_PIN_STALE")
+        return True
+
+    def pin_surface_enrichment_v8_plan(
+        self,
+        expected_run: SimpleAnalysisRun,
+        plan_ref: StoredDataRef,
+        prior_progress_hash: str,
+    ) -> bool:
+        """CAS-pin a v8 overlay only after every exact v7 part has finished.
+
+        The v7 proof and all older rows remain immutable. A repeated pin is
+        idempotent only for the same plan and unchanged predecessor evidence.
+        """
+
+        from .surface_enrichment_v8_bindings import (
+            missing_v7_part_set,
+            prior_v7_progress_snapshot_hash,
+        )
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = expected.candidate_terminal
+        identity = CheckpointIdentity(
+            analysis_id=expected.analysis_id,
+            workspace_id=expected.workspace_id,
+            commit_id=expected.commit_id,
+            hypothesis_id=None,
+        )
+        if (
+            expected.surface_enrichment_v7_plan_ref is None
+            or expected.surface_enrichment_v8_plan_ref is not None
+            or expected.surface_enrichment_v6_plan_ref is None
+            or expected.candidate_scope_fingerprint is None
+            or expected.python_scope_certificate_ref is None
+            or terminal is None
+            or terminal.status != "PARTIAL"
+            or terminal.surface_proof_version != 5
+            or terminal.scope_fingerprint != expected.candidate_scope_fingerprint
+            or terminal.scope_certificate_hash
+            != expected.python_scope_certificate_ref.content_hash
+            or terminal.surface_index_hash is None
+            or terminal.surface_coverage_hash is None
+            or not re.fullmatch(r"[0-9a-f]{64}", prior_progress_hash)
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V8_PIN_INVALID")
+        try:
+            self._candidate_ref_json(identity, plan_ref)
+            self._candidate_ref_json(identity, expected.surface_enrichment_v7_plan_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent = self._database_path.parent
+                if parent.name == "db":
+                    data_dir = parent.parent
+                elif (parent / "artifacts" / "artifacts").is_dir():
+                    data_dir = parent / "artifacts"
+                else:
+                    data_dir = parent
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            raw_plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+            raw_v7 = json.loads(
+                artifacts.read_bounded(
+                    expected.surface_enrichment_v7_plan_ref, 16 * 1024 * 1024
+                )
+            )
+            if not isinstance(raw_plan, dict) or not isinstance(raw_v7, dict):
+                raise ValueError("SURFACE_ENRICHMENT_V8_PIN_INVALID")
+            if (
+                raw_plan.get("kind") != "simple_surface_enrichment_plan_v8"
+                or raw_plan.get("analysis_id") != expected.analysis_id
+                or raw_plan.get("workspace_id") != expected.workspace_id
+                or raw_plan.get("commit_id") != expected.commit_id
+                or raw_plan.get("scope") != raw_v7.get("scope")
+                or raw_plan.get("scope_fingerprint")
+                != expected.candidate_scope_fingerprint
+                or raw_plan.get("graph_semantics_revision") != "v5-source-bound-5"
+                or raw_plan.get("static_bundle_hash") != terminal.bundle_hash
+                or raw_plan.get("prior_v7_plan_ref")
+                != expected.surface_enrichment_v7_plan_ref.model_dump(mode="json")
+                or raw_plan.get("prior_v7_plan_hash")
+                != expected.surface_enrichment_v7_plan_ref.content_hash
+                or raw_plan.get("prior_progress_hash") != prior_progress_hash
+                or raw_plan.get("missing_v7_parts") != []
+                or not isinstance(raw_plan.get("targets"), list)
+                or not isinstance(raw_plan.get("target_surface_ids"), list)
+                or not isinstance(raw_plan.get("expected_parts"), list)
+                or raw_v7.get("kind") != "simple_surface_enrichment_plan_v7"
+                or raw_v7.get("analysis_id") != expected.analysis_id
+                or raw_v7.get("workspace_id") != expected.workspace_id
+                or raw_v7.get("commit_id") != expected.commit_id
+                or raw_v7.get("scope_fingerprint")
+                != expected.candidate_scope_fingerprint
+                or raw_v7.get("static_bundle_hash") != terminal.bundle_hash
+                or raw_v7.get("prior_v6_plan_ref")
+                != expected.surface_enrichment_v6_plan_ref.model_dump(mode="json")
+                or raw_v7.get("prior_v6_plan_hash")
+                != expected.surface_enrichment_v6_plan_ref.content_hash
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V8_PIN_INVALID")
+        except (OSError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V8_PIN_INVALID") from error
+
+        revised = expected.model_copy(
+            update={"surface_enrichment_v8_plan_ref": plan_ref}
+        )
+        key = self._candidate_scope_key(identity, expected.candidate_scope_fingerprint)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (expected.analysis_id,),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    expected.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                ),
+            ).fetchone()
+            if run_row is None or root_row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V8_PIN_STALE")
+            current = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            root = StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+            if (
+                root.identity != identity
+                or root.status is not StageStatus.SUCCEEDED
+                or len(root.output_refs) != 2
+                or root.output_refs[0].content_hash != terminal.surface_index_hash
+                or root.output_refs[1].content_hash != terminal.surface_coverage_hash
+                or raw_plan.get("index_ref")
+                != root.output_refs[0].model_dump(mode="json")
+                or raw_plan.get("index_hash") != root.output_refs[0].content_hash
+                or raw_plan.get("prior_v5_coverage_ref")
+                != root.output_refs[1].model_dump(mode="json")
+                or raw_plan.get("prior_v5_coverage_hash")
+                != root.output_refs[1].content_hash
+                or raw_v7.get("index_ref")
+                != root.output_refs[0].model_dump(mode="json")
+                or raw_v7.get("index_hash") != root.output_refs[0].content_hash
+                or current not in (expected, revised)
+                or (
+                    current.surface_enrichment_v8_plan_ref is not None
+                    and current.surface_enrichment_v8_plan_ref != plan_ref
+                )
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V8_PIN_STALE")
+            try:
+                artifacts.read_bounded(root.output_refs[0], 16 * 1024 * 1024)
+                artifacts.read_bounded(root.output_refs[1], 16 * 1024 * 1024)
+            except (OSError, ValueError) as error:
+                raise ValueError("SURFACE_ENRICHMENT_V8_PIN_INVALID") from error
+            rows = connection.execute(
+                "SELECT surface_id, context_id, static_bundle_hash, index_hash, "
+                "context_hash, source_sha256, status, proposal_version, "
+                "result_ref_json, registrations_json "
+                "FROM simple_surface_exploration_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? ORDER BY surface_id, context_id",
+                key,
+            ).fetchall()
+            progress: dict[tuple[str, str], SurfaceExplorationProgressRecord] = {}
+            for row in rows:
+                version = int(row["proposal_version"])
+                if version not in {1, 2, 3, 4, 5, 6, 7, 8}:
+                    raise ValueError("SURFACE_ENRICHMENT_V8_PIN_STALE")
+                if version == 8:
+                    if current.surface_enrichment_v8_plan_ref is None:
+                        raise ValueError("SURFACE_ENRICHMENT_V8_PIN_STALE")
+                    self._assert_surface_v4_registration_connection(
+                        connection, identity, row
+                    )
+                    continue
+                if version in {4, 5, 6, 7}:
+                    self._assert_surface_v4_registration_connection(
+                        connection, identity, row
+                    )
+                record = SurfaceExplorationProgressRecord(
+                    surface_id=str(row["surface_id"]),
+                    context_id=str(row["context_id"]),
+                    static_bundle_hash=str(row["static_bundle_hash"]),
+                    index_hash=str(row["index_hash"]),
+                    context_hash=str(row["context_hash"]),
+                    source_sha256=row["source_sha256"],
+                    status=str(row["status"]),
+                    result_ref=StoredDataRef.model_validate_json(
+                        row["result_ref_json"]
+                    ),
+                    hypothesis_ids=self._surface_registration_ids(
+                        identity,
+                        str(row["status"]),
+                        str(row["registrations_json"]),
+                    ),
+                    proposal_version=version,
+                )
+                progress[(record.surface_id, record.context_id)] = record
+            if prior_v7_progress_snapshot_hash(
+                progress
+            ) != prior_progress_hash or missing_v7_part_set(raw_v7, progress):
+                raise ValueError("SURFACE_ENRICHMENT_V8_PIN_STALE")
+            if current == revised:
+                return False
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (revised.model_dump_json(), expected.analysis_id, run_row["run_json"]),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V8_PIN_STALE")
+        return True
 
     @staticmethod
     def _upsert_analysis_run_connection(
@@ -13828,6 +14717,512 @@ class SimpleCheckpointStore:
                     summary_ko="기존 민감도 검사로 차단된 PoC 후보만 재검증합니다.",
                     output_refs=(marker_ref,),
                     error_code="POC_SENSITIVE_CONTENT_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
+
+    def prepare_poc_sensitive_rewrite_timeout_replay(
+        self,
+        exhausted: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one exact three-attempt sensitive/rewrite-timeout lineage.
+
+        The original candidate and provider transcript are not read. A closed
+        diagnostic, settled call receipts, and the bound terminal root are the
+        only historical evidence consumed by this one-shot CAS.
+        """
+
+        identity = exhausted.identity
+        code = "POC_SENSITIVE_REWRITE_TIMEOUT_REPLAY_"
+        if (
+            identity.hypothesis_id is None
+            or exhausted.stage is not SimpleStage.POC_CANDIDATE_DONE
+            or exhausted.stage_version != STAGE_VERSION[exhausted.stage]
+            or exhausted.status is not StageStatus.BLOCKED
+            or exhausted.error_code != "RECOVERY_EXHAUSTED"
+            or exhausted.retryable
+            or exhausted.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or not exhausted.attempt_id
+            or len(exhausted.output_refs) != 1
+            or exhausted.output_refs[0] in exhausted.input_refs
+            or exhausted.input_hash != input_reference_hash(exhausted.input_refs)
+            or any(
+                ref not in exhausted.input_refs
+                for ref in exhausted.recovery_decision_refs
+            )
+            or exhausted.container_id is not None
+            or exhausted.validated_poc_ref is not None
+            or exhausted.recipe_ref is None
+            or exhausted.image_digest is None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError(code + "INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(key: str, stage: SimpleStage) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, key, stage.value),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row
+                    else None
+                )
+
+            child_key = self._hypothesis_key(identity)
+            root_key = self._hypothesis_key(
+                identity.model_copy(update={"hypothesis_id": None})
+            )
+            if checkpoint_at(child_key, exhausted.stage) != exhausted:
+                raise ValueError(code + "STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError(code + "RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = (
+                identity.hypothesis_id in run.hypothesis_ids
+                or connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses WHERE analysis_id = ? "
+                    "AND workspace_id = ? AND commit_id = ? AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            terminal = run.candidate_terminal
+            terminal_bound = terminal is None or (
+                terminal.status == "PARTIAL"
+                and terminal.producer_finished
+                and terminal.pending_child_count == 0
+                and terminal.hypothesis_count > 0
+                and run.static_bundle_ref is not None
+                and terminal.bundle_hash == run.static_bundle_ref.content_hash
+                and run.candidate_scope_fingerprint is not None
+                and terminal.scope_fingerprint == run.candidate_scope_fingerprint
+            )
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or not terminal_bound
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+            ):
+                raise ValueError(code + "RUN_INVALID")
+            static = checkpoint_at(root_key, SimpleStage.STATIC_DONE)
+            if (
+                static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+            ):
+                raise ValueError(code + "STATIC_INVALID")
+            checkpoints = tuple(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                for row in connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ?",
+                    (identity.analysis_id,),
+                )
+            )
+            if any(
+                item.status in {StageStatus.RUNNING, StageStatus.PENDING}
+                for item in checkpoints
+            ):
+                raise ValueError(code + "RUN_ACTIVE")
+            root = checkpoint_at(root_key, SimpleStage.HYPOTHESIS_DONE)
+            root_code = (
+                "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                f"{identity.hypothesis_id}:{exhausted.attempt_id}"
+            )
+            root_blocked_bound = (
+                root is not None
+                and root.status is StageStatus.BLOCKED
+                and root.error_code == root_code
+            )
+            root_completed_bound = (
+                root is not None
+                and terminal is not None
+                and terminal_bound
+                and root.status is StageStatus.SUCCEEDED
+                and root.error_code is None
+                and len(root.output_refs) == 2
+                and terminal.surface_index_hash == root.output_refs[0].content_hash
+                and terminal.surface_coverage_hash == root.output_refs[1].content_hash
+            )
+            if (
+                root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or root.retryable
+                or not root.attempt_id
+                or not (root_blocked_bound or root_completed_bound)
+            ):
+                raise ValueError(code + "ROOT_BOUND_INVALID")
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                )
+            )
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.error_code == "POC_SENSITIVE_REWRITE_TIMEOUT_REPLAYED"
+                for event in events
+            ):
+                raise ValueError(code + "ALREADY_REPLAYED")
+            root_event_kind = (
+                ActivityKind.STAGE_COMPLETED
+                if root_completed_bound
+                else ActivityKind.STAGE_BLOCKED
+            )
+            root_event_code = None if root_completed_bound else root_code
+            root_event_positions = tuple(
+                index
+                for index, event in enumerate(events)
+                if event.kind is root_event_kind
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.error_code == root_event_code
+                and event.input_refs == root.input_refs
+                and event.output_refs == root.output_refs
+            )
+            if len(root_event_positions) != 1:
+                raise ValueError(code + "ROOT_BOUND_INVALID")
+            candidate_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == exhausted.stage.value
+            )
+            expected = (
+                (ActivityKind.STAGE_STARTED, None),
+                (ActivityKind.STAGE_BLOCKED, "FAILED"),
+                (ActivityKind.DECISION_RECORDED, "FAILED"),
+                (ActivityKind.STAGE_STARTED, None),
+                (ActivityKind.STAGE_BLOCKED, "POC_SENSITIVE_CONTENT"),
+                (ActivityKind.DECISION_RECORDED, "POC_SENSITIVE_CONTENT"),
+                (ActivityKind.STAGE_STARTED, None),
+                (ActivityKind.STAGE_BLOCKED, "TIMED_OUT"),
+                (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+            )
+            if len(candidate_events) != len(expected) or any(
+                (event.kind, event.error_code) != pair
+                or event.analysis_id != identity.analysis_id
+                or event.workspace_id != identity.workspace_id
+                or event.commit_id != identity.commit_id
+                for event, pair in zip(candidate_events, expected, strict=True)
+            ):
+                raise ValueError(code + "EVENT_INVALID")
+            if root_completed_bound:
+                first_candidate_position = events.index(candidate_events[0])
+                if root_event_positions[0] >= first_candidate_position or any(
+                    index >= first_candidate_position
+                    and event.hypothesis_id is None
+                    and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                    and event.kind is ActivityKind.STAGE_STARTED
+                    for index, event in enumerate(events)
+                ):
+                    raise ValueError(code + "ROOT_BOUND_INVALID")
+            starts = (0, 3, 6)
+            failures = (1, 4, 7)
+            attempt_ids = tuple(candidate_events[index].attempt_id for index in starts)
+            if (
+                any(not attempt_id for attempt_id in attempt_ids)
+                or len(set(attempt_ids)) != 3
+                or attempt_ids[-1] != exhausted.attempt_id
+                or any(
+                    candidate_events[start].output_refs
+                    or candidate_events[failure].attempt_id != attempt_ids[number]
+                    or candidate_events[start].input_refs
+                    != candidate_events[failure].input_refs
+                    for number, (start, failure) in enumerate(
+                        zip(starts, failures, strict=True)
+                    )
+                )
+                or candidate_events[2].attempt_id != attempt_ids[0]
+                or candidate_events[5].attempt_id != attempt_ids[1]
+                or any(
+                    candidate_events[index].input_refs != exhausted.input_refs
+                    for index in (6, 7, 8)
+                )
+                or candidate_events[7].output_refs != exhausted.output_refs
+                or candidate_events[8].output_refs != exhausted.output_refs
+                or candidate_events[8].attempt_id != exhausted.attempt_id
+            ):
+                raise ValueError(code + "EVENT_INVALID")
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.started_at >= candidate_events[0].started_at
+                and event.stage
+                in {
+                    stage.value
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE) :
+                    ]
+                }
+                for event in events
+            ):
+                raise ValueError(code + "DOWNSTREAM_INVALID")
+            diagnostic_ref = candidate_events[4].output_refs
+            if (
+                len(diagnostic_ref) != 1
+                or diagnostic_ref[0] not in exhausted.input_refs
+            ):
+                raise ValueError(code + "DIAGNOSTIC_INVALID")
+            diagnostic = closed_poc_sensitive_diagnostic(diagnostic_ref[0], artifacts)
+            if diagnostic is None or "sensitive_category" not in diagnostic:
+                raise ValueError(code + "DIAGNOSTIC_INVALID")
+            for number, (blocked_index, decision_index, expected_code) in enumerate(
+                ((1, 2, "FAILED"), (4, 5, "POC_SENSITIVE_CONTENT")), start=1
+            ):
+                blocked = candidate_events[blocked_index]
+                decision = candidate_events[decision_index]
+                if (
+                    len(blocked.output_refs) != 1
+                    or len(decision.output_refs) != 1
+                    or decision.output_refs[0] not in exhausted.input_refs
+                ):
+                    raise ValueError(code + "DECISION_INVALID")
+                try:
+                    recovery = json.loads(
+                        artifacts.read_bounded(decision.output_refs[0], 64 * 1024)
+                    )
+                except (OSError, ValueError, TypeError, UnicodeError) as error:
+                    raise ValueError(code + "DECISION_INVALID") from error
+                body = recovery.get("decision") if isinstance(recovery, dict) else None
+                original = (
+                    recovery.get("original_error")
+                    if isinstance(recovery, dict)
+                    else None
+                )
+                decision_pair = (
+                    (body.get("category"), body.get("action"))
+                    if isinstance(body, dict)
+                    else None
+                )
+                allowed_pairs = (
+                    {
+                        ("TRANSIENT_TOOL", "RETRY_STAGE"),
+                        ("GENERATED_INPUT", "REGENERATE_INPUT"),
+                    }
+                    if number == 1
+                    else {("GENERATED_INPUT", "REGENERATE_INPUT")}
+                )
+                if (
+                    not isinstance(recovery, dict)
+                    or recovery.get("kind") != "simple_recovery_decision"
+                    or recovery.get("identity") != identity.model_dump(mode="json")
+                    or recovery.get("stage") != exhausted.stage.value
+                    or recovery.get("attempt") != number
+                    or recovery.get("attempt_id") != attempt_ids[number - 1]
+                    or not isinstance(body, dict)
+                    or decision_pair not in allowed_pairs
+                    or not isinstance(original, dict)
+                    or original.get("code") != expected_code
+                    or original.get("evidence_refs")
+                    != [blocked.output_refs[0].model_dump(mode="json")]
+                ):
+                    raise ValueError(code + "DECISION_INVALID")
+            attempt_start = candidate_events[6].started_at.isoformat()
+            attempt_end = candidate_events[7].started_at.isoformat()
+            foreign_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id not in (None, identity.hypothesis_id)
+            )
+            if any(
+                attempt_start <= event.started_at.isoformat() <= attempt_end
+                for event in foreign_events
+            ):
+                raise ValueError(code + "CALL_LINEAGE_INVALID")
+            call_rows = connection.execute(
+                "SELECT call_id, status, started_at, resolved_at "
+                "FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND started_at >= ? AND started_at <= ? ORDER BY started_at",
+                (identity.analysis_id, attempt_start, attempt_end),
+            ).fetchall()
+            if len(call_rows) != 2:
+                raise ValueError(code + "CALL_LINEAGE_INVALID")
+            for number, call in enumerate(call_rows):
+                llm = connection.execute(
+                    "SELECT agent, status FROM simple_llm_attempts "
+                    "WHERE analysis_id = ? AND attempt_id = ?",
+                    (identity.analysis_id, call["call_id"]),
+                ).fetchone()
+                spawns = connection.execute(
+                    "SELECT phase, status, pid, start_identity "
+                    "FROM simple_codex_child_spawns "
+                    "WHERE analysis_id = ? AND call_id = ?",
+                    (identity.analysis_id, call["call_id"]),
+                ).fetchall()
+                if (
+                    call["status"] != "SAFE"
+                    or not call["resolved_at"]
+                    or not call["started_at"] <= call["resolved_at"] <= attempt_end
+                    or llm is None
+                    or llm["agent"] != "poc_candidate"
+                    or llm["status"] != ("SUCCEEDED", "TIMED_OUT")[number]
+                    or {spawn["phase"] for spawn in spawns}
+                    != {"VERSION", "LOGIN", "EXEC"}
+                    or len(spawns) != 3
+                    or any(
+                        spawn["status"] != "EXITED"
+                        or type(spawn["pid"]) is not int
+                        or spawn["pid"] <= 0
+                        or not isinstance(spawn["start_identity"], str)
+                        or not spawn["start_identity"]
+                        for spawn in spawns
+                    )
+                ):
+                    raise ValueError(code + "CALL_LINEAGE_INVALID")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                    "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                    (identity.analysis_id,),
+                ).fetchone()
+                is not None
+                or connection.execute(
+                    "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                    "AND (status != 'EXITED' OR pid IS NULL OR "
+                    "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                    (identity.analysis_id,),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError(code + "CODEX_UNRESOLVED")
+            pro_con = checkpoint_at(child_key, SimpleStage.PRO_CON_DONE)
+            initial = checkpoint_at(child_key, SimpleStage.VERIFICATION_INITIAL_DONE)
+            if (
+                pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or initial is None
+                or initial.status is not StageStatus.SUCCEEDED
+                or initial.stage_version
+                != STAGE_VERSION[SimpleStage.VERIFICATION_INITIAL_DONE]
+                or initial.recipe_ref != exhausted.recipe_ref
+                or initial.image_digest != exhausted.image_digest
+                or any(
+                    checkpoint_at(child_key, stage) is not None
+                    for stage in STAGE_ORDER[
+                        STAGE_ORDER.index(SimpleStage.POC_EXECUTION_DONE) :
+                    ]
+                )
+            ):
+                raise ValueError(code + "LINEAGE_INVALID")
+            if root_completed_bound:
+                proposal_row = connection.execute(
+                    "SELECT hypothesis_ref_json FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? "
+                    "AND commit_id = ? AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                if proposal_row is None:
+                    raise ValueError(code + "LINEAGE_INVALID")
+                try:
+                    proposal_ref = StoredDataRef.model_validate_json(
+                        proposal_row["hypothesis_ref_json"]
+                    )
+                    proposal = json.loads(artifacts.read_prompt_proposal(proposal_ref))
+                except (OSError, ValueError, TypeError, UnicodeError) as error:
+                    raise ValueError(code + "LINEAGE_INVALID") from error
+                if (
+                    proposal_ref not in pro_con.input_refs
+                    or proposal.get("analysis_id") != identity.analysis_id
+                    or proposal.get("hypothesis_id") != identity.hypothesis_id
+                ):
+                    raise ValueError(code + "LINEAGE_INVALID")
+            marker_ref = artifacts.put_json(
+                {
+                    "kind": "simple_poc_sensitive_rewrite_timeout_replay",
+                    "identity": identity.model_dump(mode="json"),
+                    "old_attempt_id": exhausted.attempt_id,
+                    "old_attempt_number": exhausted.attempt_number,
+                    "old_checkpoint_hash": hashlib.sha256(
+                        canonical_bytes(exhausted.model_dump(mode="json"))
+                    ).hexdigest(),
+                    "diagnostic_ref": diagnostic_ref[0].model_dump(mode="json"),
+                    "prompt_revision": POC_CANDIDATE_NEUTRAL_FIXTURE_PROMPT_REVISION,
+                }
+            )
+            inputs = tuple(
+                dict.fromkeys(
+                    (
+                        *exhausted.input_refs,
+                        *exhausted.recovery_decision_refs,
+                        diagnostic_ref[0],
+                        marker_ref,
+                    )
+                )
+            )
+            pending = exhausted.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "input_refs": inputs,
+                    "input_hash": input_reference_hash(inputs),
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    exhausted,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(exhausted.stage, 103),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "민감도 진단과 재작성 시간 초과를 확인하여 "
+                        "후보를 한 번 재시도합니다."
+                    ),
+                    output_refs=(marker_ref,),
+                    error_code="POC_SENSITIVE_REWRITE_TIMEOUT_REPLAYED",
                 ),
             )
             if fail_before_commit:

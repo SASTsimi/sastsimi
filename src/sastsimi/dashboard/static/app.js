@@ -71,7 +71,7 @@ function demoRequest(url) {
   return { url: url.replace(`/api/analyses/${match[1]}`, `/api/analyses/${encodeURIComponent(variant.demo_source_id)}`), variant };
 }
 async function getJson(url, options = {}) {
-  const request = demoRequest(url); const response = await fetch(request.url, { cache: "no-store", signal: options.signal }); if (!response.ok) { let error = null; try { error = await response.json(); } catch (_) { /* non-JSON failure */ } if (error?.error === "index_updating") { const pending = new Error("HOLD 검토 결과를 대시보드에 반영하는 중입니다. 잠시 후 다시 시도하세요."); pending.code = "index_updating"; throw pending; } if (error?.error === "index_resume_required") { const pending = new Error("HOLD 검토 중 분석이 중단되었습니다. 분석을 재개하거나 dashboard-index rebuild를 실행하세요."); pending.code = "index_resume_required"; throw pending; } if (error?.error === "index_not_ready") throw new Error("목록 인덱스 준비가 필요합니다. dashboard-index rebuild를 실행하세요."); throw new Error(`요청 실패 (${response.status})`); }
+  const request = demoRequest(url); const response = await fetch(request.url, { cache: "no-store", signal: options.signal }); if (!response.ok) { let error = null; try { error = await response.json(); } catch (_) { /* non-JSON failure */ } if (error?.error === "index_updating") { const pending = new Error("HOLD 검토 결과를 대시보드에 반영하는 중입니다. 잠시 후 다시 시도하세요."); pending.code = "index_updating"; throw pending; } if (error?.error === "index_resume_required") { const pending = new Error("HOLD 검토 중 분석이 중단되었습니다. 분석을 재개하거나 dashboard-index rebuild를 실행하세요."); pending.code = "index_resume_required"; throw pending; } if (error?.error === "index_not_ready") { const pending = new Error("목록 인덱스 준비가 필요합니다. dashboard-index rebuild를 실행하세요."); pending.code = "index_not_ready"; throw pending; } throw new Error(`요청 실패 (${response.status})`); }
   const data = await response.json();
   if (!request.variant || !/\/summary(?:\?|$)/.test(url) || Array.isArray(data)) return data;
   const merged = { ...data, ...request.variant };
@@ -447,6 +447,7 @@ function staticCoverageNodes(detail) {
   if (detail.static_coverage_expected == null || detail.static_coverage_verified == null) return [el("div", "정적 검사 커버리지: — (검증된 기록 없음)", "empty")];
   const nodes = [el("div", `검증 ${detail.static_coverage_verified}/${detail.static_coverage_expected} · 미검증 ${detail.static_coverage_gap_count ?? "—"}`, "coverage-lead")];
   const scoped = detail.phase_counts?.surface;
+  if (Number.isInteger(scoped?.completed_inconclusive_children)) nodes.push(el("div", `분석은 끝났지만 취약점 근거 미확정 가설 ${scoped.completed_inconclusive_children}건 (확정·제보 가능 아님)`, "meta"));
   if (Number.isInteger(scoped?.raw_static_gap_count) && Number.isInteger(scoped?.effective_python_gap_count)) nodes.push(el("div", `원본 정적 공백 ${scoped.raw_static_gap_count}건 · 재인증 후 Python 공백 ${scoped.effective_python_gap_count}건 (원본 기록 유지)`, "coverage-lead"));
   if (Number.isInteger(detail.surface_unresolved_reason_count)) {
     nodes.push(el("div", `미해결 보안 표면 사유 ${detail.surface_unresolved_reason_count}건`, "meta"));
@@ -556,7 +557,7 @@ async function loadActiveTab(force = false) {
     state.tabCache.set(key, data); renderTab(tab, data);
   } catch (error) {
     if (error?.name === "AbortError" && !timedOut) return;
-    const message = timedOut ? "요청 시간이 초과되었습니다." : ["index_updating", "index_resume_required"].includes(error?.code) ? error.message : "데이터를 불러오지 못했습니다.";
+    const message = timedOut ? "요청 시간이 초과되었습니다." : ["index_updating", "index_resume_required", "index_not_ready"].includes(error?.code) ? error.message : "데이터를 불러오지 못했습니다.";
     renderListMessage(tab, message, "error", true); document.getElementById("notice").textContent = `${tab} ${message}`;
   } finally {
     if (timeout != null && typeof window.clearTimeout === "function") window.clearTimeout(timeout); if (state.requestControllers.get(tab) === controller) state.requestControllers.delete(tab); selectOne(`[data-panel="${tab}"]`)?.classList.remove("loading");

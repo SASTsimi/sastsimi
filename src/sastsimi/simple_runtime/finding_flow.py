@@ -98,6 +98,7 @@ _COMMAND_SINKS = {
 }
 _DIRECT_SINKS: dict[str, frozenset[str]] = {
     "CWE-78": frozenset(_COMMAND_SINKS),
+    "CWE-88": frozenset({"subprocess.run"}),
     "CWE-79": frozenset({"make_response", "render_template_string"}),
     "CWE-89": frozenset(),  # Receiver name is proven through sqlite3 provenance.
     "CWE-95": frozenset({"eval"}),
@@ -1329,6 +1330,41 @@ def _direct_effect_is_unambiguous(
     return len(modes) <= 1 and all(
         isinstance(mode, ast.Constant) and mode.value in {"r", "rb"} for mode in modes
     )
+
+
+def _fixed_option_argv(call: ast.Call) -> tuple[ast.expr, int] | None:
+    """Select one request-controlled argv element without inventing a flow."""
+
+    if len(call.args) != 1 or not isinstance(call.args[0], (ast.List, ast.Tuple)):
+        return None
+    argv = call.args[0].elts
+    if not 2 <= len(argv) <= 32:
+        return None
+    dynamic = [index for index, item in enumerate(argv) if not _literal(item)]
+    if len(dynamic) != 1 or dynamic[0] == 0:
+        return None
+    position = dynamic[0]
+    if any(
+        not isinstance(item, ast.Constant)
+        or not isinstance(item.value, str)
+        or not item.value
+        for index, item in enumerate(argv)
+        if index != position
+    ) or any(
+        isinstance(item, ast.Constant) and item.value == "--"
+        for item in argv[:position]
+    ):
+        return None
+    if any(
+        keyword.arg in {None, "executable"}
+        or keyword.arg == "shell"
+        and not (
+            isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+        )
+        for keyword in call.keywords
+    ):
+        return None
+    return argv[position], position
 
 
 def _direct_html_f_string(expression: ast.expr) -> bool:
@@ -2637,6 +2673,13 @@ def resolve_flow_anchor(
     callee = _name(call.func)
     if callee is None:
         return None
+    sink_expression = call.args[0]
+    sink_argument = 0
+    if normalized_cwe == "CWE-88":
+        selected = _fixed_option_argv(call)
+        if selected is None:
+            return None
+        sink_expression, sink_argument = selected
     route = _route(tree, function)
     if route is None:
         return None
@@ -2772,7 +2815,7 @@ def resolve_flow_anchor(
                 ):
                     return None
         source = _trace_expression(
-            call.args[0],
+            sink_expression,
             definitions,
             call.lineno,
             callsite.branches,
@@ -2802,7 +2845,7 @@ def resolve_flow_anchor(
         sink_file=path,
         sink_line=call.lineno,
         sink_callee=callee,
-        sink_argument=0,
+        sink_argument=sink_argument,
         branch_nodes=callsite.branches,
         cwe=normalized_cwe,
     )

@@ -622,14 +622,29 @@ def _validated_v5_part(
         or (record.status == "HYPOTHESES") != bool(derived_seed_ids)
     ):
         raise ValueError(invalid)
+    revision = graph.get("proof_semantics_revision")
+    paths = graph.get("paths")
+    source_bound_path = (
+        revision == "v5-source-bound-3"
+        and isinstance(paths, list)
+        and any(
+            isinstance(path, dict)
+            and path.get("path_id") == checked.verified_path_id
+            and path.get("blocking_gaps") == []
+            for path in paths
+        )
+    )
+    # The rev3 path-specific attribution permits a positive path claim despite
+    # unrelated graph gaps. Earlier revisions still require the whole graph to
+    # be gap-free; missing revisions are never retroactively promoted.
     usable_path = (
         checked.verified_path_id
         if checked.status in {"HYPOTHESES", "NO_HYPOTHESIS"}
-        # Older saved graphs were built before import/launcher semantics were
-        # tightened. Preserve their review record, never promote their path
-        # assertions into new terminal coverage.
-        and graph.get("proof_semantics_revision") == "v5-source-bound-2"
-        and not graph.get("gaps")
+        and (
+            source_bound_path
+            or revision == "v5-source-bound-2"
+            and not graph.get("gaps")
+        )
         and not target.get("unavailable_items")
         and context.get("unavailable_item_count") == 0
         else None
