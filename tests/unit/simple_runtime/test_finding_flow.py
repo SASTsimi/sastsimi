@@ -52,6 +52,127 @@ def test_json_command_assignment_chain_resolves_from_sink_only(tmp_path: Path) -
     assert first.sink_callee == "subprocess.run"
 
 
+def test_cwe88_fixed_argv_same_flow_from_source_and_sink_hints(tmp_path: Path) -> None:
+    source = """import subprocess
+from flask import Flask, request
+app = Flask(__name__)
+@app.route('/list', methods=['POST'])
+def list_items():
+    data = request.get_json() or {}
+    filename = data.get('filename', '')
+    if not filename:
+        return ''
+    subprocess.run(['ls', '-l', filename], capture_output=True, text=True)
+"""
+    raw = source.encode()
+    (tmp_path / "app.py").write_bytes(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+    sink_hint = {"code_locations": ["app.py:10"]}
+    source_hint = {"code_locations": ["app.py:6", "app.py:7", "app.py:10"]}
+
+    first = resolve_flow_anchor(tmp_path, "app.py", sha, sink_hint, "CWE-88")
+    second = resolve_flow_anchor(tmp_path, "app.py", sha, source_hint, "CWE-88")
+
+    assert first is not None and first == second
+    assert first.route == "/list"
+    assert first.source_access == "request.json"
+    assert first.source_key == "filename"
+    assert first.sink_callee == "subprocess.run"
+    assert first.sink_argument == 2
+
+
+@pytest.mark.parametrize(
+    ("argv", "extra_keyword"),
+    [
+        ("['ls', '--', filename]", ""),
+        ("[data.get('command'), '-l', filename]", ""),
+        ("['ls', '-l', filename, data.get('other')]", ""),
+        ("['ls', '-l', filename]", ", shell=True"),
+        ("['ls', '-l', filename]", ", executable='other'"),
+        ("['ls', '-l', filename]", ", timeout=data.get('timeout')"),
+    ],
+)
+def test_cwe88_unproven_or_non_option_argv_abstains(
+    tmp_path: Path, argv: str, extra_keyword: str
+) -> None:
+    source = (
+        "import subprocess\nfrom flask import Flask, request\n"
+        "app = Flask(__name__)\n@app.route('/list', methods=['POST'])\n"
+        "def list_items():\n    data = request.get_json() or {}\n"
+        "    filename = data.get('filename', '')\n"
+        f"    subprocess.run({argv}, capture_output=True, text=True{extra_keyword})\n"
+    )
+    raw = source.encode()
+    (tmp_path / "app.py").write_bytes(raw)
+    assert (
+        resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:8"]},
+            "CWE-88",
+        )
+        is None
+    )
+
+
+def test_cwe88_different_source_keys_and_argv_slots_have_distinct_anchors(
+    tmp_path: Path,
+) -> None:
+    def anchor_for(key: str, argv: str) -> object:
+        source = (
+            "import subprocess\nfrom flask import Flask, request\n"
+            "app = Flask(__name__)\n@app.route('/list', methods=['POST'])\n"
+            "def list_items():\n    data = request.get_json() or {}\n"
+            f"    filename = data.get('{key}', '')\n"
+            f"    subprocess.run({argv}, capture_output=True, text=True)\n"
+        )
+        raw = source.encode()
+        (tmp_path / "app.py").write_bytes(raw)
+        return resolve_flow_anchor(
+            tmp_path,
+            "app.py",
+            hashlib.sha256(raw).hexdigest(),
+            {"code_locations": ["app.py:8"]},
+            "CWE-88",
+        )
+
+    first = anchor_for("filename", "['ls', '-l', filename]")
+    other_key = anchor_for("other", "['ls', '-l', filename]")
+    other_slot = anchor_for("filename", "['ls', filename]")
+
+    assert first is not None and other_key is not None and other_slot is not None
+    assert first != other_key
+    assert first != other_slot
+
+
+def test_cwe88_distinct_branches_abstain_instead_of_merging(tmp_path: Path) -> None:
+    source = """import subprocess
+from flask import Flask, request
+app = Flask(__name__)
+@app.route('/list', methods=['POST'])
+def list_items():
+    data = request.get_json() or {}
+    filename = data.get('filename', '')
+    if data.get('mode'):
+        subprocess.run(['ls', '-l', filename], capture_output=True, text=True)
+    else:
+        subprocess.run(['ls', '-l', filename], capture_output=True, text=True)
+"""
+    raw = source.encode()
+    (tmp_path / "app.py").write_bytes(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+    first = resolve_flow_anchor(
+        tmp_path, "app.py", sha, {"code_locations": ["app.py:9"]}, "CWE-88"
+    )
+    second = resolve_flow_anchor(
+        tmp_path, "app.py", sha, {"code_locations": ["app.py:11"]}, "CWE-88"
+    )
+    assert first is not None
+    assert first.branch_nodes == ("if:8:yes",)
+    assert second is None
+
+
 def test_distinct_keys_sink_arguments_callsites_and_branches_do_not_merge(
     tmp_path: Path,
 ) -> None:
