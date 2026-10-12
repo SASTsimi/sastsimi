@@ -114,6 +114,7 @@ from .scope_policy import (
     verified_policy_snapshot,
 )
 from .store import SimpleCheckpointStore
+from .surface_evidence_validation_v5 import validate_v5_context
 from .surface_proof_read import (
     read_surface_scope_certificate,
     verified_surface_coverage_counts,
@@ -1266,6 +1267,7 @@ def _verification_anchor_refs(
             "simple_surface_context_v1": "surface_context_ref",
             "simple_surface_context_v2": "surface_context_ref",
             "simple_surface_context_v3": "surface_context_ref",
+            "simple_surface_context_v5": "surface_context_ref",
             "simple_hypothesis_source_page": "page_input_ref",
         }.get(kind if isinstance(kind, str) else "")
         if source_link is not None and (
@@ -1381,6 +1383,63 @@ def _verification_anchor_refs(
                         ):
                             raise ValueError("pinned source unavailable")
                         supporting.add((step["path"], step["line"]))
+        elif kind == "simple_surface_context_v5":
+            if proposal.get("surface_id") != source.get("surface_id"):
+                raise ValueError("surface anchor mismatch")
+            graph_hash = source.get("graph_hash")
+            if (
+                not isinstance(graph_hash, str)
+                or len(graph_hash) != 64
+                or any(char not in "0123456789abcdef" for char in graph_hash)
+            ):
+                raise ValueError("surface graph hash invalid")
+            graph_ref = StoredDataRef.model_validate(
+                {
+                    **source_ref.model_dump(mode="json"),
+                    "stored_data_id": graph_hash,
+                    "content_hash": graph_hash,
+                }
+            )
+            graph = json.loads(artifacts.read(graph_ref))
+            validate_v5_context(
+                {
+                    "context_payload": source,
+                    "graph_payload": graph,
+                    "context_hash": source_ref.content_hash,
+                    "context_id": proposal.get("context_id"),
+                }
+            )
+            for value in graph["source_files"]:
+                path = value.get("path")
+                digest = value.get("source_sha256")
+                if (
+                    not isinstance(path, str)
+                    or not tracked_path(path)
+                    or path in source_hashes
+                    or not isinstance(digest, str)
+                    or len(digest) != 64
+                    or any(char not in "0123456789abcdef" for char in digest)
+                ):
+                    raise ValueError("surface source file invalid")
+                source_hashes[path] = digest
+            for item in source["items"]:
+                if item["category"] != "source_lines":
+                    continue
+                value = item["value"]
+                path = value.get("path")
+                line = value.get("line")
+                text = value.get("text")
+                if (
+                    not isinstance(path, str)
+                    or path not in source_hashes
+                    or value.get("source_sha256") != source_hashes[path]
+                    or type(line) is not int
+                    or line < 1
+                    or not isinstance(text, str)
+                    or (path, line) in available
+                ):
+                    raise ValueError("surface source line invalid")
+                available[(path, line)] = text
         elif kind == "simple_hypothesis_source_page":
             page = source.get("page")
             segments = page.get("segments") if isinstance(page, dict) else None
