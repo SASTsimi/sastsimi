@@ -17,6 +17,7 @@ from sastsimi.config.user_config import (
     SimpleExecutionProfile,
     SimpleToolBinding,
 )
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.ports.docker_state import DockerContainerState
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome, DockerOperationError
 from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
@@ -80,12 +81,32 @@ class _BuildFailurePortableDockerRuntime(PortableDockerRuntime):
     ) -> DockerCommandOutcome:
         del timeout_seconds, input_bytes
         self.calls.append(tuple(args))
+        if args[0] == "info":
+            return DockerCommandOutcome(0, b"29.8.1\n", b"", False)
         return DockerCommandOutcome(
             exit_code=1,
             stdout=b"",
             stderr=b"uv sync: Git executable not found\n",
             timed_out=False,
         )
+
+
+class _ScriptedBuildPortableDockerRuntime(PortableDockerRuntime):
+    def __init__(self, outcomes: list[DockerCommandOutcome]) -> None:
+        self._outcomes = iter(outcomes)
+        self._network = "none"
+        self._timeout = 60
+        self.calls: list[tuple[tuple[str, ...], int, bytes | None]] = []
+
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout_seconds: int,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        self.calls.append((tuple(args), timeout_seconds, input_bytes))
+        return next(self._outcomes)
 
 
 class _OwnedListDocker(PortableDockerRuntime):
@@ -357,8 +378,190 @@ async def test_failed_docker_build_keeps_diagnostic_output() -> None:
         )
 
     assert "--quiet" not in docker.calls[1]
+    assert failure.value.code == "DOCKER_BUILD_FAILED"
     assert failure.value.outcome is not None
     assert b"Git executable not found" in failure.value.outcome.stderr
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        b"open //./pipe/dockerDesktopLinuxEngine: "
+        b"The system cannot find the file specified",
+        b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    ],
+)
+async def test_failed_build_reports_unavailable_api_with_original_output(
+    diagnostic: bytes,
+) -> None:
+    build_failure = DockerCommandOutcome(
+        1, b"partial build stdout", diagnostic + b" secret=private", False
+    )
+    docker = _ScriptedBuildPortableDockerRuntime(
+        [
+            DockerCommandOutcome(1, b"", b"No such image", False),
+            build_failure,
+            DockerCommandOutcome(1, b"", diagnostic, False),
+        ]
+    )
+
+    with pytest.raises(DockerOperationError) as failure:
+        await docker.build_or_reuse(
+            workspace=Path.cwd(),
+            dockerfile=b"FROM python:3.12-slim\n",
+            cache_key="daemon-outage",
+            labels={},
+        )
+
+    assert failure.value.code == "DOCKER_API_UNAVAILABLE"
+    assert str(failure.value) == "DOCKER_API_UNAVAILABLE"
+    assert failure.value.outcome is build_failure
+    assert [call[0][0] for call in docker.calls] == ["image", "build", "info"]
+    assert docker.calls[-1] == (("info", "--format", "{{.ServerVersion}}"), 10, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        b"Dockerfile parse error: unknown instruction",
+        b"RUN pip install: no matching distribution found",
+        b"failed to resolve source metadata: network timeout",
+        b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    ],
+)
+async def test_failed_build_with_reachable_api_remains_build_failure(
+    diagnostic: bytes,
+) -> None:
+    build_failure = DockerCommandOutcome(1, b"build trace", diagnostic, False)
+    docker = _ScriptedBuildPortableDockerRuntime(
+        [
+            DockerCommandOutcome(1, b"", b"No such image", False),
+            build_failure,
+            DockerCommandOutcome(0, b"28.0.0\n", b"", False),
+        ]
+    )
+
+    with pytest.raises(DockerOperationError) as failure:
+        await docker.build_or_reuse(
+            workspace=Path.cwd(),
+            dockerfile=b"FROM python:3.12-slim\n",
+            cache_key="real-build-failure",
+            labels={},
+        )
+
+    assert failure.value.code == "DOCKER_BUILD_FAILED"
+    assert failure.value.outcome is build_failure
+    assert [call[0][0] for call in docker.calls] == ["image", "build", "info"]
+
+
+@pytest.mark.asyncio
+async def test_post_build_inspect_outage_preserves_inspect_diagnostics() -> None:
+    inspect_failure = DockerCommandOutcome(
+        1, b"inspect stdout", b"Cannot connect to the Docker daemon", False
+    )
+    docker = _ScriptedBuildPortableDockerRuntime(
+        [
+            DockerCommandOutcome(1, b"", b"No such image", False),
+            DockerCommandOutcome(0, b"build complete", b"", False),
+            inspect_failure,
+            DockerCommandOutcome(1, b"", b"daemon unavailable", False),
+        ]
+    )
+
+    with pytest.raises(DockerOperationError) as failure:
+        await docker.build_or_reuse(
+            workspace=Path.cwd(),
+            dockerfile=b"FROM python:3.12-slim\n",
+            cache_key="post-build-outage",
+            labels={},
+        )
+
+    assert failure.value.code == "DOCKER_API_UNAVAILABLE"
+    assert failure.value.outcome is inspect_failure
+    assert [call[0][0] for call in docker.calls] == ["image", "build", "image", "info"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (DockerCommandOutcome(0, b"28.0.0\n", b"", False), True),
+        (DockerCommandOutcome(0, b"", b"", False), False),
+        (DockerCommandOutcome(0, b"not-a-version\n", b"", False), False),
+        (DockerCommandOutcome(1, b"", b"daemon unavailable", False), False),
+        (DockerCommandOutcome(-1, b"", b"", True), False),
+    ],
+)
+async def test_api_available_uses_bounded_read_only_probe(
+    outcome: DockerCommandOutcome, expected: bool
+) -> None:
+    docker = _ScriptedBuildPortableDockerRuntime([outcome])
+
+    assert await docker.api_available() is expected
+    assert docker.calls == [(("info", "--format", "{{.ServerVersion}}"), 10, None)]
+
+
+@pytest.mark.asyncio
+async def test_api_available_handles_missing_docker_executable() -> None:
+    class _MissingExecutableDocker(_ScriptedBuildPortableDockerRuntime):
+        async def _run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout_seconds: int,
+            input_bytes: bytes | None = None,
+        ) -> DockerCommandOutcome:
+            del args, timeout_seconds, input_bytes
+            raise FileNotFoundError("private installation path")
+
+    docker = _MissingExecutableDocker([])
+
+    assert await docker.api_available() is False
+
+
+@pytest.mark.asyncio
+async def test_api_outage_attempt_artifacts_keep_original_bounded_streams(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Dockerfile").write_bytes(b"FROM python:3.12-slim\n")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-api-outage",
+        workspace_id="workspace-api-outage",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-api-outage",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    stdout = b"partial build stdout"
+    stderr = b"open //./pipe/dockerDesktopLinuxEngine: missing secret=private"
+    docker = _ScriptedBuildPortableDockerRuntime(
+        [
+            DockerCommandOutcome(1, b"", b"No such image", False),
+            DockerCommandOutcome(1, stdout, stderr, False),
+            DockerCommandOutcome(1, b"probe stdout", b"probe stderr", False),
+        ]
+    )
+
+    with pytest.raises(DockerOperationError) as failure:
+        await DirectEnvironmentPreparer(
+            docker=docker,
+            artifacts=artifacts,
+            workspace=workspace,
+        ).prepare(
+            _environment_checkpoint(artifacts, action="RETRY_STAGE", patch=""),
+            {},
+            (),
+        )
+
+    assert failure.value.code == "DOCKER_API_UNAVAILABLE"
+    assert str(failure.value) == "DOCKER_API_UNAVAILABLE"
+    attempt = json.loads(artifacts.read(failure.value.attempt_refs[0]))  # type: ignore[attr-defined]
+    assert attempt["error_code"] == "DOCKER_API_UNAVAILABLE"
+    assert artifacts.read(StoredDataRef.model_validate(attempt["stdout_ref"])) == stdout
+    assert artifacts.read(StoredDataRef.model_validate(attempt["stderr_ref"])) == stderr
 
 
 class _ArchiveDocker(PortableDockerRuntime):
@@ -383,6 +586,8 @@ class _ArchiveDocker(PortableDockerRuntime):
             )
         if call[:2] == ("image", "inspect"):
             return DockerCommandOutcome(1, b"", b"not found", False)
+        if call[0] == "info":
+            return DockerCommandOutcome(0, b"29.8.1\n", b"", False)
         return DockerCommandOutcome(0, b"", b"", False)
 
 
@@ -1000,6 +1205,99 @@ async def test_archive_build_rejects_non_engine_builder(tmp_path: Path) -> None:
             context_archive=raw,
         )
     assert len(docker.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "builder_failure",
+    [
+        DockerCommandOutcome(
+            1,
+            b"builder stdout",
+            b"missing dockerDesktopLinuxEngine pipe secret=private",
+            False,
+        ),
+        DockerCommandOutcome(-1, b"partial stdout", b"probe timed out", True),
+    ],
+)
+async def test_archive_builder_failure_reports_api_outage_when_daemon_absent(
+    tmp_path: Path, builder_failure: DockerCommandOutcome
+) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
+    docker = _ScriptedBuildPortableDockerRuntime(
+        [
+            builder_failure,
+            DockerCommandOutcome(1, b"probe stdout", b"daemon unavailable", False),
+        ]
+    )
+
+    with pytest.raises(DockerOperationError) as failure:
+        await docker.build_or_reuse(
+            workspace=workspace,
+            dockerfile=dockerfile,
+            cache_key="offline-builder-outage",
+            labels={},
+            context_archive=raw,
+        )
+
+    assert failure.value.code == "DOCKER_API_UNAVAILABLE"
+    assert str(failure.value) == "DOCKER_API_UNAVAILABLE"
+    assert failure.value.outcome is builder_failure
+    assert docker.calls == [
+        (("buildx", "inspect"), 30, None),
+        (("info", "--format", "{{.ServerVersion}}"), 10, None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_archive_builder_failure_with_reachable_api_remains_unsupported(
+    tmp_path: Path,
+) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
+    docker = _ScriptedBuildPortableDockerRuntime(
+        [
+            DockerCommandOutcome(1, b"", b"buildx plugin missing", False),
+            DockerCommandOutcome(0, b"29.8.1\n", b"", False),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_BUILDER_UNSUPPORTED"):
+        await docker.build_or_reuse(
+            workspace=workspace,
+            dockerfile=dockerfile,
+            cache_key="offline-builder-unsupported",
+            labels={},
+            context_archive=raw,
+        )
+
+    assert [call[0][0] for call in docker.calls] == ["buildx", "info"]
+
+
+@pytest.mark.asyncio
+async def test_archive_builder_success_with_malformed_output_remains_unsupported(
+    tmp_path: Path,
+) -> None:
+    workspace, commit = _committed_workspace(tmp_path)
+    dockerfile = b"FROM python:3.12-slim\n"
+    raw = build_pinned_context(workspace, commit, dockerfile, {})
+    docker = _ScriptedBuildPortableDockerRuntime(
+        [DockerCommandOutcome(0, b"Driver: docker\n", b"", False)]
+    )
+
+    with pytest.raises(ValueError, match="POC_OFFLINE_BUILDER_UNSUPPORTED"):
+        await docker.build_or_reuse(
+            workspace=workspace,
+            dockerfile=dockerfile,
+            cache_key="offline-builder-malformed",
+            labels={},
+            context_archive=raw,
+        )
+
+    assert [call[0][0] for call in docker.calls] == ["buildx"]
 
 
 @pytest.mark.parametrize(

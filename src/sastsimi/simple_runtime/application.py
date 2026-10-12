@@ -273,6 +273,7 @@ class SimpleAnalysisApplication:
         owned_attempt_container: (
             Callable[[CheckpointIdentity, str], Awaitable[bool]] | None
         ) = None,
+        docker_api_available: Callable[[], Awaitable[bool]] | None = None,
         git_executable: str = "git",
     ) -> None:
         if not 1 <= max_parallel_hypotheses <= 32:
@@ -312,6 +313,7 @@ class SimpleAnalysisApplication:
         )
         self._offline_repair_preflight = offline_repair_preflight
         self._owned_attempt_container = owned_attempt_container
+        self._docker_api_available = docker_api_available
         self._git_executable = git_executable
 
     async def analyze(
@@ -509,7 +511,7 @@ class SimpleAnalysisApplication:
         supplement_saved_v2_ast_orphans: bool = False,
         enrich_saved_surface_evidence: bool = False,
     ) -> SimpleAnalysisOutcome:
-        if (
+        repair_request_count = (
             sum(
                 value is not None
                 for value in (
@@ -545,8 +547,8 @@ class SimpleAnalysisApplication:
             )
             + int(supplement_saved_v2_ast_orphans)
             + int(enrich_saved_surface_evidence)
-            > 1
-        ):
+        )
+        if repair_request_count > 1:
             raise ValueError("LEGACY_IMPORT_STOP_REPAIR_CONFLICT")
         exact = self._display.resolve(analysis_id_or_display)
         try:
@@ -754,6 +756,8 @@ class SimpleAnalysisApplication:
                                 ),
                             ),
                         )
+                if repair_request_count == int(enrich_saved_surface_evidence):
+                    await self._prepare_docker_daemon_replay_locked(exact)
                 outcome = await self._resume_locked(exact)
                 return (
                     outcome.model_copy(
@@ -2666,6 +2670,7 @@ class SimpleAnalysisApplication:
         hypothesis_id: str,
         *,
         interrupted_budget_reuse: bool = False,
+        docker_daemon_replay: bool = False,
     ) -> None:
         """Verify the pinned checkout before reopening one bound child attempt."""
 
@@ -2755,7 +2760,17 @@ class SimpleAnalysisApplication:
                 "INITIAL_ENVIRONMENT_EXHAUSTION_PROPOSAL_INVALID"
             ) from error
         artifacts = SimpleArtifactRepository(self._data_dir, child)
-        if interrupted_budget_reuse:
+        if docker_daemon_replay:
+            if self._docker_api_available is None:
+                raise ValueError("DOCKER_DAEMON_REPLAY_NOT_CONFIGURED")
+            try:
+                daemon_ready = await self._docker_api_available()
+            except (OSError, RuntimeError, ValueError):
+                daemon_ready = False
+            self._store.prepare_docker_daemon_replay(
+                exhausted, artifacts, daemon_ready=daemon_ready
+            )
+        elif interrupted_budget_reuse:
             self._store.prepare_interrupted_initial_exhaustion_replay(
                 exhausted, artifacts
             )
@@ -2763,6 +2778,34 @@ class SimpleAnalysisApplication:
             self._store.prepare_initial_environment_exhaustion_replay(
                 exhausted, artifacts
             )
+
+    async def _prepare_docker_daemon_replay_locked(self, analysis_id: str) -> None:
+        """Try only saved Docker API failures during an ordinary leased resume."""
+
+        if (
+            self._docker_api_available is None
+            or self._store.unresolved_codex_call(analysis_id) is not None
+        ):
+            return
+        for checkpoint in self._store.list_checkpoints(analysis_id):
+            if (
+                checkpoint.identity.hypothesis_id is None
+                or checkpoint.stage is not SimpleStage.VERIFICATION_INITIAL_DONE
+                or checkpoint.status is not StageStatus.BLOCKED
+                or checkpoint.retryable
+                or checkpoint.error_code
+                not in {"RECOVERY_EXHAUSTED", "DOCKER_API_UNAVAILABLE"}
+            ):
+                continue
+            try:
+                await self._prepare_initial_environment_exhaustion_locked(
+                    analysis_id,
+                    checkpoint.identity.hypothesis_id,
+                    docker_daemon_replay=True,
+                )
+            except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                # The saved failure remains authoritative when any proof fails.
+                continue
 
     def _prepare_report_validator_locked(
         self, analysis_id: str, hypothesis_id: str

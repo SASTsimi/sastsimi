@@ -21,7 +21,7 @@ from typing import cast
 from .artifacts import SimpleArtifactRepository
 from .attack_surfaces import AttackSurface, SurfaceIndex
 from .call_path_facts import PythonCallPathIndex
-from .file_context import prepare_file_context
+from .file_context import PreparedFileContext, prepare_file_context
 from .http_route_facts_v5 import _MethodAnalyzer, _module, verified_http_paths
 from .operational_config_v5 import (
     OperationalRouteBinding,
@@ -49,6 +49,8 @@ _REPLACEABLE_GAPS = frozenset(
 )
 _MAX_PARSER_BYTES = 256 * 1024
 _MAX_LAUNCHER_BYTES = 32 * 1024
+_HTTP_CONTEXT_RADIUS = 3
+_MAX_HTTP_CONTEXT_LINES = 16
 _ROUTE_VERIFICATION_TOKEN = object()
 _HTTP_MODULE_SHADOW_NAMES = ("http.py", "http.pyc", "http.so", "http.pyd")
 
@@ -356,33 +358,48 @@ def _add_http_source_lines(
     manifest_index: Mapping[str, Mapping[str, object]],
     workspace: Path,
     artifacts: SimpleArtifactRepository,
+    *,
+    prepared_cache: dict[str, PreparedFileContext | None] | None = None,
 ) -> bool:
-    """Add only redacted, indexed, exact step lines absent from the v4 graph."""
+    """Atomically add redacted, indexed source lines absent from the graph."""
 
     files = cast(list[dict[str, object]], graph["source_files"])
     lines = cast(list[dict[str, object]], graph["source_lines"])
     existing_files = {cast(str, row["path"]) for row in files}
     existing_lines = {(cast(str, row["path"]), cast(int, row["line"])) for row in lines}
+    pending_files: list[dict[str, object]] = []
+    pending_lines: list[dict[str, object]] = []
     source_hashes = dict(index.ast_source_hashes)
     for path in sorted({path for path, _ in locations}):
         expected = source_hashes.get(path)
         if expected is None or path not in manifest_index:
             return False
-        prepared = prepare_file_context(
-            artifacts,
-            ast_summary,
-            workspace,
-            path,
-            manifest_index=manifest_index,
-        )
+        cached = prepared_cache is not None and path in prepared_cache
+        if prepared_cache is not None and path in prepared_cache:
+            prepared = prepared_cache[path]
+        else:
+            prepared = prepare_file_context(
+                artifacts,
+                ast_summary,
+                workspace,
+                path,
+                manifest_index=manifest_index,
+            )
+        if prepared is None:
+            return False
         if (
             prepared.source_unavailable_reason is not None
             or prepared.ast_unavailable_reason is not None
             or prepared.ast_file_ref is None
             or prepared.source_sha256 != expected
         ):
+            if prepared_cache is not None:
+                prepared_cache[path] = None
             return False
-        _raw_source(workspace, path, expected)
+        if not cached:
+            _raw_source(workspace, path, expected)
+            if prepared_cache is not None:
+                prepared_cache[path] = prepared
         additions: list[dict[str, object]] = []
         for _, line in sorted(
             location for location in locations if location[0] == path
@@ -404,7 +421,7 @@ def _add_http_source_lines(
                 }
             )
         if path not in existing_files:
-            files.append(
+            pending_files.append(
                 {
                     "path": path,
                     "source_sha256": expected,
@@ -413,10 +430,81 @@ def _add_http_source_lines(
                     "redaction_categories": list(prepared.redaction_categories),
                 }
             )
-            existing_files.add(path)
-        lines.extend(additions)
-        existing_lines.update((path, cast(int, row["line"])) for row in additions)
+        pending_lines.extend(additions)
+    files.extend(pending_files)
+    lines.extend(pending_lines)
     return True
+
+
+def _supplemental_http_locations(
+    index: SurfaceIndex,
+    workspace: Path,
+    steps: list[dict[str, object]],
+) -> list[tuple[str, int]]:
+    """Select nearby syntax context without treating it as a path step."""
+
+    hashes = dict(index.ast_source_hashes)
+    by_path: dict[str, set[int]] = {}
+    for step in steps:
+        path, line = step.get("path"), step.get("line")
+        if isinstance(path, str) and path.endswith(".py") and type(line) is int:
+            if step.get("source_sha256") != hashes.get(path):
+                raise ValueError("SURFACE_GRAPH_HTTP_SOURCE_MISMATCH")
+            by_path.setdefault(path, set()).add(line)
+    ranked: list[tuple[int, str, int]] = []
+    for path, step_lines in sorted(by_path.items()):
+        expected = hashes.get(path)
+        if expected is None:
+            continue
+        raw = _raw_source(workspace, path, expected)
+        try:
+            source = raw.decode("utf-8")
+            source_lines = source.splitlines()
+            tree = ast.parse(source, filename=path)
+        except (UnicodeError, SyntaxError, RecursionError) as error:
+            raise ValueError("SURFACE_GRAPH_AST_SOURCE_MISMATCH") from error
+        methods = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        candidates: set[int] = set()
+        for step_line in step_lines:
+            enclosing = [
+                method
+                for method in methods
+                if method.lineno <= step_line <= (method.end_lineno or method.lineno)
+            ]
+            if not enclosing:
+                continue
+            method = min(
+                enclosing,
+                key=lambda node: (node.end_lineno or node.lineno) - node.lineno,
+            )
+            pending: list[ast.AST] = list(method.body)
+            while pending:
+                node = pending.pop()
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
+                    continue
+                if isinstance(node, ast.stmt):
+                    line = node.lineno
+                    if abs(line - step_line) <= _HTTP_CONTEXT_RADIUS:
+                        candidates.add(line)
+                    if isinstance(node, ast.If) and node.orelse:
+                        marker = node.orelse[0].lineno - 1
+                        if (
+                            abs(marker - step_line) <= _HTTP_CONTEXT_RADIUS
+                            and 1 <= marker <= len(source_lines)
+                            and source_lines[marker - 1].strip() == "else:"
+                        ):
+                            candidates.add(marker)
+                pending.extend(ast.iter_child_nodes(node))
+        for line in candidates:
+            distance = min(abs(line - step_line) for step_line in step_lines)
+            ranked.append((distance, path, line))
+    return [(path, line) for _, path, line in sorted(ranked)]
 
 
 def _single_assignment(statement: ast.stmt) -> tuple[str, ast.expr] | None:
@@ -2540,6 +2628,46 @@ def extract_surface_graph_v5(
             }
         )
     gaps.update((surface.path, reason) for reason in route_map.gaps)
+    verified_http_steps = [
+        step
+        for path in graph_paths
+        if path.get("kind")
+        in {"stdlib_http_call_path_v5", "operational_xml_call_path_v5"}
+        for step in cast(list[dict[str, object]], path["steps"])
+    ]
+    remaining = min(
+        _MAX_HTTP_CONTEXT_LINES,
+        max(0, max_nodes - len(nodes) - len(lines) - len(facts)),
+    )
+    if verified_http_steps and remaining:
+        existing = {(cast(str, row["path"]), cast(int, row["line"])) for row in lines}
+        added = 0
+        prepared_cache: dict[str, PreparedFileContext | None] = {}
+        for location in _supplemental_http_locations(
+            index, workspace, verified_http_steps
+        ):
+            if added == remaining:
+                break
+            if location in existing:
+                continue
+            if _add_http_source_lines(
+                graph,
+                {location},
+                index,
+                ast_summary,
+                manifest_index,
+                workspace,
+                artifacts,
+                prepared_cache=prepared_cache,
+            ):
+                added += 1
+        for path, prepared in sorted(prepared_cache.items()):
+            if prepared is None:
+                continue
+            expected = source_hashes.get(path)
+            if expected is None:
+                raise ValueError("SURFACE_GRAPH_HTTP_SOURCE_MISMATCH")
+            _raw_source(workspace, path, expected)
     graph["source_files"] = sorted(
         cast(list[dict[str, object]], graph["source_files"]),
         key=lambda row: cast(str, row["path"]),

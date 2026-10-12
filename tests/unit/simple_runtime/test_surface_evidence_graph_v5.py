@@ -21,11 +21,18 @@ from sastsimi.simple_runtime.call_path_facts import (
     CandidateCallPaths,
     build_python_call_path_index,
 )
+from sastsimi.simple_runtime.file_context import (
+    PreparedFileContext,
+    prepare_file_context,
+)
 from sastsimi.simple_runtime.http_route_facts_v5 import verified_http_paths
 from sastsimi.simple_runtime.models import CheckpointIdentity
 from sastsimi.simple_runtime.operational_config_v5 import (
     OperationalRouteMap,
     load_operational_routes,
+)
+from sastsimi.simple_runtime.surface_evidence_graph_v4 import (
+    _raw_source as original_raw_source,
 )
 from sastsimi.simple_runtime.surface_evidence_graph_v5 import (
     VerifiedOperationalRoutes,
@@ -364,6 +371,30 @@ def test_source_mutation_cannot_add_a_http_graph_path(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="SOURCE_HASH_MISMATCH"):
         _graph(fixture)
+
+
+def test_source_line_batch_failure_leaves_graph_unchanged(tmp_path: Path) -> None:
+    fixture = _fixture(
+        tmp_path,
+        {"a.py": b"value = 1\n", "z.py": b"#" + b"x" * 65537 + b"\n"},
+        surface_path="a.py",
+        surface_line=1,
+    )
+    index, _surface, summary, manifest, workspace, artifacts = fixture
+    graph: dict[str, object] = {"source_files": [], "source_lines": []}
+
+    added = graph_v5._add_http_source_lines(
+        graph,
+        {("a.py", 1), ("z.py", 1)},
+        index,
+        summary,
+        manifest,
+        workspace,
+        artifacts,
+    )
+
+    assert not added
+    assert graph == {"source_files": [], "source_lines": []}
 
 
 _PARSER = b"""import xml.etree.ElementTree as XML
@@ -792,6 +823,254 @@ def test_imported_http_entry_reaches_class_body_registry_and_override(
     assert "REQUEST_CONTEXT" in {step["role"] for step in steps}
     assert "DYNAMIC_DISPATCH_UNRESOLVED" not in {
         row["reason"] for row in _rows(graph, "gaps")
+    }
+
+
+def test_verified_operational_http_path_adds_redacted_input_and_control_context(
+    tmp_path: Path,
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map)
+
+    path = next(
+        row
+        for row in _rows(graph, "paths")
+        if row["kind"] == "operational_xml_call_path_v5"
+    )
+    lines = {
+        row["line"]: _source_text(row)
+        for row in _rows(graph, "source_lines")
+        if row["path"] == "pkg/dispatch.py"
+    }
+    assert lines[37] == "        parsed = urlparse.urlparse(self.path)"
+    assert lines[38] == "        self.path = parsed.path"
+    assert lines[39] == "        if self.path in self.routes:"
+    assert lines[41] == "        else:"
+    steps = _rows(path, "steps")
+    assert {(step["path"], step["line"]) for step in steps}.isdisjoint(
+        {("pkg/dispatch.py", line) for line in (37, 38, 39, 41)}
+    )
+    edge_ids = path["edge_ids"]
+    assert isinstance(edge_ids, list)
+    assert len(edge_ids) == len(steps) - 1
+    assert len(_rows(graph, "edges")) == len(steps) - 1
+    assert path["assurance"] == "SYNTACTIC_REACHABILITY"
+    assert not any(
+        row["path"] == "cfg/routes.xml" for row in _rows(graph, "source_lines")
+    )
+    serialized = json.dumps(graph)
+    for private in (
+        "good_path",
+        "evil_path",
+        "private answer",
+        "private objective",
+    ):
+        assert private not in serialized
+
+
+def test_supplemental_http_context_prepares_each_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+    original_locations = graph_v5._supplemental_http_locations
+    original_prepare = prepare_file_context
+    supplemental_started = False
+    prepare_count = 0
+
+    def mark_supplemental_phase(
+        index: SurfaceIndex, workspace: Path, steps: list[dict[str, object]]
+    ) -> list[tuple[str, int]]:
+        nonlocal supplemental_started
+        supplemental_started = True
+        return original_locations(index, workspace, steps)
+
+    def count_prepared_file(
+        artifacts: SimpleArtifactRepository,
+        ast_summary: Mapping[str, object],
+        workspace: Path,
+        path: str,
+        *,
+        manifest_index: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> PreparedFileContext:
+        nonlocal prepare_count
+        if supplemental_started and path == "pkg/dispatch.py":
+            prepare_count += 1
+        return original_prepare(
+            artifacts,
+            ast_summary,
+            workspace,
+            path,
+            manifest_index=manifest_index,
+        )
+
+    monkeypatch.setattr(
+        graph_v5, "_supplemental_http_locations", mark_supplemental_phase
+    )
+    monkeypatch.setattr(graph_v5, "prepare_file_context", count_prepared_file)
+
+    graph = _graph(fixture, route_map)
+
+    assert {
+        row["line"]
+        for row in _rows(graph, "source_lines")
+        if row["path"] == "pkg/dispatch.py"
+    } >= {37, 38, 39, 41}
+    assert prepare_count == 1
+
+
+def test_supplemental_http_context_rechecks_cached_source_before_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+    original_locations = graph_v5._supplemental_http_locations
+    supplemental_started = False
+    mutated = False
+
+    def mark_supplemental_phase(
+        index: SurfaceIndex, workspace: Path, steps: list[dict[str, object]]
+    ) -> list[tuple[str, int]]:
+        nonlocal supplemental_started
+        locations = original_locations(index, workspace, steps)
+        supplemental_started = True
+        return locations
+
+    def mutate_after_first_source_verification(
+        workspace: Path, path: str, expected_hash: str
+    ) -> bytes:
+        nonlocal mutated
+        raw = original_raw_source(workspace, path, expected_hash)
+        if supplemental_started and path == "pkg/dispatch.py" and not mutated:
+            source = workspace / path
+            source.write_bytes(source.read_bytes() + b"\n# changed mid-scan\n")
+            mutated = True
+        return raw
+
+    monkeypatch.setattr(
+        graph_v5, "_supplemental_http_locations", mark_supplemental_phase
+    )
+    monkeypatch.setattr(graph_v5, "_raw_source", mutate_after_first_source_verification)
+
+    with pytest.raises(ValueError, match="SURFACE_GRAPH_SOURCE_HASH_MISMATCH"):
+        _graph(fixture, route_map)
+    assert mutated
+
+
+def test_supplemental_http_line_uses_redacted_source(tmp_path: Path) -> None:
+    parser = _COMPOSITE_PARSER.replace(
+        b"parsed = urlparse.urlparse(self.path)",
+        b"parsed = urlparse.urlparse(self.path) # Authorization: synthetic-secret",
+    )
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=parser,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map)
+
+    line = next(
+        row
+        for row in _rows(graph, "source_lines")
+        if row["path"] == "pkg/dispatch.py" and row["line"] == 37
+    )
+    assert "parsed = urlparse.urlparse(self.path)" in _source_text(line)
+    assert "synthetic-secret" not in json.dumps(graph)
+
+
+def test_invalid_supplemental_line_does_not_hide_valid_neighbor(
+    tmp_path: Path,
+) -> None:
+    parser = _COMPOSITE_PARSER.replace(
+        b"parsed = urlparse.urlparse(self.path)",
+        b"parsed = urlparse.urlparse(self.path) # " + b"x" * 65537,
+    )
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=parser,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map)
+
+    assert any(
+        row["kind"] == "operational_xml_call_path_v5" for row in _rows(graph, "paths")
+    )
+    lines = {
+        row["line"]: _source_text(row)
+        for row in _rows(graph, "source_lines")
+        if row["path"] == "pkg/dispatch.py"
+    }
+    assert 37 not in lines
+    assert lines[38] == "        self.path = parsed.path"
+    assert lines[39] == "        if self.path in self.routes:"
+
+
+def test_supplemental_http_context_never_displaces_a_verified_path(
+    tmp_path: Path,
+) -> None:
+    fixture, route_map = _git_fixture(
+        tmp_path,
+        parser_source=_COMPOSITE_PARSER,
+        target_source=_COMPOSITE_TARGET,
+        launcher_source=_SEPARATE_LAUNCHER,
+        entry_source=_COMPOSITE_START,
+        extra_sources={"pkg/httpd.py": _COMPOSITE_SERVER},
+        surface_line=21,
+        surface_symbol="synthetic.sink-label",
+    )
+
+    graph = _graph(fixture, route_map, max_nodes=31)
+
+    assert any(
+        row["kind"] == "operational_xml_call_path_v5" for row in _rows(graph, "paths")
+    )
+    assert (
+        sum(
+            len(_rows(graph, category))
+            for category in ("source_lines", "ast_facts", "nodes")
+        )
+        <= 31
+    )
+    assert ("pkg/dispatch.py", 37) not in {
+        (row["path"], row["line"]) for row in _rows(graph, "source_lines")
     }
 
 

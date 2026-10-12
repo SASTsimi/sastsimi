@@ -64,6 +64,9 @@ from .stages import ReproductionEnvironment
 _RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _FULL_CONTAINER_ID = re.compile(r"[0-9a-f]{64}\Z")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DOCKER_SERVER_VERSION = re.compile(
+    rb"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9._-]+)?\Z"
+)
 _COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _MAX_OUTPUT = 1024 * 1024
 _MAX_PINNED_CONTEXT_BYTES = 64 * 1024 * 1024
@@ -705,6 +708,21 @@ class PortableDockerRuntime:
         self._container_limit = profile.max_parallel_containers
         self._offline_base_lock = asyncio.Lock()
 
+    async def api_available(self) -> bool:
+        """Check the configured Docker daemon without exposing probe output."""
+
+        try:
+            outcome = await self._run(
+                ("info", "--format", "{{.ServerVersion}}"), timeout_seconds=10
+            )
+        except OSError:
+            return False
+        return bool(
+            not outcome.timed_out
+            and outcome.exit_code == 0
+            and _DOCKER_SERVER_VERSION.fullmatch(outcome.stdout.strip())
+        )
+
     async def build_or_reuse(
         self,
         *,
@@ -752,6 +770,10 @@ class PortableDockerRuntime:
                 builder.stdout,
             )
             if (
+                builder.exit_code != 0 or builder.timed_out
+            ) and not await self.api_available():
+                raise DockerOperationError("DOCKER_API_UNAVAILABLE", builder)
+            if (
                 builder.exit_code != 0
                 or builder.timed_out
                 or name_match is None
@@ -798,12 +820,12 @@ class PortableDockerRuntime:
             input_bytes=context_archive if context_archive is not None else dockerfile,
             timeout_seconds=self._timeout,
         )
-        self._require_success("DOCKER_BUILD_FAILED", built)
+        await self._require_api_success("DOCKER_BUILD_FAILED", built)
         inspected = await self._run(
             ("image", "inspect", "--format", format_text, tag),
             timeout_seconds=30,
         )
-        self._require_success("DOCKER_IMAGE_INSPECT_FAILED", inspected)
+        await self._require_api_success("DOCKER_IMAGE_INSPECT_FAILED", inspected)
         return (
             self._offline_image_digest(inspected.stdout, recipe_digest)
             if context_archive is not None
@@ -1573,6 +1595,14 @@ class PortableDockerRuntime:
     ) -> None:
         outcome = await self._run(tuple(argv), timeout_seconds=60)
         self._require_success(code, outcome)
+
+    async def _require_api_success(
+        self, code: str, outcome: DockerCommandOutcome
+    ) -> None:
+        if outcome.timed_out or outcome.exit_code != 0:
+            if not await self.api_available():
+                raise DockerOperationError("DOCKER_API_UNAVAILABLE", outcome)
+            self._require_success(code, outcome)
 
     async def _run(
         self,

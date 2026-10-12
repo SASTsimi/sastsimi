@@ -585,6 +585,7 @@ def build_analysis_application(
             else None
         ),
         owned_attempt_container=docker.has_owned_attempt_container,
+        docker_api_available=docker.api_available,
         git_executable=(
             str(profile.tools["git"].executable_path)
             if "git" in profile.tools

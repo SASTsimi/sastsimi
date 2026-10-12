@@ -3855,6 +3855,368 @@ class SimpleCheckpointStore:
             _interrupted_budget_reuse=True,
         )
 
+    def prepare_docker_daemon_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        daemon_ready: bool,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one saved Docker API outage after a fresh caller-owned health probe.
+
+        The analysis lease belongs to the caller. The failure receipt and activity
+        remain immutable; the checkpoint change and one-shot marker commit together.
+        """
+
+        identity = stopped.identity
+        stage = SimpleStage.VERIFICATION_INITIAL_DONE
+        legacy = stopped.error_code == "RECOVERY_EXHAUSTED"
+        if daemon_ready is not True:
+            raise ValueError("DOCKER_DAEMON_REPLAY_UNAVAILABLE")
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not stage
+            or stopped.stage_version != STAGE_VERSION[stage]
+            or stopped.status is not StageStatus.BLOCKED
+            or stopped.retryable
+            or not stopped.attempt_id
+            or stopped.attempt_number < 1
+            or stopped.attempt_number > MAX_RECOVERY_ATTEMPTS
+            or stopped.gate_revision_count != 0
+            or stopped.recovery_lineage_id is not None
+            or stopped.recovery_origin_stage is not None
+            or stopped.recovery_decision_refs
+            or stopped.poc_stop_decision_ref is not None
+            or stopped.external_prerequisites_ref is not None
+            or stopped.environment_block_ref is not None
+            or legacy
+            and stopped.attempt_number != MAX_RECOVERY_ATTEMPTS
+            or stopped.error_code
+            not in {"RECOVERY_EXHAUSTED", "DOCKER_API_UNAVAILABLE"}
+            or stopped.recipe_ref is not None
+            or stopped.image_digest is not None
+            or stopped.container_id is not None
+            or stopped.validated_poc_ref is not None
+            or stopped.report_ref is not None
+            or stopped.bundle_manifest_ref is not None
+            or stopped.bundle_archive_ref is not None
+            or stopped.verdict is not None
+            or stopped.gate_decision is not None
+            or stopped.markdown_path is not None
+            or len(stopped.output_refs) != 3
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("DOCKER_DAEMON_REPLAY_CHECKPOINT_INVALID")
+
+        initial_ref, attempt_ref, recipe_ref = stopped.output_refs
+        try:
+            initial = json.loads(artifacts.read_bounded(initial_ref, 256 * 1024))
+            attempt = json.loads(artifacts.read_bounded(attempt_ref, 256 * 1024))
+            recipe = json.loads(artifacts.read_bounded(recipe_ref, 256 * 1024))
+            if not all(isinstance(item, dict) for item in (initial, attempt, recipe)):
+                raise ValueError("Docker receipt is not an object")
+            dockerfile_ref = StoredDataRef.model_validate(attempt["dockerfile_ref"])
+            artifacts.read_bounded(dockerfile_ref, 256 * 1024)
+            stderr_ref = StoredDataRef.model_validate(attempt["stderr_ref"])
+            stderr = artifacts.read_bounded(stderr_ref, 64 * 1024)
+            stdout_raw = attempt.get("stdout_ref")
+            if stdout_raw is not None:
+                artifacts.read_bounded(
+                    StoredDataRef.model_validate(stdout_raw), 64 * 1024
+                )
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
+            raise ValueError("DOCKER_DAEMON_REPLAY_EVIDENCE_INVALID") from error
+        failure_code = "DOCKER_BUILD_FAILED" if legacy else "DOCKER_API_UNAVAILABLE"
+        legacy_connection_error = (
+            b"open //./pipe/dockerDesktopLinuxEngine: "
+            b"The system cannot find the file specified"
+            in stderr
+            or b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+            in stderr
+        )
+        if (
+            initial.get("kind") != "simple_initial_verification"
+            or initial.get("attempt_id") != stopped.attempt_id
+            or attempt.get("kind") != "simple_docker_build_attempt"
+            or attempt.get("identity") != identity.model_dump(mode="json")
+            or attempt.get("attempt_id") != stopped.attempt_id
+            or attempt.get("status") != "FAILED"
+            or attempt.get("error_code") != failure_code
+            or type(attempt.get("timed_out")) is not bool
+            or legacy
+            and attempt["timed_out"] is not False
+            or recipe.get("kind") != "simple_environment_recipe"
+            or recipe.get("status") != "BLOCKED"
+            or recipe.get("attempt_id") != stopped.attempt_id
+            or recipe.get("build_attempt_refs") != [attempt_ref.model_dump(mode="json")]
+            or recipe.get("dockerfile_ref") != dockerfile_ref.model_dump(mode="json")
+            or recipe.get("dockerfile_source") != attempt.get("dockerfile_source")
+            or any(
+                recipe.get(key) != getattr(identity, key)
+                for key in (
+                    "analysis_id",
+                    "workspace_id",
+                    "commit_id",
+                    "hypothesis_id",
+                )
+            )
+            or legacy
+            and not legacy_connection_error
+        ):
+            raise ValueError("DOCKER_DAEMON_REPLAY_EVIDENCE_INVALID")
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def checkpoint_at(
+                checkpoint_identity: CheckpointIdentity, checkpoint_stage: SimpleStage
+            ) -> StageCheckpoint | None:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (
+                        checkpoint_identity.analysis_id,
+                        self._hypothesis_key(checkpoint_identity),
+                        checkpoint_stage.value,
+                    ),
+                ).fetchone()
+                return (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    if row is not None
+                    else None
+                )
+
+            if checkpoint_at(identity, stage) != stopped:
+                raise ValueError("DOCKER_DAEMON_REPLAY_STALE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("DOCKER_DAEMON_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            registered = identity.hypothesis_id in run.hypothesis_ids or (
+                connection.execute(
+                    "SELECT 1 FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND hypothesis_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        identity.hypothesis_id,
+                    ),
+                ).fetchone()
+                is not None
+            )
+            root_identity = identity.model_copy(update={"hypothesis_id": None})
+            static = checkpoint_at(root_identity, SimpleStage.STATIC_DONE)
+            root = checkpoint_at(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            pro_con = checkpoint_at(identity, SimpleStage.PRO_CON_DONE)
+            if (
+                run.analysis_id != identity.analysis_id
+                or run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_pipeline_version != 2
+                or run.workspace_path is None
+                or run.repository_profile_ref is None
+                or run.static_bundle_ref is None
+                or run.static_coverage_ref is None
+                or run.candidate_scope_fingerprint is None
+                or not registered
+                or static is None
+                or static.status is not StageStatus.SUCCEEDED
+                or static.stage_version != STAGE_VERSION[SimpleStage.STATIC_DONE]
+                or run.repository_profile_ref not in static.output_refs
+                or run.static_bundle_ref not in static.output_refs
+                or any(
+                    str(ref.workspace_id) != identity.workspace_id
+                    or str(ref.commit_id) != identity.commit_id
+                    for ref in (
+                        run.repository_profile_ref,
+                        run.static_bundle_ref,
+                        run.static_coverage_ref,
+                    )
+                )
+                or pro_con is None
+                or pro_con.status is not StageStatus.SUCCEEDED
+                or pro_con.stage_version != STAGE_VERSION[SimpleStage.PRO_CON_DONE]
+                or not pro_con.output_refs
+                or not all(ref in stopped.input_refs for ref in pro_con.output_refs)
+                or any(
+                    checkpoint_at(identity, downstream) is not None
+                    for downstream in STAGE_ORDER[STAGE_ORDER.index(stage) + 1 :]
+                )
+                or root is None
+                or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+                or not root.attempt_id
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_LINEAGE_INVALID")
+            all_rows = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchall()
+            if any(
+                StageCheckpoint.model_validate_json(row["checkpoint_json"]).status
+                is StageStatus.RUNNING
+                for row in all_rows
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_RUN_ACTIVE")
+            unresolved = connection.execute(
+                "SELECT 1 FROM simple_codex_calls WHERE analysis_id = ? "
+                "AND (status = 'IN_FLIGHT' OR resolved_at IS NULL) LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            unexited = connection.execute(
+                "SELECT 1 FROM simple_codex_child_spawns WHERE analysis_id = ? "
+                "AND (status != 'EXITED' OR pid IS NULL OR "
+                "start_identity IS NULL OR start_identity = '') LIMIT 1",
+                (identity.analysis_id,),
+            ).fetchone()
+            if unresolved is not None or unexited is not None:
+                raise ValueError("DOCKER_DAEMON_REPLAY_CODEX_UNRESOLVED")
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in connection.execute(
+                    "SELECT event_json FROM agent_activity_events "
+                    "WHERE analysis_id = ? ORDER BY rowid",
+                    (identity.analysis_id,),
+                ).fetchall()
+            )
+            if any(
+                event.hypothesis_id == identity.hypothesis_id
+                and event.kind is ActivityKind.DECISION_RECORDED
+                and event.error_code == "DOCKER_DAEMON_REPLAYED"
+                for event in events
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_ALREADY_USED")
+            expected_root_code = (
+                f"CANDIDATE_CHILD_ERROR_BOUND:{stopped.error_code}:"
+                f"{identity.hypothesis_id}:{stopped.attempt_id}"
+            )
+            if root.status is StageStatus.BLOCKED:
+                root_event_kind = ActivityKind.STAGE_BLOCKED
+                if root.retryable or root.error_code != expected_root_code:
+                    raise ValueError("DOCKER_DAEMON_REPLAY_ROOT_INVALID")
+            elif root.status is StageStatus.SUCCEEDED:
+                root_event_kind = ActivityKind.STAGE_COMPLETED
+                terminal = run.candidate_terminal
+                if (
+                    terminal is None
+                    or terminal.status != "PARTIAL"
+                    or terminal.surface_proof_version != 3
+                    or terminal.bundle_hash != run.static_bundle_ref.content_hash
+                    or terminal.scope_fingerprint != run.candidate_scope_fingerprint
+                    or run.surface_enrichment_v6_plan_ref is None
+                ):
+                    raise ValueError("DOCKER_DAEMON_REPLAY_ROOT_INVALID")
+            else:
+                raise ValueError("DOCKER_DAEMON_REPLAY_ROOT_INVALID")
+            if not any(
+                event.kind is root_event_kind
+                and event.hypothesis_id is None
+                and event.stage == SimpleStage.HYPOTHESIS_DONE.value
+                and event.attempt_id == root.attempt_id
+                and event.input_refs == root.input_refs
+                and event.output_refs == root.output_refs
+                and event.error_code == root.error_code
+                for event in events
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_ROOT_INVALID")
+            stage_events = tuple(
+                event
+                for event in events
+                if event.hypothesis_id == identity.hypothesis_id
+                and event.stage == stage.value
+                and event.attempt_id == stopped.attempt_id
+            )
+            expected_sequence = (
+                (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED, "DOCKER_BUILD_FAILED"),
+                    (ActivityKind.STAGE_BLOCKED, "RECOVERY_EXHAUSTED"),
+                )
+                if legacy
+                else (
+                    (ActivityKind.STAGE_STARTED, None),
+                    (ActivityKind.STAGE_BLOCKED, "DOCKER_API_UNAVAILABLE"),
+                )
+            )
+            if (
+                tuple((event.kind, event.error_code) for event in stage_events)
+                != expected_sequence
+                or any(
+                    event.analysis_id != identity.analysis_id
+                    or event.workspace_id != identity.workspace_id
+                    or event.commit_id != identity.commit_id
+                    or event.input_refs != stopped.input_refs
+                    for event in stage_events
+                )
+                or stage_events[0].output_refs
+                or any(
+                    event.output_refs != stopped.output_refs
+                    for event in stage_events[1:]
+                )
+            ):
+                raise ValueError("DOCKER_DAEMON_REPLAY_EVENT_INVALID")
+            pending = stopped.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "output_refs": (),
+                    "attempt_id": None,
+                    "attempt_number": (
+                        stopped.attempt_number if legacy else stopped.attempt_number - 1
+                    ),
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            updated = connection.execute(
+                "UPDATE simple_runtime_checkpoints SET checkpoint_json = ?, "
+                "input_hash = ?, updated_at = ? WHERE analysis_id = ? "
+                "AND hypothesis_key = ? AND stage = ? AND checkpoint_json = ?",
+                (
+                    pending.model_dump_json(),
+                    pending.input_hash,
+                    pending.updated_at.isoformat(),
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    stage.value,
+                    stopped.model_dump_json(),
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("DOCKER_DAEMON_REPLAY_STALE")
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stage, 103),
+                    status=StageStatus.BLOCKED,
+                    summary_ko=(
+                        "Docker API 복구 확인 후 초기 검증 한 번의 재개를 기록했습니다."
+                    ),
+                    output_refs=stopped.output_refs,
+                    error_code="DOCKER_DAEMON_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
+
     def prepare_initial_environment_exhaustion_replay(
         self,
         exhausted: StageCheckpoint,
