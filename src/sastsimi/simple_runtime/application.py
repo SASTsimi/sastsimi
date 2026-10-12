@@ -4247,6 +4247,21 @@ class SimpleAnalysisApplication:
         progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
         artifacts: SimpleArtifactRepository,
     ) -> None:
+        with self._store.defer_surface_hold_projection(identity.analysis_id):
+            self._record_v5_hold_children(
+                run, identity, index, plan, contexts, progress, artifacts
+            )
+
+    def _record_v5_hold_children(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        index: SurfaceIndex,
+        plan: Mapping[str, object],
+        contexts: tuple[SurfaceContext, ...],
+        progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
+        artifacts: SimpleArtifactRepository,
+    ) -> None:
         """Record source-bound v5 review of linked HOLDs without reopening them.
 
         The v5 response proves navigation roles, not a contradiction of the

@@ -71,7 +71,7 @@ function demoRequest(url) {
   return { url: url.replace(`/api/analyses/${match[1]}`, `/api/analyses/${encodeURIComponent(variant.demo_source_id)}`), variant };
 }
 async function getJson(url, options = {}) {
-  const request = demoRequest(url); const response = await fetch(request.url, { cache: "no-store", signal: options.signal }); if (!response.ok) { let error = null; try { error = await response.json(); } catch (_) { /* non-JSON failure */ } if (error?.error === "index_not_ready") throw new Error("목록 인덱스 준비가 필요합니다. dashboard-index rebuild를 실행하세요."); throw new Error(`요청 실패 (${response.status})`); }
+  const request = demoRequest(url); const response = await fetch(request.url, { cache: "no-store", signal: options.signal }); if (!response.ok) { let error = null; try { error = await response.json(); } catch (_) { /* non-JSON failure */ } if (error?.error === "index_updating") { const pending = new Error("HOLD 검토 결과를 대시보드에 반영하는 중입니다. 잠시 후 다시 시도하세요."); pending.code = "index_updating"; throw pending; } if (error?.error === "index_resume_required") { const pending = new Error("HOLD 검토 중 분석이 중단되었습니다. 분석을 재개하거나 dashboard-index rebuild를 실행하세요."); pending.code = "index_resume_required"; throw pending; } if (error?.error === "index_not_ready") throw new Error("목록 인덱스 준비가 필요합니다. dashboard-index rebuild를 실행하세요."); throw new Error(`요청 실패 (${response.status})`); }
   const data = await response.json();
   if (!request.variant || !/\/summary(?:\?|$)/.test(url) || Array.isArray(data)) return data;
   const merged = { ...data, ...request.variant };
@@ -556,7 +556,7 @@ async function loadActiveTab(force = false) {
     state.tabCache.set(key, data); renderTab(tab, data);
   } catch (error) {
     if (error?.name === "AbortError" && !timedOut) return;
-    const message = timedOut ? "요청 시간이 초과되었습니다." : "데이터를 불러오지 못했습니다.";
+    const message = timedOut ? "요청 시간이 초과되었습니다." : ["index_updating", "index_resume_required"].includes(error?.code) ? error.message : "데이터를 불러오지 못했습니다.";
     renderListMessage(tab, message, "error", true); document.getElementById("notice").textContent = `${tab} ${message}`;
   } finally {
     if (timeout != null && typeof window.clearTimeout === "function") window.clearTimeout(timeout); if (state.requestControllers.get(tab) === controller) state.requestControllers.delete(tab); selectOne(`[data-panel="${tab}"]`)?.classList.remove("loading");

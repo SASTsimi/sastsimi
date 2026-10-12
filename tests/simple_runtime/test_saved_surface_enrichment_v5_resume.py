@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,6 +85,84 @@ def _application(
         hypothesis_bootstrap=bootstrap,
         runner_factory=_unused_runner,
     )
+
+
+def test_v5_hold_review_scopes_deferred_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The app, not each marker, owns the final dashboard refresh."""
+    identity = _identity()
+    data_dir = tmp_path / "data"
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    app = _application(data_dir, store)
+    plan = {"kind": "simple_surface_enrichment_plan_v5", "child_checkpoint_hashes": {}}
+    run = SimpleNamespace(surface_enrichment_v5_plan_ref=artifacts.put_json(plan))
+    observed: list[str] = []
+
+    @contextmanager
+    def guard(analysis_id: str) -> Iterator[None]:
+        observed.append(f"start:{analysis_id}")
+        try:
+            yield
+        finally:
+            observed.append(f"end:{analysis_id}")
+
+    monkeypatch.setattr(store, "defer_surface_hold_projection", guard)
+    app._review_v5_hold_children(
+        run,  # type: ignore[arg-type]
+        identity,
+        SimpleNamespace(surfaces=()),  # type: ignore[arg-type]
+        plan,
+        (),
+        {},
+        artifacts,
+    )
+    assert observed == [
+        f"start:{identity.analysis_id}",
+        f"end:{identity.analysis_id}",
+    ]
+
+
+def test_v5_hold_review_releases_projection_scope_after_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    data_dir = tmp_path / "data"
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    app = _application(data_dir, store)
+    plan = {"kind": "simple_surface_enrichment_plan_v5", "child_checkpoint_hashes": {}}
+    run = SimpleNamespace(surface_enrichment_v5_plan_ref=artifacts.put_json(plan))
+    observed: list[str] = []
+
+    @contextmanager
+    def guard(analysis_id: str) -> Iterator[None]:
+        observed.append(f"start:{analysis_id}")
+        try:
+            yield
+        finally:
+            observed.append(f"end:{analysis_id}")
+
+    def fail(*_args: object) -> NoReturn:
+        raise ValueError("review failed")
+
+    monkeypatch.setattr(store, "defer_surface_hold_projection", guard)
+    monkeypatch.setattr(app, "_record_v5_hold_children", fail)
+    with pytest.raises(ValueError, match="review failed"):
+        app._review_v5_hold_children(
+            run,  # type: ignore[arg-type]
+            identity,
+            SimpleNamespace(surfaces=()),  # type: ignore[arg-type]
+            plan,
+            (),
+            {},
+            artifacts,
+        )
+    assert observed == [
+        f"start:{identity.analysis_id}",
+        f"end:{identity.analysis_id}",
+    ]
 
 
 def test_old_run_round_trips_without_v5_ref() -> None:

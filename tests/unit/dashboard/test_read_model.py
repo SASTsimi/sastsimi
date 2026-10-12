@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -133,6 +134,107 @@ def test_incomplete_index_fails_closed_and_can_be_rebuilt(tmp_path: Path) -> Non
     assert recovered["page"] == 3
     assert recovered["total_items"] == 23
     assert len(_items(recovered)) == 3
+
+
+def test_hold_review_dirty_index_has_distinct_not_ready_reason(tmp_path: Path) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "marker-1", _pages(1))
+    model.mark_incomplete(
+        "DEMO-ANALYSIS", "marker-1", "SURFACE_HOLD_REVIEW_IN_PROGRESS"
+    )
+
+    with pytest.raises(DashboardIndexNotReady, match="DASHBOARD_INDEX_RESUME_REQUIRED"):
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
+
+
+def test_legacy_ready_index_remains_readable_without_hold_generation(
+    tmp_path: Path,
+) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "legacy-marker", _pages(1))
+    assert (
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)["total_items"] == 1
+    )
+
+
+def test_ready_index_with_old_hold_generation_fails_closed(tmp_path: Path) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "snapshot:hold:0", _pages(1))
+    with model._connect(True) as connection:
+        connection.execute(
+            "CREATE TABLE simple_surface_hold_replay_markers "
+            "(analysis_id TEXT NOT NULL, action TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO simple_surface_hold_replay_markers VALUES (?, ?)",
+            ("DEMO-ANALYSIS", "KEEP_HOLD"),
+        )
+    with pytest.raises(DashboardIndexNotReady, match="DASHBOARD_INDEX_RESUME_REQUIRED"):
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
+
+
+def test_legacy_ready_index_with_unversioned_hold_marker_requires_refresh(
+    tmp_path: Path,
+) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "legacy-marker", _pages(1))
+    with model._connect(True) as connection:
+        connection.execute(
+            "CREATE TABLE simple_surface_hold_replay_markers "
+            "(analysis_id TEXT NOT NULL, action TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO simple_surface_hold_replay_markers VALUES (?, ?)",
+            ("DEMO-ANALYSIS", "KEEP_HOLD"),
+        )
+    with pytest.raises(DashboardIndexNotReady, match="DASHBOARD_INDEX_RESUME_REQUIRED"):
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
+
+
+def test_projection_pins_hold_generation_before_collecting_pages(
+    tmp_path: Path,
+) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    with model._connect(True) as connection:
+        connection.execute(
+            "CREATE TABLE simple_surface_hold_replay_markers "
+            "(analysis_id TEXT NOT NULL, action TEXT NOT NULL)"
+        )
+
+    class Query:
+        def __init__(self) -> None:
+            self.inserted = False
+
+        def _connect(self) -> sqlite3.Connection:
+            return model._connect()
+
+        def _checkpoints(self, _analysis_id: str) -> tuple[()]:
+            return ()
+
+        def _get_analysis_tab_from_source(
+            self, analysis_id: str, tab: str, *, offset: int, limit: int
+        ) -> dict[str, object]:
+            if not self.inserted:
+                self.inserted = True
+                with model._connect(True) as connection:
+                    connection.execute(
+                        "INSERT INTO simple_surface_hold_replay_markers VALUES (?, ?)",
+                        (analysis_id, "KEEP_HOLD"),
+                    )
+            return {"items": [], "total_items": 0, "tab": tab}
+
+    marker, pages = projection_module.collect_source_pages(
+        cast(DashboardQuery, Query()), "DEMO-ANALYSIS"
+    )
+    assert marker.endswith(":hold:0")
+    model.replace("DEMO-ANALYSIS", marker, pages)
+    with pytest.raises(DashboardIndexNotReady, match="DASHBOARD_INDEX_RESUME_REQUIRED"):
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
 
 
 def test_dashboard_indexed_list_does_not_read_cas(

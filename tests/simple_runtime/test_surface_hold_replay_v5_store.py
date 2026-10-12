@@ -15,6 +15,7 @@ import pytest
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.dashboard.read_model import INDEXED_TABS, DashboardReadModel
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     MAX_RECOVERY_ATTEMPTS,
@@ -304,6 +305,52 @@ def _markers(store: SimpleCheckpointStore) -> list[tuple[str, str, str]]:
         ).fetchall()
 
 
+def _index_status(store: SimpleCheckpointStore, analysis_id: str) -> str:
+    with sqlite3.connect(store.database_path) as connection:
+        return str(
+            connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()[0]
+        )
+
+
+def _indexed_store(
+    store: SimpleCheckpointStore,
+    data_dir: Path,
+    analysis_id: str,
+    *,
+    initialize_index: bool = True,
+) -> tuple[SimpleCheckpointStore, list[str]]:
+    model = DashboardReadModel(data_dir)
+    model.initialize()
+    pages: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
+    if initialize_index:
+        model.replace(analysis_id, "before-review", pages)
+    projected: list[str] = []
+
+    def project(_path: Path, current_id: str) -> None:
+        projected.append(current_id)
+        with model._connect() as connection:
+            generation = connection.execute(
+                "SELECT COUNT(*) FROM simple_surface_hold_replay_markers "
+                "WHERE analysis_id=? AND action='KEEP_HOLD'",
+                (current_id,),
+            ).fetchone()[0]
+        model.replace(current_id, f"after-review:hold:{generation}", pages)
+
+    return (
+        SimpleCheckpointStore(
+            store.database_path,
+            artifact_data_dir=data_dir,
+            post_commit_projection=project,
+        ),
+        projected,
+    )
+
+
 def _review_refs(
     store: SimpleCheckpointStore,
     artifacts: SimpleArtifactRepository,
@@ -474,6 +521,204 @@ def test_keep_hold_saves_review_without_mutating_child(tmp_path: Path) -> None:
         is None
     )
     assert len(_markers(store)) == 1
+
+
+def test_keep_hold_batch_marks_index_dirty_before_deferred_projection(
+    tmp_path: Path,
+) -> None:
+    """Skipping the per-marker rebuild must never leave a stale READY index."""
+    store, artifacts, run, child, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)
+    batched, projected = _indexed_store(store, tmp_path / "data", run.analysis_id)
+    decision = classify_hold_replay(child.identity, child, {}, artifacts)
+    with batched.defer_surface_hold_projection(run.analysis_id):
+        batched.prepare_surface_hold_replay(
+            child,
+            decision,
+            artifacts,
+            review_plan_ref=plan_ref,
+            review_context_ref=context_ref,
+            review_result_ref=result_ref,
+        )
+        assert _index_status(store, run.analysis_id) == "INCOMPLETE"
+        assert projected == []
+        assert batched.require(child.identity, child.stage) == child
+        assert len(_markers(batched)) == 1
+    assert _index_status(store, run.analysis_id) == "READY"
+    assert projected == [run.analysis_id]
+
+
+def test_multiple_keep_hold_markers_share_one_dashboard_projection(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, run, first, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, first)
+    children = [first]
+    for number in (2, 3):
+        child = first.model_copy(
+            update={
+                "identity": first.identity.model_copy(
+                    update={"hypothesis_id": f"hypothesis-{number}"}
+                )
+            }
+        )
+        store.save_checkpoint(child)
+        children.append(child)
+    plan = json.loads(artifacts.read(plan_ref))
+    plan["child_checkpoint_hashes"] = {
+        child.identity.hypothesis_id: hashlib.sha256(canonical_bytes(child)).hexdigest()
+        for child in children
+    }
+    expanded_ref = artifacts.put_json(plan)
+    store.save_analysis_run(
+        store.require_analysis_run(run.analysis_id).model_copy(
+            update={
+                "hypothesis_ids": tuple(
+                    child.identity.hypothesis_id for child in children
+                ),
+                "surface_enrichment_v5_plan_ref": expanded_ref,
+            }
+        )
+    )
+    batched, projected = _indexed_store(store, tmp_path / "data", run.analysis_id)
+
+    with batched.defer_surface_hold_projection(run.analysis_id):
+        for number, child in enumerate(children, start=1):
+            child_artifacts = SimpleArtifactRepository(
+                tmp_path / "data", child.identity
+            )
+            decision = classify_hold_replay(child.identity, child, {}, child_artifacts)
+            batched.prepare_surface_hold_replay(
+                child,
+                decision,
+                child_artifacts,
+                review_plan_ref=expanded_ref,
+                review_context_ref=context_ref,
+                review_result_ref=result_ref,
+            )
+            assert len(_markers(store)) == number
+            assert projected == []
+            assert _index_status(store, run.analysis_id) == "INCOMPLETE"
+    assert projected == [run.analysis_id]
+    assert _index_status(store, run.analysis_id) == "READY"
+
+
+def test_stale_external_projection_after_marker_is_rebuilt_on_batch_exit(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, run, child, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)
+    batched, projected = _indexed_store(store, tmp_path / "data", run.analysis_id)
+    model = DashboardReadModel(tmp_path / "data")
+    pages: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
+    decision = classify_hold_replay(child.identity, child, {}, artifacts)
+
+    with batched.defer_surface_hold_projection(run.analysis_id):
+        batched.prepare_surface_hold_replay(
+            child,
+            decision,
+            artifacts,
+            review_plan_ref=plan_ref,
+            review_context_ref=context_ref,
+            review_result_ref=result_ref,
+        )
+        # A competing rebuild began before the marker and published afterward.
+        model.replace(run.analysis_id, "old-snapshot:hold:0", pages)
+        assert _index_status(store, run.analysis_id) == "READY"
+    assert projected == [run.analysis_id]
+
+
+def test_keep_hold_projection_failure_recovers_without_duplicate_marker(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, run, child, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)
+    data_dir = tmp_path / "data"
+    DashboardReadModel(data_dir).initialize()
+    failed_calls: list[str] = []
+
+    def fail_projection(_path: Path, analysis_id: str) -> None:
+        failed_calls.append(analysis_id)
+        raise RuntimeError("projection interrupted after source commit")
+
+    interrupted = SimpleCheckpointStore(
+        store.database_path,
+        artifact_data_dir=data_dir,
+        post_commit_projection=fail_projection,
+    )
+    decision = classify_hold_replay(child.identity, child, {}, artifacts)
+    with pytest.raises(RuntimeError, match="projection interrupted"):
+        with interrupted.defer_surface_hold_projection(run.analysis_id):
+            interrupted.prepare_surface_hold_replay(
+                child,
+                decision,
+                artifacts,
+                review_plan_ref=plan_ref,
+                review_context_ref=context_ref,
+                review_result_ref=result_ref,
+            )
+            assert _index_status(store, run.analysis_id) == "INCOMPLETE"
+    assert failed_calls == [run.analysis_id]
+    assert len(_markers(store)) == 1
+    assert store.require(child.identity, child.stage) == child
+    assert _index_status(store, run.analysis_id) == "INCOMPLETE"
+
+    resumed, projected = _indexed_store(
+        store, data_dir, run.analysis_id, initialize_index=False
+    )
+    # A projection created by a fresh process is the only recovery action;
+    # the same saved HOLD marker is never inserted twice.
+    with resumed.defer_surface_hold_projection(run.analysis_id):
+        resumed.prepare_surface_hold_replay(
+            child,
+            decision,
+            artifacts,
+            review_plan_ref=plan_ref,
+            review_context_ref=context_ref,
+            review_result_ref=result_ref,
+        )
+        assert len(_markers(store)) == 1
+    assert projected == [run.analysis_id]
+    assert _index_status(store, run.analysis_id) == "READY"
+
+
+def test_keep_hold_batch_rolls_back_marker_and_dirty_state_together(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, run, child, _, _ = _seed(tmp_path)
+    plan_ref, context_ref, result_ref = _review_refs(store, artifacts, run, child)
+    batched, projected = _indexed_store(store, tmp_path / "data", run.analysis_id)
+    decision = classify_hold_replay(child.identity, child, {}, artifacts)
+    with batched.defer_surface_hold_projection(run.analysis_id):
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            batched.prepare_surface_hold_replay(
+                child,
+                decision,
+                artifacts,
+                review_plan_ref=plan_ref,
+                review_context_ref=context_ref,
+                review_result_ref=result_ref,
+                fail_before_commit=True,
+            )
+        assert _markers(store) == []
+        assert _index_status(store, run.analysis_id) == "READY"
+    assert projected == []
+
+
+def test_verified_replay_still_projects_immediately_inside_hold_batch(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, run, child, _, evidence = _seed(tmp_path)
+    batched, projected = _indexed_store(store, tmp_path / "data", run.analysis_id)
+    decision = _decision(child, artifacts, evidence)
+    with batched.defer_surface_hold_projection(run.analysis_id):
+        pending = batched.prepare_surface_hold_replay(child, decision, artifacts)
+        assert pending is not None
+        assert projected == [run.analysis_id]
+        assert _index_status(store, run.analysis_id) == "READY"
+    assert projected == [run.analysis_id]
 
 
 def test_keep_hold_accepts_plan_pinned_child_without_legacy_run_id(

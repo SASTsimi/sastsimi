@@ -8,7 +8,9 @@ import re
 import shutil
 import sqlite3
 import subprocess
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -572,6 +574,9 @@ class SimpleCheckpointStore:
             Path(artifact_data_dir) if artifact_data_dir is not None else None
         )
         self._post_commit_projection = post_commit_projection
+        self._deferred_hold_projection_ids: ContextVar[frozenset[str]] = ContextVar(
+            "deferred_hold_projection_ids", default=frozenset()
+        )
         if not read_only:
             self._database_path.parent.mkdir(parents=True, exist_ok=True)
             self._initialize()
@@ -17099,6 +17104,49 @@ class SimpleCheckpointStore:
         ):
             self._post_commit_projection(self._artifact_data_dir, analysis_id)
 
+    @contextmanager
+    def defer_surface_hold_projection(self, analysis_id: str) -> Iterator[None]:
+        """Keep each HOLD marker durable while rebuilding its dashboard once."""
+        active = self._deferred_hold_projection_ids.get()
+        token = self._deferred_hold_projection_ids.set(active | {analysis_id})
+        try:
+            yield
+        finally:
+            self._deferred_hold_projection_ids.reset(token)
+            if analysis_id not in active and self._hold_projection_needs_refresh(
+                analysis_id
+            ):
+                self._project_after_direct_commit(analysis_id)
+
+    def _hold_projection_needs_refresh(self, analysis_id: str) -> bool:
+        if self._artifact_data_dir is None or self._post_commit_projection is None:
+            return False
+        from sastsimi.dashboard.read_model import (
+            hold_marker_count,
+            marker_hold_generation,
+        )
+
+        with self._connect() as connection:
+            if not connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='dashboard_index_state'"
+            ).fetchone():
+                return False
+            current_generation = hold_marker_count(connection, analysis_id)
+            if not current_generation:
+                return False
+            index = connection.execute(
+                "SELECT status, source_marker FROM dashboard_index_state "
+                "WHERE analysis_id = ?",
+                (analysis_id,),
+            ).fetchone()
+            return (
+                index is None
+                or index["status"] != "READY"
+                or marker_hold_generation(str(index["source_marker"]))
+                != current_generation
+            )
+
     def _upsert_checkpoint_connection(
         self,
         connection: sqlite3.Connection,
@@ -18145,13 +18193,43 @@ class SimpleCheckpointStore:
                         raise ValueError("SURFACE_HOLD_REPLAY_STALE")
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
+            deferred_keep = (
+                changed
+                and decision.action == "KEEP_HOLD"
+                and identity.analysis_id in self._deferred_hold_projection_ids.get()
+                and self._artifact_data_dir is not None
+                and self._post_commit_projection is not None
+            )
+            if (
+                deferred_keep
+                and connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='dashboard_index_state'"
+                ).fetchone()
+            ):
+                from sastsimi.dashboard.read_model import VERSION
+
+                connection.execute(
+                    "INSERT INTO dashboard_index_state "
+                    "(analysis_id, projection_version, source_marker, status, "
+                    "last_error, indexed_at) VALUES (?, ?, ?, 'INCOMPLETE', ?, ?) "
+                    "ON CONFLICT(analysis_id) DO UPDATE SET "
+                    "status='INCOMPLETE', last_error=excluded.last_error",
+                    (
+                        identity.analysis_id,
+                        VERSION,
+                        "surface-hold-review",
+                        "SURFACE_HOLD_REVIEW_IN_PROGRESS",
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
             connection.commit()
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
-        if changed:
+        if changed and not deferred_keep:
             self._project_after_direct_commit(identity.analysis_id)
         return pending
 
