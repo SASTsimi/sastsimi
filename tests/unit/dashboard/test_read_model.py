@@ -20,6 +20,7 @@ from sastsimi.dashboard.read_model import (
     RebuildResult,
 )
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
+from sastsimi.simple_runtime.models import StageCheckpoint
 from sastsimi.storage.agent_activity import AgentActivityStore
 
 
@@ -265,7 +266,9 @@ def test_projection_materializes_each_large_tab_once(tmp_path: Path) -> None:
             super().__init__(tmp_path)
             self.calls: dict[str, int] = {}
 
-        def _checkpoints(self, _analysis_id: str) -> tuple[()]:
+        def _checkpoints(
+            self, _analysis_id: str | None = None
+        ) -> tuple[StageCheckpoint, ...]:
             return ()
 
         def _get_analysis_tab_from_source(
@@ -275,6 +278,8 @@ def test_projection_materializes_each_large_tab_once(tmp_path: Path) -> None:
             *,
             offset: int = 0,
             limit: int = 200,
+            query: str = "",
+            artifact_type: str | None = None,
             _projection_unbounded: bool = False,
         ) -> dict[str, object]:
             assert analysis_id == "DEMO-ANALYSIS"
@@ -306,11 +311,11 @@ def test_projection_materializes_each_large_tab_once(tmp_path: Path) -> None:
             if tab == "coverage":
                 page["static_tool_findings"] = selected
             if tab == "outputs":
-                visible_reports = {
-                    item["report"]["display_id"]
-                    for item in selected
-                    if isinstance(item.get("report"), dict)
-                }
+                visible_reports: set[str] = set()
+                for item in selected:
+                    report = item.get("report")
+                    if isinstance(report, dict):
+                        visible_reports.add(str(report["display_id"]))
                 page["reports"] = [item["report"] for item in selected]
                 page["artifacts"] = []
                 page["finding_traces"] = (
@@ -391,6 +396,7 @@ def test_large_projection_scans_auxiliary_rows_once(
                 self.visits += 1
                 yield row
 
+    items: list[dict[str, object]]
     if tab == "findings":
         items = [{"hypothesis_id": f"H-{index}"} for index in range(1001)]
         related = CountedRows(
@@ -420,7 +426,9 @@ def test_large_projection_scans_auxiliary_rows_once(
         )
 
     class Query(DashboardQuery):
-        def _checkpoints(self, _analysis_id: str) -> tuple[()]:
+        def _checkpoints(
+            self, _analysis_id: str | None = None
+        ) -> tuple[StageCheckpoint, ...]:
             return ()
 
         def _get_analysis_tab_from_source(
@@ -430,6 +438,8 @@ def test_large_projection_scans_auxiliary_rows_once(
             *,
             offset: int = 0,
             limit: int = 200,
+            query: str = "",
+            artifact_type: str | None = None,
             _projection_unbounded: bool = False,
         ) -> dict[str, object]:
             assert analysis_id == "DEMO-ANALYSIS"
@@ -446,8 +456,12 @@ def test_large_projection_scans_auxiliary_rows_once(
     )
     projected = pages[tab][0]
     assert len(projected) == 1001
-    assert len(projected[0]["_dashboard_auxiliary"][auxiliary_key]) == 1
-    assert len(projected[-1]["_dashboard_auxiliary"][auxiliary_key]) == 1
+    first_aux = projected[0]["_dashboard_auxiliary"]
+    last_aux = projected[-1]["_dashboard_auxiliary"]
+    assert isinstance(first_aux, dict)
+    assert isinstance(last_aux, dict)
+    assert len(first_aux[auxiliary_key]) == 1
+    assert len(last_aux[auxiliary_key]) == 1
     assert related.visits == 1001
 
 
