@@ -11,6 +11,7 @@ import pytest
 _STATIC = (
     Path(__file__).resolve().parents[3] / "src" / "sastsimi" / "dashboard" / "static"
 )
+_NODE_TIMEOUT_SECONDS = 30  # Allow CI runner contention; a genuine hang still fails.
 
 
 def test_dashboard_has_compact_kpis_grid_progress_and_history() -> None:
@@ -84,7 +85,7 @@ Promise.resolve().then(async () => {
         [node, "-e", script, str(source)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=_NODE_TIMEOUT_SECONDS,
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -136,7 +137,7 @@ assert.equal(card.children.filter((item) => item.tag === 'raw').length, 2);
         [node, "-e", script, str(source)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=_NODE_TIMEOUT_SECONDS,
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -406,7 +407,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(expansion)), {
         [node, "-e", script, str(source)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=_NODE_TIMEOUT_SECONDS,
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -448,7 +449,7 @@ assert.equal(vm.runInContext(`analysisKey({
         [node, "-e", script, str(source)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=_NODE_TIMEOUT_SECONDS,
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -515,7 +516,7 @@ assert.equal(unknownDonut.style.values['--progress'], '0');
         [node, "-e", script, str(source)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=_NODE_TIMEOUT_SECONDS,
         check=False,
     )
     assert result.returncode == 0, result.stderr
