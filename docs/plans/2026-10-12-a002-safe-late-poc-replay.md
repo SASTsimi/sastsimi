@@ -98,3 +98,26 @@ must not be reconstructed from later diagnostics. No attempt 8 is planned or
 authorized by this document. The wrapper parser now rejects shell statements
 before the inspected Python heredoc, including an `exit 0` that would otherwise
 look like a successful execution without running Django migration.
+
+## Follow-up: bounded bootstrap feedback after attempt 7
+
+The saved attempt-7 diagnostic is `PINNED_PROJECT_BOOTSTRAP_MISSING`. The
+candidate bytes were not retained, so this does **not** prove a validator bug
+or a successful PoC. Source inspection found that the retry guidance describes
+native Django setup in general terms but omits the exact safe statement order
+that the pinned-project validator accepts.
+
+1. Write a failing fixture test for the closed diagnostic and a value-free,
+   ordered bootstrap hint. Reject any hint containing candidate source,
+   credentials, prompt text, or local paths.
+2. Add only the missing guidance and structured, value-free diagnostic. Keep
+   the validator, retry cap, and terminal verdict unchanged.
+3. Run focused regression tests plus Ruff and mypy. Inspect the diff for
+   repository-specific hardcoding and feedback leakage.
+4. Integrate the verified change into PR #221. This plan does not authorize
+   attempt 8 or promise that A-002 will become `COMPLETE`; the saved run stays
+   `BLOCKED` until a separately validated, bounded replay actually succeeds.
+
+**Self-review decision:** The change improves generic error feedback, not
+vulnerability evidence. It is safe to implement and test in an isolated
+worktree without touching A-002's saved execution.
