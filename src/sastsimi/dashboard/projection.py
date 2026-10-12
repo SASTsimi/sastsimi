@@ -6,6 +6,8 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+from sastsimi.simple_runtime.hold_projection_generation import hold_marker_count
+
 from .query import DashboardQuery
 from .read_model import (
     _PAGE_KEYS,
@@ -27,12 +29,17 @@ def _marker(query: DashboardQuery, analysis_id: str) -> str:
             for x in query._checkpoints(analysis_id)
         )
     )
-    return hashlib.sha256(text.encode()).hexdigest()
+    with query._connect() as connection:
+        generation = hold_marker_count(connection, analysis_id)
+    return f"{hashlib.sha256(text.encode()).hexdigest()}:hold:{generation}"
 
 
 def collect_source_pages(
     query: DashboardQuery, analysis_id: str
 ) -> tuple[str, dict[str, tuple[list[dict[str, object]], dict[str, object]]]]:
+    # Pin the generation before collecting pages. A marker committed mid-scan
+    # must not be claimed by a projection of the older source snapshot.
+    marker = _marker(query, analysis_id)
     pages = {}
     for tab in INDEXED_TABS:
         offset = 0
@@ -56,7 +63,7 @@ def collect_source_pages(
             if not current or offset >= total:
                 break
         pages[tab] = (items, summary or {"tab": tab})
-    return _marker(query, analysis_id), pages
+    return marker, pages
 
 
 def rebuild_analysis(

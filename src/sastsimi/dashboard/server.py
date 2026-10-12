@@ -385,10 +385,22 @@ def create_server(
                     )
                 else:
                     raise DashboardNotFound("DASHBOARD_ROUTE_NOT_FOUND")
-            except DashboardIndexNotReady:
+            except DashboardIndexNotReady as error:
+                if str(error) == "DASHBOARD_INDEX_UPDATING":
+                    body = b'{"error":"index_updating","action":"retry"}'
+                elif str(error) == "DASHBOARD_INDEX_RESUME_REQUIRED":
+                    body = (
+                        b'{"error":"index_resume_required",'
+                        b'"action":"resume analysis or dashboard-index rebuild"}'
+                    )
+                else:
+                    body = (
+                        b'{"error":"index_not_ready",'
+                        b'"action":"dashboard-index rebuild"}'
+                    )
                 self._response(
                     HTTPStatus.CONFLICT,
-                    b'{"error":"index_not_ready","action":"dashboard-index rebuild"}',
+                    body,
                     "application/json; charset=utf-8",
                     send_body,
                 )

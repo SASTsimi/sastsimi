@@ -152,6 +152,71 @@ def test_v2_text_status_discloses_uncovered_surface_limit() -> None:
     assert "부분 분석: 보안 surface 검토 범위가 남아 있습니다" in rendered
 
 
+def test_v2_scope_status_keeps_raw_and_effective_gaps_separate() -> None:
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-001",
+            "status": "COMPLETE",
+            "percentage_kind": "known_checkpoint_fraction",
+            "phase_counts": {
+                "surface": {
+                    "total": 1,
+                    "covered": 1,
+                    "uncovered": 0,
+                    "insufficient": 0,
+                    "raw_static_gap_count": 4,
+                    "effective_python_gap_count": 0,
+                    "unresolved_reason_count": 0,
+                }
+            },
+        },
+    )
+    rendered = output.getvalue()
+    assert "원본 정적 공백: 4건" in rendered
+    assert "재인증 후 Python 공백: 0건" in rendered
+    assert "원본 정적 공백은 삭제되지 않았습니다" in rendered
+
+
+def test_v3_text_status_separates_reviewed_from_proven_covered() -> None:
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-001",
+            "status": "PARTIAL",
+            "percentage_kind": "known_checkpoint_fraction",
+            "phase_counts": {
+                "surface": {
+                    "total": 56,
+                    "reviewed": 36,
+                    "covered": 20,
+                    "uncovered": 0,
+                    "insufficient": 36,
+                    "raw_static_gap_count": 4,
+                    "effective_python_gap_count": 0,
+                    "unresolved_reason_count": 36,
+                    "reason_code_CHILD_HOLD": 30,
+                    "reason_code_CONNECTED_ROLE_PROOF_MISSING": 6,
+                }
+            },
+        },
+    )
+    rendered = output.getvalue()
+    assert "v5 검토 완료 36/56" in rendered
+    assert "증명된 경로 20/56" in rendered
+    assert "근거 부족 36" in rendered
+    assert "미해결 보안 표면 사유: 36건" in rendered
+    assert "CHILD_HOLD (30)" in rendered
+    assert "CONNECTED_ROLE_PROOF_MISSING (6)" in rendered
+    assert "부분 분석" in rendered
+
+
 def test_text_paused_without_usage_shows_telemetry_action() -> None:
     output = StringIO()
     emit_public(

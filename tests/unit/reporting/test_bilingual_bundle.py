@@ -138,6 +138,7 @@ def test_bilingual_reports_share_section_order_and_exact_facts() -> None:
     assert "report_en.md" not in en  # Report prose does not invent a new source.
     assert files["poc.sh"].body == b"#!/bin/sh\necho safe\n"
     provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"] is None
     assert (
         provenance["poc"]["original_sha256"]
         == hashlib.sha256(files["poc.sh"].body).hexdigest()
@@ -310,8 +311,153 @@ def test_partial_coverage_is_disclosed_equally_without_embedding_ledger() -> Non
     assert "confirmed Finding" in files["report_en.md"].body.decode()
     assert "Finding 확인" in files["report_kr.md"].body.decode()
     provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["scope"] == "python_only"
+    assert provenance["static_coverage"]["disposition"] == "PARTIAL"
     assert provenance["static_coverage"]["verified_count"] == 12
     assert provenance["static_coverage"]["ref"]["content_hash"] == "d" * 64
+
+
+def test_verified_v2_scope_discloses_raw_and_effective_gaps_separately() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [{"path": "app.py", "rule_id": "r1", "reason": "scan_timeout"}],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+        disposition="PARTIAL",
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=2,
+        surface_scope_certificate_hash="f" * 64,
+        surface_raw_static_gap_count=1,
+        surface_effective_python_gap_count=0,
+        surface_unresolved_reason_count=0,
+    )
+    files = _render(facts=_facts(coverage=scoped))
+    english = files["report_en.md"].body.decode()
+    korean = files["report_kr.md"].body.decode()
+    assert "Static scan status: `PARTIAL`" in english
+    assert "Raw static gaps: 1" in english
+    assert "Effective Python gaps after recertification: 0" in english
+    assert "원본 정적 공백: 1" in korean
+    assert "재인증 후 Python 공백: 0" in korean
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["surface_proof_version"] == 2
+    assert provenance["static_coverage"]["surface_scope_certificate_hash"] == "f" * 64
+    assert provenance["static_coverage"]["gap_count"] == 1
+
+
+def test_verified_v3_scope_reports_reviewed_and_covered_separately() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 2,
+            "verified_count": 1,
+            "gaps": [{"path": "app.py", "rule_id": "r1", "reason": "scan_timeout"}],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+        disposition="PARTIAL",
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=3,
+        surface_scope_certificate_hash="f" * 64,
+        surface_raw_static_gap_count=1,
+        surface_effective_python_gap_count=0,
+        surface_unresolved_reason_count=2,
+        surface_unresolved_reasons=(
+            ("CHILD_HOLD", 1),
+            ("CONNECTED_ROLE_PROOF_MISSING", 1),
+        ),
+        surface_reviewed_count=1,
+        surface_covered_count=0,
+        surface_uncovered_count=0,
+        surface_insufficient_count=1,
+    )
+    files = _render(facts=_facts(coverage=scoped))
+    english = files["report_en.md"].body.decode()
+    korean = files["report_kr.md"].body.decode()
+    assert "Static scan status: `PARTIAL`" in english
+    assert "V5 reviewed surfaces: 1/1" in english
+    assert "Proven covered surfaces: 0/1" in english
+    assert "Insufficient surfaces: 1" in english
+    assert "v5 검토 완료: 1/1" in korean
+    assert "증명된 경로: 0/1" in korean
+    assert "미증명 표면: 0" in korean
+    assert "근거 부족 표면: 1" in korean
+    assert "Unresolved surface reasons: 2" in english
+    assert (
+        "Unresolved surface reason codes: CHILD_HOLD (1), "
+        "CONNECTED_ROLE_PROOF_MISSING (1)" in english
+    )
+    assert (
+        "미해결 보안 표면 사유 코드: CHILD_HOLD (1), CONNECTED_ROLE_PROOF_MISSING (1)"
+        in korean
+    )
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    static = provenance["static_coverage"]
+    assert static["surface_proof_version"] == 3
+    assert static["surface_reviewed_count"] == 1
+    assert static["surface_covered_count"] == 0
+    assert static["surface_insufficient_count"] == 1
+    assert static["unresolved_reason_codes"] == {
+        "CHILD_HOLD": 1,
+        "CONNECTED_ROLE_PROOF_MISSING": 1,
+    }
+
+
+def test_v3_report_does_not_emit_untrusted_reason_payload() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=3,
+        surface_unresolved_reason_count=1,
+        surface_unresolved_reasons=cast(Any, ((["C:/secret/token"], 1),)),
+    )
+
+    files = _render(facts=_facts(coverage=scoped))
+    assert "C:/secret/token" not in files["report_en.md"].body.decode()
+    assert "C:/secret/token" not in files["report_kr.md"].body.decode()
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["unresolved_reason_codes"] == {}
 
 
 def test_bilingual_report_discloses_excluded_tests_and_out_of_scope_code() -> None:
@@ -343,7 +489,7 @@ def test_bilingual_report_discloses_excluded_tests_and_out_of_scope_code() -> No
     files = _render(facts=_facts(coverage=coverage))
     en = files["report_en.md"].body.decode()
     ko = files["report_kr.md"].body.decode()
-    assert coverage.partial is True
+    assert coverage.partial is False
     assert "Excluded test files: 1" in en
     assert "제외된 테스트 파일: 1" in ko
     assert "tests/test_api.py" in en and "tests/test_api.py" in ko
@@ -351,6 +497,8 @@ def test_bilingual_report_discloses_excluded_tests_and_out_of_scope_code() -> No
     assert "검사 범위 밖 제품 파일: 1" in ko
     assert "web/app.ts" in en and "web/app.ts" in ko
     provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["scope"] == "python_only"
+    assert provenance["static_coverage"]["disposition"] == "FULL"
     assert provenance["static_coverage"]["excluded_test_file_count"] == 1
     assert provenance["static_coverage"]["out_of_scope_product_count"] == 1
 
@@ -426,7 +574,7 @@ def test_coverage_rejects_windows_separator_in_scope_path(
         )
 
 
-def test_full_disposition_rejects_unverified_out_of_scope_product_code() -> None:
+def test_full_disposition_rejects_unverified_python_stub() -> None:
     with pytest.raises(ValueError, match="REPORT_STATIC_COVERAGE_DISPOSITION_INVALID"):
         coverage_disclosure(
             {
@@ -441,7 +589,7 @@ def test_full_disposition_rejects_unverified_out_of_scope_product_code() -> None
                 "unsupported_files": [],
                 "excluded_test_files": [],
                 "out_of_scope_product_files": [
-                    {"path": "web/app.ts", "reason": "non_python_product_source"}
+                    {"path": "api/types.pyi", "reason": "python_stub_not_scanned"}
                 ],
             },
             _ref("coverage", "d" * 64),

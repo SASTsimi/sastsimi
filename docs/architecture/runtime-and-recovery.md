@@ -25,6 +25,58 @@
 재개합니다. `HYPOTHESIS_DONE`은 v2에서 모든 가설 공급원과 등록된 자식 검증,
 최종 Chaining 확인을 마친 시점이며 자식 실행의 시작 조건이 아닙니다.
 
+## 저장된 분석의 보안 표면 근거 보강
+
+`sastsimi resume A-001 --enrich-saved-surface-evidence`는 이미 저장된 Python 분석의
+근거 부족(`INSUFFICIENT`) 표면만 다시 검토하는 명시적 경로입니다. 일반 `resume`과
+달리 먼저 분석 잠금을 획득하고 고정 커밋·추적 파일의 SHA-256·기존 정적 결과·AST·
+표면 인덱스·후보 범위와 이전 결과 참조를 대조합니다. 범위가 달라졌거나 참조가
+손상됐으면 새 분석처럼 다시 계획하지 않고 차단합니다. 범위가 일치하면 변경할 수 없는
+v4 계획과 Python 검사 범위 인증서를 저장하고, 최대 64 KiB의 코드·AST·호출 경로
+문맥 조각마다 결과를 원자적으로 기록합니다. 재개 시 유효한 조각과 완료된 자식 작업은
+재사용하고 누락된 조각만 처리합니다. 기존 정적 검사, v1–v3 표면 결과, Finding,
+PoC, Scope Gate 기록은 덮어쓰지 않습니다.
+
+검사 범위 인증서는 원본 제외 목록과 정적 검사 공백을 그대로 보존하고 **유효한 Python
+범위**를 별도로 표시합니다. 고정 커밋의 파일 내용과 제외 사유가 확인된 비Python
+제품 파일만 Python 전용 검사 범위 밖으로 판정할 수 있습니다. Python 파싱·규칙 오류,
+출처 불명의 제외, 누락된 파일은 완료로 바꾸지 않습니다. v2 보안 표면 증거에서는
+같은 그래프 경로의 입력 지점·신뢰 경계·위험 동작을 실제 코드 위치와 간선에 대조하고,
+모든 문맥 조각과 연결된 자식 가설의 상태를 확인합니다. 한 조각에서 가설을 만들지
+못했다는 사실만으로 검증 실패나 취약점 부재로 판정하지 않으며, 서로 무관한 경로의
+역할 증거를 합쳐 `COVERED`로 만들지도 않습니다.
+
+v5 보강은 이전 v2 범위 증거와 v4 계획을 고정 참조로 잇고, 표면마다 소스 해시가
+확인된 경로 그래프와 문맥 조각을 저장합니다. HTTP의 요청 입력 경로와 XML의 운영
+라우트·클래스 바인딩은 서로 다른 근거입니다. XML 바인딩만으로 요청에서 위험 동작까지
+호출됐다고 주장하지 않으며, 동적 디스패치가 풀리지 않으면 명시적 공백으로 남깁니다.
+운영 XML 라우트는 고정 커밋의 파서·XML·대상 코드·Dockerfile 사이의 조건부
+소스 근거입니다. 실제 Docker 빌드 컨텍스트나 배포 이미지의 바이트 일치는
+증명하지 않습니다. 최종 이미지 단계의 파일 변경 명령, `.dockerignore`, 파서의
+작업 디렉터리 변경이나 import 재바인딩 가능성이 있으면 경로를 추정하지 않고
+검증 공백으로 보존합니다. 이 보수적 기준은 정상적인 Dockerfile도 미증명으로
+남길 수 있습니다.
+이전 판별 코드로 이미 저장한 v5 그래프는 원본 검토 이력으로만 유지합니다.
+새 의미론 버전 표식이 없는 저장 경로는 해시가 맞더라도 `COVERED`의 근거로
+재사용하지 않습니다. 새 평가에서는 미증명으로 남기고, 과거 `COVERED` 종료
+증거와 충돌하는 경우 공개 읽기에서 실패로 닫습니다. 새 근거가 생겼다고 가정해
+기존 결과를 자동으로 완료 처리하지 않습니다.
+Agent가 조각을 유효하게 검토한 `REVIEWED`와 한 연결 경로의 입력 지점·신뢰 경계·
+위험 동작, 모든 조각 및 자식 상태까지 재검증된 `COVERED`는 별도 집계입니다. 저장된
+v3 표면 증거의 공개 수치는 읽기 시에도 고정 그래프·Agent 결과·현재 자식 상태를
+다시 대조한 경우에만 표시하며, 확인할 수 없는 수치를 완료로 추정하지 않습니다.
+CLI·대시보드·보고서는 검토 수와 입증 수, 남은 이유를 구분해 보여줍니다.
+현재 v5 표면 검토 결과는 기존 자식 가설의 `HOLD` 사유를 반증하는 자료가
+아닙니다. 재실행 판별기와 일회성 저장 절차가 있어도, 별도의 신뢰 가능한 반증·
+새 시험 입력 생산자가 입증되지 않은 `HOLD`는 재실행하지 않고 그대로 보존합니다.
+
+모든 보강 호출이 끝나도 근거 부족, 실제 Python 검사 공백, 미해결 자식 `HOLD`가
+남으면 `PARTIAL`은 올바른 최종 상태입니다. 인증서·저장 근거 손상이나 Agent 실행
+실패는 `PARTIAL`로 덮지 않고 `BLOCKED`·`FAILED` 또는 한도에 따른 `PAUSED`로
+기록합니다. 별도 보강 상태와 오류 코드는 원래 성공한 v1 종료 근거를 손상시키지
+않고 저장됩니다. v2의 `COVERED`는 정해진 검사 범위의 표면 검토 근거이지 취약점
+`TRUE`, 제보 가능한 Finding, Scope Gate 승인 또는 저장소 전체 보안 보증이 아닙니다.
+
 재시도 가능한 오류는 LLM 복구 결정으로 도구 재시도, 생성 입력 재작성 또는 일회용
 Docker 환경 재구성을 최대 3회 수행합니다. 각 결정과 변경은 artifact와 checkpoint에
 남고 `status`와 대시보드에는 현재 복구 시도 횟수가 표시됩니다. 한 계보가 소진되면
@@ -85,11 +137,38 @@ Gate 결정은 최대 세 번입니다. `ACCEPT`는 이후 단계로 진행하�
 출력은 기존의 제한된 실행 오류 복구 경로를 따르며 분석을 `BLOCKED` 또는
 `FAILED`로 남깁니다. 완료된 가설과 운영 오류가 섞이면 분석 전체도 완료가 아닙니다.
 
+## 저장된 Django PoC의 마지막 후보 재개
+
+`POC_DJANGO_MIGRATION_FIXTURE_REPLAY_UNSUPPORTED`로 여섯 번째 후보가
+차단된 경우, 저장소의 고정 커밋·정적 검사·기존 PoC 근거와 하위 Codex 프로세스
+종료를 다시 확인한 뒤 기존 `resume --repair-poc-django-migration-settings-exhaustion`
+명령으로 후보 생성만 한 번 더 재개할 수 있습니다. 기존 시도와 아티팩트는
+보존하며 같은 복구를 두 번 적용하지 않습니다. 과거에 거절된 후보 원문이
+저장되지 않았으므로 그 당시의 세부 거절 이유는 `UNKNOWN`입니다.
+
+새 후보에도 동일한 Docker·비밀정보·Django 마이그레이션 안전 검사를 적용합니다.
+고정 프로젝트 설정부터 실제 마이그레이션 호출까지는 필요한 import·설정·초기화·
+호출만 허용합니다. 안전한 import 순서는 여러 가지를 허용하지만 그 사이의 임의
+실행문이나 이름 재바인딩은 거부합니다. 이 제한은 이전에 통과하던 일부 전처리
+스크립트도 거절할 수 있으므로, PoC는 준비 작업을 마이그레이션 뒤로 옮겨야 합니다.
+셸로 감싼 Python 후보는 shebang 바로 뒤에 단일 Python heredoc 명령이 오는
+형태만 인정합니다. 앞에 `exit`·함수 재정의 같은 셸 명령이 있으면 본문을
+분석했더라도 실제 실행 증거로 삼지 않습니다.
+같은 후보를 반복하거나 합성 설정으로 마이그레이션을 우회하면 닫힌 사유 코드만
+기록하고 제한된 횟수에서 멈춥니다. 재개 자체가 취약점 확인이나 분석 완료를
+뜻하지 않으며, 새 PoC가 실패하면 `BLOCKED`를 그대로 유지합니다.
+
 ## 코드 위치
 
 - 실행기: `src/sastsimi/simple_runtime/runner.py`
 - checkpoint 저장: `src/sastsimi/simple_runtime/store.py`
 - 분석 단위 제어: `src/sastsimi/simple_runtime/application.py`
+- 저장된 Python 범위 재인증: `src/sastsimi/simple_runtime/surface_scope_recertification.py`
+- v4 그래프·조각·검증: `src/sastsimi/simple_runtime/surface_evidence_graph_v4.py`,
+  `surface_enrichment_v4.py`, `surface_evidence_validation_v4.py`
+- 보안 표면 v2 증거: `src/sastsimi/simple_runtime/surface_coverage_v2.py`
+- v5 그래프·검증과 보안 표면 v3 증거: `src/sastsimi/simple_runtime/surface_evidence_graph_v5.py`,
+  `surface_evidence_validation_v5.py`, `surface_coverage_v3.py`
 - 분석별 LLM 예산·호출 원장: `src/sastsimi/simple_runtime/call_queue.py`
 - 이전 실행 자료 연결: `src/sastsimi/simple_runtime/migration.py`
 - 진행률 계산: `src/sastsimi/progress/projector.py`

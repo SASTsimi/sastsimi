@@ -12,6 +12,10 @@ from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.python_coverage_scope import (
+    NON_PYTHON_PRODUCT_EXTENSIONS,
+    out_of_scope_limits_python_coverage,
+)
 
 _POLICY_VERSION = 6
 _TEST_DIRECTORIES = frozenset(
@@ -58,60 +62,6 @@ _MAX_CONTENT_BYTES = 64 * 1024
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 _DOCUMENTATION_DIRECTORIES = frozenset(
     {"doc", "docs", "documentation", "example", "examples", "sample", "samples"}
-)
-_NON_PYTHON_PRODUCT_EXTENSIONS = frozenset(
-    {
-        ".js",
-        ".jsx",
-        ".mjs",
-        ".cjs",
-        ".ts",
-        ".tsx",
-        ".mts",
-        ".cts",
-        ".vue",
-        ".svelte",
-        ".astro",
-        ".go",
-        ".rs",
-        ".java",
-        ".kt",
-        ".kts",
-        ".scala",
-        ".sc",
-        ".cs",
-        ".c",
-        ".h",
-        ".cc",
-        ".cpp",
-        ".cxx",
-        ".hh",
-        ".hpp",
-        ".hxx",
-        ".swift",
-        ".dart",
-        ".rb",
-        ".php",
-        ".ex",
-        ".exs",
-        ".erl",
-        ".hrl",
-        ".hs",
-        ".ml",
-        ".mli",
-        ".lua",
-        ".pl",
-        ".pm",
-        ".r",
-        ".jl",
-        ".sh",
-        ".bash",
-        ".zsh",
-        ".ps1",
-        ".sql",
-        ".graphql",
-        ".proto",
-    }
 )
 
 
@@ -365,14 +315,14 @@ def build_static_file_scope(workspace: Path, tracked: Sequence[str]) -> StaticFi
             if extension == ".py":
                 selected_paths.append(path)
                 scope_exceptions.append((path, "declared_python_entry"))
-            elif extension == ".pyi" or extension in _NON_PYTHON_PRODUCT_EXTENSIONS:
+            elif extension == ".pyi" or extension in NON_PYTHON_PRODUCT_EXTENSIONS:
                 out_of_scope_product_files.append((path, "declared_non_python_entry"))
                 scope_exceptions.append((path, "declared_non_python_entry"))
             continue
         if test_reason is not None:
             if _under_uncertain_root(path, uncertain_roots) and (
                 extension in {".py", ".pyi"}
-                or extension in _NON_PYTHON_PRODUCT_EXTENSIONS
+                or extension in NON_PYTHON_PRODUCT_EXTENSIONS
             ):
                 out_of_scope_product_files.append(
                     (path, "manifest_unverified_possible_product")
@@ -387,7 +337,7 @@ def build_static_file_scope(workspace: Path, tracked: Sequence[str]) -> StaticFi
             selected_paths.append(path)
         elif extension == ".pyi":
             out_of_scope_product_files.append((path, "python_stub_not_scanned"))
-        elif extension in _NON_PYTHON_PRODUCT_EXTENSIONS:
+        elif extension in NON_PYTHON_PRODUCT_EXTENSIONS:
             out_of_scope_product_files.append((path, "non_python_product_source"))
     selected = tuple(selected_paths)
     scope_identity: dict[str, object] = {
@@ -410,4 +360,5 @@ __all__ = [
     "StaticScopeManifestUnverified",
     "build_static_file_scope",
     "is_test_only_path",
+    "out_of_scope_limits_python_coverage",
 ]

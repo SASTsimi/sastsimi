@@ -7,7 +7,10 @@ import re
 from urllib.parse import urlsplit
 
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.prompt_redaction import inspect_poc_candidate_json
+from sastsimi.contracts.prompt_redaction import (
+    inspect_poc_candidate_json,
+    poc_candidate_sensitive_rule_id,
+)
 
 _SHELL_VARIABLE = re.compile(
     rb"\$(?:\{#?(?P<braced>[A-Za-z_][A-Za-z0-9_]*)|"
@@ -48,9 +51,70 @@ _INCONCLUSIVE_MARKER = b"SASTSIMI_POC_INCONCLUSIVE"
 # code-fix replays may not run twice against the same validator revision.
 POC_CANDIDATE_VALIDATOR_REVISION = "2026-10-07-4"
 
+_SENSITIVE_ASSIGNMENT_HEAD = re.compile(r"(?i)(?P<field>[A-Z_][A-Z0-9_-]*)\s*[:=]")
+_SENSITIVE_FIELD_KINDS = {
+    "auth": "AUTH",
+    "authorization": "AUTH",
+    "password": "PASSWORD",
+    "passwords": "PASSWORD",
+    "passwd": "PASSWORD",
+    "pwd": "PASSWORD",
+    "secret": "SECRET",
+    "secrets": "SECRET",
+    "client_secret": "SECRET",
+    "client_secrets": "SECRET",
+    "private_key": "SECRET",
+    "private_keys": "SECRET",
+    "api_key": "API_KEY",
+    "api_keys": "API_KEY",
+    "credential": "CREDENTIAL",
+    "credentials": "CREDENTIAL",
+    "database_url": "CONNECTION",
+    "database_uri": "CONNECTION",
+    "connection_url": "CONNECTION",
+    "connection_uri": "CONNECTION",
+    "connection_string": "CONNECTION",
+    "dsn": "CONNECTION",
+    "token": "TOKEN",
+    "tokens": "TOKEN",
+    "access_token": "TOKEN",
+    "refresh_token": "TOKEN",
+    "cookie": "OTHER",
+    "session_id": "OTHER",
+}
+
+
+def _sensitive_assignment_shape(source: str, offset: int) -> tuple[str, str]:
+    """Classify a rejected span without returning any source or value."""
+
+    line_start = source.rfind("\n", 0, offset) + 1
+    line_end = source.find("\n", offset)
+    if line_end < 0:
+        line_end = len(source)
+    prefix = source[line_start:offset]
+    head = _SENSITIVE_ASSIGNMENT_HEAD.match(source[offset:line_end])
+    field_kind = (
+        _SENSITIVE_FIELD_KINDS.get(
+            head.group("field").lower().replace("-", "_"), "OTHER"
+        )
+        if head is not None
+        else "OTHER"
+    )
+    if prefix.lstrip().startswith("#"):
+        site_kind = "COMMENT"
+    elif prefix.rstrip().endswith(("(", ",")):
+        site_kind = "KEYWORD_ARGUMENT"
+    elif not prefix.strip() or prefix.strip() == "export":
+        site_kind = "ASSIGNMENT"
+    else:
+        site_kind = "UNKNOWN"
+    return field_kind, site_kind
+
 
 class PoCCandidateRejected(ValueError):
-    pass
+    def __init__(self, code: str, *, reason_code: str | None = None) -> None:
+        super().__init__(code)
+        self.reason_code = reason_code
 
 
 def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str | int]:
@@ -94,6 +158,9 @@ def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str |
         # A location/category is enough for one bounded LLM repair attempt.
         diagnostic["sensitive_category"] = "UNCLASSIFIED"
         diagnostic["sensitive_line"] = 0
+        diagnostic["sensitive_rule_id"] = "UNCLASSIFIED"
+        diagnostic["sensitive_field_kind"] = "OTHER"
+        diagnostic["sensitive_site_kind"] = "UNKNOWN"
         try:
             source = content.decode("utf-8")
             inspected = inspect_poc_candidate_json(canonical_bytes({"content": source}))
@@ -118,6 +185,13 @@ def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str |
                 diagnostic["sensitive_line"] = (
                     source.count("\n", 0, first_difference) + 1
                 )
+                diagnostic["sensitive_rule_id"] = poc_candidate_sensitive_rule_id(
+                    source, first_difference
+                )
+                (
+                    diagnostic["sensitive_field_kind"],
+                    diagnostic["sensitive_site_kind"],
+                ) = _sensitive_assignment_shape(source, first_difference)
                 diagnostic["sensitive_category"] = (
                     next(iter(categories))
                     if len(categories) == 1
@@ -130,7 +204,7 @@ def candidate_rejection_diagnostic(content: bytes, code: str) -> dict[str, str |
     return diagnostic
 
 
-def _heredocs_on_line(
+def heredocs_on_line(
     line: bytes,
 ) -> tuple[list[tuple[bytes, bool, bool]], bool] | None:
     """Find simple here-doc redirections outside quotes and comments."""
@@ -253,7 +327,7 @@ def _shell_scan_sources(content: bytes) -> tuple[bytes, bytes, tuple[bytes, ...]
             continue
         shell.extend(line)
         expanding.extend(line)
-        new = _heredocs_on_line(line)
+        new = heredocs_on_line(line)
         if new is None:
             raise PoCCandidateRejected("POC_UNDECLARED_INPUT")
         heredocs, direct_python = new

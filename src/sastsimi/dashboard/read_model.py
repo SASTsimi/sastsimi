@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.simple_runtime.hold_projection_generation import (
+    hold_marker_count,
+    marker_hold_generation,
+)
+from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 
 VERSION = 1
 INDEXED_TABS = ("findings", "coverage", "artifacts", "llm", "outputs")
@@ -398,6 +403,14 @@ class DashboardReadModel:
             connection.close()
         return counts
 
+    def _hold_review_status(self, analysis_id: str) -> str:
+        active = analysis_run_lease_active(self.data_dir, analysis_id)
+        return (
+            "DASHBOARD_INDEX_RESUME_REQUIRED"
+            if active is False
+            else "DASHBOARD_INDEX_UPDATING"
+        )
+
     def page(
         self,
         analysis_id: str,
@@ -414,16 +427,29 @@ class DashboardReadModel:
             if not self.schema_present(connection):
                 raise DashboardIndexNotReady("DASHBOARD_INDEX_SCHEMA_MISSING")
             state = connection.execute(
-                "SELECT status,projection_version FROM dashboard_index_state "
+                "SELECT status,projection_version,last_error,source_marker "
+                "FROM dashboard_index_state "
                 "WHERE analysis_id=?",
                 (analysis_id,),
             ).fetchone()
+            if (
+                state is not None
+                and state["status"] == "INCOMPLETE"
+                and state["last_error"] == "SURFACE_HOLD_REVIEW_IN_PROGRESS"
+            ):
+                raise DashboardIndexNotReady(self._hold_review_status(analysis_id))
             if (
                 state is None
                 or state["status"] != "READY"
                 or int(state["projection_version"]) != VERSION
             ):
                 raise DashboardIndexNotReady("DASHBOARD_INDEX_NOT_READY")
+            projected = marker_hold_generation(str(state["source_marker"]))
+            current = hold_marker_count(connection, analysis_id)
+            if (projected is None and current) or (
+                projected is not None and projected != current
+            ):
+                raise DashboardIndexNotReady(self._hold_review_status(analysis_id))
             summary = connection.execute(
                 "SELECT summary_json FROM dashboard_list_summaries "
                 "WHERE analysis_id=? AND list_kind=?",

@@ -856,6 +856,82 @@ async def test_modern_context_citation_is_commit_pinned(
 
 
 @pytest.mark.asyncio
+async def test_auth_path_source_hash_is_not_mistaken_for_a_credential(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    path = checkout / "src" / "auth.py"
+    path.parent.mkdir(parents=True)
+    pinned = "def login(request):\n    return request.user\n"
+    path.write_text(pinned, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "src/auth.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode("ascii")
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v1",
+            "path": "src/auth.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": hashlib.sha256(pinned.encode("utf-8")).hexdigest(),
+            "source_lines": [{"line": 2, "text": "    return request.user"}],
+        }
+    )
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {
+                "title": "Pinned auth path",
+                "code_locations": ["src/auth.py:2"],
+            },
+        }
+    )
+    client = _ContextClient()
+    final = await FinalVerificationStage(
+        client,
+        artifacts,
+        workspace_path=checkout,
+        require_anchor=True,
+    )(
+        _checkpoint(SimpleStage.VERIFICATION_FINAL_DONE, identity=identity),
+        {
+            SimpleStage.PRO_CON_DONE: _checkpoint(
+                SimpleStage.PRO_CON_DONE,
+                identity=identity,
+                inputs=(proposal_ref, source_ref),
+            )
+        },
+    )
+    assert final.verdict == "HOLD"
+    assert len(client.prompts) == 1
+    assert b"[REDACTED:CREDENTIAL]" not in client.prompts[0]
+    source_hash = hashlib.sha256(pinned.encode("utf-8")).hexdigest().encode()
+    assert source_hash in client.prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_candidate_context_v2_pins_cross_file_call_path(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()

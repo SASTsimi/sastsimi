@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
+from sastsimi.contracts.python_coverage_scope import out_of_scope_limits_python_coverage
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.surface_reason_codes import SURFACE_REASON_CODES
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,11 +30,22 @@ class CoverageDisclosure:
     excluded_test_reasons: tuple[tuple[str, int], ...] = ()
     excluded_test_preview: tuple[tuple[str, str], ...] = ()
     out_of_scope_product_count: int | None = None
+    python_scope_limit_count: int | None = None
     out_of_scope_reasons: tuple[tuple[str, int], ...] = ()
     out_of_scope_preview: tuple[tuple[str, str], ...] = ()
     unavailable_file_count: int | None = None
     unavailable_reasons: tuple[tuple[str, int], ...] = ()
     unavailable_preview: tuple[tuple[str, str], ...] = ()
+    surface_proof_version: int | None = None
+    surface_scope_certificate_hash: str | None = None
+    surface_raw_static_gap_count: int | None = None
+    surface_effective_python_gap_count: int | None = None
+    surface_unresolved_reason_count: int | None = None
+    surface_unresolved_reasons: tuple[tuple[str, int], ...] = ()
+    surface_reviewed_count: int | None = None
+    surface_covered_count: int | None = None
+    surface_uncovered_count: int | None = None
+    surface_insufficient_count: int | None = None
 
     @property
     def partial(self) -> bool:
@@ -42,9 +55,42 @@ class CoverageDisclosure:
             self.gap_count
             or self.unsupported_count
             or self.engine_errors
-            or self.out_of_scope_product_count
+            or (
+                self.out_of_scope_product_count
+                if self.python_scope_limit_count is None
+                else self.python_scope_limit_count
+            )
             or self.unavailable_file_count
+            or self.expected_count == 0
+            or self.verified_count == 0
         )
+
+
+def visible_surface_reason_distribution(
+    coverage: CoverageDisclosure,
+) -> tuple[tuple[str, int], ...]:
+    """Expose only bounded verified v3 reason codes, never arbitrary source text."""
+
+    if coverage.surface_proof_version != 3:
+        return ()
+    reasons = coverage.surface_unresolved_reasons
+    if (
+        type(coverage.surface_unresolved_reason_count) is not int
+        or not isinstance(reasons, tuple)
+        or any(not isinstance(item, tuple) or len(item) != 2 for item in reasons)
+        or any(
+            not isinstance(code, str)
+            or code not in SURFACE_REASON_CODES
+            or type(count) is not int
+            or count <= 0
+            for code, count in reasons
+        )
+        or len({code for code, _ in reasons}) != len(reasons)
+        or sum(count for _, count in reasons)
+        != coverage.surface_unresolved_reason_count
+    ):
+        return ()
+    return tuple(sorted(reasons))
 
 
 def coverage_disclosure(
@@ -103,14 +149,20 @@ def coverage_disclosure(
 
     def scope_rows(
         key: str,
-    ) -> tuple[int | None, tuple[tuple[str, int], ...], tuple[tuple[str, str], ...]]:
+    ) -> tuple[
+        int | None,
+        tuple[tuple[str, int], ...],
+        tuple[tuple[str, str], ...],
+        int,
+    ]:
         value = data.get(key)
         if value is None:
-            return None, (), ()
+            return None, (), (), 0
         if not isinstance(value, list):
             raise ValueError("REPORT_STATIC_COVERAGE_INVALID")
         counts: Counter[str] = Counter()
         preview: list[tuple[str, str]] = []
+        python_scope_limits = 0
         for row in value:
             if not isinstance(row, dict) or set(row) != {"path", "reason"}:
                 raise ValueError("REPORT_STATIC_COVERAGE_INVALID")
@@ -129,17 +181,30 @@ def coverage_disclosure(
             ):
                 raise ValueError("REPORT_STATIC_COVERAGE_INVALID")
             counts[reason] += 1
+            if (
+                key == "out_of_scope_product_files"
+                and out_of_scope_limits_python_coverage(path, reason)
+            ):
+                python_scope_limits += 1
             if len(preview) < 8:
                 preview.append((path, reason))
-        return len(value), tuple(sorted(counts.items())), tuple(preview)
+        return (
+            len(value),
+            tuple(sorted(counts.items())),
+            tuple(preview),
+            python_scope_limits,
+        )
 
-    excluded_count, excluded_reasons, excluded_preview = scope_rows(
+    excluded_count, excluded_reasons, excluded_preview, _ = scope_rows(
         "excluded_test_files"
     )
-    out_of_scope_count, out_of_scope_reasons, out_of_scope_preview = scope_rows(
-        "out_of_scope_product_files"
-    )
-    unavailable_count, unavailable_reasons, unavailable_preview = scope_rows(
+    (
+        out_of_scope_count,
+        out_of_scope_reasons,
+        out_of_scope_preview,
+        python_scope_limit_count,
+    ) = scope_rows("out_of_scope_product_files")
+    unavailable_count, unavailable_reasons, unavailable_preview, _ = scope_rows(
         "unavailable_paths"
     )
     errors = list(errors)
@@ -160,10 +225,15 @@ def coverage_disclosure(
     ):
         raise ValueError("REPORT_STATIC_COVERAGE_INVALID")
     if disposition == "FULL" and (
-        gaps
+        expected == 0
+        or verified == 0
+        or gaps
         or unsupported
-        or out_of_scope_count
+        or data.get("unsupported")
+        or errors
+        or python_scope_limit_count
         or unavailable_count
+        or data.get("unavailable")
         or data.get("ast_parse_error_count", 0)
         or data.get("ast_oversize_count", 0)
         or data.get("codeql_error")
@@ -184,6 +254,7 @@ def coverage_disclosure(
         excluded_test_reasons=excluded_reasons,
         excluded_test_preview=excluded_preview,
         out_of_scope_product_count=out_of_scope_count,
+        python_scope_limit_count=python_scope_limit_count,
         out_of_scope_reasons=out_of_scope_reasons,
         out_of_scope_preview=out_of_scope_preview,
         unavailable_file_count=unavailable_count,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import CheckpointIdentity
 
@@ -94,6 +95,27 @@ def test_oversized_corrupt_scan_artifact_is_quarantined_before_retry(
     assert not path.exists()
     assert artifacts.put_bytes(expected, "application/json") == ref
     assert artifacts.read_bounded(ref, 256) == expected
+
+
+def test_corrupt_scan_artifact_quarantine_handles_long_destination(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path.resolve()
+    if len(str(base)) >= 165:
+        pytest.skip("Test fixture path is already too long for the CAS source")
+    data_dir = base / ("p" * (165 - len(str(base)) - 1))
+    artifacts = _repository(data_dir)
+    expected = b'{"results":[],"errors":[]}'
+    ref = artifacts.put_bytes(expected, "application/json")
+    path = artifacts.artifacts.path_for(ref.content_hash)
+    path.write_bytes(b"corrupt")
+
+    assert artifacts.quarantine_corrupt(ref, max_bytes=256)
+    assert not path.exists()
+    quarantined = tuple(artifacts.paths.quarantine.iterdir())
+    assert len(quarantined) == 1
+    assert quarantined[0].name.startswith(ref.content_hash + "-")
+    assert windows_extended_path(quarantined[0]).read_bytes() == b"corrupt"
 
 
 def test_valid_artifact_above_scan_reader_limit_is_not_quarantined(

@@ -271,7 +271,12 @@ def test_codex_cleanup_confirmation_rejects_active_analysis_lease(
 
 def test_v2_cleanup_confirmation_requires_captured_child_identity(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: False,
+    )
     identity = CheckpointIdentity(
         analysis_id="analysis-exact-child",
         workspace_id="workspace-exact-child",
@@ -365,6 +370,115 @@ def test_v2_cleanup_confirmation_requires_captured_child_identity(
         store.confirm_codex_cleanup(checkpoint, wrong_identity, artifacts)
     store.confirm_codex_cleanup(checkpoint, exact_marker, artifacts)
     assert store.unresolved_codex_call(identity.analysis_id) is None
+    with sqlite3.connect(store.database_path) as connection:
+        statuses = connection.execute(
+            "SELECT phase, status FROM simple_codex_child_spawns "
+            "WHERE call_id = ? ORDER BY phase",
+            (call_id,),
+        ).fetchall()
+    assert statuses == [("EXEC", "EXITED"), ("LOGIN", "EXITED")]
+
+
+def test_historical_confirmed_call_reconciles_captured_child_from_audited_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: False,
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-old-confirmation",
+        workspace_id="workspace-old-confirmation",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-old-confirmation",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            candidate_pipeline_version=2,
+        )
+    )
+    checkpoint = store.mark_running(
+        identity, SimpleStage.POC_CANDIDATE_DONE, (), attempt_id="old-attempt"
+    )
+    call_id = "old-confirmed-call"
+    assert store.begin_codex_call(call_id, identity.analysis_id)
+    store.begin_codex_child_spawn(
+        call_id=call_id, analysis_id=identity.analysis_id, phase="VERSION"
+    )
+    store.record_codex_child_spawn(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="VERSION",
+        pid=4242,
+        start_identity="windows:old-process",
+    )
+    base = _cleanup_confirmation(artifacts, checkpoint, call_id=call_id)
+    confirmation = artifacts.put_json(
+        json.loads(artifacts.read(base))
+        | {
+            "former_parent_pid": 4242,
+            "observed_at": datetime.now(UTC).isoformat(),
+            "observed_children": [
+                {
+                    "phase": "VERSION",
+                    "pid": 4242,
+                    "start_identity": "windows:old-process",
+                }
+            ],
+        }
+    )
+    store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    # Model the durable mismatch left by the older confirmation implementation.
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_codex_child_spawns SET status = 'CAPTURED' "
+            "WHERE call_id = ? AND phase = 'VERSION'",
+            (call_id,),
+        )
+
+    assert (
+        store.reconcile_confirmed_codex_children(
+            identity.analysis_id, call_id, tmp_path
+        )
+        == 1
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        status = connection.execute(
+            "SELECT status FROM simple_codex_child_spawns "
+            "WHERE call_id = ? AND phase = 'VERSION'",
+            (call_id,),
+        ).fetchone()
+    assert status == ("EXITED",)
+
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_codex_child_spawns SET status = 'CAPTURED' "
+            "WHERE call_id = ? AND phase = 'VERSION'",
+            (call_id,),
+        )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    with pytest.raises(ValueError, match="RECONCILIATION_UNSAFE"):
+        store.reconcile_confirmed_codex_children(
+            identity.analysis_id, call_id, tmp_path
+        )
+    with sqlite3.connect(store.database_path) as connection:
+        still_captured = connection.execute(
+            "SELECT status FROM simple_codex_child_spawns "
+            "WHERE call_id = ? AND phase = 'VERSION'",
+            (call_id,),
+        ).fetchone()
+    assert still_captured == ("CAPTURED",)
 
 
 @pytest.mark.asyncio

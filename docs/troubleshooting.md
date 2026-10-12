@@ -440,6 +440,29 @@ sastsimi resume A-001 --repair-poc-placeholder-exhaustion hypothesis-...
 sastsimi resume A-001 --repair-poc-sensitive-content hypothesis-...
 ```
 
+민감정보 진단에는 원문이나 값 대신 탐지 규칙 ID와 행 번호만 기록합니다. 규칙에
+걸렸다는 사실만으로 실제 비밀정보인지 오탐인지 단정할 수 없습니다. 차단된
+후보를 임의로 안전하다고 처리하거나 시도 횟수를 초기화하지 마세요.
+
+`POC_URLCONF_ORIGIN_UNVERIFIED`는 Django URLConf 복구 후보가 실제 고정
+저장소의 URL 모듈을 불러왔다는 증거가 없다는 뜻입니다. 스크립트에
+`ROOT_URLCONF` 문자열이 적혀 있어도 합성 모듈이나 import 경로 가리기로
+다른 라우트를 실행할 수 있습니다. 따라서 URLConf 자동 재개 옵션 두 가지는
+기존 기록을 바꾸기 전에 거부하고, 이미 저장된 후보도 Docker 실행 전에
+차단합니다. 이 상태를 PoC 성공·반증으로 처리하지 마세요. 실제 모듈 출처를
+독립적으로 확인하는 실행 방식이 마련되기 전에는 수동 검증이 필요합니다.
+
+`HYPOTHESIS_ANCHOR_INVALID`가 PoC 후보의 고정 소스 근거를 구성하기 **전에**
+발생했다면, 해당 시도에 LLM 호출·PoC 실행이 없고 저장된 커밋·가설·루트 오류·
+이전 복구 표식이 모두 일치할 때에만 다음 명시적 재개를 사용할 수 있습니다.
+도구는 기존 결과를 보존하고 실패한 후보만 제한적으로 다시 시도합니다. 재개
+후 `POC_SENSITIVE_CONTENT`나 `RECOVERY_EXHAUSTED`처럼 다른 오류가 나면 이
+옵션을 반복해 우회하지 않습니다.
+
+```powershell
+sastsimi resume A-001 --repair-poc-anchor hypothesis-...
+```
+
 PoC 초안은 validated PoC가 아닙니다. 같은 attempt에서 실제 실행이 성공하고 가설을 지지해야만 validated PoC가 됩니다.
 
 초기 Verification의 `environment_requirements`에는 설치 가능한 Python 실행환경과 패키지만 넣습니다. 공격자가 대상 프로세스 설정을 바꿀 권한, 외부 서비스·자격 증명·네트워크 호출처럼 별도로 입증해야 하는 조건은 `unmet_external_prerequisites`로 기록합니다. 이 조건이 남으면 해당 가설은 환경 준비·PoC·Finding·보고서를 실행하지 않고 `INCONCLUSIVE`(제보 불가)로 끝납니다. 검증하지 못한 공격 표면은 여전히 미검증이며 전체 분석이 `PARTIAL`일 수 있습니다. 반대로 설치 요구 자체가 지원되지 않아 `POC_OFFLINE_REQUIREMENT_UNSUPPORTED`가 발생했다면 이를 미확정으로 위장하지 않고 `BLOCKED`로 남깁니다. 과거 형식 때문에 이 오류로 멈춘 같은 분석은 완료된 앞 단계를 보존하고 초기 Verification만 최대 3회까지 재평가할 수 있습니다.

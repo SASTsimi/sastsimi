@@ -18,7 +18,7 @@
 - New configuration fields are optional; old `config.toml`, `profile.toml`, DB records, artifacts, and completed checkpoints remain readable and reusable.
 - Only runtime-owned, provably dead Docker containers may be removed. An unknown owner or Windows liveness uncertainty fails safe.
 - No secrets, full prompts, or repository code in ordinary logs. Live Claude inference requires the operator's own authenticated account and is not part of mock CI.
-- The repo rejects `docs/superpowers`; keep this plan in `docs/plans` and run `scripts/validate-current-docs.ps1`.
+- The repo rejects the obsolete SDD folder; keep this plan in `docs/plans` and run `scripts/validate-current-docs.ps1`.
 
 ## Review Focus
 

@@ -38,6 +38,7 @@ from sastsimi.ports.report_export import ReportUnavailable
 from sastsimi.progress.models import ProgressSnapshot
 from sastsimi.progress.projector import (
     ProgressProjector,
+    read_surface_scope_certificate,
     verified_surface_coverage_counts,
 )
 from sastsimi.providers.codex_subscription import CodexCliProcessRunner
@@ -584,6 +585,11 @@ def build_analysis_application(
             else None
         ),
         owned_attempt_container=docker.has_owned_attempt_container,
+        git_executable=(
+            str(profile.tools["git"].executable_path)
+            if "git" in profile.tools
+            else "git"
+        ),
     )
 
 
@@ -642,10 +648,33 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         repair_exhausted_hypothesis: str | None = None,
         repair_legacy_import_stop_hypothesis: str | None = None,
         repair_fallback_poc_stop_hypothesis: str | None = None,
+        repair_poc_fixture_exhaustion_hypothesis: str | None = None,
+        repair_poc_fixture_dependency_exhaustion_hypothesis: str | None = None,
+        repair_poc_candidate_app_exhaustion_hypothesis: str | None = None,
+        repair_poc_urlconf_exhaustion_hypothesis: str | None = None,
+        repair_poc_candidate_constraint_hypothesis: str | None = None,
+        repair_poc_urlconf_candidate_hypothesis: str | None = None,
+        repair_poc_generated_input_hypothesis: str | None = None,
+        repair_poc_source_gap_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_schema_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_relation_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_migration_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_server_constructor_exhaustion_hypothesis: str | None = None,
+        repair_poc_in_memory_storage_exhaustion_hypothesis: str | None = None,
+        repair_initial_environment_exhaustion_hypothesis: str | None = None,
+        repair_interrupted_initial_exhaustion_hypothesis: str | None = None,
         repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_poc_sensitive_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_transport_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_recap_hypothesis: str | None = None,
+        repair_poc_anchor_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
+        repair_auth_required_hypothesis: str | None = None,
+        supplement_saved_v2_ast_orphans: bool = False,
+        enrich_saved_surface_evidence: bool = False,
     ) -> dict[str, object]:
         outcome = asyncio.run(
             build_analysis_application(self._config, self._profile).resume(
@@ -657,6 +686,54 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 repair_fallback_poc_stop_hypothesis=(
                     repair_fallback_poc_stop_hypothesis
                 ),
+                repair_poc_fixture_exhaustion_hypothesis=(
+                    repair_poc_fixture_exhaustion_hypothesis
+                ),
+                repair_poc_fixture_dependency_exhaustion_hypothesis=(
+                    repair_poc_fixture_dependency_exhaustion_hypothesis
+                ),
+                repair_poc_candidate_app_exhaustion_hypothesis=(
+                    repair_poc_candidate_app_exhaustion_hypothesis
+                ),
+                repair_poc_urlconf_exhaustion_hypothesis=(
+                    repair_poc_urlconf_exhaustion_hypothesis
+                ),
+                repair_poc_candidate_constraint_hypothesis=(
+                    repair_poc_candidate_constraint_hypothesis
+                ),
+                repair_poc_urlconf_candidate_hypothesis=(
+                    repair_poc_urlconf_candidate_hypothesis
+                ),
+                repair_poc_generated_input_hypothesis=(
+                    repair_poc_generated_input_hypothesis
+                ),
+                repair_poc_source_gap_exhaustion_hypothesis=(
+                    repair_poc_source_gap_exhaustion_hypothesis
+                ),
+                repair_poc_django_schema_exhaustion_hypothesis=(
+                    repair_poc_django_schema_exhaustion_hypothesis
+                ),
+                repair_poc_django_settings_exhaustion_hypothesis=(
+                    repair_poc_django_settings_exhaustion_hypothesis
+                ),
+                repair_poc_django_relation_settings_exhaustion_hypothesis=(
+                    repair_poc_django_relation_settings_exhaustion_hypothesis
+                ),
+                repair_poc_django_migration_settings_exhaustion_hypothesis=(
+                    repair_poc_django_migration_settings_exhaustion_hypothesis
+                ),
+                repair_poc_server_constructor_exhaustion_hypothesis=(
+                    repair_poc_server_constructor_exhaustion_hypothesis
+                ),
+                repair_poc_in_memory_storage_exhaustion_hypothesis=(
+                    repair_poc_in_memory_storage_exhaustion_hypothesis
+                ),
+                repair_initial_environment_exhaustion_hypothesis=(
+                    repair_initial_environment_exhaustion_hypothesis
+                ),
+                repair_interrupted_initial_exhaustion_hypothesis=(
+                    repair_interrupted_initial_exhaustion_hypothesis
+                ),
                 repair_docker_owned_list_exhaustion_hypothesis=(
                     repair_docker_owned_list_exhaustion_hypothesis
                 ),
@@ -666,7 +743,20 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 repair_poc_sensitive_content_hypothesis=(
                     repair_poc_sensitive_content_hypothesis
                 ),
+                repair_poc_sensitive_exhaustion_hypothesis=(
+                    repair_poc_sensitive_exhaustion_hypothesis
+                ),
+                repair_poc_sensitive_auth_transport_hypothesis=(
+                    repair_poc_sensitive_auth_transport_hypothesis
+                ),
+                repair_poc_sensitive_auth_recap_hypothesis=(
+                    repair_poc_sensitive_auth_recap_hypothesis
+                ),
+                repair_poc_anchor_hypothesis=repair_poc_anchor_hypothesis,
                 repair_report_validator_hypothesis=(repair_report_validator_hypothesis),
+                repair_auth_required_hypothesis=repair_auth_required_hypothesis,
+                supplement_saved_v2_ast_orphans=supplement_saved_v2_ast_orphans,
+                enrich_saved_surface_evidence=enrich_saved_surface_evidence,
             )
         )
         run = self._store.require_analysis_run(outcome.identity.analysis_id)
@@ -683,10 +773,33 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         repair_exhausted_hypothesis: str | None = None,
         repair_legacy_import_stop_hypothesis: str | None = None,
         repair_fallback_poc_stop_hypothesis: str | None = None,
+        repair_poc_fixture_exhaustion_hypothesis: str | None = None,
+        repair_poc_fixture_dependency_exhaustion_hypothesis: str | None = None,
+        repair_poc_candidate_app_exhaustion_hypothesis: str | None = None,
+        repair_poc_urlconf_exhaustion_hypothesis: str | None = None,
+        repair_poc_candidate_constraint_hypothesis: str | None = None,
+        repair_poc_urlconf_candidate_hypothesis: str | None = None,
+        repair_poc_generated_input_hypothesis: str | None = None,
+        repair_poc_source_gap_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_schema_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_relation_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_django_migration_settings_exhaustion_hypothesis: str | None = None,
+        repair_poc_server_constructor_exhaustion_hypothesis: str | None = None,
+        repair_poc_in_memory_storage_exhaustion_hypothesis: str | None = None,
+        repair_initial_environment_exhaustion_hypothesis: str | None = None,
+        repair_interrupted_initial_exhaustion_hypothesis: str | None = None,
         repair_docker_owned_list_exhaustion_hypothesis: str | None = None,
         repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
         repair_poc_sensitive_content_hypothesis: str | None = None,
+        repair_poc_sensitive_exhaustion_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_transport_hypothesis: str | None = None,
+        repair_poc_sensitive_auth_recap_hypothesis: str | None = None,
+        repair_poc_anchor_hypothesis: str | None = None,
         repair_report_validator_hypothesis: str | None = None,
+        repair_auth_required_hypothesis: str | None = None,
+        supplement_saved_v2_ast_orphans: bool = False,
+        enrich_saved_surface_evidence: bool = False,
     ) -> dict[str, object]:
         exact = self._display.resolve(analysis_id)
 
@@ -701,6 +814,54 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                     repair_fallback_poc_stop_hypothesis=(
                         repair_fallback_poc_stop_hypothesis
                     ),
+                    repair_poc_fixture_exhaustion_hypothesis=(
+                        repair_poc_fixture_exhaustion_hypothesis
+                    ),
+                    repair_poc_fixture_dependency_exhaustion_hypothesis=(
+                        repair_poc_fixture_dependency_exhaustion_hypothesis
+                    ),
+                    repair_poc_candidate_app_exhaustion_hypothesis=(
+                        repair_poc_candidate_app_exhaustion_hypothesis
+                    ),
+                    repair_poc_urlconf_exhaustion_hypothesis=(
+                        repair_poc_urlconf_exhaustion_hypothesis
+                    ),
+                    repair_poc_candidate_constraint_hypothesis=(
+                        repair_poc_candidate_constraint_hypothesis
+                    ),
+                    repair_poc_urlconf_candidate_hypothesis=(
+                        repair_poc_urlconf_candidate_hypothesis
+                    ),
+                    repair_poc_generated_input_hypothesis=(
+                        repair_poc_generated_input_hypothesis
+                    ),
+                    repair_poc_source_gap_exhaustion_hypothesis=(
+                        repair_poc_source_gap_exhaustion_hypothesis
+                    ),
+                    repair_poc_django_schema_exhaustion_hypothesis=(
+                        repair_poc_django_schema_exhaustion_hypothesis
+                    ),
+                    repair_poc_django_settings_exhaustion_hypothesis=(
+                        repair_poc_django_settings_exhaustion_hypothesis
+                    ),
+                    repair_poc_django_relation_settings_exhaustion_hypothesis=(
+                        repair_poc_django_relation_settings_exhaustion_hypothesis
+                    ),
+                    repair_poc_django_migration_settings_exhaustion_hypothesis=(
+                        repair_poc_django_migration_settings_exhaustion_hypothesis
+                    ),
+                    repair_poc_server_constructor_exhaustion_hypothesis=(
+                        repair_poc_server_constructor_exhaustion_hypothesis
+                    ),
+                    repair_poc_in_memory_storage_exhaustion_hypothesis=(
+                        repair_poc_in_memory_storage_exhaustion_hypothesis
+                    ),
+                    repair_initial_environment_exhaustion_hypothesis=(
+                        repair_initial_environment_exhaustion_hypothesis
+                    ),
+                    repair_interrupted_initial_exhaustion_hypothesis=(
+                        repair_interrupted_initial_exhaustion_hypothesis
+                    ),
                     repair_docker_owned_list_exhaustion_hypothesis=(
                         repair_docker_owned_list_exhaustion_hypothesis
                     ),
@@ -710,9 +871,22 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                     repair_poc_sensitive_content_hypothesis=(
                         repair_poc_sensitive_content_hypothesis
                     ),
+                    repair_poc_sensitive_exhaustion_hypothesis=(
+                        repair_poc_sensitive_exhaustion_hypothesis
+                    ),
+                    repair_poc_sensitive_auth_transport_hypothesis=(
+                        repair_poc_sensitive_auth_transport_hypothesis
+                    ),
+                    repair_poc_sensitive_auth_recap_hypothesis=(
+                        repair_poc_sensitive_auth_recap_hypothesis
+                    ),
+                    repair_poc_anchor_hypothesis=repair_poc_anchor_hypothesis,
                     repair_report_validator_hypothesis=(
                         repair_report_validator_hypothesis
                     ),
+                    repair_auth_required_hypothesis=repair_auth_required_hypothesis,
+                    supplement_saved_v2_ast_orphans=supplement_saved_v2_ast_orphans,
+                    enrich_saved_surface_evidence=enrich_saved_surface_evidence,
                 )
             )
             return await self._track(task, [exact], callback)
@@ -792,6 +966,8 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                 analysis_run_lease_active(self._config.data_dir, run.analysis_id)
                 is True
             ),
+            surface_enrichment_status=run.surface_enrichment_status,
+            surface_enrichment_error_code=run.surface_enrichment_error_code,
         )
 
     def _surface_metrics(
@@ -868,6 +1044,19 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                         ),
                         index,
                         terminal,
+                        certificate_payload=(
+                            read_surface_scope_certificate(
+                                repository,
+                                run.python_scope_certificate_ref,
+                                run.static_coverage_ref,
+                                terminal,
+                            )
+                            if terminal.surface_proof_version in (2, 3)
+                            else None
+                        ),
+                        artifacts=repository,
+                        coverage_ref=coverage_ref,
+                        store=self._store,
                     )
                     if coverage_ref is not None
                     else None
@@ -1515,6 +1704,9 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
         commit: str,
     ) -> dict[str, object]:
         data = self._outcome(outcome.display_analysis_id, repository, commit)
+        if outcome.recovery_notice == "LATE_FIXTURE_ONE_SHOT":
+            data["recovery_notice"] = "LATE_FIXTURE_ONE_SHOT"
+            data["historical_rejection_reason"] = "UNKNOWN"
         if outcome.error_code == "MODEL_ROUTE_PROVIDER_MISMATCH":
             # This preflight intentionally leaves the saved run unchanged. Surface the
             # refusal from this invocation, not the previous persisted status.

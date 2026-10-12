@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -195,7 +196,10 @@ def test_exact_report_validator_replay_preserves_other_work(tmp_path: Path) -> N
 
 
 def _exhausted_ipv4_report(
-    tmp_path: Path, *, record_failure_event: bool = True
+    tmp_path: Path,
+    *,
+    record_failure_event: bool = True,
+    content_override: dict[str, object] | None = None,
 ) -> tuple[
     SimpleCheckpointStore,
     SimpleArtifactRepository,
@@ -206,15 +210,16 @@ def _exhausted_ipv4_report(
     identity = stopped.identity
     prior = store.prior(identity, SimpleStage.REPORT_DONE)
     refs = tuple(item.output_refs[0] for item in prior.values())
-    content = _report_content()
-    en = content["en"]
-    assert isinstance(en, dict)
-    content["en"] = {
-        **en,
-        "limitations": [
-            "The app defaults to 127.0.0.1; external reachability is unverified."
-        ],
-    }
+    content = content_override or _report_content()
+    if content_override is None:
+        en = content["en"]
+        assert isinstance(en, dict)
+        content["en"] = {
+            **en,
+            "limitations": [
+                "The app defaults to 127.0.0.1; external reachability is unverified."
+            ],
+        }
     draft_ref = artifacts.put_json(
         {
             "kind": "simple_report_draft",
@@ -283,6 +288,495 @@ def _exhausted_ipv4_report(
             )
         )
     return store, artifacts, exhausted, draft_ref
+
+
+def test_exhausted_report_replays_currently_valid_nondisclosure_prose(
+    tmp_path: Path,
+) -> None:
+    """A legacy false alarm must not consume a confirmed report forever."""
+
+    content = _report_content(legacy_ipv4=False)
+    english = content["en"]
+    assert isinstance(english, dict)
+    content["en"] = {
+        **english,
+        "summary": "The saved PoC reached the restricted operation.",
+        "limitations": [
+            "This result does not establish permission for public disclosure."
+        ],
+    }
+    store, artifacts, exhausted, draft_ref = _exhausted_ipv4_report(
+        tmp_path, content_override=content
+    )
+
+    pending = store.prepare_report_validator_replay(exhausted, draft_ref, artifacts)
+
+    assert pending.stage is SimpleStage.REPORT_DONE
+    assert pending.status is StageStatus.PENDING
+    assert store.require(exhausted.identity, SimpleStage.REPORT_DONE) == pending
+
+
+def _exhausted_historical_report(
+    tmp_path: Path,
+    *,
+    first_summary: str = "The first saved report confirms the issue.",
+    second_summary: str = "The second saved report confirms the issue.",
+    corrupt_second: str | None = None,
+    corrupt_second_decision: str | None = None,
+) -> tuple[
+    SimpleCheckpointStore,
+    SimpleArtifactRepository,
+    StageCheckpoint,
+    tuple[StoredDataRef, StoredDataRef, StoredDataRef],
+]:
+    store, artifacts, original, _legacy_ref, _other = _blocked_report(tmp_path)
+    identity = original.identity
+    refs = tuple(
+        ref
+        for checkpoint in store.prior(identity, SimpleStage.REPORT_DONE).values()
+        for ref in checkpoint.output_refs
+    )
+
+    def draft(attempt: int, summary: str) -> StoredDataRef:
+        content = _report_content(legacy_ipv4=False)
+        english = content["en"]
+        assert isinstance(english, dict)
+        content["en"] = {
+            **english,
+            "summary": summary,
+            "limitations": [
+                "This result does not establish permission for public disclosure."
+            ],
+        }
+        return artifacts.put_json(
+            {
+                "kind": "simple_report_draft",
+                "attempt_id": (
+                    "wrong-attempt"
+                    if attempt == 2 and corrupt_second == "attempt_id"
+                    else f"report-historical-{attempt}"
+                ),
+                "source_refs": [
+                    ref.model_dump(mode="json")
+                    for ref in (
+                        refs[:-1]
+                        if attempt == 2 and corrupt_second == "source_refs"
+                        else refs
+                    )
+                ],
+                "result": content,
+                "prompt_digest": "b" * 64,
+                "output_digest": (
+                    "0" * 64
+                    if attempt == 2 and corrupt_second == "output_digest"
+                    else hashlib.sha256(canonical_bytes(content)).hexdigest()
+                ),
+            }
+        )
+
+    drafts = (
+        draft(1, first_summary),
+        draft(2, second_summary),
+        draft(3, "Missing authorization: with amber river stone, stop."),
+    )
+    retry = RecoveryDecision(
+        category=RecoveryCategory.GENERATED_INPUT,
+        action=RecoveryAction.REGENERATE_INPUT,
+        diagnosis="Retry the saved Reporter stage",
+        guidance="Use only supported report content",
+    )
+    first_running = original.model_copy(
+        update={
+            "status": StageStatus.RUNNING,
+            "attempt_id": "report-historical-1",
+            "attempt_number": 1,
+            "error_code": None,
+        }
+    )
+    store.save_checkpoint(first_running)
+    for attempt in (1, 2):
+        running = (
+            first_running
+            if attempt == 1
+            else store.require(identity, SimpleStage.REPORT_DONE)
+        )
+        failure = StageFailure(
+            code="REPORT_CONTENT_INVALID",
+            retryable=True,
+            safe_message="Reporter output failed validation",
+            evidence_refs=(drafts[attempt - 1],),
+        )
+        failed = store.mark_failure(running, failure, StageStatus.BLOCKED)
+        decision_ref = artifacts.put_json(
+            {
+                "kind": "simple_recovery_decision",
+                "identity": identity.model_dump(mode="json"),
+                "stage": SimpleStage.REPORT_DONE.value,
+                "attempt": attempt,
+                "attempt_id": (
+                    "wrong-decision-attempt"
+                    if attempt == 2 and corrupt_second_decision == "attempt_id"
+                    else f"report-historical-{attempt}"
+                ),
+                "original_error": (
+                    failure.model_copy(
+                        update={"evidence_refs": (drafts[0],)}
+                    ).model_dump(mode="json")
+                    if attempt == 2 and corrupt_second_decision == "evidence_refs"
+                    else failure.model_dump(mode="json")
+                ),
+                "decision": (
+                    retry.model_copy(update={"action": RecoveryAction.STOP}).model_dump(
+                        mode="json"
+                    )
+                    if attempt == 2 and corrupt_second_decision == "action"
+                    else retry.model_dump(mode="json")
+                ),
+                "decision_origin": "AGENT",
+            }
+        )
+        pending = store.prepare_recovery(
+            failed,
+            RecoveryResolution(decision=retry, decision_ref=decision_ref),
+            SimpleStage.REPORT_DONE,
+        )
+        store.mark_running(
+            identity,
+            SimpleStage.REPORT_DONE,
+            pending.input_refs,
+            attempt_id=f"report-historical-{attempt + 1}",
+        )
+    third = store.require(identity, SimpleStage.REPORT_DONE)
+    failed = store.mark_failure(
+        third,
+        StageFailure(
+            code="REPORT_CONTENT_INVALID",
+            retryable=True,
+            safe_message="Reporter output failed validation",
+            evidence_refs=(drafts[2],),
+        ),
+        StageStatus.BLOCKED,
+    )
+    exhausted = store.mark_recovery_exhausted(failed)
+    root_identity = identity.model_copy(update={"hypothesis_id": None})
+    root = store.require(root_identity, SimpleStage.HYPOTHESIS_DONE)
+    store.save_checkpoint(
+        root.model_copy(
+            update={
+                "error_code": (
+                    "CANDIDATE_CHILD_ERROR_BOUND:RECOVERY_EXHAUSTED:"
+                    "hypothesis-1:report-historical-3"
+                )
+            }
+        )
+    )
+    return store, artifacts, exhausted, drafts
+
+
+def test_exhausted_report_replays_latest_valid_historical_draft(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, stopped, (first_ref, second_ref, last_ref) = (
+        _exhausted_historical_report(tmp_path)
+    )
+    assert stopped.output_refs == (last_ref,)
+    assert first_ref != second_ref
+
+    pending = store.prepare_report_validator_replay(stopped, last_ref, artifacts)
+
+    assert pending.status is StageStatus.PENDING
+    prior = store.prior(stopped.identity, SimpleStage.REPORT_DONE)
+    source_hash = hashlib.sha256(
+        canonical_bytes(
+            {
+                "refs": tuple(
+                    ref
+                    for checkpoint in prior.values()
+                    for ref in checkpoint.output_refs
+                ),
+                "finding_attempt_id": prior[SimpleStage.FINDING_DONE].attempt_id,
+                "poc_attempt_id": prior[SimpleStage.POC_EXECUTION_DONE].attempt_id,
+            }
+        )
+    ).hexdigest()
+    assert (
+        store.report_draft(
+            stopped.identity,
+            source_hash,
+            prior[SimpleStage.FINDING_DONE].output_refs[0],
+        )
+        == second_ref
+    )
+
+
+def test_historical_replay_falls_back_to_first_valid_draft(tmp_path: Path) -> None:
+    store, artifacts, stopped, (first_ref, _second_ref, last_ref) = (
+        _exhausted_historical_report(
+            tmp_path,
+            second_summary="Missing authorization: with secret river stone, stop.",
+        )
+    )
+
+    store.prepare_report_validator_replay(stopped, last_ref, artifacts)
+
+    prior = store.prior(stopped.identity, SimpleStage.REPORT_DONE)
+    source_hash = hashlib.sha256(
+        canonical_bytes(
+            {
+                "refs": tuple(
+                    ref
+                    for checkpoint in prior.values()
+                    for ref in checkpoint.output_refs
+                ),
+                "finding_attempt_id": prior[SimpleStage.FINDING_DONE].attempt_id,
+                "poc_attempt_id": prior[SimpleStage.POC_EXECUTION_DONE].attempt_id,
+            }
+        )
+    ).hexdigest()
+    assert (
+        store.report_draft(
+            stopped.identity,
+            source_hash,
+            prior[SimpleStage.FINDING_DONE].output_refs[0],
+        )
+        == first_ref
+    )
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Missing authorization: with amber river stone, stop.",
+        (
+            "This does not establish permission for public disclosure, "
+            "which is now permitted."
+        ),
+    ],
+)
+def test_historical_replay_rejects_only_invalid_candidates(
+    tmp_path: Path, summary: str
+) -> None:
+    store, artifacts, stopped, (_first, _second, last_ref) = (
+        _exhausted_historical_report(
+            tmp_path, first_summary=summary, second_summary=summary
+        )
+    )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_DRAFT_INVALID"):
+        store.prepare_report_validator_replay(stopped, last_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+@pytest.mark.parametrize(
+    ("corruption", "error"),
+    [
+        ("attempt_id", "DRAFT_INVALID"),
+        ("output_digest", "DRAFT_INVALID"),
+        ("source_refs", "SOURCE_MISMATCH"),
+    ],
+)
+def test_historical_replay_rejects_damaged_draft_bindings(
+    tmp_path: Path, corruption: str, error: str
+) -> None:
+    store, artifacts, stopped, (_first, _second, last_ref) = (
+        _exhausted_historical_report(tmp_path, corrupt_second=corruption)
+    )
+
+    with pytest.raises(ValueError, match=f"REPORT_VALIDATOR_REPLAY_{error}"):
+        store.prepare_report_validator_replay(stopped, last_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+@pytest.mark.parametrize(
+    ("corruption", "error"),
+    [
+        ("attempt_id", "DRAFT_INVALID"),
+        ("evidence_refs", "CAUSE_UNPROVEN"),
+        ("action", "CAUSE_UNPROVEN"),
+    ],
+)
+def test_historical_replay_rejects_wrong_recovery_decision(
+    tmp_path: Path, corruption: str, error: str
+) -> None:
+    store, artifacts, stopped, (_first, _second, last_ref) = (
+        _exhausted_historical_report(tmp_path, corrupt_second_decision=corruption)
+    )
+
+    with pytest.raises(ValueError, match=f"REPORT_VALIDATOR_REPLAY_{error}"):
+        store.prepare_report_validator_replay(stopped, last_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+@pytest.mark.parametrize(
+    "mutation", ["duplicate_failure", "wrong_ref_failure", "duplicate_start"]
+)
+def test_historical_replay_rejects_ambiguous_last_events(
+    tmp_path: Path, mutation: str
+) -> None:
+    store, artifacts, stopped, (first_ref, _second, last_ref) = (
+        _exhausted_historical_report(tmp_path)
+    )
+    ledger = AgentActivityStore(store.database_path)
+    events = ledger.list_analysis(
+        stopped.identity.analysis_id, hypothesis_id=stopped.identity.hypothesis_id
+    )
+    if mutation == "duplicate_start":
+        original = next(
+            event
+            for event in events
+            if event.attempt_id == stopped.attempt_id
+            and event.kind is ActivityKind.STAGE_STARTED
+        )
+    else:
+        original = next(
+            event
+            for event in events
+            if event.attempt_id == stopped.attempt_id
+            and event.kind is ActivityKind.STAGE_BLOCKED
+            and event.error_code == "REPORT_CONTENT_INVALID"
+        )
+    ledger.append(
+        original.model_copy(
+            update={
+                "event_id": f"ambiguous-last-report-{mutation}",
+                "sequence": 1501,
+                **(
+                    {"output_refs": (first_ref,)}
+                    if mutation == "wrong_ref_failure"
+                    else {}
+                ),
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"):
+        store.prepare_report_validator_replay(stopped, last_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "failure_inputs",
+        "exhausted_workspace",
+        "exhausted_attempt",
+        "exhausted_status",
+        "exhausted_inputs",
+        "exhausted_outputs",
+    ],
+)
+def test_historical_replay_requires_exact_final_blocked_events(
+    tmp_path: Path, mutation: str
+) -> None:
+    store, artifacts, stopped, (first_ref, _second_ref, last_ref) = (
+        _exhausted_historical_report(tmp_path)
+    )
+    events = AgentActivityStore(store.database_path).list_analysis(
+        stopped.identity.analysis_id, hypothesis_id=stopped.identity.hypothesis_id
+    )
+    error = (
+        "REPORT_CONTENT_INVALID"
+        if mutation == "failure_inputs"
+        else "RECOVERY_EXHAUSTED"
+    )
+    original = next(
+        event
+        for event in events
+        if event.attempt_id == stopped.attempt_id
+        and event.kind is ActivityKind.STAGE_BLOCKED
+        and event.error_code == error
+    )
+    changes: dict[str, dict[str, object]] = {
+        "failure_inputs": {"input_refs": (first_ref,)},
+        "exhausted_workspace": {"workspace_id": "wrong-workspace"},
+        "exhausted_attempt": {"attempt_id": "wrong-attempt"},
+        "exhausted_status": {"status": StageStatus.RUNNING.value},
+        "exhausted_inputs": {"input_refs": (first_ref,)},
+        "exhausted_outputs": {"output_refs": (first_ref,)},
+    }
+    corrupted = original.model_copy(update=changes[mutation])
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE agent_activity_events SET event_json = ? WHERE event_id = ?",
+            (canonical_bytes(corrupted).decode("utf-8"), original.event_id),
+        )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"):
+        store.prepare_report_validator_replay(stopped, last_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+@pytest.mark.parametrize("invalid", ["root", "inflight", "stale"])
+def test_historical_replay_preserves_root_lease_and_checkpoint_guards(
+    tmp_path: Path, invalid: str
+) -> None:
+    store, artifacts, stopped, (_first, _second, last_ref) = (
+        _exhausted_historical_report(tmp_path)
+    )
+    if invalid == "root":
+        root_identity = stopped.identity.model_copy(update={"hypothesis_id": None})
+        root = store.require(root_identity, SimpleStage.HYPOTHESIS_DONE)
+        store.save_checkpoint(root.model_copy(update={"error_code": "OTHER_CHILD"}))
+    elif invalid == "inflight":
+        assert store.begin_codex_call(
+            "unfinished-report-call", stopped.identity.analysis_id
+        )
+    else:
+        store.save_checkpoint(stopped.model_copy(update={"attempt_id": "new-attempt"}))
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_"):
+        store.prepare_report_validator_replay(stopped, last_ref, artifacts)
+    assert (
+        store.require(stopped.identity, SimpleStage.REPORT_DONE).status
+        is StageStatus.BLOCKED
+    )
+
+
+def test_historical_replay_rolls_back_cache_checkpoint_and_event(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, stopped, (_first, _second, last_ref) = (
+        _exhausted_historical_report(tmp_path)
+    )
+    ledger = AgentActivityStore(store.database_path)
+    before = ledger.list_analysis(
+        stopped.identity.analysis_id, hypothesis_id=stopped.identity.hypothesis_id
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        store.prepare_report_validator_replay(
+            stopped, last_ref, artifacts, fail_before_commit=True
+        )
+
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+    assert (
+        ledger.list_analysis(
+            stopped.identity.analysis_id, hypothesis_id=stopped.identity.hypothesis_id
+        )
+        == before
+    )
+    prior = store.prior(stopped.identity, SimpleStage.REPORT_DONE)
+    source_hash = hashlib.sha256(
+        canonical_bytes(
+            {
+                "refs": tuple(
+                    ref
+                    for checkpoint in prior.values()
+                    for ref in checkpoint.output_refs
+                ),
+                "finding_attempt_id": prior[SimpleStage.FINDING_DONE].attempt_id,
+                "poc_attempt_id": prior[SimpleStage.POC_EXECUTION_DONE].attempt_id,
+            }
+        )
+    ).hexdigest()
+    assert (
+        store.report_draft(
+            stopped.identity,
+            source_hash,
+            prior[SimpleStage.FINDING_DONE].output_refs[0],
+        )
+        is None
+    )
 
 
 def _stopped_second_report(
@@ -685,7 +1179,7 @@ def test_exhausted_report_replay_still_rejects_unsupported_claim(
     stopped = stopped.model_copy(update={"output_refs": (invalid_ref,)})
     store.save_checkpoint(stopped)
 
-    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_DRAFT_INVALID"):
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN"):
         store.prepare_report_validator_replay(stopped, invalid_ref, artifacts)
     assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
 
@@ -976,6 +1470,49 @@ async def test_application_replays_exhausted_report_without_new_llm_call(
             identity, source_hash, prior[SimpleStage.FINDING_DONE].output_refs[0]
         )
         == draft_ref
+    )
+
+
+def test_application_replays_historical_draft_from_exhausted_report(
+    tmp_path: Path,
+) -> None:
+    store, _artifacts, stopped, (_first_ref, second_ref, last_ref) = (
+        _exhausted_historical_report(tmp_path)
+    )
+    identity = stopped.identity
+    application = SimpleAnalysisApplication(
+        data_dir=tmp_path / "data",
+        store=store,
+        static_bootstrap=None,  # type: ignore[arg-type]
+        hypothesis_bootstrap=None,  # type: ignore[arg-type]
+        runner_factory=None,  # type: ignore[arg-type]
+    )
+    application._prepare_report_validator_locked(
+        identity.analysis_id, identity.hypothesis_id or ""
+    )
+    assert (
+        store.require(identity, SimpleStage.REPORT_DONE).status is StageStatus.PENDING
+    )
+    prior = store.prior(identity, SimpleStage.REPORT_DONE)
+    source_hash = hashlib.sha256(
+        canonical_bytes(
+            {
+                "refs": tuple(
+                    ref
+                    for checkpoint in prior.values()
+                    for ref in checkpoint.output_refs
+                ),
+                "finding_attempt_id": prior[SimpleStage.FINDING_DONE].attempt_id,
+                "poc_attempt_id": prior[SimpleStage.POC_EXECUTION_DONE].attempt_id,
+            }
+        )
+    ).hexdigest()
+    assert (
+        store.report_draft(
+            identity, source_hash, prior[SimpleStage.FINDING_DONE].output_refs[0]
+        )
+        == second_ref
+        != last_ref
     )
 
 

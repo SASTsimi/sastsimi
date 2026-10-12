@@ -720,6 +720,30 @@ async def test_surface_invalid_output_fails_after_bounded_retry(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_surface_blank_hypothesis_reason_gets_specific_bounded_feedback(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, artifacts = _fixture(tmp_path)
+    invalid = _reply(
+        context.context_id,
+        status="HYPOTHESES",
+        hypotheses=[_proposal()],
+    )
+    invalid["reason"] = "   "
+    client.replies.extend([invalid, dict(invalid)])
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert isinstance(result, StageFailure)
+    assert result.code == "HYPOTHESIS_SURFACE_OUTPUT_INVALID"
+    assert len(client.requests) == 2
+    assert b"nonempty reason" in client.requests[0]["prompt"]
+    assert b"HYPOTHESES requires a nonempty reason" in client.requests[1]["prompt"]
+    records = [json.loads(artifacts.read(ref)) for ref in result.evidence_refs]
+    assert sum(record.get("validation_status") == "INVALID" for record in records) == 2
+
+
+@pytest.mark.asyncio
 async def test_unavailable_surface_cannot_be_false_negative(tmp_path: Path) -> None:
     bootstrap, client, identity, static, context, _ = _fixture(
         tmp_path, source_status="UNAVAILABLE"

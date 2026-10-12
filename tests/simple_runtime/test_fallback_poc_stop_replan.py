@@ -454,6 +454,7 @@ def test_public_cli_forwards_explicit_fallback_poc_repair_and_reports_refusal(
             repair_poc_placeholder_exhaustion_hypothesis: str | None = None,
             repair_poc_sensitive_content_hypothesis: str | None = None,
             repair_report_validator_hypothesis: str | None = None,
+            **_kwargs: object,
         ) -> dict[str, object]:
             del (
                 repair_exhausted_hypothesis,

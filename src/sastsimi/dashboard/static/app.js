@@ -71,7 +71,7 @@ function demoRequest(url) {
   return { url: url.replace(`/api/analyses/${match[1]}`, `/api/analyses/${encodeURIComponent(variant.demo_source_id)}`), variant };
 }
 async function getJson(url, options = {}) {
-  const request = demoRequest(url); const response = await fetch(request.url, { cache: "no-store", signal: options.signal }); if (!response.ok) { let error = null; try { error = await response.json(); } catch (_) { /* non-JSON failure */ } if (error?.error === "index_not_ready") throw new Error("목록 인덱스 준비가 필요합니다. dashboard-index rebuild를 실행하세요."); throw new Error(`요청 실패 (${response.status})`); }
+  const request = demoRequest(url); const response = await fetch(request.url, { cache: "no-store", signal: options.signal }); if (!response.ok) { let error = null; try { error = await response.json(); } catch (_) { /* non-JSON failure */ } if (error?.error === "index_updating") { const pending = new Error("HOLD 검토 결과를 대시보드에 반영하는 중입니다. 잠시 후 다시 시도하세요."); pending.code = "index_updating"; throw pending; } if (error?.error === "index_resume_required") { const pending = new Error("HOLD 검토 중 분석이 중단되었습니다. 분석을 재개하거나 dashboard-index rebuild를 실행하세요."); pending.code = "index_resume_required"; throw pending; } if (error?.error === "index_not_ready") throw new Error("목록 인덱스 준비가 필요합니다. dashboard-index rebuild를 실행하세요."); throw new Error(`요청 실패 (${response.status})`); }
   const data = await response.json();
   if (!request.variant || !/\/summary(?:\?|$)/.test(url) || Array.isArray(data)) return data;
   const merged = { ...data, ...request.variant };
@@ -308,12 +308,29 @@ function renderOverview(shell) {
     const poc = phases.poc; if (Number.isInteger(poc?.attempted) && Number.isInteger(poc?.completed)) legacyMetrics.push(["PoC 시도", `${poc.attempted}건 · 완료 ${poc.completed}건`]);
     const surface = phases.surface;
     if (Number.isInteger(surface?.total)) {
-      if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) legacyMetrics.push(["보안 surface", `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`]);
+      if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) {
+        const label = Number.isInteger(surface.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
+          ? `v5 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`
+          : `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`;
+        legacyMetrics.push(["보안 surface", label]);
+      }
       else if (Number.isInteger(surface.recorded_contexts) && Number.isInteger(surface.recorded_surfaces)) legacyMetrics.push(["보안 surface", `context가 저장된 surface ${surface.recorded_surfaces}/${surface.total}개 · 저장된 context ${surface.recorded_contexts}건 (확장 포함) · coverage 확인 전`]);
       else if (Number.isInteger(surface.recorded_contexts)) legacyMetrics.push(["보안 surface", `저장된 context ${surface.recorded_contexts}건 · 인덱스 ${surface.total}개 · coverage 확인 전`]);
       else legacyMetrics.push(["보안 surface", "coverage 확인 불가"]);
     } else legacyMetrics.push(["보안 surface", "coverage 확인 불가"]);
+    if (Number.isInteger(surface?.raw_static_gap_count) && Number.isInteger(surface?.effective_python_gap_count)) {
+      legacyMetrics.push(["원본 정적 공백", `${surface.raw_static_gap_count}건`], ["재인증 후 Python 공백", `${surface.effective_python_gap_count}건`]);
+      if (Number.isInteger(surface?.unresolved_reason_count)) legacyMetrics.push(["미해결 근거 사유", `${surface.unresolved_reason_count}건`]);
+    }
     box.append(el("div", "현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
+    if (shell.status === "PARTIAL") {
+      const countsKnown = Number.isInteger(surface?.total) && ["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key])) && surface.covered + surface.uncovered + surface.insufficient === surface.total;
+      const proven = Number.isInteger(surface?.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
+        ? `v5 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total}`
+        : `보안 표면 근거 충족 ${surface.covered}/${surface.total}`;
+      const scope = countsKnown ? ` · ${proven} · 근거 부족 ${surface.insufficient}${surface.uncovered ? ` · 미검토 ${surface.uncovered}` : ""}` : " · 보안 표면 근거 미확인";
+      box.append(el("div", `실행 종료${scope} · 전체 분석은 PARTIAL`, "warning"));
+    }
     if ((shell.phase_counts?.surface?.uncovered || 0) > 0 || (shell.phase_counts?.surface?.insufficient || 0) > 0) box.append(el("div", "부분 분석: 보안 surface 검토 범위가 남아 있습니다.", "warning"));
   }
   legacyMetrics.forEach(([label, value]) => { const metric = el("div", undefined, "metric"); metric.append(el("span", label, "meta"), el("strong", value)); metrics.append(metric); });
@@ -429,6 +446,16 @@ function renderFindingTraces(items = []) { document.getElementById("finding-pin-
 function staticCoverageNodes(detail) {
   if (detail.static_coverage_expected == null || detail.static_coverage_verified == null) return [el("div", "정적 검사 커버리지: — (검증된 기록 없음)", "empty")];
   const nodes = [el("div", `검증 ${detail.static_coverage_verified}/${detail.static_coverage_expected} · 미검증 ${detail.static_coverage_gap_count ?? "—"}`, "coverage-lead")];
+  const scoped = detail.phase_counts?.surface;
+  if (Number.isInteger(scoped?.raw_static_gap_count) && Number.isInteger(scoped?.effective_python_gap_count)) nodes.push(el("div", `원본 정적 공백 ${scoped.raw_static_gap_count}건 · 재인증 후 Python 공백 ${scoped.effective_python_gap_count}건 (원본 기록 유지)`, "coverage-lead"));
+  if (Number.isInteger(detail.surface_unresolved_reason_count)) {
+    nodes.push(el("div", `미해결 보안 표면 사유 ${detail.surface_unresolved_reason_count}건`, "meta"));
+    if (detail.surface_unresolved_reason_preview?.length) {
+      const details = el("details"); details.append(el("summary", `사유 보기 (${detail.surface_unresolved_reason_count}건 중 최대 100건)`));
+      detail.surface_unresolved_reason_preview.forEach((item) => details.append(el("div", `${item.surface_id} · ${item.path} · ${item.reason}`, "meta")));
+      nodes.push(details);
+    }
+  }
   const engines = Object.entries(detail.static_coverage_engines || {}).map(([name, count]) => `${name} ${count}`).join(" · "); if (engines) nodes.push(el("div", `검증 엔진: ${engines}`, "meta"));
   if (detail.static_ast_parse_error_count != null) nodes.push(el("div", `Python AST 파싱 오류 ${detail.static_ast_parse_error_count} · 사실 수 제한 ${detail.static_ast_truncated ? "도달" : "미도달"}`, "meta"));
   if (detail.static_coverage_unsupported?.length) nodes.push(el("div", `규칙 범위 밖: ${detail.static_coverage_unsupported.map(([ext, count]) => `${ext} ${count}개`).join(" · ")}`, "meta"));
@@ -529,7 +556,7 @@ async function loadActiveTab(force = false) {
     state.tabCache.set(key, data); renderTab(tab, data);
   } catch (error) {
     if (error?.name === "AbortError" && !timedOut) return;
-    const message = timedOut ? "요청 시간이 초과되었습니다." : "데이터를 불러오지 못했습니다.";
+    const message = timedOut ? "요청 시간이 초과되었습니다." : ["index_updating", "index_resume_required"].includes(error?.code) ? error.message : "데이터를 불러오지 못했습니다.";
     renderListMessage(tab, message, "error", true); document.getElementById("notice").textContent = `${tab} ${message}`;
   } finally {
     if (timeout != null && typeof window.clearTimeout === "function") window.clearTimeout(timeout); if (state.requestControllers.get(tab) === controller) state.requestControllers.delete(tab); selectOne(`[data-panel="${tab}"]`)?.classList.remove("loading");

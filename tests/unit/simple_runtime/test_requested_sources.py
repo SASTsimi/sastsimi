@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -9,6 +10,34 @@ import pytest
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import CheckpointIdentity
 from sastsimi.simple_runtime.retrieval import collect_requested_sources
+
+
+def _pinned_commit(workspace: Path, files: dict[str, str]) -> str:
+    workspace.mkdir()
+    subprocess.run(("git", "init", "-q", str(workspace)), check=True)
+    for name, content in files.items():
+        path = workspace / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    subprocess.run(("git", "-C", str(workspace), "add", "."), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "pinned",
+        ),
+        check=True,
+    )
+    return subprocess.check_output(
+        ("git", "-C", str(workspace), "rev-parse", "HEAD"), text=True
+    ).strip()
 
 
 def test_pinned_source_retries_one_git_timeout_without_using_partial_output(
@@ -268,3 +297,162 @@ def test_escaped_source_never_truncates_prompt_artifact(tmp_path: Path) -> None:
         "path": "newlines.py",
         "reason": "PROMPT_BUDGET_EXHAUSTED",
     }
+
+
+def test_large_pinned_python_source_keeps_relation_and_class_as_partial(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "repo"
+    models = (
+        "class Ticket:\n"
+        "    kbitem = models.ForeignKey(\n"
+        '        "KBItem", on_delete=models.CASCADE\n'
+        "    )\n" + "# unrelated source context\n" * 2500 + "class KBItem:\n"
+        "    pass\n"
+    )
+    commit = _pinned_commit(
+        workspace,
+        {"urls.py": "# route\n" * 1200, "models.py": models},
+    )
+    # An uncommitted edit must not leak into the pinned excerpt.
+    (workspace / "models.py").write_text("class WrongVersion: pass\n", encoding="utf-8")
+
+    result = collect_requested_sources(
+        ("urls.py", "models.py"),
+        workspace=workspace,
+        tracked=("urls.py", "models.py"),
+        pinned_commit=commit,
+        max_total_bytes=128_000,
+        max_artifact_bytes=16_000,
+    )
+
+    models_result = next(
+        item for item in result["served"] if item["path"] == "models.py"
+    )
+    assert models_result["partial"] is True
+    assert "kbitem = models.ForeignKey(" in models_result["content"]
+    assert '"KBItem"' in models_result["content"]
+    assert "class KBItem:" in models_result["content"]
+    assert "WrongVersion" not in models_result["content"]
+    assert (
+        models_result["source_sha256"]
+        == hashlib.sha256(models.encode("utf-8")).hexdigest()
+    )
+    assert models_result["omitted_line_count"] > 0
+    assert models_result["included_line_ranges"]
+    assert models_result["omitted_line_ranges"]
+    assert {item["path"] for item in result["refused"]} == set()
+
+
+def test_pinned_line_span_charges_only_returned_source_bytes(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    source = "# filler\n" * 1500 + "class Needed:\n    pass\n"
+    commit = _pinned_commit(workspace, {"large.py": source})
+
+    result = collect_requested_sources(
+        ("large.py:1501-1502",),
+        workspace=workspace,
+        tracked=("large.py",),
+        pinned_commit=commit,
+        max_total_bytes=100,
+    )
+
+    assert result["served"] == [
+        {"path": "large.py:1501-1502", "content": "1501|class Needed:\n1502|    pass"}
+    ]
+    assert result["served_bytes"] == len(result["served"][0]["content"].encode())
+    assert result["refused"] == []
+
+
+def test_line_span_budget_uses_redacted_returned_bytes(tmp_path: Path) -> None:
+    (tmp_path / "path.py").write_text(str(tmp_path) + "\n", encoding="utf-8")
+    expected = "1|[REDACTED:HOST_ABSOLUTE_PATH]"
+
+    result = collect_requested_sources(
+        ("path.py:1-1",),
+        workspace=tmp_path,
+        tracked=("path.py",),
+        max_total_bytes=len(expected.encode()),
+    )
+
+    assert result["served"] == [{"path": "path.py:1-1", "content": expected}]
+    assert result["served_bytes"] == len(expected.encode())
+
+
+def test_pinned_python_larger_than_total_budget_is_served_as_partial(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "repo"
+    source = (
+        "class Ticket:\n"
+        '    kbitem = models.ForeignKey("KBItem", on_delete=models.CASCADE)\n'
+        + "# source not needed for schema outline\n"
+        * 4000
+        + "class KBItem:\n"
+        "    pass\n"
+    )
+    assert len(source.encode()) > 128_000
+    commit = _pinned_commit(workspace, {"models.py": source})
+
+    result = collect_requested_sources(
+        ("models.py",),
+        workspace=workspace,
+        tracked=("models.py",),
+        pinned_commit=commit,
+        max_total_bytes=128_000,
+        max_artifact_bytes=96_000,
+    )
+
+    assert len(result["served"]) == 1
+    excerpt = result["served"][0]
+    assert excerpt["partial"] is True
+    assert "kbitem = models.ForeignKey" in excerpt["content"]
+    assert "class KBItem:" in excerpt["content"]
+    assert result["served_bytes"] < 16_384
+    assert excerpt["omitted_line_count"] > 4000
+    assert result["refused"] == []
+
+
+def test_artifact_budget_projects_large_source_before_refusing_later_files(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "repo"
+    urls = "# route to ticket view\n" * 520
+    public_views = "# public ticket view\n" * 540
+    models = (
+        "class Ticket:\n"
+        '    kbitem = models.ForeignKey("KBItem", on_delete=models.CASCADE)\n'
+        + "# unrelated model details\n" * 3000
+        + "class KBItem:\n    pass\n"
+    )
+    update_ticket = "# ticket update flow\n" * 530
+    settings = "# application settings\n" * 510
+    files = {
+        "helpdesk/urls.py": urls,
+        "helpdesk/views/public.py": public_views,
+        "helpdesk/models.py": models,
+        "helpdesk/update_ticket.py": update_ticket,
+        "config/settings.py": settings,
+    }
+    assert 96_000 < sum(len(value.encode()) for value in files.values()) < 128_000
+    commit = _pinned_commit(workspace, files)
+
+    result = collect_requested_sources(
+        tuple(files),
+        workspace=workspace,
+        tracked=tuple(files),
+        pinned_commit=commit,
+        max_total_bytes=128_000,
+        max_artifact_bytes=96_000,
+    )
+
+    assert [item["path"] for item in result["served"]] == list(files)
+    assert result["refused"] == []
+    assert result["served"][2]["partial"] is True
+    assert (
+        result["served"][2]["source_sha256"]
+        == hashlib.sha256(models.encode()).hexdigest()
+    )
+    for item, source in zip(result["served"], files.values(), strict=True):
+        if item["path"] != "helpdesk/models.py":
+            assert item["content"] == source

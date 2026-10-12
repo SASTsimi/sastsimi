@@ -720,9 +720,26 @@ def expanded_surface_contexts(
             )
         else:
             usable_source.append(item)
+    source_by_line = {
+        cast(int, item["line"]): item for item in [*anchor, *usable_source]
+    }
+    anchor_line = cast(int, anchor[0]["line"]) if anchor else None
     usable_ast: list[dict[str, Any]] = []
     for item in ast_items:
-        if len(canonical_bytes(payload(anchor, [item]))) > budget_bytes:
+        line = cast(int, item["line"])
+        source = source_by_line.get(line)
+        if source is None:
+            unavailable_ast.append({"line": line, "reason": "SOURCE_LINE_TOO_LARGE"})
+        elif (
+            len(
+                canonical_bytes(
+                    payload(
+                        anchor if line == anchor_line else [*anchor, source], [item]
+                    )
+                )
+            )
+            > budget_bytes
+        ):
             unavailable_ast.append(
                 {"line": item["line"], "reason": "AST_FACT_TOO_LARGE"}
             )
@@ -731,21 +748,29 @@ def expanded_surface_contexts(
     if len(canonical_bytes(payload(anchor, []))) > budget_bytes:
         raise SurfaceContextOverflow(surface.surface_id)
 
+    facts_by_line: dict[int, list[dict[str, Any]]] = {}
+    for fact in usable_ast:
+        facts_by_line.setdefault(int(fact["line"]), []).append(fact)
     chunks: list[tuple[list[dict[str, object]], list[dict[str, Any]]]] = []
     current_source = list(anchor)
     current_ast: list[dict[str, Any]] = []
-    for kind, item in [
-        *(("source", item) for item in usable_source),
-        *(("ast", item) for item in usable_ast),
-    ]:
-        next_source = [*current_source, item] if kind == "source" else current_source
-        next_ast = [*current_ast, item] if kind == "ast" else current_ast
-        if len(canonical_bytes(payload(next_source, next_ast))) > budget_bytes:
-            chunks.append((current_source, current_ast))
-            current_source = [*anchor, item] if kind == "source" else list(anchor)
-            current_ast = [item] if kind == "ast" else []
-        else:
-            current_source, current_ast = next_source, next_ast
+    for source in [*anchor, *usable_source]:
+        line = cast(int, source["line"])
+        if line != anchor_line:
+            next_source = [*current_source, source]
+            if len(canonical_bytes(payload(next_source, current_ast))) > budget_bytes:
+                chunks.append((current_source, current_ast))
+                current_source, current_ast = [*anchor], []
+            current_source.append(source)
+        for fact in facts_by_line.get(line, []):
+            next_ast = [*current_ast, fact]
+            if len(canonical_bytes(payload(current_source, next_ast))) > budget_bytes:
+                chunks.append((current_source, current_ast))
+                current_source = list(anchor)
+                if line != anchor_line:
+                    current_source.append(source)
+                current_ast = []
+            current_ast.append(fact)
     chunks.append((current_source, current_ast))
     contexts: list[SurfaceContext] = []
     for part_index, (sources, facts) in enumerate(chunks):

@@ -233,6 +233,9 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
 # allowing one value does not permit importing another concrete service there.
 SYMBOL_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     "sastsimi.prompts.local_catalog": frozenset({"sastsimi.agents"}),
+    "sastsimi.interfaces.cli.public": frozenset(
+        {"sastsimi.contracts.surface_reason_codes.SURFACE_REASON_CODES"}
+    ),
     "sastsimi.capabilities.composition": frozenset(
         {
             "sastsimi.composition.runtime.build_runtime",
@@ -714,6 +717,21 @@ def test_symbol_exception_does_not_allow_a_concrete_service() -> None:
         module,
     )
     assert violations("import sastsimi.prompts.production as prompts", module)
+
+
+def test_public_cli_may_import_only_shared_surface_reason_codes() -> None:
+    module = "sastsimi.interfaces.cli.public"
+    assert (
+        violations(
+            "from sastsimi.contracts.surface_reason_codes import SURFACE_REASON_CODES",
+            module,
+        )
+        == []
+    )
+    assert violations(
+        "from sastsimi.contracts.surface_reason_codes import INTERNAL_DETAIL", module
+    )
+    assert violations("import sastsimi.contracts.surface_reason_codes", module)
 
 
 def test_descriptor_may_import_only_the_profile_value_model() -> None:

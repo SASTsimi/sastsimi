@@ -350,6 +350,54 @@ def test_expansion_stays_within_budget_and_splits(tmp_path: Path) -> None:
     )
 
 
+def test_large_expansion_keeps_each_ast_fact_with_its_source_line(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "def route(value):\n"
+        + "".join(
+            "    check_permission(value)\n"
+            if number % 3 == 0
+            else "    # " + "x" * 180 + "\n"
+            for number in range(614)
+        )
+        + "    check_permission(value)\n"
+    )
+    fixture = _setup(tmp_path, source, surface_line=2)
+    index, _coverage, artifacts, summary, workspace = fixture
+
+    def render() -> tuple[SurfaceContext, ...]:
+        return expanded_surface_contexts(
+            index,
+            index.surfaces[0],
+            artifacts=artifacts,
+            ast_summary=summary,
+            workspace=workspace,
+        )
+
+    expanded = render()
+    payloads = [json.loads(artifacts.read(item.context_ref)) for item in expanded]
+
+    assert len(expanded) > 1
+    assert all(item.prompt_bytes <= 64 * 1024 for item in expanded)
+    selected_lines = {
+        row["line"] for payload in payloads for row in payload["source_lines"]
+    }
+    assert selected_lines == set(range(1, 617))
+    assert (
+        sum(len(payload["ast_facts"]) for payload in payloads)
+        == payloads[0]["ast_total_count"]
+    )
+    assert all(
+        {fact["line"] for fact in payload["ast_facts"]}
+        <= {row["line"] for row in payload["source_lines"]}
+        for payload in payloads
+    )
+    assert [(item.context_id, item.context_hash) for item in expanded] == [
+        (item.context_id, item.context_hash) for item in render()
+    ]
+
+
 def test_oversized_line_and_external_file_remain_insufficient(tmp_path: Path) -> None:
     giant = "    check_permission('" + "x" * 70_000 + "')"
     fixture = _setup(tmp_path, "def route():\n" + giant + "\n", surface_line=2)

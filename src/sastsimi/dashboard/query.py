@@ -24,6 +24,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.observability.agent_activity import AgentActivityEvent
 from sastsimi.progress.projector import (
     ProgressProjector,
+    read_surface_scope_certificate,
     verified_surface_coverage_counts,
 )
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
@@ -232,14 +233,7 @@ class _ReadOnlyCheckpointStore(SimpleCheckpointStore):
     """Reuse exact cleanup audit checks without initializing or writing the DB."""
 
     def __init__(self, database_path: Path) -> None:
-        self._database_path = database_path
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            f"file:{self._database_path.as_posix()}?mode=ro", uri=True
-        )
-        connection.row_factory = sqlite3.Row
-        return connection
+        super().__init__(database_path, read_only=True)
 
 
 class DashboardQuery:
@@ -2309,6 +2303,11 @@ class DashboardQuery:
             self._candidate_metrics(run)
         )
         surface_counts, surface_index_hash = self._surface_metrics(run, values)
+        surface_unresolved_total, surface_unresolved_preview = (
+            self._surface_unresolved_preview(run, values, surface_counts)
+            if detail
+            else (None, ())
+        )
         usage = self._usage_summary(analysis_id)
         lease_state = analysis_run_lease_active(self._data_dir, analysis_id)
         hypotheses = tuple(
@@ -2362,6 +2361,12 @@ class DashboardQuery:
             surface_counts=surface_counts,
             surface_index_hash=surface_index_hash,
             analysis_active=lease_state is True,
+            surface_enrichment_status=(
+                run.surface_enrichment_status if run is not None else None
+            ),
+            surface_enrichment_error_code=(
+                run.surface_enrichment_error_code if run is not None else None
+            ),
         )
         if report_currentness_blocked:
             progress = progress.model_copy(update={"finding_count": 0})
@@ -2578,6 +2583,8 @@ class DashboardQuery:
                     "finding_groups": group_rows,
                     "artifact_projection_complete": artifact_omitted_count == 0,
                     "artifact_omitted_count": artifact_omitted_count,
+                    "surface_unresolved_reason_count": surface_unresolved_total,
+                    "surface_unresolved_reason_preview": surface_unresolved_preview,
                     "hypotheses": hypotheses,
                     "reports": reports,
                     "pipeline": self._pipeline(values, run),
@@ -3942,13 +3949,102 @@ class DashboardQuery:
                         )
                     )
                     verified = verified_surface_coverage_counts(
-                        coverage, index, terminal
+                        coverage,
+                        index,
+                        terminal,
+                        certificate_payload=(
+                            read_surface_scope_certificate(
+                                repository,
+                                run.python_scope_certificate_ref,
+                                run.static_coverage_ref,
+                                terminal,
+                            )
+                            if terminal.surface_proof_version in (2, 3)
+                            else None
+                        ),
+                        artifacts=repository,
+                        coverage_ref=coverage_ref,
+                        store=(
+                            SimpleCheckpointStore(
+                                self._database,
+                                artifact_data_dir=self._data_dir,
+                                read_only=True,
+                            )
+                            if terminal.surface_proof_version == 3
+                            else None
+                        ),
                     )
-                except (OSError, ValueError, TypeError, sqlite3.Error):
+                except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error):
                     verified = None
                 if verified is not None:
                     counts.update(verified)
         return counts, index_ref.content_hash
+
+    def _surface_unresolved_preview(
+        self,
+        run: SimpleAnalysisRun | None,
+        checkpoints: list[StageCheckpoint],
+        verified_counts: dict[str, int] | None,
+    ) -> tuple[int | None, tuple[dict[str, str], ...]]:
+        """Expose bounded reasons from an already verified v2/v3 proof."""
+
+        if (
+            run is None
+            or run.candidate_terminal is None
+            or run.candidate_terminal.surface_proof_version not in (2, 3)
+            or verified_counts is None
+            or "UNRESOLVED_REASON_COUNT" not in verified_counts
+        ):
+            return None, ()
+        terminal = run.candidate_terminal
+        coverage_ref = next(
+            (
+                ref
+                for checkpoint in checkpoints
+                if checkpoint.identity.hypothesis_id is None
+                and checkpoint.stage is SimpleStage.HYPOTHESIS_DONE
+                and checkpoint.status is StageStatus.SUCCEEDED
+                for ref in checkpoint.output_refs
+                if ref.content_hash == terminal.surface_coverage_hash
+            ),
+            None,
+        )
+        if coverage_ref is None:
+            return None, ()
+        try:
+            repository = SimpleArtifactRepository(
+                self._data_dir,
+                CheckpointIdentity(
+                    analysis_id=run.analysis_id,
+                    workspace_id=run.workspace_id,
+                    commit_id=run.commit_id,
+                    hypothesis_id=None,
+                ),
+                create_dirs=False,
+            )
+            payload = json.loads(
+                repository.read_bounded(coverage_ref, _MAX_SURFACE_PROGRESS_BYTES)
+            )
+            if not isinstance(payload, dict) or not isinstance(
+                payload.get("surfaces"), list
+            ):
+                return None, ()
+            preview = tuple(
+                {
+                    "surface_id": str(row["surface_id"]),
+                    "path": str(row["path"]),
+                    "reason": reason,
+                }
+                for row in payload["surfaces"]
+                if isinstance(row, dict)
+                for reason in row.get("unresolved_reason_codes", ())
+                if isinstance(reason, str)
+            )
+        except (OSError, ValueError, TypeError, KeyError):
+            return None, ()
+        if len(preview) != verified_counts["UNRESOLVED_REASON_COUNT"]:
+            return None, ()
+        return len(preview), preview[:100]
 
     def _unresolved_codex_call(self, analysis_id: str) -> bool:
         with self._connect() as connection:

@@ -845,8 +845,20 @@ async def test_declared_inconclusive_observation_cannot_be_validated_as_supporte
             b"#!/bin/sh\nprintf 'SASTSIMI_POC_INCONCLUSIVE\\n'\nexit 2\n",
             "POC_PLACEHOLDER_FORBIDDEN",
         ),
+        (
+            b"#!/bin/sh\npython3 - <<'PY'\n"
+            b"import django\nfrom django.db import connection\ndjango.setup()\n"
+            b"with connection.schema_editor() as editor:\n"
+            b"    for model in (Ticket, FollowUp):\n"
+            b"        editor.create_model(model)\nPY\n",
+            "POC_DJANGO_SCHEMA_SUBSET_UNVERIFIED",
+        ),
     ],
-    ids=("process-local-pickle", "stale-invalid-placeholder"),
+    ids=(
+        "process-local-pickle",
+        "stale-invalid-placeholder",
+        "django-partial-schema",
+    ),
 )
 async def test_saved_candidate_is_revalidated_before_execution(
     tmp_path: Path,
@@ -1217,3 +1229,68 @@ async def test_python_import_traceback_blocks_before_disproof_interpretation(
     ] == observation_ref.model_dump(mode="json")
     if expected_error == "POC_RUNTIME_IMPORT_FAILED":
         assert "origin is unverified" in blocked.value.failure.safe_message
+
+
+def test_saved_variadic_server_candidate_is_blocked_before_container_acquire(
+    tmp_path: Path,
+) -> None:
+    content = (
+        (Path(__file__).parents[2] / "fixtures/simple_runtime/a001_attempt4_poc.sh")
+        .read_bytes()
+        .replace(b"\r\n", b"\n")
+        .removesuffix(b"\n")
+    )
+    assert hashlib.sha256(content).hexdigest() == (
+        "db74ad8ef5d3527d781c7448a7cf8cd101b5c47e0714e863a50a5b31ee354c91"
+    )
+    identity = CheckpointIdentity(
+        analysis_id="analysis-unbound-server",
+        workspace_id="workspace-unbound-server",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-unbound-server",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    content_ref = artifacts.put_bytes(content, "text/x-shellscript")
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "content_ref": content_ref.model_dump(mode="json"),
+            "content_digest": content_ref.content_hash,
+            "attempt_id": "attempt-unbound-server",
+        }
+    )
+    refs = (candidate_ref, content_ref)
+    candidate = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=refs,
+        attempt_id="attempt-unbound-server",
+        image_digest=f"sha256:{'1' * 64}",
+    )
+    current = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_EXECUTION_DONE,
+        status=StageStatus.PENDING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-unbound-server",
+    )
+
+    class _NoContainer(_Containers):
+        async def acquire(self, _checkpoint: StageCheckpoint) -> str:
+            raise AssertionError("unsafe PoC reached container acquisition")
+
+    operation = PoCExecutionStage(
+        client=_InterpretationClient(),
+        artifacts=artifacts,
+        docker=_Docker(),  # type: ignore[arg-type]
+        containers=_NoContainer(),
+    )(current, {SimpleStage.POC_CANDIDATE_DONE: candidate})
+    with pytest.raises(StageBlocked) as blocked:
+        operation.send(None)
+
+    assert blocked.value.failure.code == "POC_SERVER_CONSTRUCTOR_UNBOUND"
+    assert blocked.value.failure.evidence_refs == refs

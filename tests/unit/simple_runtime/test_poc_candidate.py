@@ -9,16 +9,22 @@ from typing import Any
 import pytest
 
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.simple_runtime import stages
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     CheckpointIdentity,
     SimpleStage,
     StageCheckpoint,
+    StageFailure,
     StageStatus,
     input_reference_hash,
 )
 from sastsimi.simple_runtime.poc import PoCCandidateRejected
 from sastsimi.simple_runtime.provider import SimpleLLMCallResult
+from sastsimi.simple_runtime.recovery import (
+    closed_poc_runtime_diagnostic,
+    late_fixture_replay_binding,
+)
 from sastsimi.simple_runtime.runner import StageBlocked, StageFailed
 from sastsimi.simple_runtime.stages import (
     PoCCandidateStage,
@@ -158,6 +164,36 @@ class _AlwaysSensitiveClient(_RepairClient):
         )
 
 
+class _AlwaysUnknownAuthClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        return SimpleLLMCallResult(
+            value={
+                "content": (
+                    "#!/bin/sh\npython3 - <<'PY'\nfixture = {auth: fixture_value}\nPY\n"
+                )
+            },
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+class _CredentialRepairClient(_RepairClient):
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        content = (
+            "#!/bin/sh\npython3 - <<'PY'\n"
+            "client.login(password='never-print-this-value')\nPY\n"
+            if len(self.prompts) == 1
+            else "#!/bin/sh\nprintf 'inconclusive\\n'\n"
+        )
+        return SimpleLLMCallResult(
+            value={"content": content},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
 class _SourceRecordingClient:
     def __init__(self) -> None:
         self.prompt = b""
@@ -169,6 +205,88 @@ class _SourceRecordingClient:
             prompt_digest="a" * 64,
             output_digest="b" * 64,
         )
+
+
+class _ServerConstructorClient:
+    def __init__(self, *contents: bytes) -> None:
+        self.contents = contents
+        self.prompts: list[bytes] = []
+
+    async def call(self, **kwargs: Any) -> SimpleLLMCallResult:
+        self.prompts.append(kwargs["prompt"])
+        if len(self.prompts) > len(self.contents):
+            raise AssertionError("unexpected PoC regeneration")
+        return SimpleLLMCallResult(
+            value={"content": self.contents[len(self.prompts) - 1].decode("utf-8")},
+            prompt_digest="a" * 64,
+            output_digest="b" * 64,
+        )
+
+
+def _attempt4_poc() -> bytes:
+    path = Path(__file__).parents[2] / "fixtures/simple_runtime/a001_attempt4_poc.sh"
+    content = path.read_bytes().replace(b"\r\n", b"\n").removesuffix(b"\n")
+    assert hashlib.sha256(content).hexdigest() == (
+        "db74ad8ef5d3527d781c7448a7cf8cd101b5c47e0714e863a50a5b31ee354c91"
+    )
+    return content
+
+
+def test_attempt4_cas_preflight_detects_unbound_variadic_server_constructor() -> None:
+    assert stages._has_unbound_server_constructor(_attempt4_poc())
+
+
+def test_server_constructor_preflight_accepts_explicit_bound_call() -> None:
+    content = _attempt4_poc().replace(
+        b"server = server_class(*arguments[0], **arguments[1])",
+        b"server = server_class(('127.0.0.1', 0), handlers[0])",
+    )
+    assert not stages._has_unbound_server_constructor(content)
+
+
+def test_server_constructor_preflight_accepts_concrete_base_signature() -> None:
+    content = _attempt4_poc().replace(
+        b"inspect.signature(server_class).parameters.items()",
+        b"inspect.signature(http.server.HTTPServer).parameters.items()",
+    )
+    assert not stages._has_unbound_server_constructor(content)
+
+
+def test_variadic_server_candidate_is_regenerated_once_before_storage(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-variadic-server",
+        workspace_id="workspace-variadic-server",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-variadic-server",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-variadic-server",
+    )
+    # Current placeholder validation also rejects the captured setup `exit 2`.
+    # Changing only that exit isolates the constructor preflight behavior.
+    unsafe = _attempt4_poc().replace(b"exit 2", b"exit 3")
+    repaired = unsafe.replace(
+        b"inspect.signature(server_class).parameters.items()",
+        b"inspect.signature(http.server.HTTPServer).parameters.items()",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    client = _ServerConstructorClient(unsafe, repaired)
+
+    operation = PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+    with pytest.raises(StopIteration) as completed:
+        operation.send(None)
+    result = completed.value.value
+
+    assert len(client.prompts) == 2
+    assert b"VAR_POSITIONAL" in client.prompts[1]
+    assert artifacts.read(result.output_refs[1]) == repaired
 
 
 @pytest.mark.asyncio
@@ -230,10 +348,8 @@ async def test_poc_candidate_receives_pinned_pro_con_source_without_path_request
         attempt_id="attempt-1",
     )
     client = _SourceRecordingClient()
-
-    await PoCCandidateStage(client=client, artifacts=artifacts)(
-        checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}
-    )
+    stage = PoCCandidateStage(client=client, artifacts=artifacts)
+    await stage(checkpoint, {SimpleStage.PRO_CON_DONE: pro_con})
 
     assert b"aiosqlite.connect(database='fixture.db')" in client.prompt
 
@@ -695,6 +811,397 @@ async def test_poc_candidate_keeps_current_repair_metadata_when_history_is_large
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    (
+        "stderr",
+        "expected_frame",
+        "tampered_binding",
+        "missing_pair",
+        "replay_marker_variant",
+    ),
+    [
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback functions: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > /workspace/private/source.py\n",
+            False,
+            False,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback functions: foreign_related_fields > "
+            b"/workspace/private/source.py\n",
+            False,
+            False,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            True,
+            False,
+            "none",
+        ),
+        (
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            True,
+            "none",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "closed_attempt4",
+            id="closed-runtime-attempt-four-is-not-django-relation",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "spoofed_attempt4",
+            id="untyped-revision-one-still-rejected",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "mixed_attempt4",
+            id="mixed-closed-and-django-relation-still-rejected",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "relation_attempt4",
+            id="malformed-django-relation-marker-still-rejected",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "ambiguous_false_attempt4",
+            id="false-django-relation-field-cannot-mask-closed-replay",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "closed_attempt5",
+            id="closed-runtime-attempt-five-is-not-django-migration",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "spoofed_attempt5",
+            id="untyped-revision-one-attempt-five-still-rejected",
+        ),
+        pytest.param(
+            b"ValueError: RAW_MESSAGE_VALUE_SENTINEL /workspace/private/source.py\n"
+            b"Traceback: foreign_related_fields > resolve_related_fields\n",
+            True,
+            False,
+            False,
+            "mixed_migration_attempt5",
+            id="mixed-closed-and-django-migration-still-rejected",
+        ),
+    ],
+)
+async def test_bound_closed_runtime_diagnostic_excludes_raw_output_from_repair_prompt(
+    tmp_path: Path,
+    stderr: bytes,
+    expected_frame: bool,
+    tampered_binding: bool,
+    missing_pair: bool,
+    replay_marker_variant: str,
+) -> None:
+    """A verified exit-two repair sees only class/frames, not output values."""
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    source_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v2",
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "path": "main.py",
+            "source_status": "AVAILABLE",
+            "source_sha256": "b" * 64,
+            "source_lines": [{"line": 1, "text": "route_marker = True"}],
+        }
+    )
+    proposal_ref = artifacts.put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"code_locations": ["main.py:1"]},
+        }
+    )
+    pro_ref = artifacts.put_json(
+        {"kind": "simple_pro_evidence", "result": {"requested_paths": []}}
+    )
+    pro_con = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(proposal_ref, source_ref),
+        input_hash=input_reference_hash((proposal_ref, source_ref)),
+        output_refs=(pro_ref,),
+    )
+    content = b"#!/bin/sh\nprintf 'fixture'\n"
+    content_ref = artifacts.put_bytes(content, "text/x-shellscript")
+    candidate_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate",
+            "attempt_id": "old-attempt",
+            "content_ref": content_ref.model_dump(mode="json"),
+            "content_digest": hashlib.sha256(content).hexdigest(),
+        }
+    )
+    stdout_ref = artifacts.put_bytes(b"RAW_STDOUT_VALUE_SENTINEL", "text/plain")
+    stderr_ref = artifacts.put_bytes(stderr, "text/plain")
+    execution_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_execution",
+            "candidate_ref": candidate_ref.model_dump(mode="json"),
+            "content_ref": content_ref.model_dump(mode="json"),
+            "stdout_ref": stdout_ref.model_dump(mode="json"),
+            "stderr_ref": stderr_ref.model_dump(mode="json"),
+            "exit_code": 2,
+            "timed_out": False,
+            "container_id": "owned-container-1",
+            "image_digest": "sha256:" + "c" * 64,
+            "attempt_id": "old-attempt",
+        }
+    )
+    cleanup_ref = artifacts.put_json(
+        {
+            "kind": "simple_container_cleanup",
+            "attempt_id": "old-attempt",
+            "container_id": "owned-container-1",
+            "status": "REMOVED",
+        }
+    )
+    evidence_refs = (execution_ref, stdout_ref, stderr_ref, cleanup_ref)
+    decision_ref = artifacts.put_json(
+        {
+            "kind": (
+                "simple_poc_django_migration_settings_candidate_replay"
+                if replay_marker_variant == "mixed_migration_attempt5"
+                else "simple_recovery_decision"
+            ),
+            "identity": (
+                {
+                    **identity.model_dump(mode="json"),
+                    "hypothesis_id": "other-hypothesis",
+                }
+                if tampered_binding
+                else identity.model_dump(mode="json")
+            ),
+            "stage": SimpleStage.POC_EXECUTION_DONE.value,
+            "attempt": 3 if replay_marker_variant != "none" else 1,
+            "attempt_id": "old-attempt",
+            "decision_origin": "RULE",
+            "closed_runtime_policy_revision": 1,
+            **(
+                {"explicit_exhaustion_replay": True}
+                if replay_marker_variant != "none"
+                else {}
+            ),
+            **(
+                {
+                    "recovery_revision": 1,
+                    **(
+                        {"closed_runtime_replay": True}
+                        if replay_marker_variant
+                        in {
+                            "closed_attempt4",
+                            "mixed_attempt4",
+                            "ambiguous_false_attempt4",
+                            "closed_attempt5",
+                            "mixed_migration_attempt5",
+                        }
+                        else {}
+                    ),
+                    **(
+                        {"relation_settings_replay": True}
+                        if replay_marker_variant
+                        in {"mixed_attempt4", "relation_attempt4"}
+                        else {}
+                    ),
+                    **(
+                        {"relation_settings_replay": False}
+                        if replay_marker_variant == "ambiguous_false_attempt4"
+                        else {}
+                    ),
+                }
+                if replay_marker_variant != "none"
+                else {}
+            ),
+            "original_error": StageFailure(
+                code="POC_EXECUTION_FAILED",
+                retryable=True,
+                safe_message="PoC execution could not complete",
+                evidence_refs=evidence_refs,
+            ).model_dump(mode="json"),
+            "decision": {
+                "category": "GENERATED_INPUT",
+                "action": "REGENERATE_INPUT",
+                "diagnosis": "PoC execution failed",
+                "guidance": "Regenerate the PoC candidate",
+                "environment_patch": "",
+            },
+            **(
+                {
+                    "diagnostic_excerpt": json.dumps(
+                        closed_poc_runtime_diagnostic(stderr)
+                    )
+                }
+                if expected_frame
+                else {}
+            ),
+        }
+    )
+    older_refs: list[StoredDataRef] = []
+    for index in (1, 2):
+        old_attempt = f"older-attempt-{index}"
+        old_candidate_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_candidate",
+                "attempt_id": old_attempt,
+                "content_ref": content_ref.model_dump(mode="json"),
+                "content_digest": hashlib.sha256(content).hexdigest(),
+            }
+        )
+        old_stdout_ref = artifacts.put_bytes(
+            f"OLDER_STDOUT_VALUE_SENTINEL_{index}".encode(), "text/plain"
+        )
+        old_stderr_ref = artifacts.put_bytes(
+            f"OLDER_STDERR_VALUE_SENTINEL_{index}".encode(), "text/plain"
+        )
+        old_execution_ref = artifacts.put_json(
+            {
+                "kind": "simple_poc_execution",
+                "attempt_id": old_attempt,
+                "candidate_ref": old_candidate_ref.model_dump(mode="json"),
+                "content_ref": content_ref.model_dump(mode="json"),
+                "stdout_ref": old_stdout_ref.model_dump(mode="json"),
+                "stderr_ref": old_stderr_ref.model_dump(mode="json"),
+                "exit_code": 2,
+                "timed_out": False,
+            }
+        )
+        older_refs.extend(
+            (old_candidate_ref, old_execution_ref, old_stdout_ref, old_stderr_ref)
+        )
+    inputs = (
+        *older_refs,
+        candidate_ref,
+        content_ref,
+        *((execution_ref,) if not missing_pair else ()),
+        stdout_ref,
+        stderr_ref,
+        cleanup_ref,
+        decision_ref,
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=inputs,
+        input_hash=input_reference_hash(inputs),
+        attempt_id="new-attempt",
+        attempt_number=(
+            5
+            if replay_marker_variant.endswith("attempt5")
+            else 4
+            if replay_marker_variant != "none"
+            else 2
+        ),
+        recovery_decision_refs=(decision_ref,),
+        recovery_origin_stage=(
+            SimpleStage.POC_EXECUTION_DONE if replay_marker_variant != "none" else None
+        ),
+    )
+    client = _SourceRecordingClient()
+    stage = PoCCandidateStage(client=client, artifacts=artifacts)
+    if (
+        tampered_binding
+        or missing_pair
+        or replay_marker_variant
+        in {
+            "spoofed_attempt4",
+            "mixed_attempt4",
+            "relation_attempt4",
+            "ambiguous_false_attempt4",
+            "spoofed_attempt5",
+            "mixed_migration_attempt5",
+        }
+    ):
+        with pytest.raises(StageFailed) as exc:
+            await stage(checkpoint, {SimpleStage.PRO_CON_DONE: pro_con})
+        assert exc.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
+        assert client.prompt == b""
+        return
+
+    await stage(checkpoint, {SimpleStage.PRO_CON_DONE: pro_con})
+
+    assert (b'"closed_runtime":' in client.prompt) is expected_frame
+    assert (b"resolve_related_fields" in client.prompt) is expected_frame
+    assert b"RAW_MESSAGE_VALUE_SENTINEL" not in client.prompt
+    assert b"RAW_STDOUT_VALUE_SENTINEL" not in client.prompt
+    assert b"/workspace/private/source.py" not in client.prompt
+    for index in (1, 2):
+        assert f"OLDER_STDOUT_VALUE_SENTINEL_{index}".encode() not in client.prompt
+        assert f"OLDER_STDERR_VALUE_SENTINEL_{index}".encode() not in client.prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("padding", "evidence_padding", "expected_overflow"),
     [
         (150_000, 60_000, False),
@@ -1062,11 +1569,13 @@ async def test_poc_candidate_receives_requested_tracked_source_with_provenance(
     assert b"ModuleNotFoundError" in client.prompt
     assert b"exc.name" in client.prompt
     assert b"safe dotted module identifier" in b" ".join(client.prompt.split())
-    assert b"one coherent import root" in client.prompt
-    assert b"Do not put both /workspace and a child source directory" in client.prompt
+    prompt_words = b" ".join(client.prompt.split())
+    assert b"import roots for each distinct top-level package" in prompt_words
+    assert b"may need both roots on sys.path" in prompt_words
+    assert b"Do not import the same package under two roots" in prompt_words
     assert b"transitive absolute imports" in client.prompt
     assert b"importlib.util.find_spec" in client.prompt
-    assert b"keep /workspace on sys.path" in client.prompt
+    assert b"verify each selected module resolves to its actual file" in prompt_words
     assert b"For a Python NameError" in client.prompt
     assert b"safe simple identifier" in client.prompt
     assert b"transitive closure" in client.prompt
@@ -1228,11 +1737,254 @@ async def test_sensitive_candidate_repair_explains_secret_shaped_names(
     assert result.output_refs
     assert len(client.prompts) == 2
     assert b"concise error type and traceback to stderr" in client.prompts[0]
+    assert b"2026-10-11-a002-sensitive-1" in client.prompts[0]
+    assert b"including comments and embedded Python" in client.prompts[0]
     assert b"secret-shaped identifiers" in client.prompts[1]
     assert b"cookie, session, token" in client.prompts[1]
     assert b"COOKIE" in client.prompts[1]
+    assert b"COOKIE_ASSIGNMENT" in client.prompts[1]
     assert b"line 2" in client.prompts[1]
     assert b"never-print-this-cookie" not in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_sensitive_repair_explains_closed_keyword_shape_without_value(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-1",
+    )
+    client = _CredentialRepairClient()
+    stage = PoCCandidateStage(
+        client=client,
+        artifacts=SimpleArtifactRepository(tmp_path, identity),
+    )
+
+    result = await stage(checkpoint, {})
+
+    assert result.output_refs
+    assert len(client.prompts) == 2
+    assert b"synthetic local fixture" in client.prompts[0]
+    assert b"PASSWORD" in client.prompts[1]
+    assert b"KEYWORD_ARGUMENT" in client.prompts[1]
+    assert b"never-print-this-value" not in client.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_sensitive_exhaustion_replay_passes_only_closed_diagnostic_to_prompt(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    diagnostic_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate_rejection_diagnostic",
+            "reason": "SENSITIVE_CONTENT",
+            "line_count": 210,
+            "branch_count": 1,
+            "inconclusive_line_count": 1,
+            "exit_two_line_count": 0,
+            "exit_zero_line_count": 0,
+            "sensitive_category": "MULTIPLE_RULES",
+            "sensitive_line": 64,
+        }
+    )
+    marker_ref = artifacts.put_json(
+        {
+            "kind": "simple_poc_sensitive_exhaustion_replay",
+            "identity": identity.model_dump(mode="json"),
+            "old_attempt_id": "attempt-6",
+            "old_attempt_number": 6,
+            "old_checkpoint_hash": "b" * 64,
+            "diagnostic_ref": diagnostic_ref.model_dump(mode="json"),
+            "prompt_revision": "2026-10-11-a002-sensitive-1",
+        }
+    )
+    refs = (diagnostic_ref, marker_ref)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-7",
+        attempt_number=7,
+    )
+    client = _RepairClient()
+
+    result = await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert result.output_refs
+    assert b"MULTIPLE_RULES" in client.prompts[0]
+    assert b"line 64" in client.prompts[0]
+    assert b"never-print-this-cookie" not in client.prompts[0]
+
+
+def test_late_fixture_marker_without_event_store_fails_closed(tmp_path: Path) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    forged_marker_ref = artifacts.put_json({"late_fixture_replay_revision": 2})
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(forged_marker_ref,),
+        input_hash=input_reference_hash((forged_marker_ref,)),
+        recovery_decision_refs=(forged_marker_ref,),
+        attempt_id="forged-attempt-7",
+        attempt_number=7,
+    )
+
+    with pytest.raises(ValueError, match="LATE_REPLAY_UNBOUND"):
+        late_fixture_replay_binding(checkpoint, artifacts)
+
+
+@pytest.mark.asyncio
+async def test_auth_transport_replay_uses_only_closed_prior_diagnostic(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    prior_diagnostic = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate_rejection_diagnostic",
+            "reason": "SENSITIVE_CONTENT",
+            "line_count": 210,
+            "branch_count": 1,
+            "inconclusive_line_count": 1,
+            "exit_two_line_count": 0,
+            "exit_zero_line_count": 0,
+            "sensitive_category": "MULTIPLE_RULES",
+            "sensitive_line": 64,
+        }
+    )
+    prior_marker = artifacts.put_json(
+        {
+            "kind": "simple_poc_sensitive_exhaustion_replay",
+            "identity": identity.model_dump(mode="json"),
+            "old_attempt_id": "attempt-6",
+            "old_attempt_number": 6,
+            "old_checkpoint_hash": "b" * 64,
+            "diagnostic_ref": prior_diagnostic.model_dump(mode="json"),
+            "prompt_revision": "2026-10-11-a002-sensitive-1",
+        }
+    )
+    diagnostic = artifacts.put_json(
+        {
+            "kind": "simple_poc_candidate_rejection_diagnostic",
+            "reason": "SENSITIVE_CONTENT",
+            "line_count": 182,
+            "branch_count": 1,
+            "inconclusive_line_count": 0,
+            "exit_two_line_count": 0,
+            "exit_zero_line_count": 0,
+            "sensitive_category": "CREDENTIAL",
+            "sensitive_line": 80,
+            "sensitive_rule_id": "CREDENTIAL_ASSIGNMENT",
+        }
+    )
+    marker = artifacts.put_json(
+        {
+            "kind": "simple_poc_sensitive_auth_transport_replay",
+            "identity": identity.model_dump(mode="json"),
+            "old_attempt_id": "attempt-7",
+            "old_attempt_number": 7,
+            "old_checkpoint_hash": "c" * 64,
+            "diagnostic_ref": diagnostic.model_dump(mode="json"),
+            "prior_replay_ref": prior_marker.model_dump(mode="json"),
+            "prior_diagnostic_ref": prior_diagnostic.model_dump(mode="json"),
+            "prior_attempt_id": "attempt-6",
+            "prompt_revision": "2026-10-11-a002-auth-transport-2",
+        }
+    )
+    refs = (prior_diagnostic, prior_marker, diagnostic, marker)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=refs,
+        input_hash=input_reference_hash(refs),
+        attempt_id="attempt-8",
+        attempt_number=8,
+    )
+    client = _RepairClient()
+
+    result = await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert result.output_refs
+    assert b"2026-10-11-a002-auth-transport-2" in client.prompts[0]
+    assert b"CREDENTIAL_ASSIGNMENT" in client.prompts[0]
+    assert b"line 80" in client.prompts[0]
+    assert b"synthetic local fixture" in client.prompts[0]
+    assert b"never-print-this" not in client.prompts[0]
+    for prompt in client.prompts:
+        assert prompt.count(b"</UNTRUSTED_EXACT_INPUTS>\n") == 1
+        tail = prompt.split(b"</UNTRUSTED_EXACT_INPUTS>\n", 1)[1]
+        assert b"<POC_SAFETY_RECAP>" in tail
+        assert b"neutral fixture" in tail
+        assert b"never-print-this" not in tail
+        assert prompt.endswith(b"</POC_SAFETY_RECAP>\n")
+
+
+@pytest.mark.asyncio
+async def test_unknown_auth_assignment_repair_is_closed_and_bounded(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-unknown-auth",
+        workspace_id="workspace-unknown-auth",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-unknown-auth",
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.POC_CANDIDATE_DONE,
+        status=StageStatus.RUNNING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        attempt_id="attempt-unknown-auth",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    client = _AlwaysUnknownAuthClient()
+
+    with pytest.raises(StageBlocked) as blocked:
+        await PoCCandidateStage(client=client, artifacts=artifacts)(checkpoint, {})
+
+    assert blocked.value.failure.code == "POC_SENSITIVE_CONTENT"
+    assert len(client.prompts) == 2
+    assert b"AUTH/UNKNOWN" in client.prompts[1]
+    assert b"mapping entries" in client.prompts[1]
+    assert all(b"fixture = {auth: fixture_value}" not in p for p in client.prompts)
+    diagnostic = json.loads(artifacts.read(blocked.value.failure.evidence_refs[0]))
+    assert diagnostic["sensitive_field_kind"] == "AUTH"
+    assert diagnostic["sensitive_site_kind"] == "UNKNOWN"
+    assert "fixture" not in json.dumps(diagnostic)
 
 
 @pytest.mark.asyncio

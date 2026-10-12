@@ -16,6 +16,8 @@ def test_repository_exposes_only_current_documentation_sets() -> None:
         "docs/architecture/security-boundaries.md",
         "docs/architecture/implementation-map.md",
         "docs/decisions/README.md",
+        "docs/plans/2026-10-11-a001-versioned-surface-evidence-design.md",
+        "docs/plans/2026-10-11-a001-versioned-surface-evidence.md",
     }
     missing = sorted(path for path in required if not (ROOT / path).is_file())
     historical = sorted(

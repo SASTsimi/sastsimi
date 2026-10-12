@@ -15,6 +15,7 @@ import pytest
 from sastsimi.config.user_config import SimpleExecutionProfile, SimpleToolBinding
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 from sastsimi.simple_runtime import bootstrap_stages as static_module
 from sastsimi.simple_runtime import semgrep_fallback as semgrep_module
 from sastsimi.simple_runtime.application import (
@@ -886,7 +887,7 @@ async def test_non_python_product_file_is_outside_python_coverage(
     )
     identity = _identity("unsupported-product")
     result = await bootstrap.run(_request(profile), identity)
-    assert result.static_disposition == "PARTIAL"
+    assert result.static_disposition == "FULL"
     coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
     assert coverage["verified_count"] == coverage["expected_count"] == 1
     assert coverage["unsupported_files"] == []
@@ -935,7 +936,7 @@ async def test_mixed_python_typescript_scope_keeps_out_of_scope_reason(
     ).run(_request(profile), identity)
 
     coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
-    assert result.static_disposition == "PARTIAL"
+    assert result.static_disposition == "FULL", coverage["gaps"]
     assert coverage["out_of_scope_product_files"] == [
         {"path": "ui/main.ts", "reason": "non_python_product_source"}
     ]
@@ -945,6 +946,24 @@ async def test_mixed_python_typescript_scope_keeps_out_of_scope_reason(
             "reason": "test-basename+content:javascript-typescript",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_static_scan_supports_max_length_analysis_id(
+    tmp_path: Path,
+) -> None:
+    profile = _without_codeql(_profile(tmp_path))
+    identity = _identity("a" * 128)
+    result = await DirectStaticBootstrap(
+        profile=profile,
+        process=_Process(),
+        store=_store(profile),
+        static_material_root=tmp_path,
+    ).run(_request(profile), identity)
+
+    coverage = _coverage_from_ref(profile, identity, result.static_coverage_ref)
+    assert result.static_disposition == "FULL", coverage["gaps"]
+    assert coverage["verified_count"] == coverage["expected_count"] == 1
 
 
 def _profile(tmp_path: Path) -> SimpleExecutionProfile:
@@ -3770,7 +3789,7 @@ async def test_opengrep_corrupt_timed_out_parent_request_is_recreated_on_resume(
     ]
     quarantined = list(artifacts.paths.quarantine.iterdir())
     assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == b"corrupt"
+    assert windows_extended_path(quarantined[0]).read_bytes() == b"corrupt"
 
 
 @pytest.mark.asyncio
@@ -3816,7 +3835,7 @@ async def test_opengrep_corrupt_successful_child_raw_is_recreated_on_resume(
     assert json.loads(artifacts.read(child.raw_ref))["paths"]["scanned"] == ["app.py"]
     quarantined = list(artifacts.paths.quarantine.iterdir())
     assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == b"corrupt"
+    assert windows_extended_path(quarantined[0]).read_bytes() == b"corrupt"
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,7 @@ from tests.simple_runtime.test_legacy_import_stop_replan import (
 def _exhausted_extract(
     tmp_path: Path,
     *,
+    seed_commit_id: str = "a" * 40,
     stderr: bytes = b"Traceback (sanitized): extract\nRuntimeError\n",
     stdout: bytes = b"",
     execution_patch: dict[str, object] | None = None,
@@ -47,7 +48,9 @@ def _exhausted_extract(
     root_error_code: str | None = None,
 ) -> tuple[SimpleCheckpointStore, SimpleArtifactRepository, StageCheckpoint]:
     store, artifacts, old_stop, _ = _seed(
-        tmp_path, stderr=b"TypeError: earlier PoC harness failure\n"
+        tmp_path,
+        commit_id=seed_commit_id,
+        stderr=b"TypeError: earlier PoC harness failure\n",
     )
     identity = old_stop.identity
     candidate = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
