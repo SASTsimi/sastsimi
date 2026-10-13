@@ -116,19 +116,37 @@ def _route_of(decorator: ast.expr) -> dict[str, Any] | None:
     # not the HTTP verb - that comes from their ``methods`` keyword instead,
     # parsed the same way as any other route below.
     is_custom_action = name in _ACTION_DECORATORS
-    if not is_custom_action and name.lower() not in _ROUTE_VERBS:
+    # A wrapper decorator - romm's `@protected_route(router.get, "/path", ...)`
+    # is the case measured - passes the actual route registrar as its own
+    # first positional argument instead of being named after the HTTP verb
+    # itself; the verb and router both live one level down, on that
+    # argument, not on the wrapper call. Missing this left every endpoint
+    # behind such a wrapper (263 of romm's 279 route decorators) absent from
+    # entry-point detection entirely.
+    registrar = decorator.args[0] if decorator.args else None
+    is_wrapped_registrar = (
+        not is_custom_action
+        and name.lower() not in _ROUTE_VERBS
+        and isinstance(registrar, ast.Attribute)
+        and registrar.attr.lower() in _ROUTE_VERBS
+    )
+    if not is_custom_action and name.lower() not in _ROUTE_VERBS and not is_wrapped_registrar:
         return None
+    route_func = registrar if is_wrapped_registrar else decorator.func
     # `@mock.patch(...)` is not a PATCH route; its receiver gives it away.
-    if isinstance(decorator.func, ast.Attribute):
-        receiver = _name(decorator.func.value)
+    if isinstance(route_func, ast.Attribute):
+        receiver = _name(route_func.value)
         if receiver is not None and (
             receiver in _NON_ROUTE_RECEIVERS
             or receiver.split(".")[-1] in {"mock", "patch"}
         ):
             return None
+    # A wrapped registrar's own arguments start one position later, since
+    # its first positional argument is the registrar itself, not the path.
+    path_args = decorator.args[1:] if is_wrapped_registrar else decorator.args
     path: str | None = None
-    if decorator.args and isinstance(decorator.args[0], ast.Constant):
-        value = decorator.args[0].value
+    if path_args and isinstance(path_args[0], ast.Constant):
+        value = path_args[0].value
         path = value if isinstance(value, str) else None
     methods: list[str] = []
     dependencies: list[str] = []
@@ -144,13 +162,15 @@ def _route_of(decorator: ast.expr) -> dict[str, Any] | None:
                 ]
             else:
                 methods = [ast.unparse(keyword.value)]
-    verb = methods[0].lower() if is_custom_action and methods else name
+    verb = methods[0].lower() if is_custom_action and methods else (
+        route_func.attr if is_wrapped_registrar else name
+    )
     return {
         "verb": verb,
         "path": path,
         "methods": methods or [verb.upper()],
-        "router": _name(decorator.func.value)
-        if isinstance(decorator.func, ast.Attribute)
+        "router": _name(route_func.value)
+        if isinstance(route_func, ast.Attribute)
         else None,
         **({"dependencies": dependencies} if dependencies else {}),
     }
