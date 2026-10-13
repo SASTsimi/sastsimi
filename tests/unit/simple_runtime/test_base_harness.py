@@ -81,21 +81,56 @@ def test_a_proved_base_is_returned_and_reused(tmp_path: Path) -> None:
     first = asyncio.run(harness.ensure("sha256:abc"))
     second = asyncio.run(harness.ensure("sha256:abc"))
 
-    assert first and "HARNESS_OK" in first
+    assert first is not None and "HARNESS_OK" in first[0]
+    assert first[1] is True
     assert second == first
     assert len(client.prompts) == 1
     assert b"tests/test.env" in client.prompts[0]
 
 
-def test_a_failing_base_is_retried_with_its_output_then_given_up(
+def test_a_never_proved_base_still_returns_its_furthest_attempt(
     tmp_path: Path,
 ) -> None:
+    """An attempt that ran but never reached HARNESS_OK is not thrown away.
+
+    Every PoC re-deriving the same setup from nothing would otherwise hit
+    the exact same wall this attempt already got past, one by one.
+    """
+
     docker, client = _Docker([(2, "", "KeyError: 'EMAIL_DOMAIN'")]), _Client()
     harness = _harness(tmp_path, docker, client)
 
-    assert asyncio.run(harness.ensure("sha256:abc")) is None
+    result = asyncio.run(harness.ensure("sha256:abc"))
+    assert result is not None
+    script, proven = result
+    assert proven is False
+    assert script == "#!/bin/sh\necho HARNESS_OK\n"
     assert len(client.prompts) == 5
     assert b"KeyError: 'EMAIL_DOMAIN'" in client.prompts[1]
+
+    again = asyncio.run(harness.ensure("sha256:abc"))
+    assert again == result
+    assert len(client.prompts) == 5
+
+
+def test_a_base_that_never_even_ran_is_not_returned(tmp_path: Path) -> None:
+    docker = _Docker([(0, "HARNESS_OK 200", "")])
+
+    class _RejectedClient:
+        def __init__(self) -> None:
+            self.prompts: list[bytes] = []
+
+        async def call(
+            self, *, prompt: bytes, output_schema: Any, timeout_ms: int
+        ) -> Any:
+            self.prompts.append(prompt)
+            return SimpleNamespace(
+                value={"content": "echo hi\ncurl http://example.com\n"}
+            )
+
+    client = _RejectedClient()
+    harness = _harness(tmp_path, docker, client)
+
     assert asyncio.run(harness.ensure("sha256:abc")) is None
     assert len(client.prompts) == 5
 

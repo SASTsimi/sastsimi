@@ -151,28 +151,47 @@ class BaseHarness:
         found.sort()
         return "\n\n".join(f"### {path}\n{text}" for path, text in found)
 
-    async def ensure(self, image_digest: str) -> str | None:
-        """The proved base script for this image, or ``None`` if none could be made."""
+    async def ensure(self, image_digest: str) -> tuple[str, bool] | None:
+        """The base script for this image and whether it was fully proved.
+
+        ``None`` means no attempt got far enough to even run. A script that
+        ran but never reached ``HARNESS_OK`` is still returned, marked
+        unproved: it is the furthest any attempt got, and later PoCs
+        re-deriving the same setup from nothing would only hit the same wall
+        it already got past.
+        """
 
         path = self._path(image_digest)
         cached = self._read(path)
         if cached is not None:
-            return cached.get("script")
+            return self._cached_result(cached)
         lock = self._locks.setdefault(str(path), asyncio.Lock())
         async with lock:
             cached = self._read(path)
             if cached is not None:
-                return cached.get("script")
-            script, note = await self._build(image_digest)
+                return self._cached_result(cached)
+            script, proven, note = await self._build(image_digest)
             self._dir.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps(
-                    {"script": script, "note": note, "image": image_digest},
+                    {
+                        "script": script,
+                        "proven": proven,
+                        "note": note,
+                        "image": image_digest,
+                    },
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
-            return script
+            return (script, proven) if script is not None else None
+
+    @staticmethod
+    def _cached_result(cached: dict[str, Any]) -> tuple[str, bool] | None:
+        script = cached.get("script")
+        if script is None:
+            return None
+        return script, bool(cached.get("proven", True))
 
     @staticmethod
     def _read(path: Path) -> dict[str, Any] | None:
@@ -182,7 +201,7 @@ class BaseHarness:
             return None
         return value if isinstance(value, dict) else None
 
-    async def _build(self, image_digest: str) -> tuple[str | None, str]:
+    async def _build(self, image_digest: str) -> tuple[str | None, bool, str]:
         hints = self._hints()
         schema = {
             "type": "object",
@@ -192,6 +211,8 @@ class BaseHarness:
         }
         last = "no attempt"
         feedback = b""
+        best_content: bytes | None = None
+        best_output = ""
         # One held conversation for every attempt, not one call each: a retry
         # here is a follow-up turn the live process reads from its own prior
         # context, not a fresh call that resends the full prompt and hopes the
@@ -225,14 +246,27 @@ class BaseHarness:
                     continue
                 ran, output = await self._run(image_digest, content)
                 if ran:
-                    return content.decode("utf-8"), f"proved on attempt {attempt + 1}"
+                    note = f"proved on attempt {attempt + 1}"
+                    return content.decode("utf-8"), True, note
+                # Keep whichever attempt got furthest, even though none of them
+                # reached HARNESS_OK: it already cleared whatever wall every
+                # later PoC re-deriving the same setup from nothing would
+                # otherwise hit again, one by one.
+                if len(output) > len(best_output):
+                    best_content, best_output = content, output
                 feedback = (
                     "\nYour previous script ran and failed. Its last output was:\n"
                     + output[-3500:]
                     + "\nFix the first thing that failed and keep what worked.\n"
                 ).encode("utf-8")
                 last = output[-3000:]
-        return None, last
+        if best_content is not None:
+            return (
+                best_content.decode("utf-8"),
+                False,
+                f"not proved, furthest attempt: {last}",
+            )
+        return None, False, last
 
     async def _run(self, image_digest: str, content: bytes) -> tuple[bool, str]:
         container = ""

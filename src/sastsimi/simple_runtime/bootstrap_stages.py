@@ -47,6 +47,11 @@ from .provider import (
     conversation_with,
 )
 from .retrieval import collect_requested_ast, collect_requested_sources
+from .stages import (
+    _SELF_FEEDBACK_INSTRUCTIONS,
+    _self_feedback_note,
+    _with_self_feedback,
+)
 
 _MAX_TRACKED_FILES = 200_000
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
@@ -1296,7 +1301,8 @@ class DirectHypothesisBootstrap:
             # most of the repository's hypotheses with them.
             answer = await _ask_retrying(
                 talk,
-                b"<UNTRUSTED_EXACT_INPUTS>\n"
+                _self_feedback_note(result.value)
+                + b"<UNTRUSTED_EXACT_INPUTS>\n"
                 + render_round(history.as_prompt_document()).encode("utf-8")
                 + b"\n</UNTRUSTED_EXACT_INPUTS>\n"
                 + follow_up,
@@ -1568,6 +1574,7 @@ class DirectHypothesisBootstrap:
             "required": ["hypotheses", "requested_paths", "requested_ast_paths"],
             "additionalProperties": False,
         }
+        schema = _with_self_feedback(schema)
         bundle = json.loads(artifacts.read(static.static_bundle_ref))
         if not isinstance(bundle, dict):
             raise RuntimeError("HYPOTHESIS_BUNDLE_INVALID")
@@ -1618,7 +1625,9 @@ class DirectHypothesisBootstrap:
             if feeding.kind == "facts"
             else _HYPOTHESIS_INSTRUCTIONS
         )
-        instructions = (opening + PROPOSAL_INSTRUCTIONS + "\n").encode("utf-8")
+        instructions = (
+            opening + PROPOSAL_INSTRUCTIONS + "\n" + _SELF_FEEDBACK_INSTRUCTIONS
+        ).encode("utf-8")
         if surveyed:
             # One schema holds for the whole conversation, so the survey's list
             # is in every answer and left empty after the first.
@@ -1746,11 +1755,14 @@ class DirectHypothesisBootstrap:
                     client, output_schema=walk_schema, timeout_ms=self._call_timeout_ms
                 ) as talk:
                     first = True
+                    previous_value: Mapping[str, Any] | None = None
                     while index < len(parts):
                         part = parts[index]
                         context = self._batch_context(
                             bundle, feeding, part, standing=False
                         )
+                        if not first:
+                            context = _self_feedback_note(previous_value) + context
                         body = opening + b"\n\n" + context if first else context
                         result, history, proposed = await self._read_then_propose(
                             talk,
@@ -1768,6 +1780,7 @@ class DirectHypothesisBootstrap:
                             + len(json.dumps(history.as_prompt_document()))
                             + len(canonical_bytes(result.value))
                         )
+                        previous_value = result.value
                         first = False
                         index += 1
                         valid, rejected = self._validate_all(
@@ -1826,6 +1839,7 @@ class DirectHypothesisBootstrap:
                     "reading": reading,
                     "prompt_digest": result.prompt_digest,
                     "output_digest": result.output_digest,
+                    "self_feedback": result.value.get("self_feedback"),
                 }
             )
             seeds.append(

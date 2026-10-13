@@ -300,7 +300,7 @@ def build_analysis_application(
             },
         )
 
-        async def base_harness(checkpoint: StageCheckpoint) -> str | None:
+        async def base_harness(checkpoint: StageCheckpoint) -> tuple[str, bool] | None:
             if checkpoint.image_digest is None:
                 return None
             return await harness.ensure(checkpoint.image_digest)
