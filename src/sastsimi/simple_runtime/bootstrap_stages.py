@@ -446,6 +446,15 @@ def _findings_by_file(bundle: dict[str, object]) -> dict[str, list[dict[str, obj
 
 
 _FINDINGS_INDEX_SAMPLE_LINES = 5
+# Grouping by file and rule holds the index to a size that is independent of
+# how often one rule repeats in one place (the fix this replaced a per-hit
+# index for a test file's 536 repeats of one rule), but says nothing about
+# the number of distinct (tool, file, rule) groups - romm's 1195 of them
+# made the index itself 170KB, repeated standing in every one of a batch's
+# calls, and pushed every call over the provider's own prompt-length limit
+# regardless of the file batch's own size. A budget here, same as the
+# repository map's and a batch's own file content, keeps that bounded.
+_FINDINGS_INDEX_BUDGET = 40_000
 
 
 def _findings_index(bundle: dict[str, object]) -> list[dict[str, object]]:
@@ -459,7 +468,9 @@ def _findings_index(bundle: dict[str, object]) -> list[dict[str, object]]:
     hits of one rule) made the index itself the largest single piece of the
     prompt.  Grouping by file and rule keeps the same information - which
     files and which rules - at a size that holds regardless of how often a
-    rule repeats in one place.
+    rule repeats in one place, but not regardless of how many distinct
+    groups there are; busiest groups (the most repeated rules) are kept
+    first, and how many were dropped is reported rather than left silent.
     """
 
     counts: dict[tuple[str, str, str | None], list[int]] = {}
@@ -477,7 +488,7 @@ def _findings_index(bundle: dict[str, object]) -> list[dict[str, object]]:
             line = value.get("line")
             if isinstance(line, int):
                 counts.setdefault(group, []).append(line)
-    return [
+    groups = [
         {
             "tool": tool,
             "path": path,
@@ -487,6 +498,19 @@ def _findings_index(bundle: dict[str, object]) -> list[dict[str, object]]:
         }
         for (tool, path, rule), lines in counts.items()
     ]
+    groups.sort(key=lambda group: -group["count"])  # type: ignore[arg-type,operator]
+    kept: list[dict[str, object]] = []
+    used = 0
+    for group in groups:
+        size = len(json.dumps(group, ensure_ascii=False).encode("utf-8"))
+        if kept and used + size > _FINDINGS_INDEX_BUDGET:
+            break
+        kept.append(group)
+        used += size
+    omitted = len(groups) - len(kept)
+    if omitted:
+        kept.append({"omitted_groups": omitted})
+    return kept
 
 
 def _attach_findings(
