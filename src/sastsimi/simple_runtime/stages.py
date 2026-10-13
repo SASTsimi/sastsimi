@@ -737,6 +737,16 @@ execution. Return SUPPORTED only when the output and exit code directly support
 the exact hypothesis, DISPROVED only for actual counterevidence, otherwise
 INCONCLUSIVE. The Runtime binds your interpretation to the exact execution
 artifact. Do not reinterpret an execution error as DISPROVED.
+
+stderr often contains noise that is unrelated to the hypothesis: startup
+warnings from the app framework, deprecation notices, missing-route or
+missing-spec-operation warnings, and similar messages that do not indicate
+the PoC failed. A benign stderr line does not outweigh a clear, on-topic
+success signal in stdout (e.g. an explicit confirmation line, exit code 0,
+and a response body showing the expected exploit outcome). Judge SUPPORTED
+vs INCONCLUSIVE primarily on whether stdout actually demonstrates the
+hypothesis; do not downgrade to INCONCLUSIVE merely because stderr is
+non-empty.
 """
                 + _COMMON_CONTRACT,
                 context,
