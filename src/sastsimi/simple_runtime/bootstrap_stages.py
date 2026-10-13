@@ -97,6 +97,18 @@ For each flow, establish from the code you have read:
   are hypotheses even when no value reaches an injection sink - a role taken
   from the request, a check on one object and a write to another, an
   ownership test that is skipped on one branch.
+- Whether a construct you read is dangerous on its own terms, independent of
+  tracing where a value goes: a regex with nested or overlapping quantifiers
+  applied to attacker-controlled input (catastrophic backtracking / ReDoS), an
+  unbounded loop or recursion whose iteration count an attacker influences, a
+  comparison or lookup whose cost scales with attacker-sized input without a
+  limit, a cache or allocation sized from an attacker-controlled value. These
+  do not show up by following "where does this value go" - they show up by
+  reading what the library call or control-flow construct itself does with
+  whatever reaches it, the way a human auditor reads every line of a file
+  rather than only the lines a taint trace visits. Do not restrict this read
+  to the handlers you reached from an entry point; anything in the batch is
+  in scope.
 
 ## Defences are candidates, not proof
 
