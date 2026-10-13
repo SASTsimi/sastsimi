@@ -152,10 +152,43 @@ def test_a_monorepo_root_installs_its_one_package_instead(tmp_path: Path) -> Non
     (tmp_path / "cypress").mkdir()
 
     assert _preparer_for(tmp_path)._installable_directory() == "backend"
+    # Bare, without "./", "backend" is a PyPI requirement specifier to pip,
+    # not a local path - it would silently install an unrelated package by
+    # that name instead of this checkout's own one.
     assert (
-        b"pip install --no-cache-dir backend"
+        b"pip install --no-cache-dir ./backend"
         in _preparer_for(tmp_path)._generated_dockerfile()
     )
+
+
+def test_a_uv_virtual_project_installs_its_dependencies_directly(
+    tmp_path: Path,
+) -> None:
+    # `[tool.uv] package = false` is uv's own marker for a pyproject.toml
+    # that only declares/locks dependencies for an application, not a
+    # buildable package - romm's root pyproject.toml is exactly this: it
+    # has a [project] table (so _declares_a_package says yes) but no
+    # [build-system], and a flat layout with several top-level directories
+    # (backend/frontend/docker), so `pip install .` fails outright with
+    # "Multiple top-level packages discovered in a flat-layout" before any
+    # dependency is ever installed.
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "thing"\nversion = "1"\n'
+        'dependencies = ["fastapi ~= 0.141", "opentelemetry-distro ~= 0.56"]\n'
+        "[tool.uv]\npackage = false\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "frontend").mkdir()
+
+    assert _preparer_for(tmp_path)._installable_directory() == "."
+    dockerfile = _preparer_for(tmp_path)._generated_dockerfile()
+    assert b"pip install --no-cache-dir ." not in dockerfile
+    # Prereleases allowed: some dependencies (e.g. opentelemetry-*) only
+    # ever publish prerelease versions, so a bare pip install without
+    # --pre finds no matching version at all.
+    assert b"pip install --no-cache-dir --pre 'fastapi ~= 0.141'" in dockerfile
+    assert b"'opentelemetry-distro ~= 0.56'" in dockerfile
 
 
 def test_an_ambiguous_layout_skips_the_install_layer(tmp_path: Path) -> None:
@@ -475,6 +508,22 @@ async def test_declared_version_detection_reads_dockerfile_pyproject_and_pin_fil
     assert preparer._declared_python_version() == "3.11"
 
 
+def test_a_version_declared_in_the_installable_subdirectory_is_found(
+    tmp_path: Path,
+) -> None:
+    # A backend/frontend split repository states requires-python next to the
+    # one package pyproject.toml it actually installs from, not at the root.
+    (tmp_path / "pyproject.toml").write_text(_WORKSPACE_ONLY, encoding="utf-8")
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "pyproject.toml").write_text(
+        '[project]\nname = "thing"\nrequires-python = ">=3.13,<4.0"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend").mkdir()
+
+    assert _preparer_for(tmp_path)._declared_python_version() == "3.13"
+
+
 def test_build_context_carries_what_the_repository_dockerignores(
     tmp_path: Path,
 ) -> None:
@@ -551,3 +600,52 @@ def test_a_postgres_backed_repository_gets_a_local_server(tmp_path: Path) -> Non
     assert "postgresql" in layer
     assert "useradd -u 10001" in layer
     assert _preparer(tmp_path / "missing")._service_layer() == b""
+
+
+def test_a_postgres_dependency_in_the_installable_subdirectory_is_found(
+    tmp_path: Path,
+) -> None:
+    # A backend/frontend split repository declares psycopg next to the one
+    # package pyproject.toml it actually installs from, not at the root.
+    (tmp_path / "pyproject.toml").write_text(_WORKSPACE_ONLY, encoding="utf-8")
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "pyproject.toml").write_text(
+        '[project]\nname = "thing"\ndependencies = ["psycopg[binary,pool]>=3.3.3"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend").mkdir()
+
+    layer = _preparer(tmp_path)._service_layer().decode()
+
+    assert "postgresql" in layer
+
+
+def test_a_postgres_dependency_two_levels_deep_is_found_via_the_target_path(
+    tmp_path: Path,
+) -> None:
+    # librephotos' shape: no root pyproject.toml declaring a package, and the
+    # backend lives two levels down (apps/backend/) with no pyproject.toml of
+    # its own - `_installable_directory` (one level, pyproject.toml-only)
+    # cannot see it at all. `_target_requirements_path` finds it per-hypothesis
+    # by walking up from the hypothesis's own code location instead; that
+    # same directory must reach service/build-tool detection too, or a
+    # repository shaped like this gets no postgres server and the PoC fails
+    # at runtime with "initdb: not found" instead of at build time.
+    (tmp_path / "apps" / "backend").mkdir(parents=True)
+    (tmp_path / "apps" / "backend" / "requirements.txt").write_text(
+        "Django==5.2\npsycopg[binary]==3.3.4\n", encoding="utf-8"
+    )
+
+    preparer = _preparer(tmp_path)
+    target_requirements = "apps/backend/requirements.txt"
+
+    layer = preparer._service_layer(
+        preparer._extra_directory(target_requirements)
+    ).decode()
+    assert "postgresql" in layer
+    assert "useradd -u 10001" in layer
+
+    dockerfile = preparer._generated_dockerfile(target_requirements).decode()
+    assert "postgresql" in dockerfile
+    assert "build-essential" in dockerfile
+    assert "requirements.txt" in dockerfile

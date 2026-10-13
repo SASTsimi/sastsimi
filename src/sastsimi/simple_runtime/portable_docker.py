@@ -453,7 +453,7 @@ class DirectEnvironmentPreparer:
                 dockerfile_path.read_bytes()
             ) + (
                 b"\nUSER root\n"
-                + self._service_layer()
+                + self._service_layer(self._extra_directory(target_requirements))
                 + b"WORKDIR /workspace\nCOPY . /workspace\n"
                 + target_install
                 + self._test_dependency_layer()
@@ -656,6 +656,21 @@ class DirectEnvironmentPreparer:
                     current = current.parent
         return None
 
+    def _extra_directory(self, target_requirements: str | None) -> Path | None:
+        """The directory a per-hypothesis target requirements file lives in.
+
+        `_target_requirements_path` already walks up from this specific
+        hypothesis's own code location to the nearest `requirements.txt`,
+        which finds a nested backend directory (e.g. librephotos'
+        `apps/backend/`) that `_installable_directory`'s one-level,
+        pyproject.toml-only search cannot. Reusing it here lets service
+        detection see the same directory the install layer already does.
+        """
+
+        if target_requirements in (None, "requirements.txt"):
+            return None
+        return (self._workspace / target_requirements).parent
+
     @staticmethod
     def _target_install_layer(requirements_path: str | None) -> bytes:
         if requirements_path in {None, "requirements.txt"}:
@@ -713,7 +728,7 @@ class DirectEnvironmentPreparer:
             command = f"python -m pip install --no-cache-dir -r {path}"
         return f"RUN {command} || true\n".encode()
 
-    def _service_layer(self) -> bytes:
+    def _service_layer(self, extra_directory: Path | None = None) -> bytes:
         """Install a PostgreSQL server when the repository's database needs one.
 
         taiga-back's models use PostgreSQL-only features and its test settings
@@ -724,7 +739,9 @@ class DirectEnvironmentPreparer:
         """
 
         wanted = (("postgresql", "psycopg"), ("redis-server", "redis"))
-        packages = [name for name, marker in wanted if self._declares(marker)]
+        packages = [
+            name for name, marker in wanted if self._declares(marker, extra_directory)
+        ]
         if not packages:
             return b""
         links = (
@@ -746,22 +763,48 @@ class DirectEnvironmentPreparer:
     def _uses_postgres(self) -> bool:
         return self._declares("psycopg")
 
-    def _declares(self, marker: str) -> bool:
+    def _declares(self, marker: str, extra_directory: Path | None = None) -> bool:
         """Whether a dependency file names ``marker`` as a requirement."""
 
-        for name in (
-            "pyproject.toml",
-            "requirements.txt",
-            *self._TEST_REQUIREMENT_FILES,
-        ):
-            try:
-                text = (self._workspace / name).read_text(
-                    encoding="utf-8", errors="ignore"
-                )
-            except OSError:
-                continue
-            if re.search(rf'(^|["\s\'])\s*{re.escape(marker)}', text.lower(), re.M):
-                return True
+        directories = [self._workspace]
+        # A backend/frontend split repository declares its actual Python
+        # dependencies next to the one package pyproject.toml it installs
+        # from, not at the root - the root copy, when there is one, usually
+        # configures the monorepo's own tooling instead. Missing this left
+        # every service a dependency file this specific way asked for
+        # (postgresql, redis) never installed, with no error anywhere in the
+        # build: the PoC itself only discovered it was missing at runtime.
+        installable = self._installable_directory()
+        if installable is not None and installable != ".":
+            directories.append(self._workspace / installable)
+        # `_installable_directory()` only looks one level below the
+        # workspace root and only at directories with their own
+        # `pyproject.toml` - librephotos' backend lives two levels down
+        # (apps/backend/), has no pyproject.toml of its own (only a
+        # requirements.txt and a ruff-only one), and so is invisible to it.
+        # `extra_directory` carries the one directory already known to hold
+        # the real dependency file for this hypothesis (found per-hypothesis
+        # in `_target_requirements_path`, by walking up from the hypothesis's
+        # own code location), so service detection is not re-blinded by the
+        # same one-level/pyproject.toml-only assumption a second time.
+        if extra_directory is not None and extra_directory not in directories:
+            directories.append(extra_directory)
+        for directory in directories:
+            for name in (
+                "pyproject.toml",
+                "requirements.txt",
+                *self._TEST_REQUIREMENT_FILES,
+            ):
+                try:
+                    text = (directory / name).read_text(
+                        encoding="utf-8", errors="ignore"
+                    )
+                except OSError:
+                    continue
+                if re.search(
+                    rf'(^|["\s\'])\s*{re.escape(marker)}', text.lower(), re.M
+                ):
+                    return True
         return False
 
     def _declared_test_requirements(self) -> list[str]:
@@ -849,6 +892,34 @@ class DirectEnvironmentPreparer:
         ]
         return candidates[0] if len(candidates) == 1 else None
 
+    @staticmethod
+    def _virtual_project_dependencies(pyproject: Path) -> tuple[str, ...] | None:
+        """Return declared dependencies when this is a uv "virtual" project.
+
+        ``[tool.uv] package = false`` is uv's own marker for a
+        ``pyproject.toml`` that exists only to declare and lock
+        dependencies for an application, not to be built as an installable
+        package - romm's root ``pyproject.toml`` is exactly this: it has a
+        ``[project]`` table (so ``_declares_a_package`` says yes) but no
+        ``[build-system]`` and a flat layout with several top-level
+        directories (``backend``, ``frontend``, ``docker``), so
+        ``pip install .`` fails with "Multiple top-level packages
+        discovered in a flat-layout" before any dependency is ever
+        installed. Installing the declared dependency specifiers directly
+        is what ``uv sync`` would do here instead.
+        """
+
+        try:
+            document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return None
+        if document.get("tool", {}).get("uv", {}).get("package") is not False:
+            return None
+        dependencies = document.get("project", {}).get("dependencies")
+        if not isinstance(dependencies, list):
+            return None
+        return tuple(dep for dep in dependencies if isinstance(dep, str))
+
     def _generated_dockerfile(
         self,
         target_requirements: str | None = None,
@@ -857,31 +928,66 @@ class DirectEnvironmentPreparer:
         python_version: str = "3.12",
     ) -> bytes:
         directory = self._installable_directory() if install else None
+        virtual_dependencies = (
+            self._virtual_project_dependencies(
+                self._workspace / directory / "pyproject.toml"
+                if directory not in (None, ".")
+                else self._workspace / "pyproject.toml"
+            )
+            if install and directory is not None
+            else None
+        )
         if install and (self._workspace / "requirements.txt").is_file():
             install_layer = "RUN pip install --no-cache-dir -r requirements.txt"
+        elif virtual_dependencies is not None:
+            # No lock file is read here, only the loose specifiers
+            # pyproject.toml itself declares - some packages (romm's
+            # opentelemetry-* set) only ever publish prerelease versions,
+            # so a bare `~=0.56` with no matching non-prerelease build
+            # fails outright unless prereleases are explicitly allowed.
+            install_layer = (
+                "RUN pip install --no-cache-dir --pre "
+                + " ".join(shlex.quote(dep) for dep in virtual_dependencies)
+                if virtual_dependencies
+                else ""
+            )
         elif directory is not None:
-            install_layer = f"RUN pip install --no-cache-dir {shlex.quote(directory)}"
+            # A bare relative name - the common case, the one subdirectory
+            # that declares a package - is a PyPI requirement specifier to
+            # pip, not a local path: `pip install backend` silently installs
+            # whatever unrelated package by that name PyPI happens to have,
+            # instead of failing, so every dependency the checkout actually
+            # declares goes missing with no error anywhere in the build.
+            # Only "." is pip's own special case for "here"; anything else
+            # needs an explicit "./" to read as a path.
+            target = directory if directory == "." else f"./{directory}"
+            install_layer = f"RUN pip install --no-cache-dir {shlex.quote(target)}"
         else:
             install_layer = ""
+        extra_directory = self._extra_directory(target_requirements)
         # Old pinned dependencies frequently need a native build - a C
         # extension, a database driver - that a bare Python image has no
         # toolchain for.  Installed once, cheap when nothing needs it.
         # mealie's python-ldap needs libldap2-dev/libsasl2-dev (lber.h):
         # without them its wheel build fails and the install layer falls
         # back to no install at all, for every hypothesis in the run.
+        # A target requirements file (librephotos' nested apps/backend/
+        # requirements.txt, found per-hypothesis) installs real dependencies
+        # of its own even when `install_layer` above is empty, so it needs
+        # the same toolchain.
         build_tools = (
             "RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "
             "--no-install-recommends "
             "build-essential libpq-dev libjpeg-dev zlib1g-dev "
-            "libldap2-dev libsasl2-dev "
+            "libldap2-dev libsasl2-dev libmagic1 "
             "&& rm -rf /var/lib/apt/lists/*\n"
-            if install_layer
+            if install_layer or extra_directory is not None
             else ""
         )
         return (
             f"FROM python:{python_version}-slim\n"
             f"{build_tools}"
-            f"{self._service_layer().decode('utf-8') if install else ''}"
+            f"{self._service_layer(extra_directory).decode('utf-8') if install else ''}"
             "WORKDIR /workspace\n"
             "COPY . /workspace\n"
             f"{install_layer}\n"
@@ -921,7 +1027,25 @@ class DirectEnvironmentPreparer:
             match = re.search(r"(?im)^\s*FROM\s+python:(\d+\.\d+)", text)
             if match:
                 return match.group(1)
-        pyproject_path = self._workspace / "pyproject.toml"
+        found = self._declared_python_version_in(self._workspace)
+        if found is not None:
+            return found
+        # A backend/frontend split repository states its Python version next
+        # to the one package pyproject.toml actually installs from, not at
+        # the repository root - the same directory `_installable_directory`
+        # already finds. Missing it here built every image one Python
+        # version too old, which then rejected the newest release of a
+        # dependency the repository's own lock file resolved to.
+        directory = self._installable_directory()
+        if directory is not None and directory != ".":
+            found = self._declared_python_version_in(self._workspace / directory)
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _declared_python_version_in(directory: Path) -> str | None:
+        pyproject_path = directory / "pyproject.toml"
         if pyproject_path.is_file():
             try:
                 document = tomllib.loads(
@@ -934,7 +1058,7 @@ class DirectEnvironmentPreparer:
                 match = re.search(r"(\d+\.\d+)", requires)
                 if match:
                     return match.group(1)
-        version_file = self._workspace / ".python-version"
+        version_file = directory / ".python-version"
         if version_file.is_file():
             try:
                 text = version_file.read_text(encoding="utf-8", errors="ignore")
