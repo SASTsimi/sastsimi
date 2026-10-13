@@ -106,6 +106,10 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ARTIFACT_BYTES = 1024 * 1024
 _MAX_SURFACE_PROGRESS_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACTS = 512
+_MAX_INVOCATION_ALIAS_EVENTS = 128
+_MAX_INVOCATION_ALIAS_REFS = 64
+_MAX_INVOCATION_ALIAS_BYTES = 16 * 1024 * 1024
+_INVOCATION_ALIAS_ID = re.compile(r"(?:simple-)?[0-9a-f]{32}\Z")
 _DEFAULT_PAGE_SIZE = 10
 _PROJECTION_SOURCE_LIMIT = 2_147_483_647
 
@@ -588,7 +592,7 @@ class DashboardQuery:
                 from .read_model import DashboardReadModel
 
                 exact = self._resolved(analysis_id)
-                return DashboardReadModel(self._data_dir).page(
+                page = DashboardReadModel(self._data_dir).page(
                     exact,
                     tab,
                     offset=offset,
@@ -596,7 +600,12 @@ class DashboardQuery:
                     query=query,
                     artifact_type=artifact_type,
                 )
-        return self._get_analysis_tab_from_source(
+                return (
+                    self._enrich_registered_hypotheses(exact, page)
+                    if tab == "findings"
+                    else page
+                )
+        page = self._get_analysis_tab_from_source(
             analysis_id,
             tab,
             offset=offset,
@@ -604,6 +613,108 @@ class DashboardQuery:
             query=query,
             artifact_type=artifact_type,
         )
+        return (
+            self._enrich_registered_hypotheses(self._resolved(analysis_id), page)
+            if tab == "findings"
+            else page
+        )
+
+    def _enrich_registered_hypotheses(
+        self, analysis_id: str, page: dict[str, object]
+    ) -> dict[str, object]:
+        """Read only the displayed, scoped proposal refs, not the artifact preview."""
+
+        run = self._simple_run(analysis_id)
+        items = page.get("items")
+        if run is None or not isinstance(items, list):
+            return page
+        identity = CheckpointIdentity(
+            analysis_id=analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        store = _ReadOnlyCheckpointStore(self._database)
+        repository = SimpleArtifactRepository(
+            self._data_dir, identity, create_dirs=False
+        )
+        enriched: list[dict[str, object]] = []
+
+        def without_proposal(item: dict[str, object]) -> dict[str, object]:
+            return {
+                **item,
+                "title": None,
+                "vulnerability_type": None,
+                "summary": None,
+                "source": None,
+                "sink": None,
+                "code_locations": [],
+            }
+
+        for item in items:
+            if not isinstance(item, dict):
+                return page
+            hypothesis_id = item.get("hypothesis_id")
+            if not isinstance(hypothesis_id, str):
+                enriched.append(item)
+                continue
+            try:
+                ref = store.registered_hypothesis_ref(identity, hypothesis_id)
+                if ref is None:
+                    enriched.append(without_proposal(item))
+                    continue
+                _media, raw, parsed = self._safe_ref_bytes(repository, ref)
+            except (DashboardNotFound, OSError, sqlite3.Error, ValueError):
+                enriched.append(without_proposal(item))
+                continue
+            if (
+                not isinstance(parsed, dict)
+                or parsed.get("kind") != "simple_hypothesis_proposal"
+                or parsed.get("hypothesis_id") != hypothesis_id
+                or parsed.get("analysis_id") not in (None, analysis_id)
+            ):
+                enriched.append(without_proposal(item))
+                continue
+            hypothesis = HypothesisProgressView.model_validate_json(
+                json.dumps(item, ensure_ascii=False)
+            )
+            enriched.append(
+                self._with_hypothesis_metadata(
+                    (hypothesis,),
+                    {
+                        ref.content_hash: (
+                            "simple_hypothesis_proposal",
+                            _media,
+                            raw,
+                            parsed,
+                        )
+                    },
+                )[0].model_dump(mode="json")
+            )
+        result = dict(page)
+        result["items"] = enriched
+        traces = page.get("finding_traces")
+        if isinstance(traces, list):
+            metadata = {
+                item["hypothesis_id"]: item
+                for item in enriched
+                if isinstance(item.get("hypothesis_id"), str)
+            }
+            result["finding_traces"] = [
+                {
+                    **trace,
+                    "title": metadata[trace["hypothesis_id"]].get("title"),
+                    "vulnerability_type": metadata[trace["hypothesis_id"]].get(
+                        "vulnerability_type"
+                    ),
+                    "source": metadata[trace["hypothesis_id"]].get("source"),
+                    "sink": metadata[trace["hypothesis_id"]].get("sink"),
+                }
+                if isinstance(trace, dict) and trace.get("hypothesis_id") in metadata
+                else trace
+                for trace in traces
+            ]
+        return result
 
     def _get_analysis_tab_for_projection(
         self, analysis_id: str, tab: str
@@ -1000,12 +1111,98 @@ class DashboardQuery:
         run = self._simple_run(exact)
         if run is None or not values:
             raise DashboardNotFound("DASHBOARD_INVOCATION_NOT_FOUND")
+        events = self._event_models(exact)
+        event = next(
+            (
+                item
+                for item in events
+                if item.event_id == invocation_id
+                and item.analysis_id == exact
+                and item.workspace_id == run.workspace_id
+                and item.commit_id == run.commit_id
+            ),
+            None,
+        )
         artifacts, contents, invocations, poc_ids, evidence_ids, _ = (
-            self._artifact_projection(exact, values, run)
+            self._artifact_projection(
+                exact,
+                values,
+                run,
+                priority_event_id=event.event_id if event is not None else None,
+                events=events,
+            )
         )
         invocation = next(
             (item for item in invocations if item.invocation_id == invocation_id), None
         )
+        if event is None and (
+            invocation is None
+            or invocation.request_artifact_id is None
+            or invocation.response_artifact_id is None
+        ):
+            known_refs = (
+                {
+                    ref_id
+                    for ref_id in (
+                        invocation.request_artifact_id,
+                        invocation.response_artifact_id,
+                    )
+                    if ref_id is not None
+                }
+                if invocation is not None
+                else set()
+            )
+            if known_refs:
+                event = next(
+                    (
+                        item
+                        for item in events
+                        if item.analysis_id == exact
+                        and item.workspace_id == run.workspace_id
+                        and item.commit_id == run.commit_id
+                        and item.stage != SimpleStage.REPORT_DONE.value
+                        and any(
+                            ref.content_hash in known_refs
+                            for ref in item.tool_result_refs
+                        )
+                    ),
+                    None,
+                )
+            elif invocation is None:
+                event = self._event_for_invocation_alias(
+                    exact, run, events, invocation_id
+                )
+            if event is not None:
+                artifacts, contents, invocations, poc_ids, evidence_ids, _ = (
+                    self._artifact_projection(
+                        exact,
+                        values,
+                        run,
+                        priority_event_id=event.event_id,
+                        events=events,
+                    )
+                )
+                invocation = next(
+                    (
+                        item
+                        for item in invocations
+                        if item.invocation_id == invocation_id
+                    ),
+                    None,
+                )
+        if invocation is None and event is not None:
+            event_refs = {ref.content_hash for ref in event.tool_result_refs}
+            matched = next(
+                (
+                    item
+                    for item in invocations
+                    if item.request_artifact_id in event_refs
+                    or item.response_artifact_id in event_refs
+                ),
+                None,
+            )
+            if matched is not None:
+                invocation = matched.model_copy(update={"invocation_id": invocation_id})
         if invocation is None:
             raise DashboardNotFound("DASHBOARD_INVOCATION_NOT_FOUND")
         hypotheses = tuple(
@@ -1044,6 +1241,76 @@ class DashboardQuery:
             stored_request_json=cast(Any, request),
             stored_response_json=cast(Any, response),
         )
+
+    def _event_for_invocation_alias(
+        self,
+        analysis_id: str,
+        run: SimpleAnalysisRun,
+        events: tuple[AgentActivityEvent, ...],
+        invocation_id: str,
+    ) -> AgentActivityEvent | None:
+        """Best-effort old artifact ID lookup with strict read and event limits.
+
+        The current LLM list uses event IDs after preview overflow. A legacy
+        bookmarked artifact ID outside these limits returns not-found safely.
+        """
+
+        if _INVOCATION_ALIAS_ID.fullmatch(invocation_id) is None:
+            return None
+        identity = CheckpointIdentity(
+            analysis_id=analysis_id,
+            workspace_id=run.workspace_id,
+            commit_id=run.commit_id,
+            hypothesis_id=None,
+        )
+        repository = SimpleArtifactRepository(
+            self._data_dir, identity, create_dirs=False
+        )
+        checked = 0
+        read_count = 0
+        read_bytes = 0
+        seen_refs: set[str] = set()
+        for event in events:
+            if (
+                event.analysis_id != analysis_id
+                or event.workspace_id != run.workspace_id
+                or event.commit_id != run.commit_id
+                or event.stage == SimpleStage.REPORT_DONE.value
+                or event.provider is None
+            ):
+                continue
+            checked += 1
+            if checked > _MAX_INVOCATION_ALIAS_EVENTS:
+                break
+            for ref in event.tool_result_refs[:8]:
+                if (
+                    str(ref.workspace_id) != run.workspace_id
+                    or str(ref.commit_id) != run.commit_id
+                    or ref.data_kind != "artifact"
+                    or ref.content_hash in seen_refs
+                ):
+                    continue
+                if (
+                    read_count >= _MAX_INVOCATION_ALIAS_REFS
+                    or read_bytes >= _MAX_INVOCATION_ALIAS_BYTES
+                ):
+                    return None
+                seen_refs.add(ref.content_hash)
+                read_count += 1
+                try:
+                    _media, raw, parsed = self._safe_ref_bytes(repository, ref)
+                except DashboardNotFound:
+                    read_bytes += _MAX_ARTIFACT_BYTES
+                    continue
+                read_bytes += len(raw)
+                if (
+                    isinstance(parsed, dict)
+                    and parsed.get("kind")
+                    in {"simple_llm_request", "simple_llm_response"}
+                    and parsed.get("invocation_id") == invocation_id
+                ):
+                    return event
+        return None
 
     def list_status_cells(
         self, analysis_id: str, *, offset: int = 0, limit: int = 100
@@ -1623,6 +1890,9 @@ class DashboardQuery:
         analysis_id: str,
         values: list[StageCheckpoint],
         run: SimpleAnalysisRun,
+        *,
+        priority_event_id: str | None = None,
+        events: tuple[AgentActivityEvent, ...] | None = None,
     ) -> tuple[
         tuple[ArtifactView, ...],
         dict[str, tuple[str, str, bytes, Any | None]],
@@ -1648,7 +1918,7 @@ class DashboardQuery:
         refs: dict[str, StoredDataRef] = {}
         expected_artifacts: set[str] = set()
         queue: list[tuple[StoredDataRef, str, str | None]] = []
-        events = self._event_models(analysis_id)
+        events = events if events is not None else self._event_models(analysis_id)
         # The first Reporter output is the raw draft. Published report copies
         # are sanitized separately, so never serve the draft or its LLM payload.
         withheld_refs = {
@@ -1772,6 +2042,24 @@ class DashboardQuery:
             if digest not in refs and len(refs) < projection_limit:
                 refs[digest] = ref
                 queue.append((ref, stage, hypothesis))
+
+        if priority_event_id is not None:
+            for event in events:
+                if (
+                    event.event_id == priority_event_id
+                    and event.analysis_id == analysis_id
+                    and event.workspace_id == run.workspace_id
+                    and event.commit_id == run.commit_id
+                ):
+                    for ref in event.tool_result_refs:
+                        enqueue(
+                            ref,
+                            event.stage,
+                            event.hypothesis_id,
+                            event.agent_role,
+                            event.started_at,
+                        )
+                    break
 
         enqueue(
             run.repository_profile_ref, "REPOSITORY", None, "Runtime", run.started_at
@@ -3321,7 +3609,7 @@ class DashboardQuery:
         hypotheses: tuple[HypothesisProgressView, ...],
         contents: dict[str, tuple[str, str, bytes, Any | None]],
     ) -> tuple[HypothesisProgressView, ...]:
-        proposals: dict[str, dict[str, Any]] = {}
+        proposals: dict[str, tuple[str | None, dict[str, Any]]] = {}
         for _kind, _media_type, _raw, parsed in contents.values():
             if not isinstance(parsed, dict):
                 continue
@@ -3330,14 +3618,24 @@ class DashboardQuery:
             hypothesis_id = parsed.get("hypothesis_id")
             proposal = parsed.get("proposal")
             if isinstance(hypothesis_id, str) and isinstance(proposal, dict):
-                proposals[hypothesis_id] = proposal
+                proposal_analysis_id = parsed.get("analysis_id")
+                if proposal_analysis_id is None or isinstance(
+                    proposal_analysis_id, str
+                ):
+                    proposals[hypothesis_id] = (proposal_analysis_id, proposal)
 
         def text(value: object, limit: int = 500) -> str | None:
             return str(value)[:limit] if isinstance(value, str) and value else None
 
         enriched: list[HypothesisProgressView] = []
         for hypothesis in hypotheses:
-            proposal = proposals.get(hypothesis.hypothesis_id, {})
+            proposal_entry = proposals.get(hypothesis.hypothesis_id)
+            proposal = (
+                proposal_entry[1]
+                if proposal_entry is not None
+                and proposal_entry[0] in {None, hypothesis.analysis_id}
+                else {}
+            )
             raw_locations = proposal.get("code_locations", [])
             locations = (
                 tuple(str(item)[:300] for item in raw_locations[:12])

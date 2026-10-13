@@ -243,8 +243,8 @@ def test_dashboard_has_agreed_tabs_summary_and_llm_detail_views() -> None:
         "응답 결과",
         "시스템 프롬프트",
         "사용자 프롬프트",
-        "저장 원문 요청 JSON",
-        "저장 원문 응답 JSON",
+        "마스킹된 요청 JSON",
+        "마스킹된 응답 JSON",
     ):
         assert label in html
     assert "Raw JSON" not in html
@@ -264,6 +264,16 @@ def test_dashboard_fetches_tabs_and_long_llm_content_on_demand() -> None:
     assert "requestController" in source
     assert "state.tabCache" in source
     assert "version !== state.requestVersion" in source
+
+
+def test_dashboard_labels_proposal_flow_and_unavailable_prompt_reasons() -> None:
+    source = (_STATIC / "app.js").read_text(encoding="utf-8")
+    assert "가설상 Source → Sink" in source
+    assert '"가설상 SOURCE"' in source
+    assert '"가설상 SINK"' in source
+    assert "가설상 Source ${item.source" in source
+    assert "별도의 시스템 프롬프트는 없습니다" in source
+    assert "보고서 초안과 해당 LLM 내용은 안전상 표시하지 않습니다" in source
     assert "const MAX_LOG_EVENTS = 500" in source
     assert "const seen = new Set()" in source
     assert "요청 시간이 초과되었습니다." in source
