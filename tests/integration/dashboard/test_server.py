@@ -20,6 +20,7 @@ from sastsimi.dashboard.projection import (
     project_after_source_write,
     rebuild_analysis,
 )
+from sastsimi.dashboard.query import DashboardQuery
 from sastsimi.dashboard.read_model import DashboardReadModel
 from sastsimi.dashboard.server import create_server
 from sastsimi.observability.agent_activity import ActivityKind, AgentActivityEvent
@@ -40,6 +41,8 @@ from sastsimi.storage.agent_activity import AgentActivityStore
 from tests.simple_runtime.test_group_report_projection import _reported_case
 from tests.support.current_bundle import attach_current_bundle
 
+PRIMARY_INVOCATION_ID = "11111111111111111111111111111111"
+
 
 def seed(data_dir) -> None:
     database = data_dir / "db" / "sastsimi.sqlite3"
@@ -54,7 +57,7 @@ def seed(data_dir) -> None:
     llm_request = artifacts.put_json(
         {
             "kind": "simple_llm_request",
-            "invocation_id": "simple-1",
+            "invocation_id": PRIMARY_INVOCATION_ID,
             "provider": "codex-cli",
             "model": "gpt-test",
             "prompt": "api_key=do-not-show",
@@ -64,7 +67,7 @@ def seed(data_dir) -> None:
     llm_response = artifacts.put_json(
         {
             "kind": "simple_llm_response",
-            "invocation_id": "simple-1",
+            "invocation_id": PRIMARY_INVOCATION_ID,
             "provider": "codex-cli",
             "model": "gpt-test",
             "response": {"verdict": "TRUE"},
@@ -380,7 +383,7 @@ def test_server_serves_redacted_artifacts_reports_logs_and_bundle(tmp_path) -> N
         invocation = next(
             item
             for item in detail["llm_invocations"]
-            if item["invocation_id"] == "simple-1"
+            if item["invocation_id"] == PRIMARY_INVOCATION_ID
         )
         hypothesis_invocation = next(
             item
@@ -582,6 +585,349 @@ def test_large_artifact_projection_blocks_incomplete_whole_zip(tmp_path) -> None
     assert response.status == 409
     assert json.loads(response.read())["error"] == "incomplete_export"
     assert selected.status == 200
+
+
+def _seed_large_artifact_projection(data_dir) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(data_dir, identity)
+    store = SimpleCheckpointStore(data_dir / "db" / "sastsimi.sqlite3")
+    original = store.require(identity, SimpleStage.POC_CANDIDATE_DONE)
+    extras = tuple(
+        artifacts.put_json({"kind": "overflow", "index": index}) for index in range(513)
+    )
+    store.save_checkpoint(
+        original.model_copy(update={"output_refs": original.output_refs + extras})
+    )
+
+
+def test_large_artifact_projection_keeps_registered_hypothesis_source_sink(
+    tmp_path,
+) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    proposal = SimpleArtifactRepository(tmp_path, identity).put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "hypothesis_id": "hypothesis-1",
+            "proposal": {
+                "title": "Request reaches evaluation",
+                "source": "HTTP request parameter value",
+                "sink": "eval(value)",
+            },
+        }
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").upsert_hypothesis(
+        identity.model_copy(update={"hypothesis_id": None}),
+        "hypothesis-1",
+        proposal,
+    )
+    _seed_large_artifact_projection(tmp_path)
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+    DashboardQuery(tmp_path).get_analysis_tab("A-001", "findings")
+
+    with running_server(tmp_path) as base:
+        page = json.loads(
+            request(
+                f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=10"
+            ).read()
+        )
+
+    assert "items" in page, page
+    assert page["items"][0]["source"] == "HTTP request parameter value"
+    assert page["items"][0]["sink"] == "eval(value)"
+
+
+def test_large_artifact_projection_keeps_redacted_llm_request_detail(
+    tmp_path,
+) -> None:
+    seed(tmp_path)
+    _seed_large_artifact_projection(tmp_path)
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+
+    with running_server(tmp_path) as base:
+        page = json.loads(
+            request(f"{base}/api/analyses/A-001/tabs/llm?page=1&page_size=10").read()
+        )
+        invocation_id = next(
+            item["invocation_id"]
+            for item in page["items"]
+            if item["agent_role"] == "PoC Agent"
+        )
+        detail = json.loads(
+            request(f"{base}/api/analyses/A-001/llm/{invocation_id}").read()
+        )
+
+    assert detail["user_prompt"]
+    assert "do-not-show" not in json.dumps(detail)
+    assert "REDACTED" in detail["user_prompt"]
+
+
+@pytest.mark.parametrize(
+    "foreign_analysis_id", ["analysis-2", ["analysis-2"], {"value": "analysis-2"}]
+)
+def test_registered_hypothesis_rejects_other_analysis_payload(
+    tmp_path, foreign_analysis_id: object
+) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    foreign = SimpleArtifactRepository(tmp_path, identity).put_json(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": foreign_analysis_id,
+            "hypothesis_id": "hypothesis-1",
+            "proposal": {
+                "source": "other analysis source",
+                "sink": "other analysis sink",
+            },
+        }
+    )
+    SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3").upsert_hypothesis(
+        identity.model_copy(update={"hypothesis_id": None}),
+        "hypothesis-1",
+        foreign,
+    )
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+
+    with running_server(tmp_path) as base:
+        page = json.loads(
+            request(
+                f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=10"
+            ).read()
+        )
+
+    assert page["items"][0]["source"] is None
+    assert page["items"][0]["sink"] is None
+
+    stale_page = DashboardQuery(tmp_path)._enrich_registered_hypotheses(
+        "analysis-1",
+        {
+            "items": [
+                {
+                    "hypothesis_id": "hypothesis-1",
+                    "title": "other analysis title",
+                    "vulnerability_type": "other analysis type",
+                    "source": "other analysis source",
+                    "sink": "other analysis sink",
+                }
+            ],
+            "finding_traces": [
+                {
+                    "hypothesis_id": "hypothesis-1",
+                    "title": "other analysis title",
+                    "vulnerability_type": "other analysis type",
+                    "source": "other analysis source",
+                    "sink": "other analysis sink",
+                }
+            ],
+        },
+    )
+    stale_traces = stale_page["finding_traces"]
+    assert isinstance(stale_traces, list)
+    stale_trace = stale_traces[0]
+    assert isinstance(stale_trace, dict)
+    assert stale_trace["title"] is None
+    assert stale_trace["vulnerability_type"] is None
+
+
+def test_missing_registered_hypothesis_ref_clears_stale_metadata(tmp_path) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    assert (
+        SimpleCheckpointStore(
+            tmp_path / "db" / "sastsimi.sqlite3"
+        ).registered_hypothesis_ref(identity, "hypothesis-1")
+        is None
+    )
+    page = query._enrich_registered_hypotheses(
+        "analysis-1",
+        {
+            "items": [
+                {
+                    "hypothesis_id": "hypothesis-1",
+                    "title": "stale title",
+                    "vulnerability_type": "stale type",
+                    "source": "stale source",
+                    "sink": "stale sink",
+                }
+            ],
+            "finding_traces": [
+                {
+                    "hypothesis_id": "hypothesis-1",
+                    "title": "stale title",
+                    "vulnerability_type": "stale type",
+                    "source": "stale source",
+                    "sink": "stale sink",
+                }
+            ],
+        },
+    )
+    items = page["items"]
+    traces = page["finding_traces"]
+    assert isinstance(items, list) and isinstance(traces, list)
+    for item in (items[0], traces[0]):
+        assert isinstance(item, dict)
+        assert item["title"] is None
+        assert item["vulnerability_type"] is None
+        assert item["source"] is None
+        assert item["sink"] is None
+
+
+def test_llm_detail_preserves_artifact_invocation_id_after_overflow(tmp_path) -> None:
+    seed(tmp_path)
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+    with running_server(tmp_path) as base:
+        before = json.loads(
+            request(f"{base}/api/analyses/A-001/tabs/llm?page=1&page_size=10").read()
+        )
+    assert any(
+        item["invocation_id"] == PRIMARY_INVOCATION_ID for item in before["items"]
+    )
+
+    _seed_large_artifact_projection(tmp_path)
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+    with running_server(tmp_path) as base:
+        response = request(f"{base}/api/analyses/A-001/llm/{PRIMARY_INVOCATION_ID}")
+        detail = json.loads(response.read())
+
+    assert response.status == 200
+    assert detail["user_prompt"]
+    assert detail["response_result"] == {"verdict": "TRUE"}
+    assert "do-not-show" not in json.dumps(detail)
+
+
+def test_llm_detail_recovers_response_when_only_request_is_previewed(
+    tmp_path,
+) -> None:
+    seed(tmp_path)
+    request_ref = (
+        DashboardQuery(tmp_path)._event_models("analysis-1")[0].tool_result_refs[0]
+    )
+    store = SimpleCheckpointStore(tmp_path / "db" / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    checkpoint = store.require(identity, SimpleStage.HYPOTHESIS_DONE)
+    store.save_checkpoint(
+        checkpoint.model_copy(
+            update={
+                "input_refs": (request_ref,),
+                "input_hash": input_reference_hash((request_ref,)),
+            }
+        )
+    )
+    _seed_large_artifact_projection(tmp_path)
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+
+    with running_server(tmp_path) as base:
+        page = json.loads(
+            request(f"{base}/api/analyses/A-001/tabs/llm?page=1&page_size=10").read()
+        )
+        assert any(
+            item["invocation_id"] == PRIMARY_INVOCATION_ID for item in page["items"]
+        )
+        detail = json.loads(
+            request(f"{base}/api/analyses/A-001/llm/{PRIMARY_INVOCATION_ID}").read()
+        )
+
+    assert detail["user_prompt"]
+    assert detail["response_result"] == {"verdict": "TRUE"}
+
+
+def test_direct_llm_invocation_does_not_scan_old_aliases(tmp_path, monkeypatch) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+
+    def unexpected_alias_scan(*_args, **_kwargs):
+        raise AssertionError("directly projected invocation must not scan aliases")
+
+    monkeypatch.setattr(query, "_event_for_invocation_alias", unexpected_alias_scan)
+    detail = query.get_llm_invocation("A-001", PRIMARY_INVOCATION_ID)
+    assert detail.user_prompt
+
+
+def test_missing_llm_alias_scan_has_strict_id_and_read_bound(
+    tmp_path, monkeypatch
+) -> None:
+    seed(tmp_path)
+    query = DashboardQuery(tmp_path)
+    run = query._simple_run("analysis-1")
+    assert run is not None
+    original = query._event_models("analysis-1")[0]
+    events = tuple(
+        original.model_copy(
+            update={
+                "event_id": f"event-{index}",
+                "tool_result_refs": tuple(
+                    ref.model_copy(
+                        update={
+                            "content_hash": hashlib.sha256(
+                                f"{index}-{offset}".encode()
+                            ).hexdigest()
+                        }
+                    )
+                    for offset, ref in enumerate(original.tool_result_refs)
+                ),
+            }
+        )
+        for index in range(100)
+    )
+    reads = 0
+
+    def fake_read(_repository, _ref):
+        nonlocal reads
+        reads += 1
+        return "application/json", b"{}", {"kind": "unrelated"}
+
+    monkeypatch.setattr(query, "_safe_ref_bytes", fake_read)
+    assert (
+        query._event_for_invocation_alias("analysis-1", run, events, "simple-invalid")
+        is None
+    )
+    assert reads == 0
+    assert (
+        query._event_for_invocation_alias(
+            "analysis-1", run, events, "simple-" + "f" * 32
+        )
+        is None
+    )
+    assert reads <= 64
+
+    reads = 0
+
+    def fake_large_read(_repository, _ref):
+        nonlocal reads
+        reads += 1
+        return "application/json", b"x" * (1024 * 1024), {"kind": "unrelated"}
+
+    monkeypatch.setattr(query, "_safe_ref_bytes", fake_large_read)
+    assert (
+        query._event_for_invocation_alias("analysis-1", run, events, "f" * 32) is None
+    )
+    assert reads <= 16
 
 
 def test_server_restricts_persisted_legacy_allow_markdown(tmp_path) -> None:
@@ -1110,3 +1456,175 @@ def test_existing_data_dir_is_not_implicitly_migrated_by_writer(tmp_path) -> Non
             ).fetchone()
             is None
         )
+
+
+def _assert_llm_request_hidden(base: str, invocation_id: str, marker: str) -> None:
+    response = request(f"{base}/api/analyses/A-001/llm/{invocation_id}")
+    body = response.read().decode("utf-8")
+    assert marker not in body
+    if response.status == 200:
+        detail = json.loads(body)
+        assert detail["user_prompt"] is None
+        assert detail["stored_request_json"] is None
+    else:
+        assert response.status >= 400
+
+
+def test_report_llm_prompt_and_request_artifact_stay_private(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    marker = "unpublished report draft marker alpha"
+    request_ref = artifacts.put_json(
+        {
+            "kind": "simple_llm_request",
+            "invocation_id": "private-report-call",
+            "prompt": marker,
+        }
+    )
+    response_ref = artifacts.put_json(
+        {
+            "kind": "simple_llm_response",
+            "invocation_id": "private-report-call",
+            "response": {"draft": marker},
+        }
+    )
+    AgentActivityStore(tmp_path / "db" / "sastsimi.sqlite3").append(
+        AgentActivityEvent(
+            event_id="private-report-event",
+            analysis_id="analysis-1",
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            hypothesis_id="hypothesis-1",
+            stage=SimpleStage.REPORT_DONE.value,
+            agent_role="Reporter Agent",
+            attempt_id="private-report-attempt",
+            sequence=1,
+            kind=ActivityKind.DECISION_RECORDED,
+            status="SUCCEEDED",
+            summary_ko="보고서 초안 생성",
+            tool_result_refs=(request_ref, response_ref),
+            provider="codex-cli",
+            model="gpt-test",
+            started_at=datetime.now(UTC),
+        )
+    )
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+
+    with running_server(tmp_path) as base:
+        _assert_llm_request_hidden(base, "private-report-event", marker)
+        _assert_llm_request_hidden(base, "private-report-call", marker)
+        assert (
+            request(
+                f"{base}/api/analyses/A-001/artifacts/{request_ref.content_hash}"
+            ).status
+            == 404
+        )
+
+
+@pytest.mark.parametrize(
+    ("workspace_id", "commit_id"),
+    [("other-workspace", "commit-1"), ("workspace-1", "other-commit")],
+)
+def test_llm_detail_does_not_follow_foreign_scope_event_refs(
+    tmp_path, workspace_id: str, commit_id: str
+) -> None:
+    seed(tmp_path)
+    foreign_identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id=workspace_id,
+        commit_id=commit_id,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, foreign_identity)
+    marker = "foreign scope prompt marker beta"
+    request_ref = artifacts.put_json(
+        {
+            "kind": "simple_llm_request",
+            "invocation_id": "foreign-call",
+            "prompt": marker,
+        }
+    )
+    AgentActivityStore(tmp_path / "db" / "sastsimi.sqlite3").append(
+        AgentActivityEvent(
+            event_id="foreign-event",
+            analysis_id="analysis-1",
+            workspace_id=workspace_id,
+            commit_id=commit_id,
+            hypothesis_id="hypothesis-1",
+            stage=SimpleStage.POC_CANDIDATE_DONE.value,
+            agent_role="PoC Agent",
+            attempt_id="foreign-attempt",
+            sequence=1,
+            kind=ActivityKind.DECISION_RECORDED,
+            status="SUCCEEDED",
+            summary_ko="다른 분석 범위의 호출",
+            tool_result_refs=(request_ref,),
+            provider="codex-cli",
+            model="gpt-test",
+            started_at=datetime.now(UTC),
+        )
+    )
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+
+    with running_server(tmp_path) as base:
+        _assert_llm_request_hidden(base, "foreign-event", marker)
+        _assert_llm_request_hidden(base, "foreign-call", marker)
+
+
+def test_llm_detail_does_not_read_corrupted_event_artifact(tmp_path) -> None:
+    seed(tmp_path)
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    request_ref = artifacts.put_json(
+        {
+            "kind": "simple_llm_request",
+            "invocation_id": "corrupt-call",
+            "prompt": "original harmless prompt",
+        }
+    )
+    marker = "altered prompt content marker gamma"
+    artifacts.artifacts.path_for(request_ref.content_hash).write_bytes(
+        json.dumps(
+            {
+                "kind": "simple_llm_request",
+                "invocation_id": "corrupt-call",
+                "prompt": marker,
+            }
+        ).encode()
+    )
+    AgentActivityStore(tmp_path / "db" / "sastsimi.sqlite3").append(
+        AgentActivityEvent(
+            event_id="corrupt-event",
+            analysis_id="analysis-1",
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            hypothesis_id="hypothesis-1",
+            stage=SimpleStage.POC_CANDIDATE_DONE.value,
+            agent_role="PoC Agent",
+            attempt_id="corrupt-attempt",
+            sequence=1,
+            kind=ActivityKind.DECISION_RECORDED,
+            status="SUCCEEDED",
+            summary_ko="손상된 호출 참조",
+            tool_result_refs=(request_ref,),
+            provider="codex-cli",
+            model="gpt-test",
+            started_at=datetime.now(UTC),
+        )
+    )
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+
+    with running_server(tmp_path) as base:
+        _assert_llm_request_hidden(base, "corrupt-event", marker)
+        _assert_llm_request_hidden(base, "corrupt-call", marker)
