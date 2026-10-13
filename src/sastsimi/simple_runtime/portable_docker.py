@@ -907,13 +907,25 @@ class DirectEnvironmentPreparer:
         discovered in a flat-layout" before any dependency is ever
         installed. Installing the declared dependency specifiers directly
         is what ``uv sync`` would do here instead.
+
+        Not every project in this shape sets the uv marker explicitly -
+        linkding's root ``pyproject.toml`` has the same ``[project]``
+        table/no-``[build-system]``/flat-layout (``docker``, ``assets``,
+        ``bookmarks``) shape and hits the identical "Multiple top-level
+        packages" failure, with no ``[tool.uv]`` table at all. The absence
+        of a ``[build-system]`` table is itself setuptools' own signal that
+        there is no declared build backend to build a wheel with, which is
+        true of every such project regardless of which tool authored the
+        file, so that absence is treated the same as the explicit marker.
         """
 
         try:
             document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
             return None
-        if document.get("tool", {}).get("uv", {}).get("package") is not False:
+        marked_virtual = document.get("tool", {}).get("uv", {}).get("package") is False
+        no_build_backend = "build-system" not in document
+        if not (marked_virtual or no_build_backend):
             return None
         dependencies = document.get("project", {}).get("dependencies")
         if not isinstance(dependencies, list):
