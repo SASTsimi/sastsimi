@@ -302,8 +302,9 @@ class RunLimitedClient:
                     *,
                     codex_call_id: str | None = call_id,
                 ) -> None:
-                    nonlocal previous_attempt_id
+                    nonlocal deadline, previous_attempt_id
                     recorded_id = codex_call_id or uuid4().hex
+                    recording_started = loop.time()
                     self._record_attempt(
                         agent,
                         attempt_number,
@@ -316,6 +317,11 @@ class RunLimitedClient:
                         retry_of=previous_attempt_id,
                         prompt_bytes=prompt_bytes,
                     )
+                    # Recording is synchronous and may rebuild the dashboard
+                    # after the attempt is durably committed. It is not model
+                    # or retry backoff time, so it must not exhaust the next
+                    # request's bounded LLM deadline.
+                    deadline += loop.time() - recording_started
                     previous_attempt_id = recorded_id
 
                 started = monotonic()

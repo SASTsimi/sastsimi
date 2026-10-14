@@ -176,6 +176,17 @@ shown = text(nodes.get("overview"));
 for (const expected of [
   "v5 검토 완료 36/56", "증명된 경로 20/56", "근거 부족 36", "전체 분석은 PARTIAL",
 ]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+detail.phase_counts.surface = {
+  recorded_contexts: 127, recorded_surfaces: 56,
+  proof_version: 8, template_content_not_analyzed_count: 1,
+  completed: 20, total: 56, reviewed: 36,
+  covered: 20, uncovered: 0, insufficient: 36,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "v8 검토 완료 36/56", "Python 범위 밖 템플릿 HTML/Jinja 내용 1건",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
 detail.status = "RUNNING";
 vm.runInContext("renderOverview(state.detail)", context);
 shown = text(nodes.get("overview"));

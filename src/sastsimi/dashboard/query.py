@@ -4305,7 +4305,7 @@ class DashboardQuery:
                                 run.static_coverage_ref,
                                 terminal,
                             )
-                            if terminal.surface_proof_version in (2, 3, 4, 5, 6)
+                            if terminal.surface_proof_version in (2, 3, 4, 5, 6, 7, 8)
                             else None
                         ),
                         artifacts=repository,
@@ -4316,7 +4316,7 @@ class DashboardQuery:
                                 artifact_data_dir=self._data_dir,
                                 read_only=True,
                             )
-                            if terminal.surface_proof_version in (3, 4, 5, 6)
+                            if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
                             else None
                         ),
                     )
@@ -4337,7 +4337,7 @@ class DashboardQuery:
         if (
             run is None
             or run.candidate_terminal is None
-            or run.candidate_terminal.surface_proof_version not in (2, 3, 4, 5, 6)
+            or run.candidate_terminal.surface_proof_version not in (2, 3, 4, 5, 6, 7, 8)
             or verified_counts is None
             or "UNRESOLVED_REASON_COUNT" not in verified_counts
         ):

@@ -48,6 +48,7 @@ class CoverageDisclosure:
     surface_uncovered_count: int | None = None
     surface_insufficient_count: int | None = None
     surface_completed_inconclusive_child_count: int | None = None
+    surface_template_scope_limit_count: int | None = None
 
     @property
     def partial(self) -> bool:
@@ -73,7 +74,7 @@ def visible_surface_reason_distribution(
 ) -> tuple[tuple[str, int], ...]:
     """Expose only bounded verified v3 reason codes, never arbitrary source text."""
 
-    if coverage.surface_proof_version not in (3, 4, 5, 6):
+    if coverage.surface_proof_version not in (3, 4, 5, 6, 7, 8):
         return ()
     reasons = coverage.surface_unresolved_reasons
     if (

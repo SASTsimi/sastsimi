@@ -39,6 +39,7 @@ from sastsimi.observability.agent_activity import (
 from sastsimi.storage.agent_activity import AgentActivityStore
 
 from .artifacts import LEGACY_RECOVERY_FALLBACK_STOPS, SimpleArtifactRepository
+from .attack_surfaces import SurfaceIndex
 from .attempt_owner import AttemptOwner, PromptByteCounts
 from .candidates import StaticCandidate
 from .django_migration_graph_omission import (
@@ -57,6 +58,7 @@ from .models import (
     HYPOTHESIS_STAGES,
     STAGE_ORDER,
     STAGE_VERSION,
+    CandidateTerminal,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
@@ -179,9 +181,25 @@ _NO_MODEL_RESPONSE_STATUSES = (
 
 _SAFE_LOCAL_MODULE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 _SECRET_SHAPED_MODULE = re.compile(rb"secret|token|password|credential|cookie", re.I)
+_WINDOWS_START_IDENTITY = re.compile(r"windows:([0-9a-f]{16})")
+_WINDOWS_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=UTC)
 _POC_SUCCESS_CLAIM_LINE = re.compile(
     rb"(?:REPRODUCED|SUPPORTED|SUCCESS)(?:[ \t]+.*|[:=].*)?", re.I
 )
+
+
+def _windows_child_started_at(start_identity: str) -> datetime | None:
+    """Decode the exact process-creation token captured with a Codex child."""
+
+    match = _WINDOWS_START_IDENTITY.fullmatch(start_identity)
+    if match is None:
+        return None
+    try:
+        return _WINDOWS_FILETIME_EPOCH + timedelta(
+            microseconds=int(match.group(1), 16) // 10
+        )
+    except OverflowError:
+        return None
 
 
 def _pinned_local_import_diagnostic(
@@ -1972,7 +1990,7 @@ class SimpleCheckpointStore:
                 "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
             }
             or (status == "HYPOTHESES") != bool(registrations)
-            or proposal_version not in {1, 2, 3, 4, 5, 6, 7, 8}
+            or proposal_version not in {1, 2, 3, 4, 5, 6, 7, 8, 9}
         ):
             raise ValueError("SURFACE_EXPLORATION_INVALID")
         if len({item[0] for item in registrations}) != len(registrations):
@@ -2002,7 +2020,7 @@ class SimpleCheckpointStore:
         )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            if proposal_version == 8:
+            if proposal_version in {8, 9}:
                 run_row = connection.execute(
                     "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
                     (identity.analysis_id,),
@@ -2017,9 +2035,69 @@ class SimpleCheckpointStore:
                     or run.workspace_id != identity.workspace_id
                     or run.commit_id != identity.commit_id
                     or run.candidate_scope_fingerprint != scope_fingerprint
-                    or run.surface_enrichment_v8_plan_ref is None
+                    or (
+                        proposal_version == 8
+                        and run.surface_enrichment_v8_plan_ref is None
+                    )
+                    or (
+                        proposal_version == 9
+                        and run.surface_enrichment_v9_plan_ref is None
+                    )
                 ):
-                    raise ValueError("SURFACE_EXPLORATION_V8_UNPINNED")
+                    raise ValueError(
+                        "SURFACE_EXPLORATION_V8_UNPINNED"
+                        if proposal_version == 8
+                        else "SURFACE_EXPLORATION_V9_UNPINNED"
+                    )
+                if proposal_version == 9:
+                    assert run is not None
+                    plan_ref = run.surface_enrichment_v9_plan_ref
+                    assert plan_ref is not None
+                    data_dir = self._artifact_data_dir
+                    if data_dir is None:
+                        parent = self._database_path.parent
+                        if parent.name == "db":
+                            data_dir = parent.parent
+                        elif (parent / "artifacts" / "artifacts").is_dir():
+                            data_dir = parent / "artifacts"
+                        else:
+                            data_dir = parent
+                    artifacts = SimpleArtifactRepository(
+                        data_dir, identity, create_dirs=False
+                    )
+                    try:
+                        plan = json.loads(
+                            artifacts.read_bounded(plan_ref, 16 * 1024 * 1024)
+                        )
+                        expected_parts = plan["expected_parts"]
+                        if (
+                            plan.get("kind") != "simple_surface_enrichment_plan_v9"
+                            or not isinstance(expected_parts, list)
+                            or sum(
+                                isinstance(part, dict)
+                                and part.get("surface_id") == surface_id
+                                and part.get("context_id") == context_id
+                                and part.get("context_hash") == context_hash
+                                and isinstance(part.get("context_part"), dict)
+                                and part["context_part"].get("source_sha256")
+                                == source_sha256
+                                for part in expected_parts
+                            )
+                            != 1
+                            or plan.get("static_bundle_hash") != static_bundle_hash
+                            or plan.get("index_hash") != index_hash
+                        ):
+                            raise ValueError("SURFACE_EXPLORATION_V9_PLAN_MISMATCH")
+                    except (
+                        OSError,
+                        TypeError,
+                        KeyError,
+                        ValueError,
+                        UnicodeError,
+                    ) as error:
+                        raise ValueError(
+                            "SURFACE_EXPLORATION_V9_PLAN_MISMATCH"
+                        ) from error
             prior = connection.execute(
                 "SELECT static_bundle_hash, index_hash, context_hash, "
                 "source_sha256, status, proposal_version, result_ref_json, "
@@ -2030,7 +2108,7 @@ class SimpleCheckpointStore:
                 (*key, surface_id, context_id),
             ).fetchone()
             if prior is not None:
-                if int(prior["proposal_version"]) in {4, 5, 6, 7, 8}:
+                if int(prior["proposal_version"]) in {4, 5, 6, 7, 8, 9}:
                     self._assert_surface_v4_registration_connection(
                         connection, identity, prior
                     )
@@ -2072,7 +2150,7 @@ class SimpleCheckpointStore:
 
         version = row["proposal_version"]
         code = f"SURFACE_EXPLORATION_V{version}_CORRUPT"
-        if version not in {4, 5, 6, 7, 8}:
+        if version not in {4, 5, 6, 7, 8, 9}:
             raise ValueError(code)
         try:
             result_ref = StoredDataRef.model_validate_json(row["result_ref_json"])
@@ -2347,9 +2425,9 @@ class SimpleCheckpointStore:
             ).fetchall()
             records: dict[tuple[str, str], SurfaceExplorationProgressRecord] = {}
             for row in rows:
-                if row["proposal_version"] not in {1, 2, 3, 4, 5, 6, 7, 8}:
+                if row["proposal_version"] not in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
                     raise ValueError("SURFACE_EXPLORATION_VERSION_CORRUPT")
-                if row["proposal_version"] in {4, 5, 6, 7, 8}:
+                if row["proposal_version"] in {4, 5, 6, 7, 8, 9}:
                     self._assert_surface_v4_registration_connection(
                         connection, identity, row
                     )
@@ -4627,6 +4705,268 @@ class SimpleCheckpointStore:
         self._project_after_direct_commit(identity.analysis_id)
         return pending
 
+    def prepare_report_surface_proof_replay(
+        self,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+        *,
+        verify_saved_coverage: Callable[
+            [
+                CheckpointIdentity,
+                SurfaceIndex,
+                StoredDataRef,
+                SimpleCheckpointStore,
+                SimpleArtifactRepository,
+            ],
+            object,
+        ],
+        verify_pending_v9_predecessor: Callable[
+            [SimpleAnalysisRun, SimpleArtifactRepository, SimpleCheckpointStore], bool
+        ]
+        | None = None,
+        fail_before_commit: bool = False,
+    ) -> StageCheckpoint:
+        """Reopen one failed report only after its bound proof state verifies.
+
+        The caller holds the analysis lease. A validated draft is reused, so a
+        corrected proof reader cannot silently generate a different report.
+        A running v9 successor may use its frozen v6 predecessor only for a
+        static-only PARTIAL disclosure, never as current surface coverage.
+        """
+
+        from .attack_surfaces import surface_index_from_json
+
+        identity = stopped.identity
+        if (
+            identity.hypothesis_id is None
+            or stopped.stage is not SimpleStage.REPORT_DONE
+            or stopped.stage_version != STAGE_VERSION[SimpleStage.REPORT_DONE]
+            or stopped.status is not StageStatus.FAILED
+            or stopped.error_code != "REPORT_SURFACE_PROOF_UNVERIFIED"
+            or stopped.retryable
+            or stopped.attempt_id is None
+            or stopped.attempt_number != 1
+            or stopped.output_refs
+            or stopped.report_ref is not None
+            or stopped.bundle_manifest_ref is not None
+            or stopped.bundle_archive_ref is not None
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError("REPORT_SURFACE_PROOF_REPLAY_INVALID")
+        run = self.require_analysis_run(identity.analysis_id)
+        root_identity = identity.model_copy(update={"hypothesis_id": None})
+        root = self.get(root_identity, SimpleStage.HYPOTHESIS_DONE)
+        terminal = run.candidate_terminal
+        if (
+            run.workspace_id != identity.workspace_id
+            or run.commit_id != identity.commit_id
+            or run.candidate_pipeline_version != 2
+            or terminal is None
+            or terminal.surface_proof_version not in (5, 6)
+            or terminal.status not in {"COMPLETE", "PARTIAL"}
+            or run.candidate_scope_fingerprint != terminal.scope_fingerprint
+            or root is None
+            or root.status is not StageStatus.SUCCEEDED
+            or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
+            or len(root.output_refs) != 2
+            or root.output_refs[0].content_hash != terminal.surface_index_hash
+            or root.output_refs[1].content_hash != terminal.surface_coverage_hash
+            or not (
+                identity.hypothesis_id in run.hypothesis_ids
+                or self.has_hypothesis(root_identity, identity.hypothesis_id)
+            )
+        ):
+            raise ValueError("REPORT_SURFACE_PROOF_REPLAY_SCOPE_INVALID")
+        prior = self.prior(identity, SimpleStage.REPORT_DONE)
+        if any(
+            stage not in prior
+            or prior[stage].status is not StageStatus.SUCCEEDED
+            or prior[stage].stage_version != STAGE_VERSION[stage]
+            for stage in HYPOTHESIS_STAGES[:-1]
+        ):
+            raise ValueError("REPORT_SURFACE_PROOF_REPLAY_PRIOR_INVALID")
+        finding = prior[SimpleStage.FINDING_DONE]
+        execution = prior[SimpleStage.POC_EXECUTION_DONE]
+        if (
+            finding.verdict != "TRUE"
+            or len(finding.output_refs) != 1
+            or execution.validated_poc_ref is None
+            or stopped.input_refs != finding.output_refs
+        ):
+            raise ValueError("REPORT_SURFACE_PROOF_REPLAY_PRIOR_INVALID")
+        refs = tuple(
+            dict.fromkeys(
+                ref for checkpoint in prior.values() for ref in checkpoint.output_refs
+            )
+        )
+        source_hash = hashlib.sha256(
+            canonical_bytes(
+                {
+                    "refs": refs,
+                    "finding_attempt_id": finding.attempt_id,
+                    "poc_attempt_id": execution.attempt_id,
+                }
+            )
+        ).hexdigest()
+        try:
+            draft_ref = self.report_draft(identity, source_hash, finding.output_refs[0])
+            if draft_ref is None:
+                raise ValueError("saved draft missing")
+            envelope = json.loads(artifacts.read_bounded(draft_ref, 4 * 1024 * 1024))
+            if (
+                not isinstance(envelope, dict)
+                or envelope.get("kind") != "simple_report_draft"
+                or envelope.get("attempt_id") != stopped.attempt_id
+                or envelope.get("source_refs")
+                != [ref.model_dump(mode="json") for ref in refs]
+                or not isinstance(envelope.get("result"), dict)
+                or not isinstance(envelope.get("prompt_digest"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", envelope["prompt_digest"]) is None
+                or envelope.get("output_digest")
+                != hashlib.sha256(canonical_bytes(envelope["result"])).hexdigest()
+            ):
+                raise ValueError("saved draft unbound")
+            content = BilingualReportContent.model_validate_json(
+                canonical_bytes(envelope["result"])
+            )
+            validate_report_content(
+                content.model_dump(mode="json"), allowed_locations=()
+            )
+        except (OSError, TypeError, ValueError) as error:
+            raise ValueError("REPORT_SURFACE_PROOF_REPLAY_DRAFT_INVALID") from error
+        if terminal.surface_proof_version == 6:
+            if verify_pending_v9_predecessor is None or not (
+                verify_pending_v9_predecessor(run, artifacts, self)
+            ):
+                raise ValueError("REPORT_SURFACE_PROOF_REPLAY_UNVERIFIED")
+        else:
+            proof_artifacts = SimpleArtifactRepository(
+                artifacts.data_dir, root_identity, create_dirs=False
+            )
+            try:
+                index = surface_index_from_json(
+                    json.loads(
+                        proof_artifacts.read_bounded(
+                            root.output_refs[0], 2 * 1024 * 1024
+                        )
+                    )
+                )
+                verify_saved_coverage(
+                    root_identity, index, root.output_refs[1], self, proof_artifacts
+                )
+            except (OSError, TypeError, ValueError) as error:
+                raise ValueError("REPORT_SURFACE_PROOF_REPLAY_UNVERIFIED") from error
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            def current(checkpoint: StageCheckpoint) -> bool:
+                row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (
+                        identity.analysis_id,
+                        self._hypothesis_key(checkpoint.identity),
+                        checkpoint.stage.value,
+                    ),
+                ).fetchone()
+                return row is not None and (
+                    StageCheckpoint.model_validate_json(row["checkpoint_json"])
+                    == checkpoint
+                )
+
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            cache_row = connection.execute(
+                "SELECT finding_ref_json, draft_ref_json FROM simple_report_drafts "
+                "WHERE identity_json = ? AND input_hash = ? AND stage_version = ?",
+                (identity.model_dump_json(), source_hash, stopped.stage_version),
+            ).fetchone()
+            event_rows = connection.execute(
+                "SELECT event_json FROM agent_activity_events "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND attempt_id = ?",
+                (identity.analysis_id, identity.hypothesis_id, stopped.attempt_id),
+            ).fetchall()
+            events = tuple(
+                AgentActivityEvent.model_validate_json(row["event_json"])
+                for row in event_rows
+            )
+            failures = tuple(
+                event
+                for event in events
+                if event.stage == SimpleStage.REPORT_DONE.value
+                and event.kind is ActivityKind.STAGE_FAILED
+                and event.error_code == stopped.error_code
+                and event.status == StageStatus.FAILED.value
+                and event.analysis_id == identity.analysis_id
+                and event.workspace_id == identity.workspace_id
+                and event.commit_id == identity.commit_id
+                and event.hypothesis_id == identity.hypothesis_id
+                and event.attempt_id == stopped.attempt_id
+                and event.input_refs == stopped.input_refs
+                and event.output_refs == stopped.output_refs
+            )
+            if (
+                not current(stopped)
+                or not current(root)
+                or any(not current(checkpoint) for checkpoint in prior.values())
+                or run_row is None
+                or SimpleAnalysisRun.model_validate_json(run_row["run_json"]) != run
+                or cache_row is None
+                or StoredDataRef.model_validate_json(cache_row["finding_ref_json"])
+                != finding.output_refs[0]
+                or StoredDataRef.model_validate_json(cache_row["draft_ref_json"])
+                != draft_ref
+                or len(failures) != 1
+                or any(
+                    event.stage == SimpleStage.REPORT_DONE.value
+                    and event.kind is ActivityKind.STAGE_COMPLETED
+                    for event in events
+                )
+                or connection.execute(
+                    "SELECT 1 FROM simple_codex_calls "
+                    "WHERE analysis_id = ? AND status = 'IN_FLIGHT' LIMIT 1",
+                    (identity.analysis_id,),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError("REPORT_SURFACE_PROOF_REPLAY_STALE")
+            pending = stopped.model_copy(
+                update={
+                    "status": StageStatus.PENDING,
+                    "attempt_id": None,
+                    "error_code": None,
+                    "retryable": False,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            self._upsert_checkpoint_connection(connection, pending)
+            AgentActivityStore.append_connection(
+                connection,
+                self._lifecycle_event(
+                    stopped,
+                    ActivityKind.DECISION_RECORDED,
+                    sequence=self._stage_sequence(stopped.stage, 70),
+                    status=StageStatus.FAILED,
+                    summary_ko="검증기 수정에 따라 저장된 보고서 초안을 재검증합니다.",
+                    error_code="REPORT_SURFACE_PROOF_REPLAYED",
+                ),
+            )
+            if fail_before_commit:
+                raise RuntimeError("simulated crash")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
+
     def prepare_report_validator_replay(
         self,
         stopped: StageCheckpoint,
@@ -5222,6 +5562,13 @@ class SimpleCheckpointStore:
                         raise ValueError("REPORT_VALIDATOR_REPLAY_CAUSE_UNPROVEN")
             root_identity = identity.model_copy(update={"hypothesis_id": None})
             root = checkpoint_at(root_identity, SimpleStage.HYPOTHESIS_DONE)
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("REPORT_VALIDATOR_REPLAY_RUN_INVALID")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
             expected_root_error = (
                 "CANDIDATE_CHILD_ERROR_BOUND:"
                 f"{stopped.error_code}:{identity.hypothesis_id}:{stopped.attempt_id}"
@@ -5232,17 +5579,15 @@ class SimpleCheckpointStore:
                 or root.stage is not SimpleStage.HYPOTHESIS_DONE
                 or root.stage_version != STAGE_VERSION[SimpleStage.HYPOTHESIS_DONE]
                 or root.input_hash != input_reference_hash(root.input_refs)
-                or root.status is not StageStatus.BLOCKED
-                or root.error_code != expected_root_error
+                or not (
+                    root.status is StageStatus.BLOCKED
+                    and root.error_code == expected_root_error
+                    or self._v4_report_replay_root_bound(
+                        connection, root, run, stopped, artifacts
+                    )
+                )
             ):
                 raise ValueError("REPORT_VALIDATOR_REPLAY_ROOT_UNBOUND")
-            run_row = connection.execute(
-                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
-                (identity.analysis_id,),
-            ).fetchone()
-            if run_row is None:
-                raise ValueError("REPORT_VALIDATOR_REPLAY_RUN_INVALID")
-            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
             registered = identity.hypothesis_id in run.hypothesis_ids or (
                 connection.execute(
                     "SELECT 1 FROM simple_candidate_hypotheses "
@@ -5378,6 +5723,153 @@ class SimpleCheckpointStore:
             connection.close()
         self._project_after_direct_commit(identity.analysis_id)
         return pending
+
+    def _v4_report_replay_root_bound(
+        self,
+        connection: sqlite3.Connection,
+        root: StageCheckpoint,
+        run: SimpleAnalysisRun,
+        stopped: StageCheckpoint,
+        artifacts: SimpleArtifactRepository,
+    ) -> bool:
+        """Prove a v4 child failure while preserving its successful v1 root."""
+
+        identity = stopped.identity
+        terminal = run.candidate_terminal
+        plan_ref = run.surface_enrichment_plan_ref
+        static_ref = run.static_bundle_ref
+        certificate_ref = run.python_scope_certificate_ref
+        scope = run.candidate_scope_fingerprint
+        if (
+            root.status is not StageStatus.SUCCEEDED
+            or root.error_code is not None
+            or len(root.output_refs) != 2
+            or terminal is None
+            or terminal.status != "PARTIAL"
+            or terminal.surface_proof_version != 1
+            or plan_ref is None
+            or static_ref is None
+            or certificate_ref is None
+            or scope is None
+            or run.surface_enrichment_status != "BLOCKED"
+            or run.surface_enrichment_error_code != stopped.error_code
+            or run.surface_enrichment_v5_plan_ref is not None
+            or run.surface_enrichment_v6_plan_ref is not None
+            or run.surface_enrichment_v7_plan_ref is not None
+            or run.surface_enrichment_v8_plan_ref is not None
+            or static_ref not in root.input_refs
+            or terminal.scope_fingerprint != scope
+            or terminal.bundle_hash != static_ref.content_hash
+            or terminal.surface_index_hash != root.output_refs[0].content_hash
+            or terminal.surface_coverage_hash != root.output_refs[1].content_hash
+        ):
+            return False
+        try:
+            plan = json.loads(artifacts.read(plan_ref))
+            if not isinstance(plan, dict):
+                return False
+            index_ref = StoredDataRef.model_validate(plan.get("index_ref"))
+            coverage_ref = StoredDataRef.model_validate(
+                plan.get("original_coverage_ref")
+            )
+            expected_parts = plan.get("expected_parts")
+            if (
+                plan.get("kind") != "simple_surface_enrichment_plan_v4"
+                or plan.get("analysis_id") != identity.analysis_id
+                or plan.get("workspace_id") != identity.workspace_id
+                or plan.get("commit_id") != identity.commit_id
+                or plan.get("scope_fingerprint") != scope
+                or plan.get("static_bundle_ref") != static_ref.model_dump(mode="json")
+                or plan.get("index_hash") != index_ref.content_hash
+                or plan.get("certificate_hash") != certificate_ref.content_hash
+                or root.output_refs != (index_ref, coverage_ref)
+                or not isinstance(plan.get("plan_binding_hash"), str)
+                or not isinstance(expected_parts, list)
+                or not expected_parts
+                or any(not isinstance(part, dict) for part in expected_parts)
+                or len(
+                    {
+                        (part.get("surface_id"), part.get("context_id"))
+                        for part in expected_parts
+                    }
+                )
+                != len(expected_parts)
+            ):
+                return False
+            artifacts.read(index_ref)
+            artifacts.read(coverage_ref)
+            artifacts.read(certificate_ref)
+            for part in expected_parts:
+                row = connection.execute(
+                    "SELECT static_bundle_hash, index_hash, context_hash, "
+                    "source_sha256, status, proposal_version, result_ref_json, "
+                    "registrations_json FROM simple_surface_exploration_progress "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? AND surface_id = ? AND context_id = ?",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        scope,
+                        part.get("surface_id"),
+                        part.get("context_id"),
+                    ),
+                ).fetchone()
+                if row is None or int(row["proposal_version"]) != 4:
+                    continue
+                if (
+                    row["static_bundle_hash"] != static_ref.content_hash
+                    or row["index_hash"] != index_ref.content_hash
+                    or row["context_hash"] != part.get("context_hash")
+                    or row["source_sha256"] != part.get("source_sha256")
+                ):
+                    return False
+                self._assert_surface_v4_registration_connection(
+                    connection,
+                    identity.model_copy(update={"hypothesis_id": None}),
+                    row,
+                )
+                ids = self._surface_registration_ids(
+                    identity,
+                    str(row["status"]),
+                    str(row["registrations_json"]),
+                )
+                if identity.hypothesis_id not in ids:
+                    continue
+                pro_con = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (
+                        identity.analysis_id,
+                        identity.hypothesis_id,
+                        SimpleStage.PRO_CON_DONE.value,
+                    ),
+                ).fetchone()
+                if pro_con is None:
+                    return False
+                child = StageCheckpoint.model_validate_json(pro_con["checkpoint_json"])
+                if len(child.input_refs) < 2:
+                    return False
+                context = json.loads(
+                    artifacts.read_bounded(child.input_refs[1], 64 * 1024)
+                )
+                return bool(
+                    isinstance(context, dict)
+                    and context.get("kind") == "simple_surface_context_v4"
+                    and context.get("analysis_id") == identity.analysis_id
+                    and context.get("workspace_id") == identity.workspace_id
+                    and context.get("commit_id") == identity.commit_id
+                    and context.get("scope_fingerprint") == scope
+                    and context.get("surface_id") == part.get("surface_id")
+                    and context.get("plan_binding_hash")
+                    == plan.get("plan_binding_hash")
+                    and context.get("source_sha256") == part.get("source_sha256")
+                    and context.get("part_index") == part.get("part_index")
+                    and context.get("part_count") == part.get("part_count")
+                )
+        except (OSError, TypeError, ValueError, sqlite3.Error):
+            return False
+        return False
 
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
@@ -5853,6 +6345,545 @@ class SimpleCheckpointStore:
             )
             if changed.rowcount != 1:
                 raise ValueError("SURFACE_ENRICHMENT_V8_PIN_STALE")
+        return True
+
+    def pin_surface_enrichment_v9_plan(
+        self,
+        expected_run: SimpleAnalysisRun,
+        plan_ref: StoredDataRef,
+        prior_progress_hash: str,
+    ) -> bool:
+        """CAS-pin a v9 successor over the exact completed v8 snapshot."""
+
+        from .surface_enrichment_v9_bindings import (
+            missing_v8_part_set,
+            prior_v8_progress_snapshot_hash,
+        )
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = expected.candidate_terminal
+        identity = CheckpointIdentity(
+            analysis_id=expected.analysis_id,
+            workspace_id=expected.workspace_id,
+            commit_id=expected.commit_id,
+            hypothesis_id=None,
+        )
+        if (
+            expected.surface_enrichment_v8_plan_ref is None
+            or expected.surface_enrichment_v9_plan_ref is not None
+            or expected.candidate_scope_fingerprint is None
+            or expected.python_scope_certificate_ref is None
+            or terminal is None
+            or terminal.status != "PARTIAL"
+            or terminal.surface_proof_version != 6
+            or terminal.scope_fingerprint != expected.candidate_scope_fingerprint
+            or terminal.scope_certificate_hash
+            != expected.python_scope_certificate_ref.content_hash
+            or terminal.surface_index_hash is None
+            or terminal.surface_coverage_hash is None
+            or re.fullmatch(r"[0-9a-f]{64}", prior_progress_hash) is None
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V9_PIN_INVALID")
+        try:
+            self._candidate_ref_json(identity, plan_ref)
+            self._candidate_ref_json(identity, expected.surface_enrichment_v8_plan_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent = self._database_path.parent
+                if parent.name == "db":
+                    data_dir = parent.parent
+                elif (parent / "artifacts" / "artifacts").is_dir():
+                    data_dir = parent / "artifacts"
+                else:
+                    data_dir = parent
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            raw_plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+            raw_v8 = json.loads(
+                artifacts.read_bounded(
+                    expected.surface_enrichment_v8_plan_ref, 16 * 1024 * 1024
+                )
+            )
+            if not isinstance(raw_plan, dict) or not isinstance(raw_v8, dict):
+                raise ValueError("SURFACE_ENRICHMENT_V9_PIN_INVALID")
+            binding = dict(raw_plan)
+            binding.pop("expected_parts", None)
+            binding_hash = binding.pop("plan_binding_hash", None)
+            binding["kind"] = "simple_surface_enrichment_binding_v9"
+            if (
+                raw_plan.get("kind") != "simple_surface_enrichment_plan_v9"
+                or binding_hash != hashlib.sha256(canonical_bytes(binding)).hexdigest()
+                or raw_plan.get("analysis_id") != expected.analysis_id
+                or raw_plan.get("workspace_id") != expected.workspace_id
+                or raw_plan.get("commit_id") != expected.commit_id
+                or raw_plan.get("scope") != raw_v8.get("scope")
+                or raw_plan.get("scope_fingerprint")
+                != expected.candidate_scope_fingerprint
+                or raw_plan.get("static_bundle_hash") != terminal.bundle_hash
+                or raw_plan.get("prior_v8_plan_ref")
+                != expected.surface_enrichment_v8_plan_ref.model_dump(mode="json")
+                or raw_plan.get("prior_v8_progress_hash") != prior_progress_hash
+                or not isinstance(raw_plan.get("targets"), list)
+                or not isinstance(raw_plan.get("expected_parts"), list)
+                or raw_v8.get("kind") != "simple_surface_enrichment_plan_v8"
+                or raw_v8.get("analysis_id") != expected.analysis_id
+                or raw_v8.get("workspace_id") != expected.workspace_id
+                or raw_v8.get("commit_id") != expected.commit_id
+                or raw_v8.get("scope_fingerprint")
+                != expected.candidate_scope_fingerprint
+                or raw_v8.get("static_bundle_hash") != terminal.bundle_hash
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V9_PIN_INVALID")
+        except (OSError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V9_PIN_INVALID") from error
+
+        revised = expected.model_copy(
+            update={"surface_enrichment_v9_plan_ref": plan_ref}
+        )
+        key = self._candidate_scope_key(identity, expected.candidate_scope_fingerprint)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (expected.analysis_id,),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    expected.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                ),
+            ).fetchone()
+            if run_row is None or root_row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V9_PIN_STALE")
+            current = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            root = StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+            if (
+                root.identity != identity
+                or root.status is not StageStatus.SUCCEEDED
+                or len(root.output_refs) != 2
+                or root.output_refs[0].content_hash != terminal.surface_index_hash
+                or root.output_refs[1].content_hash != terminal.surface_coverage_hash
+                or raw_plan.get("index_ref")
+                != root.output_refs[0].model_dump(mode="json")
+                or raw_plan.get("index_hash") != root.output_refs[0].content_hash
+                or raw_plan.get("prior_v8_coverage_ref")
+                != root.output_refs[1].model_dump(mode="json")
+                or raw_v8.get("index_ref")
+                != root.output_refs[0].model_dump(mode="json")
+                or current not in (expected, revised)
+                or (
+                    current.surface_enrichment_v9_plan_ref is not None
+                    and current.surface_enrichment_v9_plan_ref != plan_ref
+                )
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V9_PIN_STALE")
+            try:
+                artifacts.read_bounded(root.output_refs[0], 16 * 1024 * 1024)
+                artifacts.read_bounded(root.output_refs[1], 16 * 1024 * 1024)
+            except (OSError, ValueError) as error:
+                raise ValueError("SURFACE_ENRICHMENT_V9_PIN_INVALID") from error
+            rows = connection.execute(
+                "SELECT surface_id, context_id, static_bundle_hash, index_hash, "
+                "context_hash, source_sha256, status, proposal_version, "
+                "result_ref_json, registrations_json "
+                "FROM simple_surface_exploration_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? ORDER BY surface_id, context_id",
+                key,
+            ).fetchall()
+            progress: dict[tuple[str, str], SurfaceExplorationProgressRecord] = {}
+            for row in rows:
+                version = int(row["proposal_version"])
+                if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
+                    raise ValueError("SURFACE_ENRICHMENT_V9_PIN_STALE")
+                if version == 9:
+                    if current.surface_enrichment_v9_plan_ref is None:
+                        raise ValueError("SURFACE_ENRICHMENT_V9_PIN_STALE")
+                    self._assert_surface_v4_registration_connection(
+                        connection, identity, row
+                    )
+                    continue
+                if version >= 4:
+                    self._assert_surface_v4_registration_connection(
+                        connection, identity, row
+                    )
+                record = SurfaceExplorationProgressRecord(
+                    surface_id=str(row["surface_id"]),
+                    context_id=str(row["context_id"]),
+                    static_bundle_hash=str(row["static_bundle_hash"]),
+                    index_hash=str(row["index_hash"]),
+                    context_hash=str(row["context_hash"]),
+                    source_sha256=row["source_sha256"],
+                    status=str(row["status"]),
+                    result_ref=StoredDataRef.model_validate_json(
+                        row["result_ref_json"]
+                    ),
+                    hypothesis_ids=self._surface_registration_ids(
+                        identity,
+                        str(row["status"]),
+                        str(row["registrations_json"]),
+                    ),
+                    proposal_version=version,
+                )
+                progress[(record.surface_id, record.context_id)] = record
+            if prior_v8_progress_snapshot_hash(progress) != prior_progress_hash:
+                raise ValueError("SURFACE_ENRICHMENT_V9_PIN_STALE_PROGRESS")
+            if missing_v8_part_set(raw_v8, progress):
+                raise ValueError("SURFACE_ENRICHMENT_V9_PIN_STALE_PARTS")
+            if current == revised:
+                return False
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (revised.model_dump_json(), expected.analysis_id, run_row["run_json"]),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V9_PIN_STALE")
+        return True
+
+    def pin_surface_enrichment_v10_plan(
+        self, expected_run: SimpleAnalysisRun, plan_ref: StoredDataRef
+    ) -> bool:
+        """CAS-pin one successor to the exact completed v9 root and review set."""
+
+        from .surface_enrichment_v10_bindings import v9_progress_snapshot_hash
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = expected.candidate_terminal
+        identity = CheckpointIdentity(
+            analysis_id=expected.analysis_id,
+            workspace_id=expected.workspace_id,
+            commit_id=expected.commit_id,
+            hypothesis_id=None,
+        )
+        if (
+            expected.surface_enrichment_v9_plan_ref is None
+            or expected.surface_enrichment_v10_plan_ref is not None
+            or expected.candidate_scope_fingerprint is None
+            or terminal is None
+            or terminal.surface_proof_version != 7
+            or not terminal.producer_finished
+            or terminal.pending_child_count
+            or terminal.surface_index_hash is None
+            or terminal.surface_coverage_hash is None
+            or terminal.scope_fingerprint != expected.candidate_scope_fingerprint
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V10_PIN_INVALID")
+        try:
+            self._candidate_ref_json(identity, plan_ref)
+            self._candidate_ref_json(identity, expected.surface_enrichment_v9_plan_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent = self._database_path.parent
+                if parent.name == "db":
+                    data_dir = parent.parent
+                elif (parent / "artifacts" / "artifacts").is_dir():
+                    data_dir = parent / "artifacts"
+                else:
+                    data_dir = parent
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+            v9_plan = json.loads(
+                artifacts.read_bounded(
+                    expected.surface_enrichment_v9_plan_ref, 16 * 1024 * 1024
+                )
+            )
+            if not isinstance(plan, dict) or not isinstance(v9_plan, dict):
+                raise ValueError("SURFACE_ENRICHMENT_V10_PIN_INVALID")
+            coverage_ref = StoredDataRef.model_validate(plan["v9_coverage_ref"])
+            self._candidate_ref_json(identity, coverage_ref)
+            coverage = json.loads(
+                artifacts.read_bounded(coverage_ref, 16 * 1024 * 1024)
+            )
+            if (
+                not isinstance(coverage, dict)
+                or plan.get("kind") != "simple_surface_enrichment_plan_v10"
+                or plan.get("analysis_id") != expected.analysis_id
+                or plan.get("workspace_id") != expected.workspace_id
+                or plan.get("commit_id") != expected.commit_id
+                or plan.get("scope_fingerprint") != expected.candidate_scope_fingerprint
+                or plan.get("static_bundle_hash") != terminal.bundle_hash
+                or plan.get("index_hash") != terminal.surface_index_hash
+                or plan.get("v9_plan_ref")
+                != expected.surface_enrichment_v9_plan_ref.model_dump(mode="json")
+                or plan.get("v9_terminal") != terminal.model_dump(mode="json")
+                or coverage_ref.content_hash != terminal.surface_coverage_hash
+                or coverage.get("kind") != "simple_attack_surface_coverage_v7"
+                or coverage.get("scope_fingerprint")
+                != expected.candidate_scope_fingerprint
+                or coverage.get("static_bundle_hash") != terminal.bundle_hash
+                or coverage.get("index_hash") != terminal.surface_index_hash
+                or coverage.get("v9_plan_ref")
+                != expected.surface_enrichment_v9_plan_ref.model_dump(mode="json")
+                or coverage.get("missing_v9_parts")
+                or not isinstance(coverage.get("surfaces"), list)
+                or not isinstance(plan.get("proofs"), list)
+                or len(coverage["surfaces"]) != len(plan["proofs"])
+                or v9_plan.get("kind") != "simple_surface_enrichment_plan_v9"
+                or v9_plan.get("analysis_id") != expected.analysis_id
+                or v9_plan.get("workspace_id") != expected.workspace_id
+                or v9_plan.get("commit_id") != expected.commit_id
+                or v9_plan.get("scope_fingerprint")
+                != expected.candidate_scope_fingerprint
+                or v9_plan.get("index_hash") != terminal.surface_index_hash
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V10_PIN_INVALID")
+        except (KeyError, OSError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V10_PIN_INVALID") from error
+
+        revised = expected.model_copy(
+            update={"surface_enrichment_v10_plan_ref": plan_ref}
+        )
+        key = self._candidate_scope_key(identity, expected.candidate_scope_fingerprint)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                ),
+            ).fetchone()
+            if run_row is None or root_row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V10_PIN_STALE")
+            current = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            root = StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+            if (
+                current not in (expected, revised)
+                or root.identity != identity
+                or root.stage is not SimpleStage.HYPOTHESIS_DONE
+                or root.status is not StageStatus.SUCCEEDED
+                or len(root.output_refs) != 2
+                or root.output_refs[0].content_hash != terminal.surface_index_hash
+                or root.output_refs[1] != coverage_ref
+                or plan.get("v9_root") != root.model_dump(mode="json")
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V10_PIN_STALE")
+            rows = connection.execute(
+                "SELECT surface_id, context_id, static_bundle_hash, index_hash, "
+                "context_hash, source_sha256, status, proposal_version, "
+                "result_ref_json, registrations_json "
+                "FROM simple_surface_exploration_progress "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? ORDER BY surface_id, context_id",
+                key,
+            ).fetchall()
+            progress: dict[tuple[str, str], SurfaceExplorationProgressRecord] = {}
+            for row in rows:
+                if int(row["proposal_version"]) >= 4:
+                    self._assert_surface_v4_registration_connection(
+                        connection, identity, row
+                    )
+                record = SurfaceExplorationProgressRecord(
+                    surface_id=str(row["surface_id"]),
+                    context_id=str(row["context_id"]),
+                    static_bundle_hash=str(row["static_bundle_hash"]),
+                    index_hash=str(row["index_hash"]),
+                    context_hash=str(row["context_hash"]),
+                    source_sha256=row["source_sha256"],
+                    status=str(row["status"]),
+                    result_ref=StoredDataRef.model_validate_json(
+                        row["result_ref_json"]
+                    ),
+                    hypothesis_ids=self._surface_registration_ids(
+                        identity, str(row["status"]), str(row["registrations_json"])
+                    ),
+                    proposal_version=int(row["proposal_version"]),
+                )
+                progress[(record.surface_id, record.context_id)] = record
+            try:
+                if v9_progress_snapshot_hash(v9_plan, progress) != plan.get(
+                    "v9_progress_hash"
+                ):
+                    raise ValueError("v9 progress hash changed")
+            except ValueError as error:
+                raise ValueError("SURFACE_ENRICHMENT_V10_PIN_STALE") from error
+            if current == revised:
+                return False
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (revised.model_dump_json(), identity.analysis_id, run_row["run_json"]),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V10_PIN_STALE")
+        return True
+
+    def promote_surface_enrichment_v10_coverage(
+        self,
+        expected_run: SimpleAnalysisRun,
+        plan_ref: StoredDataRef,
+        coverage_ref: StoredDataRef,
+        successor_terminal: CandidateTerminal,
+    ) -> bool:
+        """Atomically replace only the current root/terminal after v10 replay."""
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = CandidateTerminal.model_validate(successor_terminal)
+        prior = expected.candidate_terminal
+        identity = CheckpointIdentity(
+            analysis_id=expected.analysis_id,
+            workspace_id=expected.workspace_id,
+            commit_id=expected.commit_id,
+            hypothesis_id=None,
+        )
+        if (
+            expected.surface_enrichment_v10_plan_ref != plan_ref
+            or expected.surface_enrichment_v9_plan_ref is None
+            or prior is None
+            or prior.surface_proof_version != 7
+            or terminal.surface_proof_version != 8
+            or not prior.producer_finished
+            or terminal.bundle_hash != prior.bundle_hash
+            or terminal.scope_fingerprint != prior.scope_fingerprint
+            or terminal.surface_index_hash != prior.surface_index_hash
+            or terminal.surface_coverage_hash != coverage_ref.content_hash
+            or terminal.scope_certificate_hash != prior.scope_certificate_hash
+            or not terminal.producer_finished
+            or terminal.pending_child_count
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V10_RESULT_INVALID")
+        try:
+            self._candidate_ref_json(identity, plan_ref)
+            self._candidate_ref_json(identity, coverage_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent = self._database_path.parent
+                if parent.name == "db":
+                    data_dir = parent.parent
+                elif (parent / "artifacts" / "artifacts").is_dir():
+                    data_dir = parent / "artifacts"
+                else:
+                    data_dir = parent
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+            coverage = json.loads(
+                artifacts.read_bounded(coverage_ref, 16 * 1024 * 1024)
+            )
+            if not isinstance(plan, dict) or not isinstance(coverage, dict):
+                raise ValueError("v10 result malformed")
+            rows = coverage.get("surfaces")
+            proofs = plan.get("proofs")
+            if not isinstance(rows, list) or not isinstance(proofs, list):
+                raise ValueError("v10 result malformed")
+            counts = {
+                status: sum(
+                    isinstance(row, dict) and row.get("coverage_status") == status
+                    for row in rows
+                )
+                for status in ("COVERED", "UNCOVERED", "INSUFFICIENT")
+            }
+            expected_terminal = prior.model_copy(
+                update={
+                    "status": (
+                        "COMPLETE"
+                        if coverage.get("complete") is True
+                        and expected.static_disposition == "FULL"
+                        else "PARTIAL"
+                    ),
+                    "surface_coverage_hash": coverage_ref.content_hash,
+                    "surface_counts": counts,
+                    "surface_proof_version": 8,
+                    "pending_child_count": 0,
+                }
+            )
+            if (
+                plan.get("kind") != "simple_surface_enrichment_plan_v10"
+                or plan.get("v9_terminal") != prior.model_dump(mode="json")
+                or plan.get("v9_plan_ref")
+                != expected.surface_enrichment_v9_plan_ref.model_dump(mode="json")
+                or coverage.get("kind") != "simple_attack_surface_coverage_v8"
+                or coverage.get("v10_plan_ref") != plan_ref.model_dump(mode="json")
+                or coverage.get("v9_coverage_hash") != prior.surface_coverage_hash
+                or coverage.get("scope_fingerprint") != prior.scope_fingerprint
+                or coverage.get("static_bundle_hash") != prior.bundle_hash
+                or coverage.get("index_hash") != prior.surface_index_hash
+                or len(rows) != len(proofs)
+                or any(
+                    not isinstance(row, dict)
+                    or not isinstance(proof, dict)
+                    or row.get("surface_id") != proof.get("surface_id")
+                    for row, proof in zip(rows, proofs, strict=True)
+                )
+                or sum(counts.values()) != len(rows)
+                or terminal != expected_terminal
+                or coverage.get("pending_candidate_count") != 0
+                or coverage.get("pending_child_count") != 0
+            ):
+                raise ValueError("v10 result unbound")
+        except (OSError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V10_RESULT_INVALID") from error
+
+        revised = SimpleAnalysisRun.model_validate(
+            expected.model_copy(
+                update={
+                    "candidate_terminal": terminal,
+                    "surface_enrichment_status": terminal.status,
+                    "surface_enrichment_error_code": None,
+                }
+            )
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                ),
+            ).fetchone()
+            if run_row is None or root_row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V10_RESULT_STALE")
+            current = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            root = StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+            if current == revised:
+                if (
+                    root.status is StageStatus.SUCCEEDED
+                    and len(root.output_refs) == 2
+                    and root.output_refs[0].content_hash == prior.surface_index_hash
+                    and root.output_refs[1] == coverage_ref
+                ):
+                    return False
+                raise ValueError("SURFACE_ENRICHMENT_V10_RESULT_STALE")
+            if (
+                current != expected
+                or root.identity != identity
+                or root.status is not StageStatus.SUCCEEDED
+                or len(root.output_refs) != 2
+                or root.output_refs[0].content_hash != prior.surface_index_hash
+                or root.output_refs[1].content_hash != prior.surface_coverage_hash
+                or plan.get("v9_root") != root.model_dump(mode="json")
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V10_RESULT_STALE")
+            updated_root = root.model_copy(
+                update={
+                    "output_refs": (root.output_refs[0], coverage_ref),
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (revised.model_dump_json(), identity.analysis_id, run_row["run_json"]),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V10_RESULT_STALE")
+            self._upsert_checkpoint_connection(connection, updated_root)
+        self._project_after_direct_commit(identity.analysis_id)
         return True
 
     @staticmethod
@@ -6750,6 +7781,15 @@ class SimpleCheckpointStore:
                 if call_id is not None
                 else []
             )
+            call_row = (
+                connection.execute(
+                    "SELECT status, started_at FROM simple_codex_calls "
+                    "WHERE call_id = ? AND analysis_id = ?",
+                    (call_id, identity.analysis_id),
+                ).fetchone()
+                if call_id is not None
+                else None
+            )
         strict_identity = bool(child_rows) or (
             version_row is not None
             and int(version_row["candidate_pipeline_version"]) >= 2
@@ -6786,9 +7826,55 @@ class SimpleCheckpointStore:
                 not in {child["pid"] for child in expected_children}
             ):
                 return False
-            from sastsimi.providers.codex_subscription import child_identity_matches
+            from sastsimi.providers.codex_subscription import (
+                child_identity_matches,
+                windows_boot_time_utc,
+            )
 
-            if any(
+            if marker.get("verification_method") == "windows_reboot":
+                recorded_boot = marker.get("observed_boot_at")
+                if not isinstance(recorded_boot, str) or call_row is None:
+                    return False
+                try:
+                    recorded_boot_at = datetime.fromisoformat(recorded_boot)
+                    call_started_at = datetime.fromisoformat(call_row["started_at"])
+                except (TypeError, ValueError):
+                    return False
+                live_boot_at = windows_boot_time_utc()
+                if (
+                    recorded_boot_at.tzinfo is None
+                    or call_started_at.tzinfo is None
+                    or live_boot_at is None
+                    or live_boot_at.tzinfo is None
+                    or call_row["status"] not in {"IN_FLIGHT", "CONFIRMED"}
+                    or not call_started_at < checkpoint.updated_at < recorded_boot_at
+                    or recorded_boot_at > observed_at
+                    or live_boot_at > datetime.now(UTC) + timedelta(minutes=1)
+                ):
+                    return False
+                # The first confirmation must match this boot. Once the
+                # exact call is durably CONFIRMED, a later reboot cannot
+                # resurrect its old child process tree.
+                boot_difference = (live_boot_at - recorded_boot_at).total_seconds()
+                if (
+                    call_row["status"] == "IN_FLIGHT" and abs(boot_difference) > 60
+                ) or (call_row["status"] == "CONFIRMED" and boot_difference < -60):
+                    return False
+                for child in expected_children:
+                    started_at = _windows_child_started_at(
+                        cast(str, child["start_identity"])
+                    )
+                    if (
+                        started_at is None
+                        or not call_started_at <= started_at < checkpoint.updated_at
+                        or child_identity_matches(
+                            cast(int, child["pid"]),
+                            cast(str, child["start_identity"]),
+                        )
+                        is True
+                    ):
+                        return False
+            elif any(
                 child_identity_matches(
                     cast(int, child["pid"]), cast(str, child["start_identity"])
                 )
@@ -6805,7 +7891,11 @@ class SimpleCheckpointStore:
             == hashlib.sha256(canonical_bytes(checkpoint)).hexdigest()
             and marker.get("process_tree_stopped") is True
             and marker.get("verification_method")
-            in {"windows_process_inventory", "posix_process_inventory"}
+            in {
+                "windows_process_inventory",
+                "posix_process_inventory",
+                "windows_reboot",
+            }
             and type(marker.get("former_parent_pid")) is int
             and marker["former_parent_pid"] > 0
             and type(marker.get("observed_matching_process_count")) is int

@@ -307,10 +307,11 @@ function renderOverview(shell) {
     }
     const poc = phases.poc; if (Number.isInteger(poc?.attempted) && Number.isInteger(poc?.completed)) legacyMetrics.push(["PoC 시도", `${poc.attempted}건 · 완료 ${poc.completed}건`]);
     const surface = phases.surface;
+    const surfaceReviewVersion = surface?.proof_version === 8 ? "v8" : "v5";
     if (Number.isInteger(surface?.total)) {
       if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) {
         const label = Number.isInteger(surface.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
-          ? `v5 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`
+          ? `${surfaceReviewVersion} 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`
           : `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`;
         legacyMetrics.push(["보안 surface", label]);
       }
@@ -322,11 +323,12 @@ function renderOverview(shell) {
       legacyMetrics.push(["원본 정적 공백", `${surface.raw_static_gap_count}건`], ["재인증 후 Python 공백", `${surface.effective_python_gap_count}건`]);
       if (Number.isInteger(surface?.unresolved_reason_count)) legacyMetrics.push(["미해결 근거 사유", `${surface.unresolved_reason_count}건`]);
     }
+    if (surface?.proof_version === 8 && Number.isInteger(surface?.template_content_not_analyzed_count)) legacyMetrics.push(["Python 범위 밖 템플릿 HTML/Jinja 내용", `${surface.template_content_not_analyzed_count}건`]);
     box.append(el("div", "현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
     if (shell.status === "PARTIAL") {
       const countsKnown = Number.isInteger(surface?.total) && ["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key])) && surface.covered + surface.uncovered + surface.insufficient === surface.total;
       const proven = Number.isInteger(surface?.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
-        ? `v5 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total}`
+        ? `${surfaceReviewVersion} 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total}`
         : `보안 표면 근거 충족 ${surface.covered}/${surface.total}`;
       const scope = countsKnown ? ` · ${proven} · 근거 부족 ${surface.insufficient}${surface.uncovered ? ` · 미검토 ${surface.uncovered}` : ""}` : " · 보안 표면 근거 미확인";
       box.append(el("div", `실행 종료${scope} · 전체 분석은 PARTIAL`, "warning"));

@@ -81,3 +81,115 @@ def test_v6_verified_partial_reason_reaches_cli_dashboard_and_progress(
         ]
         == 1
     )
+
+
+def test_v7_partial_reason_is_projected_only_as_verified_partial(
+    tmp_path: Path,
+) -> None:
+    data, _, old_terminal = _saved_v4_case(tmp_path, old_hold=True)
+    case = data["case"]
+    terminal = old_terminal.model_copy(update={"surface_proof_version": 7})
+    snapshot = ProgressProjector(case.store).snapshot(
+        case.identity.analysis_id,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        candidate_bundle_hash=case.index.static_bundle_hash,
+        candidate_scope_fingerprint=case.index.scope_fingerprint,
+        surface_counts={
+            "TOTAL": 2,
+            "CONTEXT_RECORDS": 1,
+            "COVERED": 1,
+            "UNCOVERED": 0,
+            "INSUFFICIENT": 1,
+            "RAW_STATIC_GAP_COUNT": 0,
+            "EFFECTIVE_PYTHON_GAP_COUNT": 0,
+            "UNRESOLVED_REASON_COUNT": 1,
+            "REASON_CODE_LOCAL_ONLY_ATTACK_PATH_UNVERIFIED": 1,
+        },
+        surface_index_hash=case.index_ref.content_hash,
+    )
+    assert snapshot.status != "COMPLETE"
+    assert snapshot.phase_counts["surface"]["insufficient"] == 1
+    assert (
+        snapshot.phase_counts["surface"][
+            "reason_code_LOCAL_ONLY_ATTACK_PATH_UNVERIFIED"
+        ]
+        == 1
+    )
+
+
+def test_v8_template_exclusion_is_separate_from_verified_python_gap(
+    tmp_path: Path,
+) -> None:
+    data, _, old_terminal = _saved_v4_case(tmp_path, old_hold=True)
+    case = data["case"]
+    terminal = old_terminal.model_copy(update={"surface_proof_version": 8})
+    snapshot = ProgressProjector(case.store).snapshot(
+        case.identity.analysis_id,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        candidate_bundle_hash=case.index.static_bundle_hash,
+        candidate_scope_fingerprint=case.index.scope_fingerprint,
+        surface_counts={
+            "TOTAL": 2,
+            "CONTEXT_RECORDS": 1,
+            "COVERED": 1,
+            "UNCOVERED": 0,
+            "INSUFFICIENT": 1,
+            "RAW_STATIC_GAP_COUNT": 0,
+            "EFFECTIVE_PYTHON_GAP_COUNT": 0,
+            "UNRESOLVED_REASON_COUNT": 1,
+            "REASON_CODE_LOCAL_ONLY_ATTACK_PATH_UNVERIFIED": 1,
+            "TEMPLATE_CONTENT_NOT_ANALYZED_COUNT": 1,
+        },
+        surface_index_hash=case.index_ref.content_hash,
+    )
+    surface = snapshot.phase_counts["surface"]
+    assert surface["covered"] == 1
+    assert surface["insufficient"] == 1
+    assert surface["template_content_not_analyzed_count"] == 1
+    assert surface["unresolved_reason_count"] == 1
+
+
+def test_v8_complete_terminal_credits_only_verified_surface_rows(
+    tmp_path: Path,
+) -> None:
+    data, _, old_terminal = _saved_v4_case(tmp_path, old_hold=True)
+    case = data["case"]
+    terminal = old_terminal.model_copy(
+        update={
+            "status": "COMPLETE",
+            "surface_proof_version": 8,
+            "surface_counts": {"COVERED": 2, "UNCOVERED": 0, "INSUFFICIENT": 0},
+            "pending_child_count": 0,
+        }
+    )
+    snapshot = ProgressProjector(case.store).snapshot(
+        case.identity.analysis_id,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        candidate_bundle_hash=case.index.static_bundle_hash,
+        candidate_scope_fingerprint=case.index.scope_fingerprint,
+        surface_counts={
+            "TOTAL": 2,
+            "CONTEXT_RECORDS": 1,
+            "COVERED": 2,
+            "UNCOVERED": 0,
+            "INSUFFICIENT": 0,
+            "RAW_STATIC_GAP_COUNT": 0,
+            "EFFECTIVE_PYTHON_GAP_COUNT": 0,
+            "UNRESOLVED_REASON_COUNT": 0,
+            "TEMPLATE_CONTENT_NOT_ANALYZED_COUNT": 1,
+        },
+        surface_index_hash=case.index_ref.content_hash,
+    )
+    assert snapshot.phase_counts["surface"]["covered"] == 2
+    # This legacy fixture still has a blocked hypothesis; surface credit must
+    # not hide the unrelated blocker or manufacture a complete analysis.
+    assert snapshot.status != "COMPLETE"

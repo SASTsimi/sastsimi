@@ -28,7 +28,8 @@
 ## 저장된 분석의 보안 표면 근거 보강
 
 `sastsimi resume A-001 --enrich-saved-surface-evidence`는 이미 저장된 Python 분석의
-근거 부족(`INSUFFICIENT`) 표면만 다시 검토하는 명시적 경로입니다. 일반 `resume`과
+보안 표면 근거를 별도 회차로 보강하는 명시적 경로입니다. 초기 회차는 근거 부족
+표면을 중심으로 검토하고, 후속 회차는 기존 `COVERED` 표면도 다시 검증할 수 있습니다. 일반 `resume`과
 달리 먼저 분석 잠금을 획득하고 고정 커밋·추적 파일의 SHA-256·기존 정적 결과·AST·
 표면 인덱스·후보 범위와 이전 결과 참조를 대조합니다. 범위가 달라졌거나 참조가
 손상됐으면 새 분석처럼 다시 계획하지 않고 차단합니다. 범위가 일치하면 변경할 수 없는
@@ -81,6 +82,15 @@ CLI·대시보드·보고서는 검토 수와 입증 수, 남은 이유를 구�
 고정 소스에서 연결될 때만 해당 경로를 인정하며, 속성 재대입·동적 디스패치 등
 증명되지 않은 경우는 공백으로 남깁니다. 새 경로 증거는 과거 PoC·검증 `HOLD`의
 반증이 아니므로 별도 신뢰 가능한 실행 증거가 없으면 전체 `PARTIAL`을 유지합니다.
+
+v9 검토가 끝난 분석은 기존 v9 계획·coverage·종료 근거·진행 기록의 해시에 결속된
+불변 v10 계획을 별도로 저장할 수 있습니다. v10은 고정된 Python 소스에서 요청별
+라우트와 호출 간선을 대조해 같은 파일의 무관한 초기화 동작을 분리하고, Python
+응답 또는 검증된 리터럴 템플릿 호출 경계까지만 증명합니다. 템플릿 HTML/Jinja
+내용은 `TEMPLATE_CONTENT_NOT_ANALYZED`로 별도 표시합니다. 공개 수치는 v9 전임
+근거와 v10 결과를 독립적으로 재검증한 뒤에만 표시합니다. 동적·외부 호출 등
+증명하지 못한 경로와 기존 자식 `HOLD`는 자동으로 해제하지 않으며, 이전
+v9·PoC·Finding 기록도 변경하지 않습니다.
 
 모든 보강 호출이 끝나도 근거 부족, 실제 Python 검사 공백, 미해결 자식 `HOLD`가
 남으면 `PARTIAL`은 올바른 최종 상태입니다. 인증서·저장 근거 손상이나 Agent 실행
@@ -181,6 +191,8 @@ Gate 결정은 최대 세 번입니다. `ACCEPT`는 이후 단계로 진행하�
 - 보안 표면 v2 증거: `src/sastsimi/simple_runtime/surface_coverage_v2.py`
 - v5 그래프·검증과 보안 표면 v3 증거: `src/sastsimi/simple_runtime/surface_evidence_graph_v5.py`,
   `surface_evidence_validation_v5.py`, `surface_coverage_v3.py`
+- v10 요청 경로 증명·불변 후속 계획·검증: `src/sastsimi/simple_runtime/surface_route_boundary_v10.py`,
+  `surface_enrichment_v10.py`, `surface_coverage_v8.py`, `surface_coverage_v8_read.py`
 - 분석별 LLM 예산·호출 원장: `src/sastsimi/simple_runtime/call_queue.py`
 - 이전 실행 자료 연결: `src/sastsimi/simple_runtime/migration.py`
 - 진행률 계산: `src/sastsimi/progress/projector.py`

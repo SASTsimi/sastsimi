@@ -64,6 +64,7 @@ def _route_function(tree: ast.Module, surface: AttackSurface) -> ast.FunctionDef
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef)
+        and len(node.decorator_list) == 1
         and any(
             isinstance(decorator, ast.Call)
             and (
@@ -94,12 +95,41 @@ def _direct_functions(tree: ast.Module) -> dict[str, ast.FunctionDef] | None:
     return {node.name: node for node in functions}
 
 
+_KNOWN_IMPORTED_ROUTE_CALLS = frozenset(
+    {
+        "flask.make_response",
+        "flask.render_template",
+        "flask.jsonify",
+        "flask.request.args.get",
+        "flask.request.form.get",
+        "flask.request.get_json",
+        "sqlite3.connect",
+        "subprocess.run",
+        "requests.get",
+        "html.escape",
+        "re.sub",
+        "urllib.parse.urlparse",
+    }
+)
+_KNOWN_LOCAL_ROUTE_CALLS = frozenset(
+    {
+        "json_data.get",
+        "sqlite_connection.cursor",
+        "sqlite_connection.commit",
+        "sqlite_connection.close",
+        "sqlite_cursor.execute",
+        "sqlite_cursor.fetchall",
+    }
+)
+
+
 def _called_local_functions(
     tree: ast.Module,
     route: ast.FunctionDef,
     functions: Mapping[str, ast.FunctionDef],
+    indexed_sql_lines: frozenset[int] = frozenset(),
 ) -> set[str] | None:
-    """Return a closed set only when local calls have unique direct bindings."""
+    """Return a closed set only when every reached call has a pinned binding."""
 
     names = set(functions)
     parents = {
@@ -119,9 +149,155 @@ def _called_local_functions(
             parent = parents.get(id(parent))
         return True
 
+    def attribute_parts(node: ast.AST) -> tuple[str, ...] | None:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            prefix = attribute_parts(node.value)
+            return (*prefix, node.attr) if prefix is not None else None
+        return None
+
+    def assignment_root(node: ast.AST) -> str | None:
+        while isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        return node.id if isinstance(node, ast.Name) else None
+
+    imports: dict[str, str] = {}
+    invalid_imports: set[str] = set()
+    module_bindings = set(names)
+    for statement in tree.body:
+        aliases: list[tuple[str, str]] = []
+        if isinstance(statement, ast.Import):
+            aliases = [
+                (
+                    item.asname or item.name.split(".")[0],
+                    item.name if item.asname else item.name.split(".")[0],
+                )
+                for item in statement.names
+            ]
+        elif isinstance(statement, ast.ImportFrom) and statement.level == 0:
+            aliases = [
+                (item.asname or item.name, f"{statement.module}.{item.name}")
+                for item in statement.names
+                if statement.module is not None and item.name != "*"
+            ]
+        for binding, origin in aliases:
+            module_bindings.add(binding)
+            if binding in imports:
+                invalid_imports.add(binding)
+            imports[binding] = origin
+
+    app_route_attributes = {
+        id(decorator.func)
+        for function in functions.values()
+        for decorator in function.decorator_list
+        if isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "route"
+        and isinstance(decorator.func.value, ast.Name)
+        and decorator.func.value.id == "app"
+    }
+    app_route = any(
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and id(decorator.func) in app_route_attributes
+        for decorator in route.decorator_list
+    )
+    app_assignments = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == "app"
+        and isinstance(statement.value, ast.Call)
+        and isinstance(statement.value.func, ast.Name)
+        and statement.value.func.id == "Flask"
+    ]
+    if app_route and len(app_assignments) != 1:
+        return None
+
+    dynamic_bindings = {
+        "exec",
+        "eval",
+        "globals",
+        "locals",
+        "vars",
+        "getattr",
+        "setattr",
+        "delattr",
+        "__import__",
+        "import_module",
+        "reload",
+    }
     for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            alias.name == "builtins" or alias.name.startswith("importlib")
+            for alias in node.names
+        ):
+            return None
+        if isinstance(node, ast.ImportFrom) and (
+            node.module is not None
+            and (
+                node.module == "importlib"
+                or node.module.startswith("importlib.")
+                or node.module == "builtins"
+                and any(alias.name in dynamic_bindings for alias in node.names)
+            )
+        ):
+            return None
+        if isinstance(node, ast.Call):
+            parts = attribute_parts(node.func)
+            if parts is None:
+                return None
+            qualified = (*imports.get(parts[0], parts[0]).split("."), *parts[1:])
+            if qualified[-1] in dynamic_bindings:
+                return None
         if not module_scoped(node):
             continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for item in node.names:
+                if item.name == "*":
+                    return None
+                binding = item.asname or (
+                    item.name.split(".")[0]
+                    if isinstance(node, ast.Import)
+                    else item.name
+                )
+                module_bindings.add(binding)
+                if node not in tree.body and binding in imports:
+                    invalid_imports.add(binding)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            module_bindings.add(node.name)
+            invalid_imports.add(node.name)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            module_bindings.add(node.id)
+            if node.id in imports:
+                invalid_imports.add(node.id)
+            if (
+                app_route
+                and node.id == "app"
+                and (
+                    len(app_assignments) != 1
+                    or node is not app_assignments[0].targets[0]
+                )
+            ):
+                return None
+        if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            root = assignment_root(node)
+            if root in imports:
+                invalid_imports.add(root)
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            module_bindings.add(node.name)
+            invalid_imports.add(node.name)
+        if isinstance(node, ast.MatchMapping) and node.rest:
+            module_bindings.add(node.rest)
+            invalid_imports.add(node.rest)
+        if isinstance(node, ast.ExceptHandler) and node.name:
+            module_bindings.add(node.name)
+            invalid_imports.add(node.name)
         if (
             isinstance(node, (ast.AsyncFunctionDef, ast.ClassDef))
             and node.name in names
@@ -142,6 +318,28 @@ def _called_local_functions(
             return None
         if isinstance(node, ast.ExceptHandler) and node.name in names:
             return None
+    if app_route:
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, ast.Name)
+                or node.id != "app"
+                or not isinstance(node.ctx, ast.Load)
+            ):
+                continue
+            parent = parents.get(id(node))
+            if not isinstance(parent, ast.Attribute) or parent.value is not node:
+                return None
+            if id(parent) in app_route_attributes:
+                continue
+            grandparent = parents.get(id(parent))
+            if not (
+                parent.attr == "run"
+                and isinstance(parent.ctx, ast.Load)
+                and module_scoped(parent)
+                and isinstance(grandparent, ast.Call)
+                and grandparent.func is parent
+            ):
+                return None
     # A definition may be called directly, but handing its object to any
     # other binding makes a closed direct-call graph unprovable.
     for node in ast.walk(tree):
@@ -155,10 +353,164 @@ def _called_local_functions(
             return None
     for function in functions.values():
         for node in ast.walk(function):
-            if isinstance(node, (ast.Global, ast.Nonlocal)) and names.intersection(
-                node.names
-            ):
+            if isinstance(node, (ast.Global, ast.Nonlocal)) and (
+                names | imports.keys() | {"app"}
+            ).intersection(node.names):
                 return None
+
+    def resolved_call(
+        target: ast.AST, local_bindings: frozenset[str], origins: Mapping[str, str]
+    ) -> str | None:
+        parts = attribute_parts(target)
+        if not parts:
+            return None
+        root = parts[0]
+        if root in origins:
+            return ".".join((origins[root], *parts[1:]))
+        if root in local_bindings or root in invalid_imports:
+            return None
+        if root in imports:
+            return ".".join((imports[root], *parts[1:]))
+        if parts == ("str",) and "str" not in module_bindings:
+            return "builtins.str"
+        return None
+
+    def local_origins(
+        function: ast.FunctionDef, local_bindings: frozenset[str]
+    ) -> dict[str, str]:
+        def guarded_origin_call(value: ast.expr) -> ast.Call | None:
+            if isinstance(value, ast.Call):
+                return value
+            if (
+                isinstance(value, ast.BoolOp)
+                and isinstance(value.op, ast.Or)
+                and len(value.values) == 2
+                and isinstance(value.values[0], ast.Call)
+                and isinstance(value.values[1], ast.Dict)
+                and not value.values[1].keys
+                and not value.values[1].values
+            ):
+                return value.values[0]
+            return None
+
+        assignments: dict[str, list[ast.expr]] = {}
+        direct_assignments: set[str] = set()
+        writes: dict[str, int] = {}
+        ambiguous_bindings: set[str] = set()
+
+        def collect_safe_assignment(statement: ast.stmt, *, direct: bool) -> None:
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+            ):
+                name = statement.targets[0].id
+                assignments.setdefault(name, []).append(statement.value)
+                if direct:
+                    direct_assignments.add(name)
+            elif (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.value is not None
+            ):
+                name = statement.target.id
+                assignments.setdefault(name, []).append(statement.value)
+                if direct:
+                    direct_assignments.add(name)
+            elif isinstance(statement, ast.If):
+                for child in (*statement.body, *statement.orelse):
+                    collect_safe_assignment(child, direct=False)
+            elif isinstance(statement, ast.Try):
+                for child in (
+                    *statement.body,
+                    *statement.orelse,
+                    *statement.finalbody,
+                ):
+                    collect_safe_assignment(child, direct=False)
+
+        for statement in function.body:
+            collect_safe_assignment(statement, direct=True)
+            for node in ast.walk(statement):
+                if isinstance(node, ast.Name) and isinstance(
+                    node.ctx, (ast.Store, ast.Del)
+                ):
+                    writes[node.id] = writes.get(node.id, 0) + 1
+                if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+                    ambiguous_bindings.add(node.name)
+                if isinstance(node, ast.MatchMapping) and node.rest:
+                    ambiguous_bindings.add(node.rest)
+                if isinstance(node, ast.ExceptHandler) and node.name:
+                    ambiguous_bindings.add(node.name)
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    ambiguous_bindings.update(
+                        alias.asname
+                        or (
+                            alias.name.split(".")[0]
+                            if isinstance(node, ast.Import)
+                            else alias.name
+                        )
+                        for alias in node.names
+                    )
+        parameters = {
+            argument.arg
+            for argument in (
+                *function.args.posonlyargs,
+                *function.args.args,
+                *function.args.kwonlyargs,
+                *((function.args.vararg,) if function.args.vararg else ()),
+                *((function.args.kwarg,) if function.args.kwarg else ()),
+            )
+        }
+        origins: dict[str, str] = {}
+        for _ in range(len(assignments)):
+            changed = False
+            for name, values in assignments.items():
+                if (
+                    name in origins
+                    or name in parameters
+                    or name in imports
+                    or name in names
+                    or name in ambiguous_bindings
+                    or name not in direct_assignments
+                    or writes.get(name) != len(values)
+                ):
+                    continue
+                proven: set[str] = set()
+                for value in values:
+                    source_call = guarded_origin_call(value)
+                    if source_call is None:
+                        break
+                    called = resolved_call(source_call.func, local_bindings, origins)
+                    if called is None:
+                        break
+                    origin = {
+                        "flask.request.get_json": "json_data",
+                        "sqlite3.connect": "sqlite_connection",
+                        "sqlite_connection.cursor": "sqlite_cursor",
+                    }.get(called)
+                    if origin is None:
+                        break
+                    proven.add(origin)
+                else:
+                    if len(proven) == 1:
+                        origins[name] = proven.pop()
+                        changed = True
+            if not changed:
+                break
+        return origins
+
+    indexed_sql_call_counts: dict[int, int] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and node.lineno in indexed_sql_lines
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"execute", "executemany", "executescript"}
+        ):
+            indexed_sql_call_counts[node.lineno] = (
+                indexed_sql_call_counts.get(node.lineno, 0) + 1
+            )
+
     visited: set[str] = set()
     stack = [route.name]
     while stack:
@@ -167,7 +519,30 @@ def _called_local_functions(
             continue
         visited.add(name)
         function = functions[name]
-        if names.intersection(_function_local_bindings(function)):
+        if name != route.name and function.decorator_list:
+            return None
+        if any(
+            isinstance(
+                node,
+                (
+                    ast.Global,
+                    ast.Nonlocal,
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                    ast.ListComp,
+                    ast.SetComp,
+                    ast.DictComp,
+                    ast.GeneratorExp,
+                ),
+            )
+            for statement in function.body
+            for node in ast.walk(statement)
+        ):
+            return None
+        local_bindings = _function_local_bindings(function)
+        if names.intersection(local_bindings):
             return None
         if any(
             isinstance(node, (ast.MatchAs, ast.MatchStar))
@@ -177,17 +552,33 @@ def _called_local_functions(
             for node in ast.walk(function)
         ):
             return None
-        for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+        origins = local_origins(function, local_bindings)
+        if any(
+            isinstance(node, (ast.Attribute, ast.Subscript))
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and assignment_root(node) in imports.keys() | origins.keys()
+            for statement in function.body
+            for node in ast.walk(statement)
+        ):
+            return None
+        for call in (
+            node
+            for statement in function.body
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Call)
+        ):
             if isinstance(call.func, ast.Name) and call.func.id in names:
                 stack.append(call.func.id)
-            if isinstance(call.func, ast.Name) and call.func.id in {
-                "eval",
-                "exec",
-                "getattr",
-                "globals",
-                "locals",
-                "__import__",
-            }:
+            elif resolved_call(
+                call.func, local_bindings, origins
+            ) not in _KNOWN_IMPORTED_ROUTE_CALLS | _KNOWN_LOCAL_ROUTE_CALLS | {
+                "builtins.str"
+            } and not (
+                call.lineno in indexed_sql_lines
+                and indexed_sql_call_counts.get(call.lineno) == 1
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr in {"execute", "executemany", "executescript"}
+            ):
                 return None
             if any(
                 isinstance(argument, ast.Name) and argument.id in names
@@ -354,19 +745,125 @@ def _literal_template_boundary(
             for alias in node.names
         )
         != 1
-    ):
-        return ()
-    if any(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        and node.name == "render_template"
-        or isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "render_template"
-            for target in node.targets
+        or sum(
+            alias.name == "Flask" and alias.asname is None
+            for node in imports
+            for alias in node.names
         )
-        for node in tree.body
+        != 1
     ):
         return ()
+    approved_import = next(
+        node
+        for node in imports
+        if any(
+            alias.name == "render_template" and alias.asname is None
+            for alias in node.names
+        )
+    )
+    approved_factory_import = next(
+        node
+        for node in imports
+        if any(alias.name == "Flask" and alias.asname is None for alias in node.names)
+    )
+    parents = {
+        id(child): parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+    def module_scoped(node: ast.AST) -> bool:
+        parent = parents.get(id(node))
+        while parent is not None:
+            if isinstance(
+                parent,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                    ast.ListComp,
+                    ast.SetComp,
+                    ast.DictComp,
+                    ast.GeneratorExp,
+                ),
+            ):
+                return False
+            parent = parents.get(id(parent))
+        return True
+
+    renderer_import_bindings = 0
+    factory_import_bindings = 0
+    if any(
+        isinstance(node, ast.Name)
+        and node.id == "__name__"
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        or isinstance(node, (ast.Global, ast.Nonlocal))
+        and "__name__" in node.names
+        for node in ast.walk(tree)
+    ):
+        return ()
+    for node in ast.walk(tree):
+        if not module_scoped(node):
+            continue
+        if isinstance(node, ast.ImportFrom):
+            if any(alias.name == "*" for alias in node.names):
+                return ()
+            for alias in node.names:
+                if (alias.asname or alias.name) == "__name__":
+                    return ()
+                if (alias.asname or alias.name) == "Flask":
+                    if node is not approved_factory_import or alias.asname is not None:
+                        return ()
+                    factory_import_bindings += 1
+                if (alias.asname or alias.name) == "render_template":
+                    if node is not approved_import or alias.asname is not None:
+                        return ()
+                    renderer_import_bindings += 1
+        elif isinstance(node, ast.Import) and any(
+            (alias.asname or alias.name.split(".")[0])
+            in {"Flask", "render_template", "__name__"}
+            for alias in node.names
+        ):
+            return ()
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in {"Flask", "render_template", "__name__"}:
+                return ()
+        elif isinstance(node, ast.Name) and node.id in {"Flask", "render_template"}:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                return ()
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name in {"Flask", "render_template", "__name__"}:
+                return ()
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest in {"Flask", "render_template", "__name__"}:
+                return ()
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name in {"Flask", "render_template", "__name__"}:
+                return ()
+    if renderer_import_bindings != 1 or factory_import_bindings != 1:
+        return ()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            app_root = node.value
+            while isinstance(app_root, ast.Attribute):
+                app_root = app_root.value
+            if (
+                isinstance(app_root, ast.Name)
+                and app_root.id == "app"
+                and node.attr
+                in {"jinja_loader", "jinja_env", "template_folder", "root_path"}
+            ):
+                return ()
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"setattr", "delattr"}
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "app"
+        ):
+            return ()
     app_assignments = [
         node
         for node in tree.body
@@ -384,6 +881,8 @@ def _literal_template_boundary(
         and isinstance(app_factory.func, ast.Name)
         and app_factory.func.id == "Flask"
         and len(app_factory.args) == 1
+        and isinstance(app_factory.args[0], ast.Name)
+        and app_factory.args[0].id == "__name__"
         and not any(
             keyword.arg in {"template_folder", "root_path"} or keyword.arg is None
             for keyword in app_factory.keywords
@@ -420,15 +919,19 @@ def _literal_template_boundary(
         or any(part in {"", ".", ".."} for part in template_name.split("/"))
     ):
         return ()
-    relative = Path("templates") / template_name
-    root = workspace.resolve()
+    relative = Path(surface.path).parent / "templates" / template_name
+    workspace_root = workspace.resolve()
     target = workspace / relative
     try:
         if (
-            target.is_symlink()
-            or target.parent.is_symlink()
+            relative.is_absolute()
+            or any(part == ".." for part in relative.parts)
+            or any(
+                workspace.joinpath(*relative.parts[:depth]).is_symlink()
+                for depth in range(1, len(relative.parts) + 1)
+            )
             or not target.is_file()
-            or not target.resolve().is_relative_to(root)
+            or not target.resolve().is_relative_to(workspace_root)
         ):
             return ()
         raw = target.read_bytes()
@@ -583,7 +1086,23 @@ def prove_route_boundaries_v10(
             if route is None or functions is None or route.name not in functions:
                 reasons.add("ROUTE_BINDING_UNPROVEN")
             else:
-                reachable = _called_local_functions(tree, route, functions)
+                pinned_sql_sinks = {
+                    path.sink_surface_id: path.steps[-1].line
+                    for path in certificate.downstream_paths
+                    if path.kind == "call_path_v1"
+                    and path.steps
+                    and path.steps[-1].role == "SINK"
+                }
+                indexed_sql_lines = frozenset(
+                    row.line
+                    for row in index.surfaces
+                    if row.path == surface.path
+                    and row.type == "SQL_EXECUTION"
+                    and pinned_sql_sinks.get(row.surface_id) == row.line
+                )
+                reachable = _called_local_functions(
+                    tree, route, functions, indexed_sql_lines
+                )
                 if reachable is None:
                     reasons.add("ROUTE_CALL_GRAPH_OPEN")
                 else:

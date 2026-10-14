@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, `ast`, Pydantic contracts, SQLite checkpoint store, content-addressed artifact repository, pytest, PowerShell on Windows.
 
-**Spec:** `docs/superpowers/specs/2026-10-14-route-bound-surface-evidence-design.md`
+**Spec:** `docs/plans/2026-10-14-route-bound-surface-evidence-design.md`
 
 ## Global Constraints
 

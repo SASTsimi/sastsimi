@@ -11,6 +11,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.reporting import (
     BilingualReportContent,
     has_legacy_report_ipv4_false_positive,
+    has_report_validator_false_positive,
 )
 from sastsimi.contracts.static import CodeLocation
 from sastsimi.reporting.bilingual_bundle import (
@@ -406,7 +407,10 @@ def test_full_static_scan_does_not_hide_partial_surface_analysis() -> None:
     assert provenance["static_coverage"]["analysis_status"] == "PARTIAL"
 
 
-def test_v6_partial_surface_proof_is_visible_in_both_reports_and_provenance() -> None:
+@pytest.mark.parametrize("proof_version", [6, 7])
+def test_partial_surface_proof_is_visible_in_both_reports_and_provenance(
+    proof_version: int,
+) -> None:
     coverage = coverage_disclosure(
         {
             "kind": "simple_static_coverage_v1",
@@ -428,7 +432,7 @@ def test_v6_partial_surface_proof_is_visible_in_both_reports_and_provenance() ->
     )
     scoped = replace(
         coverage,
-        surface_proof_version=6,
+        surface_proof_version=proof_version,
         analysis_status="PARTIAL",
         surface_scope_certificate_hash="f" * 64,
         surface_raw_static_gap_count=0,
@@ -445,16 +449,62 @@ def test_v6_partial_surface_proof_is_visible_in_both_reports_and_provenance() ->
     english = files["report_en.md"].body.decode()
     korean = files["report_kr.md"].body.decode()
     assert "Analysis status: `PARTIAL`" in english
-    assert "V6 reviewed surfaces: 1/1" in english
+    assert f"V{proof_version} reviewed surfaces: 1/1" in english
     assert "LOCAL_ONLY_ATTACK_PATH_UNVERIFIED (1)" in english
     assert "전체 분석 상태: `PARTIAL`" in korean
-    assert "v6 검토 완료: 1/1" in korean
+    assert f"v{proof_version} 검토 완료: 1/1" in korean
     assert "LOCAL_ONLY_ATTACK_PATH_UNVERIFIED (1)" in korean
     provenance = json.loads(files["evidence/provenance.json"].body)
-    assert provenance["static_coverage"]["surface_proof_version"] == 6
+    assert provenance["static_coverage"]["surface_proof_version"] == proof_version
     assert provenance["static_coverage"]["unresolved_reason_codes"] == {
         "LOCAL_ONLY_ATTACK_PATH_UNVERIFIED": 1
     }
+
+
+def test_v8_python_template_boundary_is_disclosed_without_counting_as_gap() -> None:
+    coverage = coverage_disclosure(
+        {
+            "kind": "simple_static_coverage_v1",
+            "fingerprint": "e" * 64,
+            "analysis_id": "A-004",
+            "workspace_id": "ws-1",
+            "commit_id": "a" * 40,
+            "expected_count": 1,
+            "verified_count": 1,
+            "gaps": [],
+            "unsupported_files": [],
+            "engine_errors": [],
+        },
+        _ref("coverage", "d" * 64),
+        analysis_id="A-004",
+        workspace_id="ws-1",
+        commit_id="a" * 40,
+        disposition="FULL",
+    )
+    scoped = replace(
+        coverage,
+        surface_proof_version=8,
+        analysis_status="COMPLETE",
+        surface_scope_certificate_hash="f" * 64,
+        surface_raw_static_gap_count=0,
+        surface_effective_python_gap_count=0,
+        surface_unresolved_reason_count=0,
+        surface_reviewed_count=1,
+        surface_covered_count=1,
+        surface_uncovered_count=0,
+        surface_insufficient_count=0,
+        surface_template_scope_limit_count=1,
+    )
+
+    files = _render(facts=_facts(coverage=scoped))
+    english = files["report_en.md"].body.decode()
+    korean = files["report_kr.md"].body.decode()
+    assert "V8 reviewed surfaces: 1/1" in english
+    assert "Template HTML/Jinja content outside Python scope: 1" in english
+    assert "v8 검토 완료: 1/1" in korean
+    assert "Python 범위 밖 템플릿 HTML/Jinja 내용: 1" in korean
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["template_content_not_analyzed_count"] == 1
 
 
 def test_verified_v3_scope_reports_reviewed_and_covered_separately() -> None:
@@ -858,6 +908,83 @@ def test_report_prose_accepts_bare_ipv4_poc_endpoint(
 
 
 @pytest.mark.parametrize(
+    "description",
+    [
+        "The direct 127.0.0.1 URL was used for the local PoC.",
+        "The redirect to 127.0.0.1 URL was observed in the local PoC.",
+        "The controlled URL redirected to 127.0.0.1 in the local PoC.",
+        "The host redirect target was 127.0.0.1 in the local PoC.",
+    ],
+)
+def test_report_prose_accepts_loopback_url_description(description: str) -> None:
+    content = _content()
+    en = content.en.model_copy(update={"details": description})
+    content = content.model_copy(update={"en": en})
+
+    files = {
+        item.path: item
+        for item in render_bundle_files(
+            _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
+        )
+    }
+
+    assert description in files["report_en.md"].body.decode()
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "내부 호스트를 향한 로컬 PoC의 127.0.0.1 직접 요청을 관찰했습니다.",
+        (
+            "호스트 제약을 확인했습니다. "
+            "내부 PoC의 127.0.0.1 직접 요청은 로컬에서 수행했습니다."
+        ),
+    ],
+)
+def test_report_prose_accepts_korean_loopback_direct_request(
+    description: str,
+) -> None:
+    content = _content()
+    ko = content.ko.model_copy(update={"details": description})
+    content = content.model_copy(update={"ko": ko})
+
+    files = {
+        item.path: item
+        for item in render_bundle_files(
+            _facts(), content, poc=b"#!/bin/sh\necho safe\n", stdout=None, stderr=None
+        )
+    }
+
+    assert description in files["report_kr.md"].body.decode()
+
+
+@pytest.mark.parametrize(
+    ("language", "description"),
+    [
+        ("en", "The direct 127.0.0.1 URL was used for the local PoC."),
+        ("en", "The controlled URL redirected to 127.0.0.1 in the local PoC."),
+        ("en", "The host redirect target was 127.0.0.1 in the local PoC."),
+        ("ko", "내부 호스트를 향한 로컬 PoC의 127.0.0.1 직접 요청을 관찰했습니다."),
+        (
+            "ko",
+            (
+                "호스트 제약을 확인했습니다. "
+                "내부 PoC의 127.0.0.1 직접 요청은 로컬에서 수행했습니다."
+            ),
+        ),
+    ],
+)
+def test_report_replay_recognizes_loopback_endpoint_false_positive(
+    language: str, description: str
+) -> None:
+    content = _content()
+    prose = getattr(content, language).model_copy(update={"details": description})
+    content = content.model_copy(update={language: prose})
+
+    assert has_report_validator_false_positive(content)
+
+
+@pytest.mark.parametrize(
     "limitation",
     [
         "기본 수신 주소는 127.0.0.1이므로 기본 설정의 네트워크 노출은 제한됩니다.",
@@ -906,6 +1033,8 @@ def test_report_replay_recognizes_endpoint_false_positive(
         "The default listener version is 1.2.3.4.",
         "The default listener is 1.2.3.4 as its release version.",
         "The release <= 1.2.3.4 is affected; the default listener is unknown.",
+        "The direct 1.2.3.4 URL was used.",
+        "The host redirect build 127.0.0.1 is unverified.",
     ],
 )
 def test_report_replay_does_not_misidentify_version_claim_as_endpoint(
@@ -916,6 +1045,7 @@ def test_report_replay_does_not_misidentify_version_claim_as_endpoint(
     content = content.model_copy(update={"en": en})
 
     assert not has_legacy_report_ipv4_false_positive(content)
+    assert not has_report_validator_false_positive(content)
 
 
 @pytest.mark.parametrize(
@@ -926,6 +1056,9 @@ def test_report_replay_does_not_misidentify_version_claim_as_endpoint(
         "The app defaults to 1.2.3.4 as its release version.",
         "The default listener version is 1.2.3.4.",
         "The release <= 1.2.3.4 is affected; the default listener is unknown.",
+        "The direct 1.2.3.4 URL was used.",
+        "The direct 1.2.3.4 URL version is unverified.",
+        "The host redirect build 127.0.0.1 is unverified.",
         "기본 수신 주소의 버전은 1.2.3.4입니다.",
     ],
 )

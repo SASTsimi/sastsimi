@@ -58,3 +58,20 @@ def test_v4_schema_rejects_missing_context_hash() -> None:
             version=4,
             eligible_review_parts=frozenset(),
         )
+
+
+@pytest.mark.parametrize("version", [4, 5, 8])
+def test_incomplete_graph_schema_forbids_no_hypothesis(version: int) -> None:
+    schema = DirectHypothesisBootstrap._surface_schema(
+        "surface-id",
+        "context-id",
+        version=version,
+        context_hash="a" * 64,
+        eligible_review_parts=frozenset({"ENTRY"}),
+        allow_no_hypothesis=False,
+    )
+
+    statuses = schema["properties"]["status"]["enum"]
+    assert "NO_HYPOTHESIS" not in statuses
+    assert "HYPOTHESES" in statuses
+    assert "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS" in statuses

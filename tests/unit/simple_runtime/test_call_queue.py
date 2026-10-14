@@ -150,6 +150,84 @@ async def test_owned_retry_rows_link_logical_attempts(tmp_path: Path) -> None:
     assert rows[1]["fixed_prompt_bytes"] == 6
 
 
+@pytest.mark.asyncio
+async def test_retry_deadline_excludes_synchronous_attempt_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-queue",
+        workspace_id="workspace-queue",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    projection_calls = 0
+    clock_offset = 0.0
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+
+    def logical_time() -> float:
+        return real_time() + clock_offset
+
+    def project(_data_dir: Path, _analysis_id: str) -> None:
+        nonlocal clock_offset, projection_calls
+        projection_calls += 1
+        if projection_calls == 1:
+            # Production projection is a synchronous, post-commit read-model
+            # rebuild. Its wall time must not consume the next model attempt.
+            clock_offset += 1.4
+
+    store = SimpleCheckpointStore(
+        artifacts.paths.database,
+        artifact_data_dir=tmp_path,
+        post_commit_projection=project,
+    )
+    inner = _Client(
+        [
+            StageFailure(
+                code="RATE_LIMITED",
+                retryable=True,
+                safe_message="try again",
+            ),
+            _success(),
+        ]
+    )
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    client = RunLimitedClient(
+        inner=inner,
+        semaphore=asyncio.Semaphore(1),
+        artifacts=artifacts,
+        store=store,
+        model="test-model",
+        max_retries=1,
+        max_tokens="unlimited",
+        max_cost_minor_units=1000,
+        max_elapsed_seconds=3600,
+        sleep=no_sleep,
+    )
+    with monkeypatch.context() as clock_patch:
+        clock_patch.setattr(loop, "time", logical_time)
+        result = await client.call(
+            prompt=b"safe",
+            output_schema={"type": "object"},
+            timeout_ms=1800,
+        )
+
+    assert isinstance(result, SimpleLLMCallResult)
+    assert inner.calls == 2
+    assert projection_calls == 2
+    with sqlite3.connect(store.database_path) as connection:
+        rows = connection.execute(
+            "SELECT status, elapsed_ms FROM simple_llm_attempts ORDER BY attempt_number"
+        ).fetchall()
+    assert [row[0] for row in rows] == ["RATE_LIMITED", "SUCCEEDED"]
+    assert rows[0][1] < 1000
+
+
 def _wrapper(
     tmp_path: Path,
     inner: SimpleLLMClient,
@@ -377,6 +455,308 @@ def test_v2_cleanup_confirmation_requires_captured_child_identity(
             (call_id,),
         ).fetchall()
     assert statuses == [("EXEC", "EXITED"), ("LOGIN", "EXITED")]
+
+
+def _windows_reboot_confirmation_case(
+    tmp_path: Path,
+) -> tuple[
+    SimpleCheckpointStore,
+    SimpleArtifactRepository,
+    StageCheckpoint,
+    str,
+    datetime,
+    datetime,
+    str,
+]:
+    """A recorded child predates a real reboot; no current PID proves its exit."""
+
+    identity = CheckpointIdentity(
+        analysis_id="analysis-reboot-child",
+        workspace_id="workspace-reboot-child",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-reboot-child",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    store = SimpleCheckpointStore(artifacts.paths.database)
+    store.save_analysis_run(
+        SimpleAnalysisRun(
+            analysis_id=identity.analysis_id,
+            display_analysis_id="A-001",
+            workspace_id=identity.workspace_id,
+            commit_id=identity.commit_id,
+            repository="https://example.invalid/repo.git",
+            candidate_pipeline_version=2,
+        )
+    )
+    now = datetime.now(UTC)
+    checkpoint = store.mark_running(
+        identity, SimpleStage.REPORT_DONE, (), attempt_id="reboot-attempt"
+    ).model_copy(update={"updated_at": now - timedelta(minutes=90)})
+    store.save_checkpoint(checkpoint)
+    call_id = "reboot-call"
+    assert store.begin_codex_call(call_id, identity.analysis_id)
+    call_started = now - timedelta(hours=3)
+    child_started = now - timedelta(hours=2)
+    boot_at = now - timedelta(hours=1)
+    windows_epoch = datetime(1601, 1, 1, tzinfo=UTC)
+    delta = child_started - windows_epoch
+    ticks = (delta.days * 86400 + delta.seconds) * 10_000_000 + delta.microseconds * 10
+    start_identity = f"windows:{ticks:016x}"
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_codex_calls SET started_at = ? WHERE call_id = ?",
+            (call_started.isoformat(), call_id),
+        )
+    store.begin_codex_child_spawn(
+        call_id=call_id, analysis_id=identity.analysis_id, phase="EXEC"
+    )
+    store.record_codex_child_spawn(
+        call_id=call_id,
+        analysis_id=identity.analysis_id,
+        phase="EXEC",
+        pid=4242,
+        start_identity=start_identity,
+    )
+    return store, artifacts, checkpoint, call_id, boot_at, now, start_identity
+
+
+def _reboot_confirmation(
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    call_id: str,
+    boot_at: datetime,
+    observed_at: datetime,
+    start_identity: str,
+) -> StoredDataRef:
+    original = _cleanup_confirmation(artifacts, checkpoint, call_id=call_id)
+    return artifacts.put_json(
+        json.loads(artifacts.read(original))
+        | {
+            "verification_method": "windows_reboot",
+            "observed_boot_at": boot_at.isoformat(),
+            "observed_at": observed_at.isoformat(),
+            "former_parent_pid": 4242,
+            "observed_children": [
+                {
+                    "phase": "EXEC",
+                    "pid": 4242,
+                    "start_identity": start_identity,
+                }
+            ],
+        }
+    )
+
+
+def test_windows_reboot_confirms_unknown_child_only_after_exact_boot_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path)
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: boot_at,
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts, checkpoint, call_id, boot_at, observed_at, child_identity
+    )
+
+    store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) is None
+    assert store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+    with sqlite3.connect(store.database_path) as connection:
+        status = connection.execute(
+            "SELECT status FROM simple_codex_child_spawns WHERE call_id = ?",
+            (call_id,),
+        ).fetchone()
+    assert status == ("EXITED",)
+
+
+def test_windows_inventory_still_rejects_unknown_child_after_reboot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path)
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: boot_at,
+        raising=False,
+    )
+    reboot_ref = _reboot_confirmation(
+        artifacts, checkpoint, call_id, boot_at, observed_at, child_identity
+    )
+    inventory_ref = artifacts.put_json(
+        json.loads(artifacts.read(reboot_ref))
+        | {"verification_method": "windows_process_inventory"}
+    )
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, inventory_ref, artifacts)
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) == call_id
+
+
+@pytest.mark.parametrize(
+    ("marker_boot_offset", "live_boot_offset"),
+    [
+        (timedelta(hours=-2), timedelta(hours=-2)),
+        (timedelta(minutes=-40), timedelta(minutes=-40)),
+        (timedelta(hours=0), timedelta(minutes=2)),
+        (timedelta(hours=2), timedelta(hours=2)),
+    ],
+)
+def test_windows_reboot_rejects_stale_or_forged_boot_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    marker_boot_offset: timedelta,
+    live_boot_offset: timedelta,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path)
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: boot_at + live_boot_offset,
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts,
+        checkpoint,
+        call_id,
+        boot_at + marker_boot_offset,
+        observed_at,
+        child_identity,
+    )
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) == call_id
+
+
+def test_windows_reboot_does_not_override_a_matching_live_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path)
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: True,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: boot_at,
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts, checkpoint, call_id, boot_at, observed_at, child_identity
+    )
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) == call_id
+
+
+def test_windows_reboot_requires_parseable_recorded_child_filetime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, _child_identity = (
+        _windows_reboot_confirmation_case(tmp_path)
+    )
+    malformed_identity = "windows:not-a-filetime"
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE simple_codex_child_spawns SET start_identity = ? "
+            "WHERE call_id = ? AND phase = 'EXEC'",
+            (malformed_identity, call_id),
+        )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: boot_at,
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts, checkpoint, call_id, boot_at, observed_at, malformed_identity
+    )
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) == call_id
+
+
+def test_windows_reboot_requires_live_boot_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path)
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: None,
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts, checkpoint, call_id, boot_at, observed_at, child_identity
+    )
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) == call_id
+
+
+def test_confirmed_windows_reboot_remains_valid_after_later_reboot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path)
+    )
+    current_boot = boot_at
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: current_boot,
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts, checkpoint, call_id, boot_at, observed_at, child_identity
+    )
+    store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+
+    current_boot = boot_at + timedelta(minutes=20)
+    assert store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+    current_boot = boot_at - timedelta(minutes=20)
+    assert not store.has_codex_cleanup_confirmation(checkpoint, artifacts)
 
 
 def test_historical_confirmed_call_reconciles_captured_child_from_audited_ref(

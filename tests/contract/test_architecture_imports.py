@@ -233,6 +233,11 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
 # allowing one value does not permit importing another concrete service there.
 SYMBOL_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     "sastsimi.prompts.local_catalog": frozenset({"sastsimi.agents"}),
+    # The v9 pinned proof must classify the same product-only file scope as
+    # static bootstrap. Permit only this pure selector, not the package.
+    "sastsimi.simple_runtime.surface_applicability_v9": frozenset(
+        {"sastsimi.static_analysis.file_scope.build_static_file_scope"}
+    ),
     "sastsimi.interfaces.cli.public": frozenset(
         {"sastsimi.contracts.surface_reason_codes.SURFACE_REASON_CODES"}
     ),
@@ -732,6 +737,17 @@ def test_public_cli_may_import_only_shared_surface_reason_codes() -> None:
         "from sastsimi.contracts.surface_reason_codes import INTERNAL_DETAIL", module
     )
     assert violations("import sastsimi.contracts.surface_reason_codes", module)
+
+
+def test_v9_applicability_may_import_only_shared_product_selector() -> None:
+    module = "sastsimi.simple_runtime.surface_applicability_v9"
+    selector = "from sastsimi.static_analysis.file_scope import build_static_file_scope"
+    assert violations(selector, module) == []
+    assert violations(
+        "from sastsimi.static_analysis.file_scope import is_test_only_path", module
+    )
+    assert violations("import sastsimi.static_analysis.file_scope", module)
+    assert violations(selector, "sastsimi.simple_runtime.unrelated")
 
 
 def test_descriptor_may_import_only_the_profile_value_model() -> None:

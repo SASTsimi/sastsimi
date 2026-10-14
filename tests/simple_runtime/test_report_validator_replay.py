@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,12 +23,14 @@ from sastsimi.simple_runtime.application import (
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
+    CandidateTerminal,
     CheckpointIdentity,
     SimpleAnalysisRun,
     SimpleStage,
     StageCheckpoint,
     StageFailure,
     StageStatus,
+    input_reference_hash,
 )
 from sastsimi.simple_runtime.recovery import (
     RecoveryAction,
@@ -60,6 +63,8 @@ def _report_content(*, legacy_ipv4: bool = True) -> dict[str, object]:
 
 def _blocked_report(
     tmp_path: Path,
+    *,
+    pro_con_inputs: tuple[StoredDataRef, ...] = (),
 ) -> tuple[
     SimpleCheckpointStore,
     SimpleArtifactRepository,
@@ -99,7 +104,13 @@ def _blocked_report(
             identity,
             stage,
             status=StageStatus.SUCCEEDED,
-            inputs=(source_refs[-1],) if source_refs else (),
+            inputs=(
+                pro_con_inputs
+                if stage is SimpleStage.PRO_CON_DONE and pro_con_inputs
+                else (source_refs[-1],)
+                if source_refs
+                else ()
+            ),
             outputs=(output,),
             attempt_id=f"{stage.value}-attempt",
             attempt_number=1,
@@ -785,6 +796,7 @@ def _stopped_second_report(
     invalid_draft: str | None = None,
     invalid_decision: str | None = None,
     record_stop: bool = True,
+    pro_con_inputs: tuple[StoredDataRef, ...] = (),
 ) -> tuple[
     SimpleCheckpointStore,
     SimpleArtifactRepository,
@@ -793,7 +805,9 @@ def _stopped_second_report(
     StoredDataRef,
     StoredDataRef,
 ]:
-    store, artifacts, original, _legacy_ref, _other = _blocked_report(tmp_path)
+    store, artifacts, original, _legacy_ref, _other = _blocked_report(
+        tmp_path, pro_con_inputs=pro_con_inputs
+    )
     identity = original.identity
     refs = tuple(
         item.output_refs[0]
@@ -986,6 +1000,236 @@ def test_second_report_stop_replays_only_when_both_saved_drafts_are_now_valid(
     assert store.require(root_identity, SimpleStage.HYPOTHESIS_DONE) == root
     with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_STALE"):
         store.prepare_report_validator_replay(stopped, second_ref, artifacts)
+
+
+def _v4_succeeded_root_report(
+    tmp_path: Path,
+    *,
+    index_padding_bytes: int = 0,
+) -> tuple[
+    SimpleCheckpointStore,
+    SimpleArtifactRepository,
+    StageCheckpoint,
+    StoredDataRef,
+]:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-1",
+        workspace_id="workspace-1",
+        commit_id="a" * 40,
+        hypothesis_id="hypothesis-1",
+    )
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    proposal_ref = artifacts.put_json({"kind": "surface-proposal"})
+    scope = "f" * 64
+    surface_id = "surface-1"
+    context_id = "context-1"
+    source_sha256 = "a" * 64
+    plan_binding_hash = "b" * 64
+    certificate_ref = artifacts.put_json({"kind": "scope-certificate"})
+    context_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_context_v4",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "scope_fingerprint": scope,
+            "surface_id": surface_id,
+            "plan_binding_hash": plan_binding_hash,
+            "source_sha256": source_sha256,
+            "part_index": 0,
+            "part_count": 1,
+        }
+    )
+    proposal_inputs = (proposal_ref, context_ref)
+    store, artifacts, stopped, _first_ref, second_ref, _stop_ref = (
+        _stopped_second_report(tmp_path, pro_con_inputs=proposal_inputs)
+    )
+    root_identity = identity.model_copy(update={"hypothesis_id": None})
+    static_ref = artifacts.put_json({"kind": "static-bundle"})
+    index_ref = artifacts.put_json(
+        {"kind": "surface-index-v2", "padding": "x" * index_padding_bytes}
+    )
+    coverage_ref = artifacts.put_json({"kind": "surface-coverage-v1"})
+    pending_seed = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.PRO_CON_DONE,
+        status=StageStatus.PENDING,
+        input_refs=proposal_inputs,
+        input_hash=input_reference_hash(proposal_inputs),
+    )
+    result_ref = artifacts.put_json({"kind": "simple_surface_hypothesis_result_v4"})
+    store.commit_surface_exploration(
+        root_identity,
+        scope,
+        surface_id,
+        context_id,
+        static_bundle_hash=static_ref.content_hash,
+        index_hash=index_ref.content_hash,
+        context_hash=context_ref.content_hash,
+        source_sha256=source_sha256,
+        status="HYPOTHESES",
+        result_ref=result_ref,
+        registrations=((identity.hypothesis_id or "", proposal_ref, pending_seed),),
+        proposal_version=4,
+    )
+    plan_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_enrichment_plan_v4",
+            "analysis_id": identity.analysis_id,
+            "workspace_id": identity.workspace_id,
+            "commit_id": identity.commit_id,
+            "scope_fingerprint": scope,
+            "static_bundle_ref": static_ref.model_dump(mode="json"),
+            "index_ref": index_ref.model_dump(mode="json"),
+            "index_hash": index_ref.content_hash,
+            "original_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "certificate_hash": certificate_ref.content_hash,
+            "plan_binding_hash": plan_binding_hash,
+            "expected_parts": [
+                {
+                    "surface_id": surface_id,
+                    "context_id": context_id,
+                    "context_hash": context_ref.content_hash,
+                    "source_sha256": source_sha256,
+                    "part_index": 0,
+                    "part_count": 1,
+                }
+            ],
+        }
+    )
+    run = store.require_analysis_run(identity.analysis_id)
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash=static_ref.content_hash,
+        scope_fingerprint=scope,
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=1,
+        surface_index_hash=index_ref.content_hash,
+        surface_coverage_hash=coverage_ref.content_hash,
+    )
+    store.save_analysis_run(
+        run.model_copy(
+            update={
+                "static_bundle_ref": static_ref,
+                "candidate_scope_fingerprint": scope,
+                "candidate_terminal": terminal,
+                "surface_enrichment_plan_ref": plan_ref,
+                "python_scope_certificate_ref": certificate_ref,
+                "surface_enrichment_status": "BLOCKED",
+                "surface_enrichment_error_code": stopped.error_code,
+            }
+        )
+    )
+    root = store.require(root_identity, SimpleStage.HYPOTHESIS_DONE)
+    store.save_checkpoint(
+        root.model_copy(
+            update={
+                "status": StageStatus.SUCCEEDED,
+                "error_code": None,
+                "attempt_id": "root-v1-succeeded",
+                "attempt_number": 2,
+                "input_refs": (static_ref,),
+                "input_hash": input_reference_hash((static_ref,)),
+                "output_refs": (index_ref, coverage_ref),
+            }
+        )
+    )
+    return store, artifacts, stopped, second_ref
+
+
+def test_second_report_stop_replays_v4_succeeded_root_with_pinned_child(
+    tmp_path: Path,
+) -> None:
+    store, artifacts, stopped, draft_ref = _v4_succeeded_root_report(tmp_path)
+    root_identity = stopped.identity.model_copy(update={"hypothesis_id": None})
+    root_before = store.require(root_identity, SimpleStage.HYPOTHESIS_DONE)
+    prior = store.prior(stopped.identity, SimpleStage.REPORT_DONE)
+
+    pending = store.prepare_report_validator_replay(stopped, draft_ref, artifacts)
+
+    assert pending.status is StageStatus.PENDING
+    assert pending.attempt_number == 2
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == pending
+    assert store.require(root_identity, SimpleStage.HYPOTHESIS_DONE) == root_before
+    assert store.prior(stopped.identity, SimpleStage.REPORT_DONE) == prior
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_STALE"):
+        store.prepare_report_validator_replay(stopped, draft_ref, artifacts)
+
+
+def test_v4_report_replay_rejects_duplicate_plan_part(tmp_path: Path) -> None:
+    store, artifacts, stopped, draft_ref = _v4_succeeded_root_report(tmp_path)
+    run = store.require_analysis_run(stopped.identity.analysis_id)
+    assert run.surface_enrichment_plan_ref is not None
+    plan = json.loads(artifacts.read(run.surface_enrichment_plan_ref))
+    plan["expected_parts"].append(dict(plan["expected_parts"][0]))
+    store.save_analysis_run(
+        run.model_copy(update={"surface_enrichment_plan_ref": artifacts.put_json(plan)})
+    )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_ROOT_UNBOUND"):
+        store.prepare_report_validator_replay(stopped, draft_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
+
+
+def test_v4_report_replay_does_not_add_index_size_limit(tmp_path: Path) -> None:
+    store, artifacts, stopped, draft_ref = _v4_succeeded_root_report(
+        tmp_path, index_padding_bytes=16 * 1024 * 1024 + 1
+    )
+
+    pending = store.prepare_report_validator_replay(stopped, draft_ref, artifacts)
+
+    assert pending.status is StageStatus.PENDING
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == pending
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["wrong_run_error", "missing_progress", "wrong_plan_context", "wrong_root_output"],
+)
+def test_v4_report_replay_rejects_unbound_saved_scope(
+    tmp_path: Path, corruption: str
+) -> None:
+    store, artifacts, stopped, draft_ref = _v4_succeeded_root_report(tmp_path)
+    run = store.require_analysis_run(stopped.identity.analysis_id)
+    root_identity = stopped.identity.model_copy(update={"hypothesis_id": None})
+    if corruption == "wrong_run_error":
+        store.save_analysis_run(
+            run.model_copy(update={"surface_enrichment_error_code": "OTHER_ERROR"})
+        )
+    elif corruption == "missing_progress":
+        with store._connect() as connection:
+            connection.execute(
+                "DELETE FROM simple_surface_exploration_progress WHERE analysis_id = ?",
+                (stopped.identity.analysis_id,),
+            )
+    elif corruption == "wrong_plan_context":
+        assert run.surface_enrichment_plan_ref is not None
+        plan = json.loads(artifacts.read(run.surface_enrichment_plan_ref))
+        plan["expected_parts"][0]["context_id"] = "another-context"
+        store.save_analysis_run(
+            run.model_copy(
+                update={"surface_enrichment_plan_ref": artifacts.put_json(plan)}
+            )
+        )
+    else:
+        root = store.require(root_identity, SimpleStage.HYPOTHESIS_DONE)
+        store.save_checkpoint(
+            root.model_copy(
+                update={
+                    "attempt_id": "wrong-v1-root-output",
+                    "attempt_number": root.attempt_number + 1,
+                    "output_refs": (
+                        artifacts.put_json({"kind": "other-index"}),
+                        root.output_refs[1],
+                    ),
+                }
+            )
+        )
+
+    with pytest.raises(ValueError, match="REPORT_VALIDATOR_REPLAY_ROOT_UNBOUND"):
+        store.prepare_report_validator_replay(stopped, draft_ref, artifacts)
+    assert store.require(stopped.identity, SimpleStage.REPORT_DONE) == stopped
 
 
 @pytest.mark.parametrize("invalid_draft", ["first", "second"])

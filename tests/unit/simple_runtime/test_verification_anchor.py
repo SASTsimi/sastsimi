@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -33,14 +34,24 @@ from sastsimi.simple_runtime.stages import (
     TechnicalGateStage,
     _verification_anchor_refs,
 )
+from sastsimi.simple_runtime.surface_enrichment_v9 import (
+    prepare_surface_enrichment_v9,
+)
 from tests.unit.simple_runtime.test_surface_enrichment_v8 import (
     _graph as _v8_source_graph,
 )
 from tests.unit.simple_runtime.test_surface_enrichment_v8 import (
     _wrapper as _v8_source_wrapper,
 )
+from tests.unit.simple_runtime.test_surface_enrichment_v9 import connected_inputs
+from tests.unit.simple_runtime.test_surface_evidence_validation_v4 import (
+    _SOURCE as _V4_SOURCE,
+)
 from tests.unit.simple_runtime.test_surface_evidence_validation_v4 import (
     _SOURCE as _V5_SOURCE,
+)
+from tests.unit.simple_runtime.test_surface_evidence_validation_v4 import (
+    _graph as _v4_source_graph,
 )
 from tests.unit.simple_runtime.test_surface_evidence_validation_v4 import (
     _graph as _v5_source_graph,
@@ -149,6 +160,131 @@ def _anchor_refs(
         }
     )
     return proposal_ref, source_ref
+
+
+def _v4_anchor_case(
+    tmp_path: Path, *, mutation: str = "valid"
+) -> tuple[
+    StageCheckpoint,
+    dict[SimpleStage, StageCheckpoint],
+    SimpleArtifactRepository,
+    Path,
+]:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    source_path = checkout / "app.py"
+    source_path.write_text(_V4_SOURCE, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "app.py"], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    commit = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout)
+        .decode("ascii")
+        .strip()
+    )
+    identity = _identity().model_copy(update={"commit_id": commit})
+    artifacts = SimpleArtifactRepository(tmp_path / "data", identity)
+    graph = _v4_source_graph()
+    graph_ref = artifacts.put_json(graph)
+    items: list[dict[str, object]] = []
+    for category in (
+        "source_files",
+        "source_lines",
+        "ast_facts",
+        "nodes",
+        "edges",
+        "paths",
+        "gaps",
+    ):
+        source_parts = graph[category]
+        assert isinstance(source_parts, list)
+        for ordinal, value in enumerate(source_parts):
+            assert isinstance(value, dict)
+            if (
+                mutation == "missing_citation"
+                and category == "source_lines"
+                and value.get("line") == 4
+            ):
+                continue
+            items.append({"category": category, "ordinal": ordinal, "value": value})
+    context = {
+        "kind": "simple_surface_context_v4",
+        "analysis_id": identity.analysis_id,
+        "workspace_id": identity.workspace_id,
+        "commit_id": identity.commit_id,
+        "scope": "default",
+        "scope_fingerprint": "scope-surface",
+        "static_bundle_hash": "a" * 64,
+        "ast_manifest_hash": "d" * 64,
+        "surface_index_hash": "c" * 64,
+        "scope_certificate_hash": "e" * 64,
+        "surface_id": "surface-review-001",
+        "surface_type": "CODE_EXECUTION",
+        "path": "app.py",
+        "line": 4,
+        "source_sha256": hashlib.sha256(_V4_SOURCE.encode()).hexdigest(),
+        "graph_hash": (
+            "0" * 64 if mutation == "wrong_graph" else graph_ref.content_hash
+        ),
+        "parent_progress_hash": "f" * 64,
+        "plan_binding_hash": "1" * 64,
+        "reader_revision": "source-bound-v4-1",
+        "part_index": 0,
+        "part_count": 1,
+        "unavailable_item_count": 0,
+        "items": items,
+    }
+    context_ref = artifacts.put_json(context)
+    context_id = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "simple_surface_context_id_v4",
+                "plan_binding_hash": context["plan_binding_hash"],
+                "surface_id": context["surface_id"],
+                "part_index": 0,
+                "context_hash": context_ref.content_hash,
+            }
+        )
+    ).hexdigest()
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_id": (
+                "other-surface"
+                if mutation == "wrong_surface"
+                else context["surface_id"]
+            ),
+            "context_id": context_id,
+            "surface_context_ref": context_ref.model_dump(mode="json"),
+            "proposal": {
+                "title": "Pinned v4 call path",
+                "code_locations": ["app.py:3", "app.py:4"],
+            },
+        }
+    )
+    source_path.write_text("changed checkout", encoding="utf-8")
+    pro_con = _checkpoint(
+        SimpleStage.PRO_CON_DONE,
+        identity=identity,
+        inputs=(proposal_ref, context_ref),
+    )
+    checkpoint = _checkpoint(SimpleStage.VERIFICATION_INITIAL_DONE, identity=identity)
+    return checkpoint, {SimpleStage.PRO_CON_DONE: pro_con}, artifacts, checkout
 
 
 def _v5_anchor_case(
@@ -543,6 +679,116 @@ def test_v8_surface_context_anchor_rejects_unbound_evidence(
     assert caught.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
 
 
+def _v9_anchor_case(
+    tmp_path: Path, *, mutation: str = "valid"
+) -> tuple[
+    StageCheckpoint,
+    dict[SimpleStage, StageCheckpoint],
+    SimpleArtifactRepository,
+    Path,
+    tuple[str, int, str],
+]:
+    inputs = connected_inputs(tmp_path)
+    _plan, parts = prepare_surface_enrichment_v9(**inputs)
+    assert parts
+    part = parts[0]
+    identity = inputs["identity"].model_copy(update={"hypothesis_id": "hypothesis-1"})
+    artifacts = SimpleArtifactRepository(tmp_path / "anchor-data", identity)
+    graph = deepcopy(inputs["graphs"][part.surface_id])
+    # The shared proof fixture uses a non-hex AST placeholder; bind a valid
+    # digest consistently in the saved graph and context for the anchor test.
+    graph["ast_manifest_hash"] = "c" * 64
+    graph_ref = artifacts.put_json(graph)
+    payload = deepcopy(part.payload)
+    payload["ast_manifest_hash"] = "c" * 64
+    payload["graph_hash"] = graph_ref.content_hash
+    context_part = payload["context_part"]
+    assert isinstance(context_part, dict)
+    start_line = context_part["start_line"]
+    excerpt = payload["source_excerpt"]
+    assert type(start_line) is int and isinstance(excerpt, str)
+    cited_line = start_line
+    cited_text = excerpt.split("\n")[0]
+    if mutation == "wrong_graph":
+        payload["graph_hash"] = "0" * 64
+    elif mutation == "wrong_source":
+        lines = excerpt.split("\n")
+        lines[0] = "x" * len(lines[0])
+        payload["source_excerpt"] = "\n".join(lines)
+    source_ref = artifacts.put_json(payload)
+    context_id = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "simple_surface_context_id_v9",
+                "plan_binding_hash": payload["plan_binding_hash"],
+                "surface_id": part.surface_id,
+                "part_id": context_part["part_id"],
+                "context_hash": source_ref.content_hash,
+            }
+        )
+    ).hexdigest()
+    citation = f"app.py:{cited_line}"
+    if mutation == "missing_citation":
+        citation = "app.py:99999"
+    proposal_ref = artifacts.put_prompt_proposal(
+        {
+            "kind": "simple_hypothesis_proposal",
+            "analysis_id": identity.analysis_id,
+            "hypothesis_id": identity.hypothesis_id,
+            "surface_id": part.surface_id,
+            "context_id": context_id,
+            "surface_context_ref": source_ref.model_dump(mode="json"),
+            "proposal": {"title": "Pinned v9 path", "code_locations": [citation]},
+        }
+    )
+    (tmp_path / "app.py").write_text("changed checkout", encoding="utf-8")
+    pro_con = _checkpoint(
+        SimpleStage.PRO_CON_DONE,
+        identity=identity,
+        inputs=(proposal_ref, source_ref),
+    )
+    checkpoint = _checkpoint(SimpleStage.VERIFICATION_INITIAL_DONE, identity=identity)
+    return (
+        checkpoint,
+        {SimpleStage.PRO_CON_DONE: pro_con},
+        artifacts,
+        tmp_path,
+        ("app.py", cited_line, cited_text),
+    )
+
+
+def test_v9_surface_context_anchor_uses_pinned_source(tmp_path: Path) -> None:
+    checkpoint, prior, artifacts, checkout, citation = _v9_anchor_case(tmp_path)
+
+    refs = _verification_anchor_refs(
+        checkpoint, prior, artifacts, workspace_path=checkout, require_anchor=True
+    )
+    assert len(refs) == 2
+    assert refs[0] == prior[SimpleStage.PRO_CON_DONE].input_refs[0]
+    focused = json.loads(artifacts.read(refs[1]))
+    assert citation in {
+        (row["path"], row["line"], row["text"]) for row in focused["source_lines"]
+    }
+    assert b"changed checkout" not in artifacts.read(refs[1])
+
+
+@pytest.mark.parametrize(
+    "mutation", ["wrong_graph", "wrong_source", "missing_citation"]
+)
+def test_v9_surface_context_anchor_rejects_unbound_evidence(
+    tmp_path: Path, mutation: str
+) -> None:
+    checkpoint, prior, artifacts, checkout, _citation = _v9_anchor_case(
+        tmp_path, mutation=mutation
+    )
+
+    with pytest.raises(StageFailed) as caught:
+        _verification_anchor_refs(
+            checkpoint, prior, artifacts, workspace_path=checkout, require_anchor=True
+        )
+    assert caught.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
+
+
 def test_v5_surface_context_anchor_uses_pinned_cited_lines(tmp_path: Path) -> None:
     checkpoint, prior, artifacts, checkout = _v5_anchor_case(tmp_path)
 
@@ -558,6 +804,43 @@ def test_v5_surface_context_anchor_uses_pinned_cited_lines(tmp_path: Path) -> No
         (row["path"], row["line"], row["text"]) for row in focused["source_lines"]
     }
     assert b"changed checkout" not in artifacts.read(focused_ref)
+
+
+def test_v4_surface_context_anchor_uses_bound_graph_and_pinned_source(
+    tmp_path: Path,
+) -> None:
+    checkpoint, prior, artifacts, checkout = _v4_anchor_case(tmp_path)
+
+    refs = _verification_anchor_refs(
+        checkpoint, prior, artifacts, workspace_path=checkout, require_anchor=True
+    )
+    assert len(refs) == 2
+    proposal_ref, focused_ref = refs
+
+    assert proposal_ref == prior[SimpleStage.PRO_CON_DONE].input_refs[0]
+    focused = json.loads(artifacts.read(focused_ref))
+    assert ("app.py", 4, "    return dangerous(value)") in {
+        (row["path"], row["line"], row["text"]) for row in focused["source_lines"]
+    }
+    assert b"changed checkout" not in artifacts.read(focused_ref)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing_citation", "wrong_graph", "wrong_surface"]
+)
+def test_v4_surface_context_anchor_rejects_unbound_evidence(
+    tmp_path: Path, mutation: str
+) -> None:
+    checkpoint, prior, artifacts, checkout = _v4_anchor_case(
+        tmp_path, mutation=mutation
+    )
+
+    with pytest.raises(StageFailed) as caught:
+        _verification_anchor_refs(
+            checkpoint, prior, artifacts, workspace_path=checkout, require_anchor=True
+        )
+
+    assert caught.value.failure.code == "HYPOTHESIS_ANCHOR_INVALID"
 
 
 def test_v5_split_context_uses_bound_graph_file_hash(tmp_path: Path) -> None:

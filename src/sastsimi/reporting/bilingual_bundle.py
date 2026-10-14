@@ -256,7 +256,7 @@ def coverage_report_lines(
             f"- {'전체 분석 상태' if korean else 'Analysis status'}: "
             f"`{coverage.analysis_status}`",
         )
-    if coverage.surface_proof_version in (2, 3, 4, 5, 6):
+    if coverage.surface_proof_version in (2, 3, 4, 5, 6, 7, 8):
         lines.extend(
             [
                 f"- {'원본 정적 공백' if korean else 'Raw static gaps'}: "
@@ -280,7 +280,7 @@ def coverage_report_lines(
                 + f": `{coverage.surface_scope_certificate_hash}`",
             ]
         )
-    if coverage.surface_proof_version in (3, 4, 5, 6):
+    if coverage.surface_proof_version in (3, 4, 5, 6, 7, 8):
         if coverage.surface_completed_inconclusive_child_count is not None:
             lines.append(
                 "- "
@@ -315,10 +315,15 @@ def coverage_report_lines(
         if all(type(count) is int and count >= 0 for count in counts):
             total = sum(cast(int, count) for count in counts)
             if total > 0 and type(coverage.surface_reviewed_count) is int:
+                version = (
+                    coverage.surface_proof_version
+                    if coverage.surface_proof_version in (6, 7, 8)
+                    else 5
+                )
                 reviewed_label = (
-                    ("v6 검토 완료" if korean else "V6 reviewed surfaces")
-                    if coverage.surface_proof_version == 6
-                    else ("v5 검토 완료" if korean else "V5 reviewed surfaces")
+                    f"v{version} 검토 완료"
+                    if korean
+                    else f"V{version} reviewed surfaces"
                 )
                 lines.extend(
                     [
@@ -332,6 +337,19 @@ def coverage_report_lines(
                         f"{coverage.surface_insufficient_count}",
                     ]
                 )
+        if (
+            coverage.surface_proof_version == 8
+            and type(coverage.surface_template_scope_limit_count) is int
+        ):
+            lines.append(
+                "- "
+                + (
+                    "Python 범위 밖 템플릿 HTML/Jinja 내용"
+                    if korean
+                    else "Template HTML/Jinja content outside Python scope"
+                )
+                + f": {coverage.surface_template_scope_limit_count}"
+            )
     if coverage.unavailable_file_count is not None:
         label = (
             "미검증 Python 소스 파일" if korean else "Unavailable Python source files"
@@ -641,7 +659,8 @@ def render_bundle_files(
                                     visible_surface_reason_distribution(facts.coverage)
                                 )
                             }
-                            if facts.coverage.surface_proof_version in (3, 4, 5, 6)
+                            if facts.coverage.surface_proof_version
+                            in (3, 4, 5, 6, 7, 8)
                             else {}
                         ),
                         **(
@@ -662,11 +681,21 @@ def render_bundle_files(
                                     facts.coverage.surface_completed_inconclusive_child_count
                                 ),
                             }
-                            if facts.coverage.surface_proof_version in (3, 4, 5, 6)
+                            if facts.coverage.surface_proof_version
+                            in (3, 4, 5, 6, 7, 8)
+                            else {}
+                        ),
+                        **(
+                            {
+                                "template_content_not_analyzed_count": (
+                                    facts.coverage.surface_template_scope_limit_count
+                                )
+                            }
+                            if facts.coverage.surface_proof_version == 8
                             else {}
                         ),
                     }
-                    if facts.coverage.surface_proof_version in (2, 3, 4, 5, 6)
+                    if facts.coverage.surface_proof_version in (2, 3, 4, 5, 6, 7, 8)
                     else {}
                 ),
             }

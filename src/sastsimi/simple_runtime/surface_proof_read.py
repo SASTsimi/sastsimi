@@ -22,6 +22,10 @@ from .surface_coverage_v3 import verified_saved_coverage_v3
 from .surface_coverage_v4 import verified_saved_coverage_v4
 from .surface_coverage_v5 import SurfaceCoverageV5, verified_saved_coverage_v5
 from .surface_coverage_v6 import SurfaceCoverageV6, verified_saved_coverage_v6
+from .surface_coverage_v7 import SurfaceCoverageV7
+from .surface_coverage_v7_read import verified_saved_coverage_v7
+from .surface_coverage_v8 import SurfaceCoverageV8
+from .surface_coverage_v8_read import verified_saved_coverage_v8
 
 SURFACE_STATUSES = ("COVERED", "UNCOVERED", "INSUFFICIENT")
 
@@ -35,7 +39,7 @@ def read_surface_scope_certificate(
     """Load the exact v2 scope certificate, also retained by v3 proof."""
 
     if (
-        terminal.surface_proof_version not in (2, 3, 4, 5, 6)
+        terminal.surface_proof_version not in (2, 3, 4, 5, 6, 7, 8)
         or certificate_ref is None
         or static_coverage_ref is None
         or certificate_ref.content_hash != terminal.scope_certificate_hash
@@ -237,12 +241,20 @@ def verified_surface_coverage_counts(
 
     if not isinstance(payload, dict):
         return None
-    if terminal.surface_proof_version in (3, 4, 5, 6):
+    if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8):
         if artifacts is None or coverage_ref is None or store is None:
             return None
         try:
             current = (
-                verified_saved_coverage_v6(
+                verified_saved_coverage_v8(
+                    artifacts.identity, index, coverage_ref, store, artifacts
+                )
+                if terminal.surface_proof_version == 8
+                else verified_saved_coverage_v7(
+                    artifacts.identity, index, coverage_ref, store, artifacts
+                )
+                if terminal.surface_proof_version == 7
+                else verified_saved_coverage_v6(
                     artifacts.identity, index, coverage_ref, store, artifacts
                 )
                 if terminal.surface_proof_version == 6
@@ -258,7 +270,15 @@ def verified_surface_coverage_counts(
                     artifacts.identity, index, coverage_ref, store, artifacts
                 )
             )
-        except (OSError, TypeError, ValueError):
+            static_disposition = "FULL"
+            if terminal.surface_proof_version == 8:
+                verified_run = store.require_analysis_run(
+                    artifacts.identity.analysis_id
+                )
+                if verified_run.candidate_terminal != terminal:
+                    return None
+                static_disposition = verified_run.static_disposition
+        except (LookupError, OSError, TypeError, ValueError):
             return None
         counts = {
             status: sum(row.coverage_status == status for row in current.surfaces)
@@ -268,9 +288,15 @@ def verified_surface_coverage_counts(
             payload != current.to_json()
             or terminal.surface_coverage_hash != coverage_ref.content_hash
             or terminal.surface_counts != counts
-            or terminal.status != ("COMPLETE" if current.complete else "PARTIAL")
+            or terminal.status
+            != (
+                "COMPLETE"
+                if current.complete and static_disposition == "FULL"
+                else "PARTIAL"
+            )
             or terminal.pending_child_count != current.pending_child_count
-            or terminal.scope_certificate_hash
+            or not isinstance(current, SurfaceCoverageV8)
+            and terminal.scope_certificate_hash
             != current.scope_certificate_ref.content_hash
         ):
             return None
@@ -280,8 +306,16 @@ def verified_surface_coverage_counts(
             for code in row.unresolved_reason_codes
         )
         version5_counts: dict[str, int] = {}
-        if terminal.surface_proof_version in (5, 6):
-            if not isinstance(current, (SurfaceCoverageV5, SurfaceCoverageV6)):
+        if terminal.surface_proof_version in (5, 6, 7, 8):
+            if not isinstance(
+                current,
+                (
+                    SurfaceCoverageV5,
+                    SurfaceCoverageV6,
+                    SurfaceCoverageV7,
+                    SurfaceCoverageV8,
+                ),
+            ):
                 return None
             version5_counts["COMPLETED_INCONCLUSIVE_CHILD_COUNT"] = len(
                 {
@@ -290,11 +324,24 @@ def verified_surface_coverage_counts(
                     for child in row.completed_inconclusive_children
                 }
             )
+        reviewed_count = (
+            sum(bool(row.reviewed_context_ids) for row in current.surfaces)
+            if isinstance(current, SurfaceCoverageV8)
+            else sum(row.review_classification is not None for row in current.surfaces)
+        )
         return {
             **counts,
             **version5_counts,
-            "REVIEWED": sum(
-                row.review_classification is not None for row in current.surfaces
+            "REVIEWED": reviewed_count,
+            **(
+                {
+                    "TEMPLATE_CONTENT_NOT_ANALYZED_COUNT": sum(
+                        row.external_scope_limit == "TEMPLATE_CONTENT_NOT_ANALYZED"
+                        for row in current.surfaces
+                    )
+                }
+                if isinstance(current, SurfaceCoverageV8)
+                else {}
             ),
             "RAW_STATIC_GAP_COUNT": len(current.raw_static_gaps),
             "EFFECTIVE_PYTHON_GAP_COUNT": len(current.effective_python_gaps),

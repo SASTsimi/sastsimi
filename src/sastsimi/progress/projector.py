@@ -346,6 +346,7 @@ class ProgressProjector:
                     "EFFECTIVE_PYTHON_GAP_COUNT",
                     "UNRESOLVED_REASON_COUNT",
                     "COMPLETED_INCONCLUSIVE_CHILD_COUNT",
+                    "TEMPLATE_CONTENT_NOT_ANALYZED_COUNT",
                     "REVIEWED",
                 }
                 and not (
@@ -365,12 +366,21 @@ class ProgressProjector:
             }
             if reason_counts and (
                 candidate_terminal is None
-                or candidate_terminal.surface_proof_version not in (3, 4, 5, 6)
+                or candidate_terminal.surface_proof_version not in (3, 4, 5, 6, 7, 8)
                 or sum(reason_counts.values())
                 != surface_counts.get("UNRESOLVED_REASON_COUNT")
             ):
                 raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
             total = surface_counts.get("TOTAL", 0)
+            template_scope_limit = surface_counts.get(
+                "TEMPLATE_CONTENT_NOT_ANALYZED_COUNT"
+            )
+            if template_scope_limit is not None and (
+                candidate_terminal is None
+                or candidate_terminal.surface_proof_version != 8
+                or template_scope_limit > total
+            ):
+                raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
             recorded_contexts = surface_counts.get("CONTEXT_RECORDS", 0)
             surface_phase = {
                 "recorded_contexts": recorded_contexts,
@@ -379,6 +389,11 @@ class ProgressProjector:
             }
             if "CONTEXT_SURFACES" in surface_counts:
                 surface_phase["recorded_surfaces"] = surface_counts["CONTEXT_SURFACES"]
+            if template_scope_limit is not None:
+                surface_phase["proof_version"] = 8
+                surface_phase["template_content_not_analyzed_count"] = (
+                    template_scope_limit
+                )
             if "REVIEWED" in surface_counts:
                 if surface_counts["REVIEWED"] > total:
                     raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
@@ -442,7 +457,7 @@ class ProgressProjector:
                             static_disposition == "FULL"
                             and candidate_terminal.surface_proof_version == 1
                             or candidate_terminal.surface_proof_version
-                            in (2, 3, 4, 5, 6)
+                            in (2, 3, 4, 5, 6, 7, 8)
                             and surface_counts is not None
                             and surface_counts.get("EFFECTIVE_PYTHON_GAP_COUNT") == 0
                             and "RAW_STATIC_GAP_COUNT" in surface_counts
@@ -456,7 +471,7 @@ class ProgressProjector:
             if terminal_valid and surface_phase is not None:
                 if (
                     candidate_terminal is not None
-                    and candidate_terminal.surface_proof_version in (3, 4, 5, 6)
+                    and candidate_terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
                 ):
                     surface_phase.update(
                         {
