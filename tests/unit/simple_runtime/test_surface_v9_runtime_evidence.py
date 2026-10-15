@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,10 +87,6 @@ def test_v9_recompute_reuses_one_call_index_for_all_surfaces(
         lambda *_args: {"app.py": {"source_sha256": "e" * 64}},
     )
     monkeypatch.setattr(
-        "sastsimi.simple_runtime.surface_v9_runtime_evidence.assess_optional_analyzers",
-        lambda *_args: object(),
-    )
-    monkeypatch.setattr(
         "sastsimi.simple_runtime.surface_v9_runtime_evidence.discover_operational_route_maps",
         lambda *_args: object(),
     )
@@ -107,6 +104,14 @@ def test_v9_recompute_reuses_one_call_index_for_all_surfaces(
     monkeypatch.setattr(
         "sastsimi.simple_runtime.surface_v9_runtime_evidence.build_python_call_path_index",
         call_index,
+    )
+    monkeypatch.setattr(
+        "sastsimi.simple_runtime.surface_v9_runtime_evidence.build_path_proof_replay",
+        lambda *_args, **kwargs: (
+            SimpleNamespace(applicability=object())
+            if kwargs["call_index"] is shared_index
+            else pytest.fail("call index was not shared with proof replay")
+        ),
     )
     monkeypatch.setattr(
         "sastsimi.simple_runtime.surface_v9_runtime_evidence.extract_surface_graph_v5",

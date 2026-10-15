@@ -178,6 +178,25 @@ def test_v9_plan_pins_v8_parent_and_every_ordered_source_part(tmp_path: Path) ->
     }
 
 
+def test_v9_plan_rechecks_pinned_sources_once_per_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = connected_inputs(tmp_path)
+    from sastsimi.simple_runtime import surface_applicability_v9
+
+    original_scan = surface_applicability_v9._scan_sources
+    scans = 0
+
+    def counted_scan(index: SurfaceIndex, workspace: Path) -> Any:
+        nonlocal scans
+        scans += 1
+        return original_scan(index, workspace)
+
+    monkeypatch.setattr(surface_applicability_v9, "_scan_sources", counted_scan)
+    prepare_surface_enrichment_v9(**inputs)
+    assert scans == 1
+
+
 def test_v9_plan_rejects_tampered_parent_or_source_binding(tmp_path: Path) -> None:
     inputs = connected_inputs(tmp_path)
     parent = inputs["prior_v8_coverage"]

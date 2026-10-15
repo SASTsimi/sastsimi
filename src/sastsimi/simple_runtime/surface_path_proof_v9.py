@@ -23,7 +23,7 @@ from .flask_html_response_flow_v9 import prove_flask_html_response_flow_v9
 from .http_route_facts_v5 import verified_http_paths
 from .surface_applicability_v9 import (
     AnalyzerApplicabilityV9,
-    validate_analyzer_applicability,
+    assess_optional_analyzers,
 )
 from .surface_evidence_graph_v4 import _raw_source, _surface_candidate
 
@@ -344,6 +344,54 @@ def _source_and_tree(
             raise ValueError("SURFACE_PATH_SOURCE_INVALID") from error
         sources[path] = tuple(text.splitlines())
     return sources, trees
+
+
+@dataclass(frozen=True, slots=True)
+class PathProofReplay:
+    """Fresh pinned source checks shared only within one proof replay."""
+
+    index: SurfaceIndex
+    workspace: Path
+    applicability: AnalyzerApplicabilityV9
+    sources: dict[str, tuple[str, ...]]
+    trees: dict[str, ast.Module]
+    call_index: PythonCallPathIndex
+
+
+def build_path_proof_replay(
+    index: SurfaceIndex,
+    workspace: Path,
+    *,
+    call_index: PythonCallPathIndex | None = None,
+) -> PathProofReplay:
+    """Validate the pinned checkout once before certifying a batch of surfaces."""
+
+    applicability = assess_optional_analyzers(index, workspace)
+    sources, trees = _source_and_tree(index, workspace)
+    hashes = dict(index.ast_source_hashes)
+    if call_index is None:
+        call_index = build_python_call_path_index(workspace, tuple(hashes))
+    elif (
+        not isinstance(call_index, PythonCallPathIndex)
+        or call_index._workspace != workspace.resolve(strict=True)
+        or call_index._tracked
+        != tuple(sorted(path for path in hashes if path.endswith(".py")))
+        or any(
+            path not in trees
+            or ast.dump(index_tree, include_attributes=True)
+            != ast.dump(trees[path], include_attributes=True)
+            for path, index_tree in call_index._trees.items()
+        )
+    ):
+        raise ValueError("SURFACE_PATH_CALL_INDEX_INVALID")
+    return PathProofReplay(
+        index=index,
+        workspace=workspace.resolve(strict=True),
+        applicability=applicability,
+        sources=sources,
+        trees=trees,
+        call_index=call_index,
+    )
 
 
 def _graph_sources(
@@ -1369,6 +1417,7 @@ def certify_surface_paths(
     workspace: Path,
     *,
     call_index: PythonCallPathIndex | None = None,
+    replay: PathProofReplay | None = None,
 ) -> PathCertificateV9:
     if (
         surface not in index.surfaces
@@ -1384,28 +1433,20 @@ def certify_surface_paths(
         or graph.get("ast_manifest_hash") != index.ast_manifest_hash
     ):
         raise ValueError("SURFACE_PATH_SCOPE_INVALID")
-    if not validate_analyzer_applicability(index, applicability, workspace):
+    if replay is None:
+        replay = build_path_proof_replay(index, workspace, call_index=call_index)
+    elif (
+        replay.index is not index
+        or replay.workspace != workspace.resolve(strict=True)
+        or (call_index is not None and call_index is not replay.call_index)
+    ):
+        raise ValueError("SURFACE_PATH_REPLAY_INVALID")
+    if replay.applicability != applicability:
         raise ValueError("SURFACE_PATH_APPLICABILITY_INVALID")
     hashes = dict(index.ast_source_hashes)
-    sources, trees = _source_and_tree(index, workspace)
+    sources, trees = replay.sources, replay.trees
     files, locations = _graph_sources(graph, index, sources, workspace)
-    if call_index is None:
-        call_index = build_python_call_path_index(workspace, tuple(hashes))
-    elif (
-        # A cached index from the same checkout can still predate a new pinned
-        # manifest. Its call edges are usable only for the exact parsed trees.
-        not isinstance(call_index, PythonCallPathIndex)
-        or call_index._workspace != workspace.resolve(strict=True)
-        or call_index._tracked
-        != tuple(sorted(path for path in hashes if path.endswith(".py")))
-        or any(
-            path not in trees
-            or ast.dump(index_tree, include_attributes=True)
-            != ast.dump(trees[path], include_attributes=True)
-            for path, index_tree in call_index._trees.items()
-        )
-    ):
-        raise ValueError("SURFACE_PATH_CALL_INDEX_INVALID")
+    call_index = replay.call_index
     if surface.type == "REQUEST_ENTRY":
         return _certify_request_entry_paths(
             index,
@@ -1628,6 +1669,7 @@ def validate_path_certificate(
     certificate: PathCertificateV9,
     *,
     call_index: PythonCallPathIndex | None = None,
+    replay: PathProofReplay | None = None,
 ) -> bool:
     if not isinstance(certificate, PathCertificateV9):
         return False
@@ -1639,6 +1681,7 @@ def validate_path_certificate(
             applicability,
             workspace,
             call_index=call_index,
+            replay=replay,
         )
     except (OSError, TypeError, ValueError):
         return False

@@ -27,7 +27,11 @@ from .surface_evidence_graph_v5 import (
     verify_operational_routes_v5,
 )
 from .surface_intrinsic_proof_v9 import IntrinsicProofV9, prove_intrinsic_surface
-from .surface_path_proof_v9 import PathCertificateV9, certify_surface_paths
+from .surface_path_proof_v9 import (
+    PathCertificateV9,
+    build_path_proof_replay,
+    certify_surface_paths,
+)
 
 
 def recompute_v9_runtime_evidence(
@@ -71,9 +75,12 @@ def recompute_v9_runtime_evidence(
         != index.candidate_inventory_hash
     ):
         raise ValueError("SURFACE_ENRICHMENT_V9_CANDIDATE_CHANGED")
-    applicability = assess_optional_analyzers(index, workspace)
+    applicability = (
+        assess_optional_analyzers(index, workspace) if not index.surfaces else None
+    )
     graphs: dict[str, dict[str, object]] = {}
     intrinsic: dict[str, IntrinsicProofV9] = {}
+    pinned_blob_cache: dict[tuple[Path, str, str], bytes] = {}
     paths: dict[str, PathCertificateV9] = {}
     if index.surfaces:
         route_map = discover_operational_route_maps(
@@ -83,6 +90,8 @@ def recompute_v9_runtime_evidence(
         call_index = build_python_call_path_index(
             workspace, tuple(path for path, _ in source_hashes)
         )
+        replay = build_path_proof_replay(index, workspace, call_index=call_index)
+        applicability = replay.applicability
         for surface in index.surfaces:
             graph = extract_surface_graph_v5(
                 index,
@@ -104,6 +113,7 @@ def recompute_v9_runtime_evidence(
                 graph,
                 candidates=candidates,
                 artifacts=artifacts,
+                pinned_blob_cache=pinned_blob_cache,
             )
             if proof is not None:
                 intrinsic[surface.surface_id] = proof
@@ -114,5 +124,7 @@ def recompute_v9_runtime_evidence(
                 applicability,
                 workspace,
                 call_index=call_index,
+                replay=replay,
             )
+    assert applicability is not None
     return applicability, intrinsic, paths, graphs, candidates

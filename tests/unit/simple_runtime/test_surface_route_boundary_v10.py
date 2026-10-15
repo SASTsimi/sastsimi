@@ -7,6 +7,7 @@ import hashlib
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -91,6 +92,32 @@ def test_startup_sql_gap_is_not_attributed_to_request_route(tmp_path: Path) -> N
     assert proof.unresolved_v9_path_ids == v9_path.unresolved_path_ids
     assert proof.resolved_v9_path_ids == v9_path.path_ids
     assert proof.expected_v9_part_count == len(v9_path.context_parts)
+
+
+def test_route_boundary_replay_scans_pinned_sources_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index, route, _sink, graph = _request_fixture(
+        tmp_path, STARTUP_SQL_AND_HTML, anchor_line=6
+    )
+    applicability = assess_optional_analyzers(index, tmp_path)
+    certificate = certify_surface_paths(index, route, graph, applicability, tmp_path)
+    from sastsimi.simple_runtime import surface_applicability_v9
+
+    original_scan = surface_applicability_v9._scan_sources
+    scans = 0
+
+    def counted_scan(index: SurfaceIndex, workspace: Path) -> Any:
+        nonlocal scans
+        scans += 1
+        return original_scan(index, workspace)
+
+    monkeypatch.setattr(surface_applicability_v9, "_scan_sources", counted_scan)
+    proof = prove_route_boundaries_v10(
+        index, tmp_path, {route.surface_id: graph}, {route.surface_id: certificate}
+    )[route.surface_id]
+    assert proof.unresolved_reasons == ()
+    assert scans == 1
 
 
 def test_literal_template_is_only_a_python_boundary_proof(tmp_path: Path) -> None:

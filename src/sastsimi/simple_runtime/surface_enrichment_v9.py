@@ -23,7 +23,6 @@ from .candidates import StaticCandidate
 from .models import CheckpointIdentity
 from .surface_applicability_v9 import (
     AnalyzerApplicabilityV9,
-    validate_analyzer_applicability,
 )
 from .surface_coverage_v6 import SurfaceCoverageV6
 from .surface_evidence_graph_v4 import _raw_source
@@ -31,6 +30,7 @@ from .surface_intrinsic_proof_v9 import IntrinsicProofV9, validate_intrinsic_pro
 from .surface_path_proof_v9 import (
     ContextPartV9,
     PathCertificateV9,
+    build_path_proof_replay,
     validate_path_certificate,
 )
 
@@ -300,9 +300,12 @@ def prepare_surface_enrichment_v9(
         or set(graphs) != surface_ids
         or not set(intrinsic_proofs) <= surface_ids
         or not set(path_certificates) <= surface_ids
-        or not validate_analyzer_applicability(index, applicability, workspace)
     ):
         raise ValueError("SURFACE_ENRICHMENT_V9_PROOF_INVALID")
+    replay = build_path_proof_replay(index, workspace)
+    if replay.applicability != applicability:
+        raise ValueError("SURFACE_ENRICHMENT_V9_PROOF_INVALID")
+    pinned_blob_cache: dict[tuple[Path, str, str], bytes] = {}
     targets: list[dict[str, object]] = []
     for surface in index.surfaces:
         graph = graphs[surface.surface_id]
@@ -318,11 +321,12 @@ def prepare_surface_enrichment_v9(
                 intrinsic,
                 candidates=candidates,
                 artifacts=artifacts,
+                pinned_blob_cache=pinned_blob_cache,
             )
         ) or (
             path is not None
             and not validate_path_certificate(
-                index, surface, graph, applicability, workspace, path
+                index, surface, graph, applicability, workspace, path, replay=replay
             )
         ):
             raise ValueError("SURFACE_ENRICHMENT_V9_PROOF_INVALID")

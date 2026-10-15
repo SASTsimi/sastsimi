@@ -7,7 +7,7 @@ import hashlib
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -21,6 +21,7 @@ from sastsimi.simple_runtime.surface_coverage_v2 import _ref
 from sastsimi.simple_runtime.surface_evidence_graph_v4 import _surface_candidate
 from sastsimi.simple_runtime.surface_path_proof_v9 import (
     PathCertificateV9,
+    build_path_proof_replay,
     certify_surface_paths,
     validate_path_certificate,
 )
@@ -266,6 +267,67 @@ def _html_request_fixture(
     index = replace(index, surfaces=(entry,), candidate_count=1)
     graph["index_hash"] = _digest(index.to_json())
     return index, entry, graph
+
+
+def test_batch_replay_scans_pinned_sources_once_without_changing_certificate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index, route, sink, graph = _request_fixture(tmp_path)
+    sink_graph = copy.deepcopy(graph)
+    sink_graph["anchor"] = {
+        "surface_id": sink.surface_id,
+        "path": sink.path,
+        "line": sink.line,
+    }
+    applicability = assess_optional_analyzers(index, tmp_path)
+    cases = ((route, graph), (sink, sink_graph))
+    expected = [
+        certify_surface_paths(index, surface, evidence, applicability, tmp_path)
+        for surface, evidence in cases
+    ]
+    from sastsimi.simple_runtime import surface_applicability_v9, surface_path_proof_v9
+
+    original_scan = surface_applicability_v9._scan_sources
+    original_sources = surface_path_proof_v9._source_and_tree
+    scans = 0
+    source_loads = 0
+
+    def counted_scan(index: SurfaceIndex, workspace: Path) -> Any:
+        nonlocal scans
+        scans += 1
+        return original_scan(index, workspace)
+
+    def counted_sources(index: SurfaceIndex, workspace: Path) -> Any:
+        nonlocal source_loads
+        source_loads += 1
+        return original_sources(index, workspace)
+
+    monkeypatch.setattr(surface_applicability_v9, "_scan_sources", counted_scan)
+    monkeypatch.setattr(surface_path_proof_v9, "_source_and_tree", counted_sources)
+    replay = build_path_proof_replay(index, tmp_path)
+    assert replay.applicability == applicability
+    for (surface, evidence), certificate in zip(cases, expected, strict=True):
+        assert (
+            certify_surface_paths(
+                index, surface, evidence, applicability, tmp_path, replay=replay
+            )
+            == certificate
+        )
+        assert validate_path_certificate(
+            index,
+            surface,
+            evidence,
+            applicability,
+            tmp_path,
+            certificate,
+            replay=replay,
+        )
+    assert scans == 1
+    assert source_loads == 1
+    with pytest.raises(ValueError, match="SURFACE_PATH_REPLAY_INVALID"):
+        certify_surface_paths(
+            replace(index), route, graph, applicability, tmp_path, replay=replay
+        )
 
 
 @pytest.mark.parametrize("anchor_line", [4, 6])

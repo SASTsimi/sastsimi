@@ -9,7 +9,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -615,6 +615,7 @@ def prove_intrinsic_surface(
     *,
     candidates: Mapping[str, StaticCandidate] | None = None,
     artifacts: SimpleArtifactRepository | None = None,
+    pinned_blob_cache: MutableMapping[tuple[Path, str, str], bytes] | None = None,
 ) -> IntrinsicProofV9 | None:
     """Recompute one exact intrinsic claim; return ``None`` on uncertainty."""
 
@@ -629,7 +630,11 @@ def prove_intrinsic_surface(
     try:
         _verify_commit(workspace, index.commit_id)
         raw, pinned_sha = _verified_blob(
-            workspace, index.commit_id, surface.path, MAX_CONTEXT_SOURCE_BYTES
+            workspace,
+            index.commit_id,
+            surface.path,
+            MAX_CONTEXT_SOURCE_BYTES,
+            pinned_cache=pinned_blob_cache,
         )
         if pinned_sha != source_sha:
             return None
@@ -665,6 +670,7 @@ def validate_intrinsic_proof(
     *,
     candidates: Mapping[str, StaticCandidate] | None = None,
     artifacts: SimpleArtifactRepository | None = None,
+    pinned_blob_cache: MutableMapping[tuple[Path, str, str], bytes] | None = None,
 ) -> bool:
     """Recompute the claim, including when read back from a JSON artifact."""
 
@@ -675,6 +681,7 @@ def validate_intrinsic_proof(
         graph,
         candidates=candidates,
         artifacts=artifacts,
+        pinned_blob_cache=pinned_blob_cache,
     )
     if current is None:
         return False

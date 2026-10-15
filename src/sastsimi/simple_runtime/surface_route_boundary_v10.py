@@ -15,13 +15,12 @@ from pathlib import Path
 
 from .attack_surfaces import AttackSurface, SurfaceIndex, surface_review_contract
 from .call_path_facts import _function_local_bindings
-from .surface_applicability_v9 import assess_optional_analyzers
 from .surface_path_proof_v9 import (
     DownstreamPathV9,
     PathCertificateV9,
     _flask_binding,
     _request_binding,
-    _source_and_tree,
+    build_path_proof_replay,
     validate_path_certificate,
 )
 
@@ -1058,8 +1057,9 @@ def prove_route_boundaries_v10(
 ) -> dict[str, RouteBoundaryProofV10]:
     """Prove route-local Python edges; leave every ambiguous gap unresolved."""
 
-    _, trees = _source_and_tree(index, workspace)
-    applicability = assess_optional_analyzers(index, workspace)
+    replay = build_path_proof_replay(index, workspace)
+    trees = replay.trees
+    applicability = replay.applicability
     result: dict[str, RouteBoundaryProofV10] = {}
     for surface in index.surfaces:
         reasons: set[str] = set()
@@ -1077,7 +1077,7 @@ def prove_route_boundaries_v10(
         elif graph is None or certificate is None or tree is None:
             reasons.add("ROUTE_EVIDENCE_MISSING")
         elif not validate_path_certificate(
-            index, surface, graph, applicability, workspace, certificate
+            index, surface, graph, applicability, workspace, certificate, replay=replay
         ):
             reasons.add("V9_PATH_INVALID")
         else:
