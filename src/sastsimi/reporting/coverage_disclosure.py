@@ -38,6 +38,7 @@ class CoverageDisclosure:
     unavailable_reasons: tuple[tuple[str, int], ...] = ()
     unavailable_preview: tuple[tuple[str, str], ...] = ()
     surface_proof_version: int | None = None
+    surface_coverage_hash: str | None = None
     surface_scope_certificate_hash: str | None = None
     surface_raw_static_gap_count: int | None = None
     surface_effective_python_gap_count: int | None = None
@@ -49,6 +50,10 @@ class CoverageDisclosure:
     surface_insufficient_count: int | None = None
     surface_completed_inconclusive_child_count: int | None = None
     surface_template_scope_limit_count: int | None = None
+    surface_child_resolved_count: int | None = None
+    surface_child_pending_count: int | None = None
+    surface_child_still_hold_count: int | None = None
+    surface_child_error_count: int | None = None
 
     @property
     def partial(self) -> bool:
@@ -74,7 +79,7 @@ def visible_surface_reason_distribution(
 ) -> tuple[tuple[str, int], ...]:
     """Expose only bounded verified v3 reason codes, never arbitrary source text."""
 
-    if coverage.surface_proof_version not in (3, 4, 5, 6, 7, 8):
+    if coverage.surface_proof_version not in (3, 4, 5, 6, 7, 8, 9):
         return ()
     reasons = coverage.surface_unresolved_reasons
     if (

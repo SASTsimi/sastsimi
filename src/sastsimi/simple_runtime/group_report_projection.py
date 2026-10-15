@@ -28,8 +28,12 @@ from .models import (
     StageCheckpoint,
     StageStatus,
 )
-from .report_currentness import candidate_report_integrity_blocked
+from .report_currentness import (
+    candidate_report_integrity_blocked,
+    current_surface_report_binding,
+)
 from .scope_policy import project_scope_review, safe_public_report
+from .store import SimpleCheckpointStore
 
 
 def _read_only_artifact_reader(
@@ -199,6 +203,16 @@ def current_group_bundle(
                 member.finding_ref,
                 run.static_coverage_ref,
                 run.static_disposition,
+                **current_surface_report_binding(
+                    run,
+                    checkpoints,
+                    data_dir=data_dir,
+                    store=SimpleCheckpointStore(
+                        database_path,
+                        artifact_data_dir=data_dir,
+                        read_only=True,
+                    ),
+                ),
             )
             manifest, _archive = artifacts.verified_report_bundle(
                 checkpoints=stages,

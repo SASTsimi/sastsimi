@@ -52,19 +52,23 @@ def verified_saved_coverage_v8(
     coverage_ref: StoredDataRef,
     store: SimpleCheckpointStore,
     artifacts: SimpleArtifactRepository,
+    *,
+    predecessor_terminal: CandidateTerminal | None = None,
+    predecessor_root: StageCheckpoint | None = None,
 ) -> SurfaceCoverageV8:
     """Return only source- and parent-replayed V8 coverage, or fail closed."""
 
     invalid = "SURFACE_COVERAGE_V8_VERIFIED_INVALID"
     try:
         run = store.require_analysis_run(identity.analysis_id)
-        terminal = run.candidate_terminal
+        terminal = predecessor_terminal or run.candidate_terminal
         plan_ref = run.surface_enrichment_v10_plan_ref
-        root = store.get(identity, SimpleStage.HYPOTHESIS_DONE)
+        root = predecessor_root or store.get(identity, SimpleStage.HYPOTHESIS_DONE)
         bundle_ref = run.static_bundle_ref
         workspace = run.workspace_path
         if (
-            identity.hypothesis_id is not None
+            (predecessor_terminal is None) != (predecessor_root is None)
+            or identity.hypothesis_id is not None
             or identity != artifacts.identity
             or identity.workspace_id != run.workspace_id
             or identity.commit_id != run.commit_id

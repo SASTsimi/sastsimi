@@ -66,6 +66,7 @@ from sastsimi.simple_runtime.poc_currentness import (
 )
 from sastsimi.simple_runtime.report_currentness import (
     candidate_report_currentness_blocked,
+    current_surface_report_binding,
 )
 from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.scope_policy import (
@@ -73,6 +74,9 @@ from sastsimi.simple_runtime.scope_policy import (
     safe_public_report,
 )
 from sastsimi.simple_runtime.store import ROLE_BY_STAGE, SimpleCheckpointStore
+from sastsimi.simple_runtime.surface_child_evidence_v11 import (
+    interim_child_attempt_counts_v11,
+)
 
 from .models import (
     AgentActivityView,
@@ -257,8 +261,8 @@ class _SurfaceProofArtifacts(SimpleArtifactRepository):
 class _ReadOnlyCheckpointStore(SimpleCheckpointStore):
     """Reuse exact cleanup audit checks without initializing or writing the DB."""
 
-    def __init__(self, database_path: Path) -> None:
-        super().__init__(database_path, read_only=True)
+    def __init__(self, database_path: Path, data_dir: Path | None = None) -> None:
+        super().__init__(database_path, artifact_data_dir=data_dir, read_only=True)
 
 
 class DashboardQuery:
@@ -275,7 +279,7 @@ class DashboardQuery:
             run,
             checkpoints,
             data_dir=self._data_dir,
-            store=_ReadOnlyCheckpointStore(self._database),
+            store=_ReadOnlyCheckpointStore(self._database, self._data_dir),
         )
 
     def _connect(self) -> sqlite3.Connection:
@@ -634,7 +638,7 @@ class DashboardQuery:
             commit_id=run.commit_id,
             hypothesis_id=None,
         )
-        store = _ReadOnlyCheckpointStore(self._database)
+        store = _ReadOnlyCheckpointStore(self._database, self._data_dir)
         repository = SimpleArtifactRepository(
             self._data_dir, identity, create_dirs=False
         )
@@ -2434,6 +2438,12 @@ class DashboardQuery:
                     finding_ref,
                     run.static_coverage_ref,
                     run.static_disposition,
+                    **current_surface_report_binding(
+                        run,
+                        checkpoints,
+                        data_dir=self._data_dir,
+                        store=_ReadOnlyCheckpointStore(self._database, self._data_dir),
+                    ),
                 )
         except (OSError, ValueError, sqlite3.Error) as error:
             raise DashboardNotFound("DASHBOARD_REPORT_NOT_FOUND") from error
@@ -2693,6 +2703,21 @@ class DashboardQuery:
             ),
             surface_counts=surface_counts,
             surface_index_hash=surface_index_hash,
+            child_attempt_counts=(
+                {
+                    status: surface_counts[f"CHILD_REVALIDATION_ATTEMPT_{status}_COUNT"]
+                    for status in (
+                        "PENDING",
+                        "RUNNING",
+                        "RESOLVED",
+                        "STILL_HOLD",
+                        "ERROR",
+                    )
+                }
+                if surface_counts is not None
+                and surface_counts.get("CHILD_REVALIDATION_ATTEMPTS_UNVERIFIED") == 1
+                else None
+            ),
             analysis_active=lease_state is True,
             surface_enrichment_status=(
                 run.surface_enrichment_status if run is not None else None
@@ -4271,6 +4296,35 @@ class DashboardQuery:
         }
         terminal = run.candidate_terminal
         if (
+            run.surface_enrichment_v11_plan_ref is not None
+            and run.surface_enrichment_status in {"RUNNING", "BLOCKED"}
+            and terminal is not None
+            and terminal.surface_proof_version == 8
+        ):
+            try:
+                attempts = interim_child_attempt_counts_v11(
+                    run,
+                    identity,
+                    index_ref.content_hash,
+                    SimpleCheckpointStore(
+                        self._database,
+                        artifact_data_dir=self._data_dir,
+                        read_only=True,
+                    ),
+                    repository,
+                )
+            except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error):
+                pass
+            else:
+                counts["CHILD_REVALIDATION_ATTEMPTS_UNVERIFIED"] = 1
+                counts.update(
+                    {
+                        f"CHILD_REVALIDATION_ATTEMPT_{status}_COUNT": count
+                        for status, count in attempts.items()
+                    }
+                )
+            return counts, index_ref.content_hash
+        if (
             terminal is not None
             and terminal.surface_index_hash == index_ref.content_hash
             and terminal.surface_coverage_hash
@@ -4305,7 +4359,8 @@ class DashboardQuery:
                                 run.static_coverage_ref,
                                 terminal,
                             )
-                            if terminal.surface_proof_version in (2, 3, 4, 5, 6, 7, 8)
+                            if terminal.surface_proof_version
+                            in (2, 3, 4, 5, 6, 7, 8, 9)
                             else None
                         ),
                         artifacts=repository,
@@ -4316,7 +4371,7 @@ class DashboardQuery:
                                 artifact_data_dir=self._data_dir,
                                 read_only=True,
                             )
-                            if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
+                            if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                             else None
                         ),
                     )
@@ -4337,7 +4392,8 @@ class DashboardQuery:
         if (
             run is None
             or run.candidate_terminal is None
-            or run.candidate_terminal.surface_proof_version not in (2, 3, 4, 5, 6, 7, 8)
+            or run.candidate_terminal.surface_proof_version
+            not in (2, 3, 4, 5, 6, 7, 8, 9)
             or verified_counts is None
             or "UNRESOLVED_REASON_COUNT" not in verified_counts
         ):
@@ -4419,7 +4475,7 @@ class DashboardQuery:
         if not affected:
             return False
         try:
-            store = _ReadOnlyCheckpointStore(self._database)
+            store = _ReadOnlyCheckpointStore(self._database, self._data_dir)
             if store.unresolved_codex_call(analysis_id) is not None:
                 return False
             return all(

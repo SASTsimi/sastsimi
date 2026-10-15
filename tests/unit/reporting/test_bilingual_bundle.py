@@ -19,7 +19,10 @@ from sastsimi.reporting.bilingual_bundle import (
     BundleFile,
     render_bundle_files,
 )
-from sastsimi.reporting.coverage_disclosure import coverage_disclosure
+from sastsimi.reporting.coverage_disclosure import (
+    CoverageDisclosure,
+    coverage_disclosure,
+)
 
 
 def _ref(kind: str, digest: str) -> StoredDataRef:
@@ -147,6 +150,38 @@ def test_bilingual_reports_share_section_order_and_exact_facts() -> None:
     assert provenance["poc"]["redacted"] is False
     assert provenance["sources"]["finding"]["content_hash"] == "b" * 64
     assert provenance["sources"]["poc"]["content_hash"] == "c" * 64
+
+
+def test_v11_bundle_binds_exact_surface_proof_and_child_dispositions() -> None:
+    """A newer surface certificate must make an older bundle distinguishable."""
+
+    coverage = CoverageDisclosure(
+        ref=_ref("artifact", "d" * 64),
+        fingerprint="f" * 64,
+        expected_count=2,
+        verified_count=2,
+        gap_count=0,
+        unsupported_count=0,
+        gap_reasons=(),
+        unsupported_reasons=(),
+        engine_errors=(),
+        analysis_status="PARTIAL",
+        surface_proof_version=9,
+        surface_coverage_hash="e" * 64,
+        surface_child_resolved_count=1,
+        surface_child_pending_count=0,
+        surface_child_still_hold_count=1,
+        surface_child_error_count=0,
+    )
+    files = _render(facts=_facts(coverage=coverage))
+    provenance = json.loads(files["evidence/provenance.json"].body)
+    assert provenance["static_coverage"]["surface_coverage_hash"] == "e" * 64
+    assert provenance["static_coverage"]["child_revalidation"] == {
+        "resolved": 1,
+        "pending": 0,
+        "still_hold": 1,
+        "error": 0,
+    }
 
 
 def test_local_repository_path_is_redacted_from_bundle_metadata() -> None:

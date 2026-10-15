@@ -26,6 +26,8 @@ from .surface_coverage_v7 import SurfaceCoverageV7
 from .surface_coverage_v7_read import verified_saved_coverage_v7
 from .surface_coverage_v8 import SurfaceCoverageV8
 from .surface_coverage_v8_read import verified_saved_coverage_v8
+from .surface_coverage_v9 import SurfaceCoverageV9
+from .surface_coverage_v9_read import verified_saved_coverage_v9
 
 SURFACE_STATUSES = ("COVERED", "UNCOVERED", "INSUFFICIENT")
 
@@ -39,7 +41,7 @@ def read_surface_scope_certificate(
     """Load the exact v2 scope certificate, also retained by v3 proof."""
 
     if (
-        terminal.surface_proof_version not in (2, 3, 4, 5, 6, 7, 8)
+        terminal.surface_proof_version not in (2, 3, 4, 5, 6, 7, 8, 9)
         or certificate_ref is None
         or static_coverage_ref is None
         or certificate_ref.content_hash != terminal.scope_certificate_hash
@@ -241,12 +243,16 @@ def verified_surface_coverage_counts(
 
     if not isinstance(payload, dict):
         return None
-    if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8):
+    if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9):
         if artifacts is None or coverage_ref is None or store is None:
             return None
         try:
             current = (
-                verified_saved_coverage_v8(
+                verified_saved_coverage_v9(
+                    artifacts.identity, index, coverage_ref, store, artifacts
+                )
+                if terminal.surface_proof_version == 9
+                else verified_saved_coverage_v8(
                     artifacts.identity, index, coverage_ref, store, artifacts
                 )
                 if terminal.surface_proof_version == 8
@@ -271,7 +277,7 @@ def verified_surface_coverage_counts(
                 )
             )
             static_disposition = "FULL"
-            if terminal.surface_proof_version == 8:
+            if terminal.surface_proof_version in (8, 9):
                 verified_run = store.require_analysis_run(
                     artifacts.identity.analysis_id
                 )
@@ -295,11 +301,55 @@ def verified_surface_coverage_counts(
                 else "PARTIAL"
             )
             or terminal.pending_child_count != current.pending_child_count
-            or not isinstance(current, SurfaceCoverageV8)
+            or not isinstance(current, (SurfaceCoverageV8, SurfaceCoverageV9))
             and terminal.scope_certificate_hash
             != current.scope_certificate_ref.content_hash
         ):
             return None
+        if isinstance(current, SurfaceCoverageV9):
+            reasons = Counter(
+                code if code in SURFACE_REASON_CODES else "OTHER"
+                for row in current.surfaces
+                for code in row.unresolved_reason_codes
+            )
+            return {
+                **counts,
+                "REVIEWED": sum(
+                    bool(row.reviewed_context_ids) for row in current.surfaces
+                ),
+                "COMPLETED_INCONCLUSIVE_CHILD_COUNT": len(
+                    {
+                        child["hypothesis_id"]
+                        for row in current.surfaces
+                        for child in row.completed_inconclusive_children
+                    }
+                ),
+                "TEMPLATE_CONTENT_NOT_ANALYZED_COUNT": sum(
+                    row.external_scope_limit == "TEMPLATE_CONTENT_NOT_ANALYZED"
+                    for row in current.surfaces
+                ),
+                "RAW_STATIC_GAP_COUNT": len(index.static_gaps),
+                "EFFECTIVE_PYTHON_GAP_COUNT": len(current.effective_python_gaps),
+                "UNRESOLVED_REASON_COUNT": sum(
+                    len(row.unresolved_reason_codes) for row in current.surfaces
+                ),
+                "CHILD_REVALIDATION_RESOLVED_COUNT": (
+                    current.resolved_child_revalidation_count
+                ),
+                "CHILD_REVALIDATION_PENDING_COUNT": (
+                    current.pending_child_revalidation_count
+                ),
+                "CHILD_REVALIDATION_STILL_HOLD_COUNT": (
+                    current.still_hold_child_revalidation_count
+                ),
+                "CHILD_REVALIDATION_ERROR_COUNT": (
+                    current.error_child_revalidation_count
+                ),
+                **{
+                    f"{SURFACE_REASON_CODE_PREFIX}{code}": count
+                    for code, count in reasons.items()
+                },
+            }
         reasons = Counter(
             code if code in SURFACE_REASON_CODES else "OTHER"
             for row in current.surfaces

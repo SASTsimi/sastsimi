@@ -459,6 +459,8 @@ def test_v2_cleanup_confirmation_requires_captured_child_identity(
 
 def _windows_reboot_confirmation_case(
     tmp_path: Path,
+    *,
+    checkpoint_before_call: bool = False,
 ) -> tuple[
     SimpleCheckpointStore,
     SimpleArtifactRepository,
@@ -491,7 +493,12 @@ def _windows_reboot_confirmation_case(
     now = datetime.now(UTC)
     checkpoint = store.mark_running(
         identity, SimpleStage.REPORT_DONE, (), attempt_id="reboot-attempt"
-    ).model_copy(update={"updated_at": now - timedelta(minutes=90)})
+    ).model_copy(
+        update={
+            "updated_at": now
+            - (timedelta(hours=4) if checkpoint_before_call else timedelta(minutes=90))
+        }
+    )
     store.save_checkpoint(checkpoint)
     call_id = "reboot-call"
     assert store.begin_codex_call(call_id, identity.analysis_id)
@@ -518,6 +525,40 @@ def _windows_reboot_confirmation_case(
         start_identity=start_identity,
     )
     return store, artifacts, checkpoint, call_id, boot_at, now, start_identity
+
+
+def _record_reboot_attempt_owner(
+    store: SimpleCheckpointStore,
+    artifacts: SimpleArtifactRepository,
+    checkpoint: StageCheckpoint,
+    call_id: str,
+    *,
+    stage: str | None = None,
+    hypothesis_id: str | None = None,
+    checkpoint_attempt_id: str | None = None,
+    status: str = "CODEX_PROCESS_CLEANUP_UNCONFIRMED",
+) -> None:
+    store.record_llm_attempt(
+        attempt_id=call_id,
+        analysis_id=checkpoint.identity.analysis_id,
+        agent="report",
+        model="test-model",
+        attempt_number=1,
+        status=status,
+        elapsed_ms=1,
+        input_tokens=None,
+        output_tokens=None,
+        cost_cents=None,
+        artifact_ref=artifacts.put_json(
+            {"kind": "simple_llm_attempt", "provider": "codex-cli", "status": status}
+        ),
+        owner=AttemptOwner(
+            analysis_id=checkpoint.identity.analysis_id,
+            stage=stage or checkpoint.stage.value,
+            hypothesis_id=hypothesis_id or checkpoint.identity.hypothesis_id,
+            checkpoint_attempt_id=checkpoint_attempt_id or checkpoint.attempt_id,
+        ),
+    )
 
 
 def _reboot_confirmation(
@@ -577,6 +618,113 @@ def test_windows_reboot_confirms_unknown_child_only_after_exact_boot_evidence(
             (call_id,),
         ).fetchone()
     assert status == ("EXITED",)
+
+
+def test_windows_reboot_accepts_older_checkpoint_only_for_exact_call_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path, checkpoint_before_call=True)
+    )
+    _record_reboot_attempt_owner(store, artifacts, checkpoint, call_id)
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: boot_at,
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts, checkpoint, call_id, boot_at, observed_at, child_identity
+    )
+
+    store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) is None
+    assert store.has_codex_cleanup_confirmation(checkpoint, artifacts)
+
+
+def test_windows_reboot_rejects_child_born_after_live_boot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path, checkpoint_before_call=True)
+    )
+    _record_reboot_attempt_owner(store, artifacts, checkpoint, call_id)
+    child_started = boot_at - timedelta(hours=1)
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: False,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: child_started - timedelta(seconds=10),
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts,
+        checkpoint,
+        call_id,
+        child_started + timedelta(seconds=10),
+        observed_at,
+        child_identity,
+    )
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) == call_id
+
+
+@pytest.mark.parametrize(
+    "mismatched_field", ["missing", "stage", "hypothesis", "attempt", "succeeded"]
+)
+def test_windows_reboot_rejects_older_checkpoint_for_unrelated_call_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mismatched_field: str,
+) -> None:
+    store, artifacts, checkpoint, call_id, boot_at, observed_at, child_identity = (
+        _windows_reboot_confirmation_case(tmp_path, checkpoint_before_call=True)
+    )
+    if mismatched_field != "missing":
+        _record_reboot_attempt_owner(
+            store,
+            artifacts,
+            checkpoint,
+            call_id,
+            stage="OTHER_STAGE" if mismatched_field == "stage" else None,
+            hypothesis_id=(
+                "other-hypothesis" if mismatched_field == "hypothesis" else None
+            ),
+            checkpoint_attempt_id=(
+                "other-attempt" if mismatched_field == "attempt" else None
+            ),
+            status=(
+                "SUCCEEDED"
+                if mismatched_field == "succeeded"
+                else "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+            ),
+        )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.child_identity_matches",
+        lambda _pid, _start_identity: None,
+    )
+    monkeypatch.setattr(
+        "sastsimi.providers.codex_subscription.windows_boot_time_utc",
+        lambda: boot_at,
+        raising=False,
+    )
+    confirmation = _reboot_confirmation(
+        artifacts, checkpoint, call_id, boot_at, observed_at, child_identity
+    )
+
+    with pytest.raises(ValueError, match="CODEX_CLEANUP_CONFIRMATION_INVALID"):
+        store.confirm_codex_cleanup(checkpoint, confirmation, artifacts)
+    assert store.unresolved_codex_call(checkpoint.identity.analysis_id) == call_id
 
 
 def test_windows_inventory_still_rejects_unknown_child_after_reboot(

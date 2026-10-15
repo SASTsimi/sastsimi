@@ -68,6 +68,20 @@ cannot safely execute a required downstream step, record `STILL_HOLD` with
 reason and do not count it complete. Provider/tool failures use `ERROR`, not
 `STILL_HOLD` or a vulnerability refutation.
 
+A pinned V11 plan blocked before any child call may be reactivated by an exact
+run/root/plan/ledger compare-and-set when every unfinished child is still
+`PENDING`. An `ERROR` attempt requires a new evidence generation; an in-flight
+`RUNNING` attempt also requires independently verified process cleanup.
+Ordinary resume never clears either status or overwrites its attempt record.
+
+The initial implementation deliberately stops at that safety boundary: it
+does not build a new PoC/negative-proof chain for an initial HOLD and does
+not run the finding, technical gate, scope gate or report chain after a new
+final TRUE. Those children remain `STILL_HOLD` rather than being counted as
+resolved. Only exact replay of an existing terminal PoC `INCONCLUSIVE` can
+close a child in this version. This is not evidence that unresolved
+hypotheses are false or that A-001 reaches 100%.
+
 ## Certificate, read path, and user-visible state
 
 Introduce successor proof version 9 (internal v11 plan/coverage). Preserve

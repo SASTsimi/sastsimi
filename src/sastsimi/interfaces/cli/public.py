@@ -116,6 +116,22 @@ def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
             )
         if surface["uncovered"] or surface["insufficient"]:
             stream.write("부분 분석: 보안 surface 검토 범위가 남아 있습니다.\n")
+        child_keys = (
+            "child_revalidation_resolved",
+            "child_revalidation_pending",
+            "child_revalidation_still_hold",
+            "child_revalidation_error",
+        )
+        if surface.get("proof_version") == 9 and all(
+            type(surface.get(key)) is int for key in child_keys
+        ):
+            stream.write(
+                "자식 근거 재검증: "
+                f"해결 {surface['child_revalidation_resolved']} · "
+                f"대기 {surface['child_revalidation_pending']} · "
+                f"HOLD 유지 {surface['child_revalidation_still_hold']} · "
+                f"오류 {surface['child_revalidation_error']}\n"
+            )
     else:
         recorded_contexts = surface.get("recorded_contexts")
         if type(recorded_contexts) is int:
@@ -133,6 +149,24 @@ def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
                 )
         else:
             stream.write("보안 surface: coverage 확인 불가\n")
+    attempt_keys = (
+        "child_revalidation_attempt_pending",
+        "child_revalidation_attempt_running",
+        "child_revalidation_attempt_resolved",
+        "child_revalidation_attempt_still_hold",
+        "child_revalidation_attempt_error",
+    )
+    if surface.get("child_revalidation_attempts_unverified") == 1 and all(
+        type(surface.get(key)) is int and surface[key] >= 0 for key in attempt_keys
+    ):
+        stream.write(
+            "자식 근거 재검증 (검증 전 시도 기록 · coverage·완료 판정 아님): "
+            f"대기 {surface['child_revalidation_attempt_pending']} · "
+            f"실행 중 {surface['child_revalidation_attempt_running']} · "
+            f"해결 {surface['child_revalidation_attempt_resolved']} · "
+            f"HOLD 유지 {surface['child_revalidation_attempt_still_hold']} · "
+            f"오류 {surface['child_revalidation_attempt_error']}\n"
+        )
     raw_gaps = surface.get("raw_static_gap_count")
     effective_gaps = surface.get("effective_python_gap_count")
     if type(raw_gaps) is int and type(effective_gaps) is int:

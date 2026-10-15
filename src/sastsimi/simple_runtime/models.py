@@ -81,7 +81,7 @@ class CandidateTerminal(ContractModel):
     hypothesis_count: int = Field(ge=0)
     surface_index_hash: str | None = None
     surface_coverage_hash: str | None = None
-    surface_proof_version: Literal[1, 2, 3, 4, 5, 6, 7, 8] = 1
+    surface_proof_version: Literal[1, 2, 3, 4, 5, 6, 7, 8, 9] = 1
     scope_certificate_hash: str | None = None
     surface_counts: dict[str, int] = Field(default_factory=dict)
     producer_finished: bool = False
@@ -124,6 +124,7 @@ class SimpleAnalysisRun(ContractModel):
     surface_enrichment_v8_plan_ref: StoredDataRef | None = None
     surface_enrichment_v9_plan_ref: StoredDataRef | None = None
     surface_enrichment_v10_plan_ref: StoredDataRef | None = None
+    surface_enrichment_v11_plan_ref: StoredDataRef | None = None
     python_scope_certificate_ref: StoredDataRef | None = None
     surface_enrichment_status: (
         Literal["RUNNING", "BLOCKED", "FAILED", "PAUSED", "PARTIAL", "COMPLETE"] | None
@@ -182,6 +183,17 @@ class SimpleAnalysisRun(ContractModel):
             or self.python_scope_certificate_ref is None
         ):
             raise ValueError("SURFACE_ENRICHMENT_V10_STATE_UNBOUND")
+        if self.surface_enrichment_v11_plan_ref is not None and (
+            self.surface_enrichment_v10_plan_ref is None
+            or self.python_scope_certificate_ref is None
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V11_STATE_UNBOUND")
+        if (
+            self.candidate_terminal is not None
+            and self.candidate_terminal.surface_proof_version == 9
+            and self.surface_enrichment_v11_plan_ref is None
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V11_STATE_UNBOUND")
         if self.surface_enrichment_status in {"BLOCKED", "FAILED", "PAUSED"}:
             if not self.surface_enrichment_error_code:
                 raise ValueError("SURFACE_ENRICHMENT_ERROR_MISSING")

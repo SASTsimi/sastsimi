@@ -92,6 +92,22 @@ v9 검토가 끝난 분석은 기존 v9 계획·coverage·종료 근거·진행 
 증명하지 못한 경로와 기존 자식 `HOLD`는 자동으로 해제하지 않으며, 이전
 v9·PoC·Finding 기록도 변경하지 않습니다.
 
+v10 전임 근거가 검증되면 후속 자식 재검증 계획은 연결된 과거 `HOLD`
+체크포인트와 증거 해시를 고정합니다. 자식별 `PENDING/RUNNING/RESOLVED/`
+`STILL_HOLD/ERROR`는 별도 원장에 저장하고, 이전 체크포인트나 PoC를
+덮어쓰지 않습니다. 대시보드·CLI의 중간 집계는 검토 진행 상황일 뿐
+보안 표면의 완료 근거가 아닙니다. 현재 후속 버전은 실행·해석 체인이
+독립적으로 재생되는 PoC의 `INCONCLUSIVE`만 완료 처리합니다. 초기
+`HOLD`와 새 최종 `TRUE`는 후속 PoC·검증·Gate·보고서가 입증되지 않으면
+계속 미해결로 남고, 기존 보고서는 현재 보고서로 노출하지 않습니다.
+
+재부팅 뒤 미배달된 Codex 호출은 정확한 호출·하위 프로세스 동일성과
+재부팅 이후 종료를 확인한 경우에만 별도 감사 기록으로 정리합니다.
+과거 성공 응답의 호출별 원문 참조가 없으면 결과를 복원하거나 완료로
+계산하지 않습니다. 해당 표면·문맥의 미완료 작업은 한 번의 논리적
+재시도만 허용하고, 재시도가 다시 중단되면 중복 호출을 막고 차단
+상태로 남깁니다. 재시도에는 추가 모델 사용량이 발생할 수 있습니다.
+
 모든 보강 호출이 끝나도 근거 부족, 실제 Python 검사 공백, 미해결 자식 `HOLD`가
 남으면 `PARTIAL`은 올바른 최종 상태입니다. 인증서·저장 근거 손상이나 Agent 실행
 실패는 `PARTIAL`로 덮지 않고 `BLOCKED`·`FAILED` 또는 한도에 따른 `PAUSED`로
@@ -193,6 +209,8 @@ Gate 결정은 최대 세 번입니다. `ACCEPT`는 이후 단계로 진행하�
   `surface_evidence_validation_v5.py`, `surface_coverage_v3.py`
 - v10 요청 경로 증명·불변 후속 계획·검증: `src/sastsimi/simple_runtime/surface_route_boundary_v10.py`,
   `surface_enrichment_v10.py`, `surface_coverage_v8.py`, `surface_coverage_v8_read.py`
+- 자식 `HOLD` 후속 계획·재검증·독립 재생: `src/sastsimi/simple_runtime/surface_child_evidence_v11.py`,
+  `surface_child_revalidation_v11.py`, `surface_coverage_v9.py`, `surface_coverage_v9_read.py`
 - 분석별 LLM 예산·호출 원장: `src/sastsimi/simple_runtime/call_queue.py`
 - 이전 실행 자료 연결: `src/sastsimi/simple_runtime/migration.py`
 - 진행률 계산: `src/sastsimi/progress/projector.py`

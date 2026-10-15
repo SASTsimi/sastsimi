@@ -14,7 +14,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from sastsimi.config.user_config import ElapsedLimit, TokenLimit
@@ -507,6 +507,47 @@ class SurfaceExplorationProgressRecord:
     proposal_version: int
 
 
+@dataclass(frozen=True, slots=True)
+class ChildRevalidationProgressRecordV11:
+    hypothesis_id: str
+    stage: SimpleStage
+    checkpoint_hash: str
+    status: Literal["PENDING", "RUNNING", "RESOLVED", "STILL_HOLD", "ERROR"]
+    reason_code: str | None
+    result_ref: StoredDataRef | None
+    attempt_id: str | None
+
+
+class SurfaceReplayContext(Protocol):
+    """Only the frozen V9 context fields needed for orphan-call binding."""
+
+    @property
+    def surface_id(self) -> str: ...
+
+    @property
+    def context_id(self) -> str: ...
+
+    @property
+    def context_hash(self) -> str: ...
+
+    @property
+    def context_ref(self) -> StoredDataRef: ...
+
+    @property
+    def source_sha256(self) -> str | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class V11PromotionReaders:
+    """Explicit, fixed replay functions supplied by the application layer."""
+
+    collect_child_hold_targets_v11: Callable[..., Any]
+    verified_saved_coverage_v8: Callable[..., Any]
+    evaluate_surface_coverage_v9: Callable[..., Any]
+    verified_child_dispositions_v11: Callable[..., Any]
+    prepare_surface_enrichment_v11: Callable[..., Any]
+
+
 class SimpleCheckpointStore:
     """Atomic checkpoint storage for the single-process local runtime."""
 
@@ -527,6 +568,7 @@ class SimpleCheckpointStore:
             "list_candidate_batch_progress",
             "get_attack_surface_index",
             "list_surface_exploration_progress",
+            "list_surface_child_revalidation_v11",
             "get_pro_con_batch_evidence",
             "list_chaining_pool_batches",
             "list_incomplete_hypotheses",
@@ -770,6 +812,21 @@ class SimpleCheckpointStore:
                     call_id TEXT PRIMARY KEY,
                     analysis_id TEXT NOT NULL,
                     candidate_pipeline_version INTEGER NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_codex_orphaned_calls (
+                    call_id TEXT PRIMARY KEY,
+                    analysis_id TEXT NOT NULL,
+                    surface_id TEXT NOT NULL,
+                    context_id TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    attempt_ref_json TEXT NOT NULL,
+                    confirmation_ref_json TEXT NOT NULL,
+                    orphaned_at TEXT NOT NULL
                 )
                 """
             )
@@ -1067,6 +1124,31 @@ class SimpleCheckpointStore:
                     PRIMARY KEY (
                         analysis_id, workspace_id, commit_id,
                         scope_fingerprint, surface_id, context_id
+                    )
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simple_surface_child_revalidation_v11 (
+                    analysis_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    plan_hash TEXT NOT NULL,
+                    hypothesis_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    checkpoint_hash TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN (
+                        'PENDING', 'RUNNING', 'RESOLVED', 'STILL_HOLD', 'ERROR'
+                    )),
+                    reason_code TEXT,
+                    result_ref_json TEXT,
+                    attempt_id TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (
+                        analysis_id, workspace_id, commit_id,
+                        scope_fingerprint, plan_hash, hypothesis_id, stage
                     )
                 )
                 """
@@ -2450,6 +2532,201 @@ class SimpleCheckpointStore:
                     )
                 )
         return records
+
+    def v9_missing_progress_call_decision(
+        self,
+        run: SimpleAnalysisRun,
+        identity: CheckpointIdentity,
+        context: SurfaceReplayContext,
+        artifacts: SimpleArtifactRepository,
+    ) -> Literal["CLEAR", "ORPHAN_RETRY", "BLOCKED"]:
+        """Authorize at most one logical replay of an exact reboot orphan.
+
+        The caller holds the analysis run lease through this preflight and the
+        following Agent call. Historical Codex attempts lack a durable link to
+        the response, so any other saved success must remain blocked.
+        """
+
+        if (
+            identity.hypothesis_id is not None
+            or (run.analysis_id, run.workspace_id, run.commit_id)
+            != (identity.analysis_id, identity.workspace_id, identity.commit_id)
+            or artifacts.identity != identity
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            return "BLOCKED"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            attempts = connection.execute(
+                "SELECT a.attempt_id, a.agent, a.model, a.artifact_ref_json, "
+                "m.candidate_ids_json, m.hypothesis_id, m.file_path, "
+                "m.checkpoint_attempt_id FROM simple_llm_attempts AS a "
+                "JOIN simple_llm_attempt_metadata AS m "
+                "ON m.attempt_id = a.attempt_id AND m.analysis_id = a.analysis_id "
+                "WHERE a.analysis_id = ? AND a.status = 'SUCCEEDED' "
+                "AND m.stage = 'HYPOTHESIS_SURFACE' "
+                "AND m.surface_id = ? AND m.context_id = ?",
+                (identity.analysis_id, context.surface_id, context.context_id),
+            ).fetchall()
+            orphans = connection.execute(
+                "SELECT * FROM simple_codex_orphaned_calls WHERE analysis_id = ? "
+                "AND surface_id = ? AND context_id = ?",
+                (identity.analysis_id, context.surface_id, context.context_id),
+            ).fetchall()
+            if not attempts:
+                return "BLOCKED" if orphans else "CLEAR"
+            if len(attempts) != 1:
+                return "BLOCKED"
+            attempt = attempts[0]
+            if len(orphans) != 1:
+                return "BLOCKED"
+            orphan = orphans[0]
+            call = connection.execute(
+                "SELECT status, started_at, resolved_at, confirmation_ref_json "
+                "FROM simple_codex_calls WHERE call_id = ? AND analysis_id = ?",
+                (orphan["call_id"], identity.analysis_id),
+            ).fetchone()
+            saved = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            plan_ref = run.surface_enrichment_v9_plan_ref
+            if call is None or saved is None or plan_ref is None:
+                return "BLOCKED"
+            try:
+                saved_run = SimpleAnalysisRun.model_validate_json(saved["run_json"])
+                plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+                payload = json.loads(
+                    artifacts.read_bounded(context.context_ref, 1024 * 1024)
+                )
+                attempt_ref = StoredDataRef.model_validate_json(
+                    attempt["artifact_ref_json"]
+                )
+                attempt_marker = json.loads(
+                    artifacts.read_bounded(attempt_ref, 64 * 1024)
+                )
+                confirmation_ref = StoredDataRef.model_validate_json(
+                    orphan["confirmation_ref_json"]
+                )
+                marker = json.loads(artifacts.read_bounded(confirmation_ref, 64 * 1024))
+            except (OSError, TypeError, ValueError, UnicodeError):
+                return "BLOCKED"
+            if (
+                saved_run != run
+                or not isinstance(plan, dict)
+                or not isinstance(payload, dict)
+                or not isinstance(attempt_marker, dict)
+                or not isinstance(marker, dict)
+                or run.provider != "codex"
+                or run.llm_provider != "codex"
+                or run.candidate_pipeline_version != 2
+                or run.model_route_version != 1
+                or run.model is None
+                or run.model_routes is None
+                or run.candidate_scope_fingerprint is None
+                or run.static_bundle_ref is None
+                or attempt["attempt_id"] != orphan["call_id"]
+                or attempt["agent"] != "hypothesis_surface"
+                or attempt["model"]
+                != run.model_routes.get("hypothesis_surface", run.model)
+                or attempt["candidate_ids_json"] != "[]"
+                or attempt["hypothesis_id"] is not None
+                or attempt["checkpoint_attempt_id"] is not None
+                or attempt["file_path"] != orphan["file_path"]
+                or orphan["model"] != attempt["model"]
+                or call["status"] != "SAFE"
+                or call["resolved_at"] != orphan["orphaned_at"]
+                or call["confirmation_ref_json"] != orphan["confirmation_ref_json"]
+                or orphan["attempt_ref_json"] != attempt_ref.model_dump_json()
+                or attempt_marker.get("kind") != "simple_llm_attempt"
+                or attempt_marker.get("provider") != "codex-cli"
+                or attempt_marker.get("agent") != attempt["agent"]
+                or attempt_marker.get("model") != attempt["model"]
+                or attempt_marker.get("status") != "SUCCEEDED"
+                or plan.get("kind") != "simple_surface_enrichment_plan_v9"
+                or plan.get("analysis_id") != identity.analysis_id
+                or plan.get("workspace_id") != identity.workspace_id
+                or plan.get("commit_id") != identity.commit_id
+                or plan.get("scope_fingerprint") != run.candidate_scope_fingerprint
+                or plan.get("static_bundle_hash") != run.static_bundle_ref.content_hash
+                or marker.get("kind") != "simple_codex_reboot_orphan_confirmation"
+                or marker.get("analysis_id") != identity.analysis_id
+                or marker.get("workspace_id") != identity.workspace_id
+                or marker.get("commit_id") != identity.commit_id
+                or marker.get("call_id") != orphan["call_id"]
+                or marker.get("call_started_at") != call["started_at"]
+                or marker.get("surface_id") != context.surface_id
+                or marker.get("context_id") != context.context_id
+                or marker.get("file_path") != orphan["file_path"]
+                or marker.get("model") != attempt["model"]
+                or marker.get("surface_plan_hash") != plan_ref.content_hash
+                or marker.get("attempt_ref") != attempt_ref.model_dump(mode="json")
+                or marker.get("verification_method") != "windows_reboot"
+                or marker.get("process_tree_stopped") is not True
+                or marker.get("observed_matching_process_count") != 0
+            ):
+                return "BLOCKED"
+            expected_parts = plan.get("expected_parts")
+            targets = plan.get("targets")
+            raw_part = payload.get("context_part")
+            if (
+                not isinstance(expected_parts, list)
+                or not isinstance(targets, list)
+                or not isinstance(raw_part, dict)
+                or raw_part.get("path") != orphan["file_path"]
+                or raw_part.get("source_sha256") != context.source_sha256
+                or sum(
+                    isinstance(item, dict)
+                    and item.get("surface_id") == context.surface_id
+                    and item.get("context_id") == context.context_id
+                    and item.get("context_hash") == context.context_hash
+                    and item.get("context_part") == raw_part
+                    for item in expected_parts
+                )
+                != 1
+                or sum(
+                    isinstance(item, dict)
+                    and item.get("surface_id") == context.surface_id
+                    and item.get("path") == orphan["file_path"]
+                    for item in targets
+                )
+                != 1
+            ):
+                return "BLOCKED"
+            later_calls = connection.execute(
+                "SELECT c.status, a.agent, m.stage, m.surface_id, m.context_id "
+                "FROM simple_codex_calls AS c "
+                "LEFT JOIN simple_llm_attempts AS a ON a.attempt_id = c.call_id "
+                "AND a.analysis_id = c.analysis_id "
+                "LEFT JOIN simple_llm_attempt_metadata AS m "
+                "ON m.attempt_id = c.call_id AND m.analysis_id = c.analysis_id "
+                "WHERE c.analysis_id = ? AND c.call_id != ? "
+                "AND c.started_at >= ?",
+                (identity.analysis_id, orphan["call_id"], orphan["orphaned_at"]),
+            ).fetchall()
+            for later in later_calls:
+                if (
+                    later["status"] != "SAFE"
+                    or later["agent"] is None
+                    or later["stage"] is None
+                    or (
+                        later["agent"] == "hypothesis_surface"
+                        and later["stage"] != "HYPOTHESIS_SURFACE"
+                    )
+                    or (
+                        later["stage"] == "HYPOTHESIS_SURFACE"
+                        and (
+                            later["surface_id"] is None
+                            or later["context_id"] is None
+                            or (
+                                later["surface_id"] == context.surface_id
+                                and later["context_id"] == context.context_id
+                            )
+                        )
+                    )
+                ):
+                    return "BLOCKED"
+            return "ORPHAN_RETRY"
 
     @staticmethod
     def _pro_con_batch_key(
@@ -6886,6 +7163,972 @@ class SimpleCheckpointStore:
         self._project_after_direct_commit(identity.analysis_id)
         return True
 
+    def pin_surface_enrichment_v11_plan(
+        self, expected_run: SimpleAnalysisRun, plan_ref: StoredDataRef
+    ) -> bool:
+        """Pin one child-HOLD successor and suspend a stale V10 COMPLETE claim.
+
+        The historical V10 root remains unchanged. Its exact terminal is
+        frozen in the content-addressed plan before this CAS transition.
+        """
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = expected.candidate_terminal
+        identity = CheckpointIdentity(
+            analysis_id=expected.analysis_id,
+            workspace_id=expected.workspace_id,
+            commit_id=expected.commit_id,
+            hypothesis_id=None,
+        )
+        if (
+            expected.surface_enrichment_v10_plan_ref is None
+            or expected.surface_enrichment_v11_plan_ref is not None
+            or expected.candidate_scope_fingerprint is None
+            or terminal is None
+            or terminal.surface_proof_version != 8
+            or not terminal.producer_finished
+            or terminal.surface_coverage_hash is None
+            or terminal.surface_index_hash is None
+            or terminal.scope_fingerprint != expected.candidate_scope_fingerprint
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V11_PIN_INVALID")
+        try:
+            self._candidate_ref_json(identity, plan_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent_dir = self._database_path.parent
+                if parent_dir.name == "db":
+                    data_dir = parent_dir.parent
+                elif (parent_dir / "artifacts" / "artifacts").is_dir():
+                    data_dir = parent_dir / "artifacts"
+                else:
+                    data_dir = parent_dir
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+            v10_plan = json.loads(
+                artifacts.read_bounded(
+                    expected.surface_enrichment_v10_plan_ref, 16 * 1024 * 1024
+                )
+            )
+            if not isinstance(plan, dict) or not isinstance(v10_plan, dict):
+                raise ValueError("plan object missing")
+            targets = plan.get("targets")
+            coverage_ref = StoredDataRef.model_validate(plan["v10_coverage_ref"])
+            self._candidate_ref_json(identity, coverage_ref)
+            if (
+                plan.get("kind") != "simple_surface_enrichment_plan_v11"
+                or plan.get("analysis_id") != identity.analysis_id
+                or plan.get("workspace_id") != identity.workspace_id
+                or plan.get("commit_id") != identity.commit_id
+                or plan.get("scope_fingerprint") != expected.candidate_scope_fingerprint
+                or plan.get("static_bundle_hash") != terminal.bundle_hash
+                or plan.get("index_hash") != terminal.surface_index_hash
+                or plan.get("v10_plan_ref")
+                != expected.surface_enrichment_v10_plan_ref.model_dump(mode="json")
+                or coverage_ref.content_hash != terminal.surface_coverage_hash
+                or plan.get("v10_terminal") != terminal.model_dump(mode="json")
+                or plan.get("v9_progress_hash") != v10_plan.get("v9_progress_hash")
+                or not isinstance(plan.get("child_snapshot_hash"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", plan["child_snapshot_hash"]) is None
+                or not isinstance(targets, list)
+                or any(
+                    not isinstance(target, dict)
+                    or not isinstance(target.get("hypothesis_id"), str)
+                    or not target["hypothesis_id"]
+                    or target.get("stage")
+                    not in {
+                        SimpleStage.VERIFICATION_INITIAL_DONE.value,
+                        SimpleStage.POC_EXECUTION_DONE.value,
+                        SimpleStage.VERIFICATION_FINAL_DONE.value,
+                    }
+                    or not isinstance(target.get("checkpoint_hash"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", target["checkpoint_hash"]) is None
+                    or not isinstance(target.get("surface_ids"), list)
+                    or not target["surface_ids"]
+                    or len(target["surface_ids"]) != len(set(target["surface_ids"]))
+                    for target in targets
+                )
+                or len({(row["hypothesis_id"], row["stage"]) for row in targets})
+                != len(targets)
+            ):
+                raise ValueError("plan binding invalid")
+        except (KeyError, OSError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V11_PIN_INVALID") from error
+
+        revised = SimpleAnalysisRun.model_validate(
+            expected.model_copy(
+                update={
+                    "surface_enrichment_v11_plan_ref": plan_ref,
+                    "surface_enrichment_status": "RUNNING",
+                    "surface_enrichment_error_code": None,
+                    "candidate_terminal": terminal.model_copy(
+                        update={"status": "PARTIAL"}
+                    ),
+                }
+            )
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                ),
+            ).fetchone()
+            if run_row is None or root_row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V11_PIN_STALE")
+            current = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            root = StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+            if (
+                current not in (expected, revised)
+                or root.identity != identity
+                or root.status is not StageStatus.SUCCEEDED
+                or len(root.output_refs) != 2
+                or root.output_refs[0].content_hash != terminal.surface_index_hash
+                or root.output_refs[1] != coverage_ref
+                or plan.get("v10_root") != root.model_dump(mode="json")
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V11_PIN_STALE")
+            for target in targets:
+                stage = SimpleStage(target["stage"])
+                child = identity.model_copy(
+                    update={"hypothesis_id": target["hypothesis_id"]}
+                )
+                old_row = connection.execute(
+                    "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                    "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                    (identity.analysis_id, self._hypothesis_key(child), stage.value),
+                ).fetchone()
+                if old_row is None:
+                    raise ValueError("SURFACE_ENRICHMENT_V11_PIN_STALE_CHILD")
+                old = StageCheckpoint.model_validate_json(old_row["checkpoint_json"])
+                if (
+                    old.identity != child
+                    or old.stage is not stage
+                    or old.verdict != "HOLD"
+                    or hashlib.sha256(canonical_bytes(old)).hexdigest()
+                    != target["checkpoint_hash"]
+                ):
+                    raise ValueError("SURFACE_ENRICHMENT_V11_PIN_STALE_CHILD")
+            if current == revised:
+                return False
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (revised.model_dump_json(), identity.analysis_id, run_row["run_json"]),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V11_PIN_STALE")
+            now = datetime.now(UTC).isoformat()
+            for target in targets:
+                connection.execute(
+                    "INSERT INTO simple_surface_child_revalidation_v11 "
+                    "(analysis_id, workspace_id, commit_id, scope_fingerprint, "
+                    "plan_hash, hypothesis_id, stage, checkpoint_hash, status, "
+                    "reason_code, result_ref_json, attempt_id, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, NULL, NULL, ?)",
+                    (
+                        identity.analysis_id,
+                        identity.workspace_id,
+                        identity.commit_id,
+                        expected.candidate_scope_fingerprint,
+                        plan_ref.content_hash,
+                        target["hypothesis_id"],
+                        target["stage"],
+                        target["checkpoint_hash"],
+                        now,
+                    ),
+                )
+        self._project_after_direct_commit(identity.analysis_id)
+        return True
+
+    def list_surface_child_revalidation_v11(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        plan_ref: StoredDataRef,
+    ) -> dict[tuple[str, SimpleStage], ChildRevalidationProgressRecordV11]:
+        """Read the V11 attempt ledger without inferring a missing row as done."""
+
+        self._candidate_ref_json(identity, plan_ref)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT hypothesis_id, stage, checkpoint_hash, status, "
+                "reason_code, result_ref_json, attempt_id "
+                "FROM simple_surface_child_revalidation_v11 "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND plan_hash = ? "
+                "ORDER BY hypothesis_id, stage",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    scope_fingerprint,
+                    plan_ref.content_hash,
+                ),
+            ).fetchall()
+        result: dict[tuple[str, SimpleStage], ChildRevalidationProgressRecordV11] = {}
+        for row in rows:
+            stage = SimpleStage(str(row["stage"]))
+            record = ChildRevalidationProgressRecordV11(
+                hypothesis_id=str(row["hypothesis_id"]),
+                stage=stage,
+                checkpoint_hash=str(row["checkpoint_hash"]),
+                status=cast(
+                    Literal["PENDING", "RUNNING", "RESOLVED", "STILL_HOLD", "ERROR"],
+                    str(row["status"]),
+                ),
+                reason_code=row["reason_code"],
+                result_ref=(
+                    StoredDataRef.model_validate_json(row["result_ref_json"])
+                    if row["result_ref_json"] is not None
+                    else None
+                ),
+                attempt_id=row["attempt_id"],
+            )
+            key = (record.hypothesis_id, stage)
+            if key in result:
+                raise ValueError("SURFACE_CHILD_V11_PROGRESS_DUPLICATE")
+            result[key] = record
+        return result
+
+    def resume_surface_enrichment_v11_if_safe(
+        self, expected_run: SimpleAnalysisRun, plan_ref: StoredDataRef
+    ) -> bool:
+        """Reactivate a blocked pinned plan only when no child call is in flight.
+
+        An ERROR is a completed but failed attempt and needs a new evidence
+        generation; a RUNNING row needs process-cleanup proof. Neither can be
+        reset by ordinary resume. This CAS only recovers a preflight failure
+        while all unfinished child rows are still PENDING.
+        """
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = expected.candidate_terminal
+        identity = CheckpointIdentity(
+            analysis_id=expected.analysis_id,
+            workspace_id=expected.workspace_id,
+            commit_id=expected.commit_id,
+            hypothesis_id=None,
+        )
+        if (
+            expected.surface_enrichment_v11_plan_ref != plan_ref
+            or expected.surface_enrichment_status != "BLOCKED"
+            or expected.candidate_scope_fingerprint is None
+            or terminal is None
+            or terminal.surface_proof_version != 8
+            or terminal.status != "PARTIAL"
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V11_RESUME_UNSAFE")
+        try:
+            self._candidate_ref_json(identity, plan_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent_dir = self._database_path.parent
+                data_dir = (
+                    parent_dir.parent
+                    if parent_dir.name == "db"
+                    else parent_dir / "artifacts"
+                    if (parent_dir / "artifacts" / "artifacts").is_dir()
+                    else parent_dir
+                )
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+            if not isinstance(plan, dict) or not isinstance(plan.get("targets"), list):
+                raise ValueError("plan invalid")
+            targets = plan["targets"]
+            expected_keys = {
+                (target["hypothesis_id"], target["stage"], target["checkpoint_hash"])
+                for target in targets
+            }
+            if (
+                len(expected_keys) != len(targets)
+                or plan.get("kind") != "simple_surface_enrichment_plan_v11"
+                or plan.get("analysis_id") != identity.analysis_id
+                or plan.get("workspace_id") != identity.workspace_id
+                or plan.get("commit_id") != identity.commit_id
+                or plan.get("scope_fingerprint") != expected.candidate_scope_fingerprint
+                or terminal
+                != CandidateTerminal.model_validate_json(
+                    json.dumps(plan["v10_terminal"])
+                ).model_copy(update={"status": "PARTIAL"})
+            ):
+                raise ValueError("plan changed")
+        except (KeyError, OSError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V11_RESUME_UNSAFE") from error
+
+        revised = SimpleAnalysisRun.model_validate(
+            expected.model_copy(
+                update={
+                    "surface_enrichment_status": "RUNNING",
+                    "surface_enrichment_error_code": None,
+                }
+            )
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                ),
+            ).fetchone()
+            rows = connection.execute(
+                "SELECT hypothesis_id, stage, checkpoint_hash, status "
+                "FROM simple_surface_child_revalidation_v11 "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND plan_hash = ?",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    expected.candidate_scope_fingerprint,
+                    plan_ref.content_hash,
+                ),
+            ).fetchall()
+            if run_row is None or root_row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V11_RESUME_UNSAFE")
+            root = StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+            actual_keys = {
+                (
+                    str(row["hypothesis_id"]),
+                    str(row["stage"]),
+                    str(row["checkpoint_hash"]),
+                )
+                for row in rows
+            }
+            if (
+                SimpleAnalysisRun.model_validate_json(run_row["run_json"]) != expected
+                or root.model_dump(mode="json") != plan.get("v10_root")
+                or len(actual_keys) != len(rows)
+                or actual_keys != expected_keys
+                or any(
+                    row["status"] not in {"PENDING", "RESOLVED", "STILL_HOLD"}
+                    for row in rows
+                )
+            ):
+                raise ValueError("SURFACE_ENRICHMENT_V11_RESUME_UNSAFE")
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (revised.model_dump_json(), identity.analysis_id, run_row["run_json"]),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V11_RESUME_UNSAFE")
+        self._project_after_direct_commit(identity.analysis_id)
+        return True
+
+    def promote_surface_enrichment_v11_coverage(
+        self,
+        expected_run: SimpleAnalysisRun,
+        plan_ref: StoredDataRef,
+        coverage_ref: StoredDataRef,
+        successor_terminal: CandidateTerminal,
+        *,
+        readers: V11PromotionReaders,
+    ) -> bool:
+        """CAS-promote only an independently replayed V11 child certificate.
+
+        Full source/graph replay runs before the SQLite write reservation.
+        The short locked phase compares the saved run, root, progress, child
+        inventory, ledger and pending IDs before replacing root and terminal.
+        An unresolved HOLD may produce PARTIAL, never invented completion.
+        """
+
+        if type(readers) is not V11PromotionReaders or not all(
+            callable(reader)
+            for reader in (
+                readers.collect_child_hold_targets_v11,
+                readers.verified_saved_coverage_v8,
+                readers.evaluate_surface_coverage_v9,
+                readers.verified_child_dispositions_v11,
+                readers.prepare_surface_enrichment_v11,
+            )
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V11_READERS_INVALID")
+        from .attack_surfaces import surface_index_from_json
+        from .surface_enrichment_v10_bindings import v9_progress_snapshot_hash
+
+        expected = SimpleAnalysisRun.model_validate(expected_run)
+        terminal = CandidateTerminal.model_validate(successor_terminal)
+        prior = expected.candidate_terminal
+        identity = CheckpointIdentity(
+            analysis_id=expected.analysis_id,
+            workspace_id=expected.workspace_id,
+            commit_id=expected.commit_id,
+            hypothesis_id=None,
+        )
+        if (
+            expected.surface_enrichment_v11_plan_ref != plan_ref
+            or expected.surface_enrichment_v10_plan_ref is None
+            or expected.candidate_scope_fingerprint is None
+            or expected.surface_enrichment_status != "RUNNING"
+            or prior is None
+            or prior.surface_proof_version != 8
+            or terminal.surface_proof_version != 9
+            or not terminal.producer_finished
+            or terminal.surface_coverage_hash != coverage_ref.content_hash
+            or terminal.scope_fingerprint != expected.candidate_scope_fingerprint
+        ):
+            raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_INVALID")
+        try:
+            self._candidate_ref_json(identity, plan_ref)
+            self._candidate_ref_json(identity, coverage_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent_dir = self._database_path.parent
+                if parent_dir.name == "db":
+                    data_dir = parent_dir.parent
+                elif (parent_dir / "artifacts" / "artifacts").is_dir():
+                    data_dir = parent_dir / "artifacts"
+                else:
+                    data_dir = parent_dir
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+            saved_coverage = json.loads(
+                artifacts.read_bounded(coverage_ref, 16 * 1024 * 1024)
+            )
+            if not isinstance(plan, dict) or not isinstance(saved_coverage, dict):
+                raise ValueError("V11 artifact is not an object")
+            predecessor_terminal = CandidateTerminal.model_validate_json(
+                json.dumps(plan["v10_terminal"])
+            )
+            predecessor_root = StageCheckpoint.model_validate_json(
+                json.dumps(plan["v10_root"])
+            )
+            predecessor_ref = StoredDataRef.model_validate(plan["v10_coverage_ref"])
+            if (
+                plan.get("kind") != "simple_surface_enrichment_plan_v11"
+                or plan.get("v10_plan_ref")
+                != expected.surface_enrichment_v10_plan_ref.model_dump(mode="json")
+                or predecessor_terminal.surface_coverage_hash
+                != predecessor_ref.content_hash
+                or prior
+                != predecessor_terminal.model_copy(update={"status": "PARTIAL"})
+                or predecessor_root.identity != identity
+                or predecessor_root.output_refs[1] != predecessor_ref
+            ):
+                raise ValueError("V11 frozen predecessor unbound")
+        except (
+            IndexError,
+            KeyError,
+            OSError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+        ) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_INVALID") from error
+
+        def incomplete_ids() -> tuple[str, ...]:
+            ids: list[str] = []
+            after_id: str | None = None
+            while True:
+                page = self.list_incomplete_hypotheses(
+                    identity, after_id=after_id, limit=100
+                )
+                if (
+                    len(page) > 100
+                    or tuple(sorted(set(page))) != page
+                    or any(not item or item in ids for item in page)
+                    or after_id is not None
+                    and any(item <= after_id for item in page)
+                ):
+                    raise ValueError("SURFACE_ENRICHMENT_V11_PENDING_PAGE_INVALID")
+                ids.extend(page)
+                if len(page) < 100:
+                    return tuple(ids)
+                after_id = page[-1]
+
+        def durable_inputs_hash(connection: sqlite3.Connection) -> str:
+            """Cheap exact fingerprint of tables consumed by the V11 replay."""
+
+            scope_key = (
+                identity.analysis_id,
+                identity.workspace_id,
+                identity.commit_id,
+                expected.candidate_scope_fingerprint,
+            )
+            queries: tuple[tuple[str, str, tuple[object, ...]], ...] = (
+                (
+                    "checkpoints",
+                    "SELECT * FROM simple_runtime_checkpoints WHERE analysis_id = ? "
+                    "ORDER BY hypothesis_key, stage",
+                    (identity.analysis_id,),
+                ),
+                (
+                    "hypotheses",
+                    "SELECT * FROM simple_candidate_hypotheses "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "ORDER BY hypothesis_id",
+                    scope_key[:3],
+                ),
+                (
+                    "links",
+                    "SELECT * FROM simple_candidate_hypothesis_links "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? ORDER BY candidate_id, hypothesis_id",
+                    scope_key,
+                ),
+                (
+                    "progress",
+                    "SELECT * FROM simple_surface_exploration_progress "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? ORDER BY surface_id, context_id",
+                    scope_key,
+                ),
+                (
+                    "candidates",
+                    "SELECT * FROM simple_static_candidates "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? ORDER BY candidate_id",
+                    scope_key,
+                ),
+                (
+                    "child_results",
+                    "SELECT * FROM simple_surface_child_revalidation_v11 "
+                    "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                    "AND scope_fingerprint = ? AND plan_hash = ? "
+                    "ORDER BY hypothesis_id, stage",
+                    (*scope_key, plan_ref.content_hash),
+                ),
+            )
+            digest = hashlib.sha256(b"simple_surface_v11_cas_inputs\n")
+            for table_name, query, args in queries:
+                digest.update(table_name.encode("ascii") + b"\n")
+                for row in connection.execute(query, args):
+                    digest.update(repr(tuple(row)).encode("utf-8") + b"\n")
+            return digest.hexdigest()
+
+        revised = SimpleAnalysisRun.model_validate(
+            expected.model_copy(
+                update={
+                    "candidate_terminal": terminal,
+                    "surface_enrichment_status": terminal.status,
+                    "surface_enrichment_error_code": None,
+                }
+            )
+        )
+
+        # This is the expensive phase. No reserved SQLite write lock is held
+        # while replaying Python source, route graphs and historical artifacts.
+        try:
+            with self._connect() as snapshot_connection:
+                starting_inputs_hash = durable_inputs_hash(snapshot_connection)
+            preflight_run = self.require_analysis_run(identity.analysis_id)
+            preflight_root = self.get(identity, SimpleStage.HYPOTHESIS_DONE)
+            if preflight_run == revised and preflight_root is not None:
+                if (
+                    preflight_root.status is StageStatus.SUCCEEDED
+                    and len(preflight_root.output_refs) == 2
+                    and preflight_root.output_refs[0] == predecessor_root.output_refs[0]
+                    and preflight_root.output_refs[1] == coverage_ref
+                    and preflight_root
+                    == predecessor_root.model_copy(
+                        update={
+                            "output_refs": preflight_root.output_refs,
+                            "updated_at": preflight_root.updated_at,
+                        }
+                    )
+                ):
+                    return False
+                raise ValueError("V11 promoted root changed")
+            if preflight_run != expected or preflight_root != predecessor_root:
+                raise ValueError("V11 predecessor changed")
+            index_payload = json.loads(
+                artifacts.read_bounded(
+                    predecessor_root.output_refs[0], 16 * 1024 * 1024
+                )
+            )
+            index = surface_index_from_json(index_payload)
+            parent = readers.verified_saved_coverage_v8(
+                identity,
+                index,
+                predecessor_ref,
+                self,
+                artifacts,
+                predecessor_terminal=predecessor_terminal,
+                predecessor_root=predecessor_root,
+            )
+            progress = self.list_surface_exploration_progress(
+                identity, index.scope_fingerprint
+            )
+            targets, snapshot_hash = readers.collect_child_hold_targets_v11(
+                identity, index, progress, self
+            )
+            v10_plan = json.loads(
+                artifacts.read_bounded(
+                    expected.surface_enrichment_v10_plan_ref, 16 * 1024 * 1024
+                )
+            )
+            if not isinstance(v10_plan, dict):
+                raise ValueError("V10 plan invalid")
+            v9_plan_ref = StoredDataRef.model_validate(v10_plan["v9_plan_ref"])
+            v9_plan = json.loads(artifacts.read_bounded(v9_plan_ref, 16 * 1024 * 1024))
+            if not isinstance(v9_plan, dict):
+                raise ValueError("V9 plan invalid")
+            progress_hash = v9_progress_snapshot_hash(v9_plan, progress)
+            if progress_hash != v10_plan["v9_progress_hash"]:
+                raise ValueError("V9 progress changed")
+            expected_plan = readers.prepare_surface_enrichment_v11(
+                identity,
+                parent,
+                expected.surface_enrichment_v10_plan_ref,
+                predecessor_ref,
+                predecessor_terminal,
+                predecessor_root,
+                targets,
+                snapshot_hash,
+                progress_hash,
+            )
+            if plan != expected_plan:
+                raise ValueError("V11 plan drifted")
+            records = self.list_surface_child_revalidation_v11(
+                identity, index.scope_fingerprint, plan_ref
+            )
+            target_keys = {(item.hypothesis_id, item.stage) for item in targets}
+            if set(records) != target_keys or any(
+                row.status in {"PENDING", "RUNNING", "ERROR"}
+                for row in records.values()
+            ):
+                raise ValueError("V11 child work not terminal")
+            dispositions = readers.verified_child_dispositions_v11(
+                identity, index, plan_ref, targets, self, artifacts
+            )
+            pending_ids = incomplete_ids()
+            coverage = readers.evaluate_surface_coverage_v9(
+                parent,
+                targets,
+                dispositions,
+                current_pending_child_count=len(pending_ids),
+            )
+            counts = {
+                status: sum(row.coverage_status == status for row in coverage.surfaces)
+                for status in ("COVERED", "UNCOVERED", "INSUFFICIENT")
+            }
+            expected_terminal = predecessor_terminal.model_copy(
+                update={
+                    "status": (
+                        "COMPLETE"
+                        if coverage.complete and expected.static_disposition == "FULL"
+                        else "PARTIAL"
+                    ),
+                    "surface_coverage_hash": coverage_ref.content_hash,
+                    "surface_counts": counts,
+                    "surface_proof_version": 9,
+                    "pending_child_count": coverage.pending_child_count,
+                }
+            )
+            if saved_coverage != coverage.to_json() or terminal != expected_terminal:
+                raise ValueError("V11 coverage or terminal differs from proof")
+            with self._connect() as snapshot_connection:
+                if durable_inputs_hash(snapshot_connection) != starting_inputs_hash:
+                    raise ValueError("V11 inputs changed during full replay")
+        except (
+            IndexError,
+            KeyError,
+            LookupError,
+            OSError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            subprocess.CalledProcessError,
+        ) as error:
+            raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_INVALID") from error
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (
+                    identity.analysis_id,
+                    self._hypothesis_key(identity),
+                    SimpleStage.HYPOTHESIS_DONE.value,
+                ),
+            ).fetchone()
+            if run_row is None or root_row is None:
+                raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_STALE")
+            current_run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            root = StageCheckpoint.model_validate_json(root_row["checkpoint_json"])
+            if current_run == revised:
+                if (
+                    root.status is StageStatus.SUCCEEDED
+                    and len(root.output_refs) == 2
+                    and root.output_refs[0] == predecessor_root.output_refs[0]
+                    and root.output_refs[1] == coverage_ref
+                    and root
+                    == predecessor_root.model_copy(
+                        update={
+                            "output_refs": root.output_refs,
+                            "updated_at": root.updated_at,
+                        }
+                    )
+                ):
+                    return False
+                raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_STALE")
+            if current_run != expected or root != predecessor_root:
+                raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_STALE")
+            try:
+                # Equality of the exact SQLite source rows implies the same
+                # V9 progress, linked child inventory, ledger and pending IDs.
+                # Unlike a second graph replay it only scans scoped rows.
+                if durable_inputs_hash(connection) != starting_inputs_hash:
+                    raise ValueError("V11 preflight changed before CAS")
+                if index.ast_source_hashes:
+                    workspace = expected.workspace_path
+                    if workspace is None:
+                        raise ValueError("V11 workspace missing")
+                    for path, source_hash in index.ast_source_hashes:
+                        tracked = safe_tracked_file(Path(workspace), path)
+                        if tracked is None:
+                            raise ValueError("V11 tracked source missing")
+                        with tracked.open("rb") as stream:
+                            if (
+                                hashlib.file_digest(stream, "sha256").hexdigest()
+                                != source_hash
+                            ):
+                                raise ValueError("V11 tracked source changed")
+            except (
+                IndexError,
+                KeyError,
+                LookupError,
+                OSError,
+                TypeError,
+                ValueError,
+                UnicodeError,
+                subprocess.CalledProcessError,
+            ) as error:
+                raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_INVALID") from error
+            updated_root = root.model_copy(
+                update={
+                    "output_refs": (root.output_refs[0], coverage_ref),
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            changed = connection.execute(
+                "UPDATE simple_analysis_runs SET run_json = ? "
+                "WHERE analysis_id = ? AND run_json = ?",
+                (revised.model_dump_json(), identity.analysis_id, run_row["run_json"]),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_STALE")
+            self._upsert_checkpoint_connection(connection, updated_root)
+        self._project_after_direct_commit(identity.analysis_id)
+        return True
+
+    def claim_surface_child_revalidation_v11(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        plan_ref: StoredDataRef,
+        hypothesis_id: str,
+        stage: SimpleStage,
+        checkpoint_hash: str,
+        attempt_id: str,
+    ) -> bool:
+        """CAS-claim a pending child; an interrupted RUNNING attempt is not retried."""
+
+        if (
+            identity.hypothesis_id is not None
+            or not hypothesis_id
+            or not attempt_id
+            or re.fullmatch(r"[0-9a-f]{64}", checkpoint_hash) is None
+        ):
+            raise ValueError("SURFACE_CHILD_V11_CLAIM_INVALID")
+        self._candidate_ref_json(identity, plan_ref)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+            if run_row is None:
+                raise ValueError("SURFACE_CHILD_V11_CLAIM_STALE")
+            run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+            if (
+                run.workspace_id != identity.workspace_id
+                or run.commit_id != identity.commit_id
+                or run.candidate_scope_fingerprint != scope_fingerprint
+                or run.surface_enrichment_v11_plan_ref != plan_ref
+                or run.surface_enrichment_status != "RUNNING"
+            ):
+                raise ValueError("SURFACE_CHILD_V11_CLAIM_STALE")
+            child = identity.model_copy(update={"hypothesis_id": hypothesis_id})
+            old_row = connection.execute(
+                "SELECT checkpoint_json FROM simple_runtime_checkpoints "
+                "WHERE analysis_id = ? AND hypothesis_key = ? AND stage = ?",
+                (identity.analysis_id, self._hypothesis_key(child), stage.value),
+            ).fetchone()
+            if old_row is None:
+                raise ValueError("SURFACE_CHILD_V11_CLAIM_STALE")
+            old = StageCheckpoint.model_validate_json(old_row["checkpoint_json"])
+            if (
+                old.identity != child
+                or old.stage is not stage
+                or old.verdict != "HOLD"
+                or hashlib.sha256(canonical_bytes(old)).hexdigest() != checkpoint_hash
+            ):
+                raise ValueError("SURFACE_CHILD_V11_CLAIM_STALE")
+            changed = connection.execute(
+                "UPDATE simple_surface_child_revalidation_v11 "
+                "SET status = 'RUNNING', attempt_id = ?, updated_at = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND plan_hash = ? "
+                "AND hypothesis_id = ? AND stage = ? AND checkpoint_hash = ? "
+                "AND status = 'PENDING' AND attempt_id IS NULL",
+                (
+                    attempt_id,
+                    datetime.now(UTC).isoformat(),
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    scope_fingerprint,
+                    plan_ref.content_hash,
+                    hypothesis_id,
+                    stage.value,
+                    checkpoint_hash,
+                ),
+            )
+            if changed.rowcount == 1:
+                return True
+            row = connection.execute(
+                "SELECT 1 FROM simple_surface_child_revalidation_v11 "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND plan_hash = ? "
+                "AND hypothesis_id = ? AND stage = ? AND checkpoint_hash = ?",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    scope_fingerprint,
+                    plan_ref.content_hash,
+                    hypothesis_id,
+                    stage.value,
+                    checkpoint_hash,
+                ),
+            ).fetchone()
+            if row is None:
+                raise ValueError("SURFACE_CHILD_V11_CLAIM_STALE")
+            return False
+
+    def finish_surface_child_revalidation_v11(
+        self,
+        identity: CheckpointIdentity,
+        scope_fingerprint: str,
+        plan_ref: StoredDataRef,
+        hypothesis_id: str,
+        stage: SimpleStage,
+        checkpoint_hash: str,
+        attempt_id: str,
+        status: Literal["RESOLVED", "STILL_HOLD", "ERROR"],
+        reason_code: str,
+        result_ref: StoredDataRef,
+    ) -> bool:
+        """Commit a separately saved result only for the exact claimed attempt."""
+
+        if (
+            status not in {"RESOLVED", "STILL_HOLD", "ERROR"}
+            or re.fullmatch(r"[A-Z][A-Z0-9_]{1,159}", reason_code) is None
+        ):
+            raise ValueError("SURFACE_CHILD_V11_RESULT_INVALID")
+        try:
+            self._candidate_ref_json(identity, result_ref)
+            data_dir = self._artifact_data_dir
+            if data_dir is None:
+                parent_dir = self._database_path.parent
+                data_dir = parent_dir.parent if parent_dir.name == "db" else parent_dir
+            artifacts = SimpleArtifactRepository(data_dir, identity, create_dirs=False)
+            result = json.loads(artifacts.read_bounded(result_ref, 4 * 1024 * 1024))
+            if (
+                not isinstance(result, dict)
+                or result.get("kind") != "simple_surface_child_revalidation_result_v11"
+                or result.get("plan_ref") != plan_ref.model_dump(mode="json")
+                or result.get("hypothesis_id") != hypothesis_id
+                or result.get("stage") != stage.value
+                or result.get("checkpoint_hash") != checkpoint_hash
+                or result.get("status") != status
+                or result.get("reason_code") != reason_code
+                or not isinstance(result.get("evidence_refs"), list)
+            ):
+                raise ValueError("result artifact unbound")
+            for raw_ref in result["evidence_refs"]:
+                self._candidate_ref_json(
+                    identity, StoredDataRef.model_validate(raw_ref)
+                )
+        except (OSError, TypeError, ValueError, UnicodeError) as error:
+            raise ValueError("SURFACE_CHILD_V11_RESULT_INVALID") from error
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                "UPDATE simple_surface_child_revalidation_v11 "
+                "SET status = ?, reason_code = ?, result_ref_json = ?, updated_at = ? "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND plan_hash = ? "
+                "AND hypothesis_id = ? AND stage = ? AND checkpoint_hash = ? "
+                "AND status = 'RUNNING' AND attempt_id = ?",
+                (
+                    status,
+                    reason_code,
+                    result_ref.model_dump_json(),
+                    datetime.now(UTC).isoformat(),
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    scope_fingerprint,
+                    plan_ref.content_hash,
+                    hypothesis_id,
+                    stage.value,
+                    checkpoint_hash,
+                    attempt_id,
+                ),
+            )
+            if changed.rowcount == 1:
+                return True
+            existing = connection.execute(
+                "SELECT status, reason_code, result_ref_json, attempt_id "
+                "FROM simple_surface_child_revalidation_v11 "
+                "WHERE analysis_id = ? AND workspace_id = ? AND commit_id = ? "
+                "AND scope_fingerprint = ? AND plan_hash = ? "
+                "AND hypothesis_id = ? AND stage = ? AND checkpoint_hash = ?",
+                (
+                    identity.analysis_id,
+                    identity.workspace_id,
+                    identity.commit_id,
+                    scope_fingerprint,
+                    plan_ref.content_hash,
+                    hypothesis_id,
+                    stage.value,
+                    checkpoint_hash,
+                ),
+            ).fetchone()
+            if (
+                existing is not None
+                and existing["status"] == status
+                and existing["reason_code"] == reason_code
+                and existing["result_ref_json"] == result_ref.model_dump_json()
+                and existing["attempt_id"] == attempt_id
+            ):
+                return False
+            raise ValueError("SURFACE_CHILD_V11_RESULT_STALE")
+
     @staticmethod
     def _upsert_analysis_run_connection(
         connection: sqlite3.Connection, run: SimpleAnalysisRun
@@ -6952,6 +8195,36 @@ class SimpleCheckpointStore:
                 ).fetchone()
                 if row is None or tuple(row) != values:
                     raise ValueError("LLM_ATTEMPT_CONFLICT")
+            if (
+                retry_of is None
+                and owner is not None
+                and owner.stage == "HYPOTHESIS_SURFACE"
+                and owner.surface_id is not None
+                and owner.context_id is not None
+            ):
+                orphans = connection.execute(
+                    "SELECT call_id, file_path, model, orphaned_at "
+                    "FROM simple_codex_orphaned_calls WHERE analysis_id = ? "
+                    "AND surface_id = ? AND context_id = ?",
+                    (analysis_id, owner.surface_id, owner.context_id),
+                ).fetchall()
+                if orphans and attempt_id not in {
+                    str(orphan["call_id"]) for orphan in orphans
+                }:
+                    call = connection.execute(
+                        "SELECT started_at FROM simple_codex_calls "
+                        "WHERE call_id = ? AND analysis_id = ?",
+                        (attempt_id, analysis_id),
+                    ).fetchone()
+                    if call is not None:
+                        if (
+                            len(orphans) != 1
+                            or orphans[0]["file_path"] != owner.file_path
+                            or orphans[0]["model"] != model
+                            or call["started_at"] < orphans[0]["orphaned_at"]
+                        ):
+                            raise ValueError("CODEX_ORPHAN_RETRY_LINEAGE_INVALID")
+                        retry_of = str(orphans[0]["call_id"])
             if owner is not None or retry_of is not None or prompt_bytes is not None:
                 metadata = (
                     attempt_id,
@@ -7790,6 +9063,20 @@ class SimpleCheckpointStore:
                 if call_id is not None
                 else None
             )
+            owner_row = (
+                connection.execute(
+                    "SELECT m.stage, m.hypothesis_id, m.checkpoint_attempt_id, "
+                    "a.status, a.artifact_ref_json "
+                    "FROM simple_llm_attempt_metadata AS m "
+                    "JOIN simple_llm_attempts AS a "
+                    "ON a.attempt_id = m.attempt_id "
+                    "AND a.analysis_id = m.analysis_id "
+                    "WHERE m.attempt_id = ? AND m.analysis_id = ?",
+                    (call_id, identity.analysis_id),
+                ).fetchone()
+                if call_id is not None
+                else None
+            )
         strict_identity = bool(child_rows) or (
             version_row is not None
             and int(version_row["candidate_pipeline_version"]) >= 2
@@ -7841,13 +9128,43 @@ class SimpleCheckpointStore:
                 except (TypeError, ValueError):
                     return False
                 live_boot_at = windows_boot_time_utc()
+                if call_started_at.tzinfo is None:
+                    return False
+                checkpoint_predates_call = checkpoint.updated_at <= call_started_at
+                if checkpoint_predates_call:
+                    if (
+                        owner_row is None
+                        or owner_row["stage"] != checkpoint.stage.value
+                        or owner_row["hypothesis_id"] != identity.hypothesis_id
+                        or owner_row["checkpoint_attempt_id"] != checkpoint.attempt_id
+                        or owner_row["status"] != "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                    ):
+                        return False
+                    try:
+                        attempt_ref = StoredDataRef.model_validate_json(
+                            owner_row["artifact_ref_json"]
+                        )
+                        attempt_marker = json.loads(artifacts.read(attempt_ref))
+                    except (OSError, TypeError, ValueError):
+                        return False
+                    if (
+                        str(attempt_ref.workspace_id) != identity.workspace_id
+                        or str(attempt_ref.commit_id) != identity.commit_id
+                        or not isinstance(attempt_marker, dict)
+                        or attempt_marker.get("kind") != "simple_llm_attempt"
+                        or attempt_marker.get("provider") != "codex-cli"
+                        or attempt_marker.get("status")
+                        != "CODEX_PROCESS_CLEANUP_UNCONFIRMED"
+                    ):
+                        return False
                 if (
                     recorded_boot_at.tzinfo is None
                     or call_started_at.tzinfo is None
                     or live_boot_at is None
                     or live_boot_at.tzinfo is None
                     or call_row["status"] not in {"IN_FLIGHT", "CONFIRMED"}
-                    or not call_started_at < checkpoint.updated_at < recorded_boot_at
+                    or not call_started_at < recorded_boot_at
+                    or not checkpoint.updated_at < recorded_boot_at
                     or recorded_boot_at > observed_at
                     or live_boot_at > datetime.now(UTC) + timedelta(minutes=1)
                 ):
@@ -7860,13 +9177,19 @@ class SimpleCheckpointStore:
                     call_row["status"] == "IN_FLIGHT" and abs(boot_difference) > 60
                 ) or (call_row["status"] == "CONFIRMED" and boot_difference < -60):
                     return False
+                child_must_precede = (
+                    recorded_boot_at
+                    if checkpoint_predates_call
+                    else checkpoint.updated_at
+                )
                 for child in expected_children:
                     started_at = _windows_child_started_at(
                         cast(str, child["start_identity"])
                     )
                     if (
                         started_at is None
-                        or not call_started_at <= started_at < checkpoint.updated_at
+                        or not call_started_at <= started_at < child_must_precede
+                        or not started_at < live_boot_at
                         or child_identity_matches(
                             cast(int, child["pid"]),
                             cast(str, child["start_identity"]),
@@ -7971,6 +9294,341 @@ class SimpleCheckpointStore:
                 )
         except AnalysisRunBusy as error:
             raise ValueError("CODEX_CLEANUP_CONFIRMATION_ACTIVE_RUN") from error
+
+    def orphan_codex_rebooted_surface_call(
+        self,
+        analysis_id: str,
+        call_id: str,
+        confirmation_ref: StoredDataRef,
+        artifacts: SimpleArtifactRepository,
+    ) -> bool:
+        """Close an undelivered v9 surface call after exact reboot proof.
+
+        The call remains a billable SUCCEEDED LLM attempt, but it has not
+        returned to its owner: RunLimitedClient records the attempt before
+        changing the call from IN_FLIGHT to SAFE, then returns the result.
+        The absent context progress proves no result was committed. This
+        recovery records the orphan and frees only the process reservation;
+        it does not create a checkpoint or a cleanup-confirmation event.
+        """
+
+        invalid = "CODEX_ORPHAN_RECOVERY_INVALID"
+        if (
+            not analysis_id
+            or not call_id
+            or artifacts.identity.analysis_id != analysis_id
+            or artifacts.identity.hypothesis_id is not None
+            or artifacts.paths.database.resolve() != self._database_path.resolve()
+        ):
+            raise ValueError(invalid)
+        try:
+            with analysis_run_lease(artifacts.data_dir, analysis_id):
+                with self._connect() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    call = connection.execute(
+                        "SELECT status, started_at, confirmation_ref_json "
+                        "FROM simple_codex_calls WHERE call_id = ? AND analysis_id = ?",
+                        (call_id, analysis_id),
+                    ).fetchone()
+                    orphan = connection.execute(
+                        "SELECT confirmation_ref_json FROM simple_codex_orphaned_calls "
+                        "WHERE call_id = ? AND analysis_id = ?",
+                        (call_id, analysis_id),
+                    ).fetchone()
+                    if orphan is not None:
+                        if (
+                            call is not None
+                            and call["status"] == "SAFE"
+                            and call["confirmation_ref_json"]
+                            == confirmation_ref.model_dump_json()
+                            and orphan["confirmation_ref_json"]
+                            == confirmation_ref.model_dump_json()
+                        ):
+                            return False
+                        raise ValueError(invalid)
+                    if (
+                        call is None
+                        or call["status"] != "IN_FLIGHT"
+                        or call["confirmation_ref_json"] is not None
+                    ):
+                        raise ValueError(invalid)
+                    version = connection.execute(
+                        "SELECT candidate_pipeline_version "
+                        "FROM simple_codex_call_versions "
+                        "WHERE call_id = ? AND analysis_id = ?",
+                        (call_id, analysis_id),
+                    ).fetchone()
+                    run_row = connection.execute(
+                        "SELECT run_json FROM simple_analysis_runs "
+                        "WHERE analysis_id = ?",
+                        (analysis_id,),
+                    ).fetchone()
+                    attempt = connection.execute(
+                        "SELECT a.agent, a.model, a.status, a.artifact_ref_json, "
+                        "m.stage, m.candidate_ids_json, m.hypothesis_id, "
+                        "m.surface_id, m.file_path, m.context_id, "
+                        "m.checkpoint_attempt_id "
+                        "FROM simple_llm_attempts AS a "
+                        "JOIN simple_llm_attempt_metadata AS m "
+                        "ON m.attempt_id = a.attempt_id "
+                        "AND m.analysis_id = a.analysis_id "
+                        "WHERE a.attempt_id = ? AND a.analysis_id = ?",
+                        (call_id, analysis_id),
+                    ).fetchone()
+                    children = connection.execute(
+                        "SELECT phase, status, pid, start_identity "
+                        "FROM simple_codex_child_spawns "
+                        "WHERE call_id = ? AND analysis_id = ? ORDER BY phase",
+                        (call_id, analysis_id),
+                    ).fetchall()
+                    if version is None or run_row is None or attempt is None:
+                        raise ValueError(invalid)
+                    try:
+                        run = SimpleAnalysisRun.model_validate_json(run_row["run_json"])
+                        marker = json.loads(artifacts.read(confirmation_ref))
+                        attempt_ref = StoredDataRef.model_validate_json(
+                            attempt["artifact_ref_json"]
+                        )
+                        attempt_marker = json.loads(artifacts.read(attempt_ref))
+                        call_started_at = datetime.fromisoformat(call["started_at"])
+                    except (OSError, TypeError, ValueError, UnicodeError) as error:
+                        raise ValueError(invalid) from error
+                    plan_ref = run.surface_enrichment_v9_plan_ref
+                    if (
+                        not isinstance(marker, dict)
+                        or not isinstance(attempt_marker, dict)
+                        or plan_ref is None
+                        or run.analysis_id != analysis_id
+                        or run.workspace_id != artifacts.identity.workspace_id
+                        or run.commit_id != artifacts.identity.commit_id
+                        or run.provider != "codex"
+                        or run.llm_provider != "codex"
+                        or run.candidate_pipeline_version != 2
+                        or int(version["candidate_pipeline_version"]) != 2
+                        or run.model_route_version != 1
+                        or run.model is None
+                        or run.model_routes is None
+                        or run.candidate_scope_fingerprint is None
+                        or run.static_bundle_ref is None
+                        or run.surface_enrichment_v8_plan_ref is None
+                        or run.surface_enrichment_status != "RUNNING"
+                        or attempt["agent"] != "hypothesis_surface"
+                        or attempt["stage"] != "HYPOTHESIS_SURFACE"
+                        or attempt["candidate_ids_json"] != "[]"
+                        or attempt["hypothesis_id"] is not None
+                        or attempt["checkpoint_attempt_id"] is not None
+                        or attempt["status"] != "SUCCEEDED"
+                        or attempt["model"]
+                        != run.model_routes.get("hypothesis_surface", run.model)
+                        or not attempt["surface_id"]
+                        or not attempt["context_id"]
+                        or not attempt["file_path"]
+                        or str(attempt_ref.workspace_id) != run.workspace_id
+                        or str(attempt_ref.commit_id) != run.commit_id
+                        or attempt_marker.get("kind") != "simple_llm_attempt"
+                        or attempt_marker.get("provider") != "codex-cli"
+                        or attempt_marker.get("agent") != attempt["agent"]
+                        or attempt_marker.get("model") != attempt["model"]
+                        or attempt_marker.get("status") != "SUCCEEDED"
+                        or marker.get("kind")
+                        != "simple_codex_reboot_orphan_confirmation"
+                        or marker.get("analysis_id") != analysis_id
+                        or marker.get("workspace_id") != run.workspace_id
+                        or marker.get("commit_id") != run.commit_id
+                        or marker.get("call_id") != call_id
+                        or marker.get("call_started_at") != call["started_at"]
+                        or marker.get("surface_id") != attempt["surface_id"]
+                        or marker.get("context_id") != attempt["context_id"]
+                        or marker.get("file_path") != attempt["file_path"]
+                        or marker.get("model") != attempt["model"]
+                        or marker.get("surface_plan_hash") != plan_ref.content_hash
+                        or marker.get("attempt_ref")
+                        != attempt_ref.model_dump(mode="json")
+                        or str(confirmation_ref.workspace_id) != run.workspace_id
+                        or str(confirmation_ref.commit_id) != run.commit_id
+                        or call_started_at.tzinfo is None
+                    ):
+                        raise ValueError(invalid)
+                    try:
+                        plan = json.loads(artifacts.read(plan_ref))
+                    except (OSError, TypeError, ValueError, UnicodeError) as error:
+                        raise ValueError(invalid) from error
+                    if not isinstance(plan, dict):
+                        raise ValueError(invalid)
+                    targets = plan.get("targets")
+                    expected_parts = plan.get("expected_parts")
+                    if (
+                        plan.get("kind") != "simple_surface_enrichment_plan_v9"
+                        or plan.get("analysis_id") != analysis_id
+                        or plan.get("workspace_id") != run.workspace_id
+                        or plan.get("commit_id") != run.commit_id
+                        or plan.get("scope_fingerprint")
+                        != run.candidate_scope_fingerprint
+                        or plan.get("static_bundle_hash")
+                        != run.static_bundle_ref.content_hash
+                        or plan.get("prior_v8_plan_ref")
+                        != run.surface_enrichment_v8_plan_ref.model_dump(mode="json")
+                        or not isinstance(targets, list)
+                        or not isinstance(expected_parts, list)
+                    ):
+                        raise ValueError(invalid)
+                    matching_targets = [
+                        item
+                        for item in targets
+                        if isinstance(item, dict)
+                        and item.get("surface_id") == attempt["surface_id"]
+                    ]
+                    matching_parts = [
+                        item
+                        for item in expected_parts
+                        if isinstance(item, dict)
+                        and item.get("surface_id") == attempt["surface_id"]
+                        and item.get("context_id") == attempt["context_id"]
+                    ]
+                    if (
+                        len(matching_targets) != 1
+                        or matching_targets[0].get("path") != attempt["file_path"]
+                        or len(matching_parts) != 1
+                        or not isinstance(matching_parts[0].get("context_hash"), str)
+                        or not isinstance(matching_parts[0].get("context_part"), dict)
+                        or re.fullmatch(
+                            r"[0-9a-f]{64}",
+                            str(matching_parts[0]["context_hash"]),
+                        )
+                        is None
+                    ):
+                        raise ValueError(invalid)
+                    progress = connection.execute(
+                        "SELECT 1 FROM simple_surface_exploration_progress "
+                        "WHERE analysis_id = ? AND workspace_id = ? "
+                        "AND commit_id = ? AND surface_id = ? AND context_id = ? "
+                        "LIMIT 1",
+                        (
+                            analysis_id,
+                            run.workspace_id,
+                            run.commit_id,
+                            attempt["surface_id"],
+                            attempt["context_id"],
+                        ),
+                    ).fetchone()
+                    if progress is not None:
+                        raise ValueError(invalid)
+                    try:
+                        boot_at = datetime.fromisoformat(marker["observed_boot_at"])
+                        observed_at = datetime.fromisoformat(marker["observed_at"])
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise ValueError(invalid) from error
+                    from sastsimi.providers.codex_subscription import (
+                        child_identity_matches,
+                        windows_boot_time_utc,
+                    )
+
+                    live_boot_at = windows_boot_time_utc()
+                    now = datetime.now(UTC)
+                    if (
+                        boot_at.tzinfo is None
+                        or observed_at.tzinfo is None
+                        or live_boot_at is None
+                        or live_boot_at.tzinfo is None
+                        or not call_started_at < boot_at <= observed_at
+                        or not call_started_at < live_boot_at
+                        or observed_at > now + timedelta(minutes=5)
+                        or live_boot_at > now + timedelta(minutes=1)
+                        or abs((live_boot_at - boot_at).total_seconds()) > 60
+                        or marker.get("verification_method") != "windows_reboot"
+                        or marker.get("process_tree_stopped") is not True
+                        or type(marker.get("observed_matching_process_count"))
+                        is not int
+                        or marker["observed_matching_process_count"] != 0
+                        or not children
+                        or any(
+                            child["status"] not in {"CAPTURED", "EXITED"}
+                            or type(child["pid"]) is not int
+                            or child["pid"] <= 0
+                            or not child["start_identity"]
+                            for child in children
+                        )
+                    ):
+                        raise ValueError(invalid)
+                    expected_children = [
+                        {
+                            "phase": str(child["phase"]),
+                            "pid": int(child["pid"]),
+                            "start_identity": str(child["start_identity"]),
+                        }
+                        for child in children
+                    ]
+                    observed_children = marker.get("observed_children")
+                    if (
+                        not isinstance(observed_children, list)
+                        or sorted(
+                            observed_children,
+                            key=lambda item: (
+                                str(item.get("phase")) if isinstance(item, dict) else ""
+                            ),
+                        )
+                        != expected_children
+                        or marker.get("former_parent_pid")
+                        not in {child["pid"] for child in expected_children}
+                    ):
+                        raise ValueError(invalid)
+                    for child in expected_children:
+                        child_started_at = _windows_child_started_at(
+                            cast(str, child["start_identity"])
+                        )
+                        if (
+                            child_started_at is None
+                            or not call_started_at <= child_started_at < boot_at
+                            or not child_started_at < live_boot_at
+                            or child_identity_matches(
+                                cast(int, child["pid"]),
+                                cast(str, child["start_identity"]),
+                            )
+                            is True
+                        ):
+                            raise ValueError(invalid)
+                    resolved_at = now.isoformat()
+                    changed = connection.execute(
+                        "UPDATE simple_codex_calls SET status = 'SAFE', "
+                        "resolved_at = ?, confirmation_ref_json = ? "
+                        "WHERE call_id = ? AND analysis_id = ? "
+                        "AND status = 'IN_FLIGHT' "
+                        "AND confirmation_ref_json IS NULL",
+                        (
+                            resolved_at,
+                            confirmation_ref.model_dump_json(),
+                            call_id,
+                            analysis_id,
+                        ),
+                    )
+                    if changed.rowcount != 1:
+                        raise ValueError("CODEX_ORPHAN_RECOVERY_STALE")
+                    connection.execute(
+                        "INSERT INTO simple_codex_orphaned_calls "
+                        "(call_id, analysis_id, surface_id, context_id, file_path, "
+                        "model, attempt_ref_json, confirmation_ref_json, orphaned_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            call_id,
+                            analysis_id,
+                            attempt["surface_id"],
+                            attempt["context_id"],
+                            attempt["file_path"],
+                            attempt["model"],
+                            attempt_ref.model_dump_json(),
+                            confirmation_ref.model_dump_json(),
+                            resolved_at,
+                        ),
+                    )
+                    connection.execute(
+                        "UPDATE simple_codex_child_spawns SET status = 'EXITED' "
+                        "WHERE call_id = ? AND analysis_id = ? "
+                        "AND status = 'CAPTURED'",
+                        (call_id, analysis_id),
+                    )
+                    return True
+        except AnalysisRunBusy as error:
+            raise ValueError("CODEX_ORPHAN_RECOVERY_ACTIVE_RUN") from error
 
     def reconcile_confirmed_codex_children(
         self, analysis_id: str, call_id: str, data_dir: Path

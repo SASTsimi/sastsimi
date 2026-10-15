@@ -256,7 +256,7 @@ def coverage_report_lines(
             f"- {'전체 분석 상태' if korean else 'Analysis status'}: "
             f"`{coverage.analysis_status}`",
         )
-    if coverage.surface_proof_version in (2, 3, 4, 5, 6, 7, 8):
+    if coverage.surface_proof_version in (2, 3, 4, 5, 6, 7, 8, 9):
         lines.extend(
             [
                 f"- {'원본 정적 공백' if korean else 'Raw static gaps'}: "
@@ -280,7 +280,27 @@ def coverage_report_lines(
                 + f": `{coverage.surface_scope_certificate_hash}`",
             ]
         )
-    if coverage.surface_proof_version in (3, 4, 5, 6, 7, 8):
+    if coverage.surface_proof_version in (3, 4, 5, 6, 7, 8, 9):
+        child_counts = (
+            coverage.surface_child_resolved_count,
+            coverage.surface_child_pending_count,
+            coverage.surface_child_still_hold_count,
+            coverage.surface_child_error_count,
+        )
+        if coverage.surface_proof_version == 9 and all(
+            type(count) is int and count >= 0 for count in child_counts
+        ):
+            resolved, pending, still_hold, error = child_counts
+            child_line = (
+                "- 자식 근거 재검증: "
+                f"해결 {resolved} · 대기 {pending} · HOLD 유지 {still_hold} "
+                f"· 오류 {error}"
+                if korean
+                else "- Child revalidation: "
+                f"resolved {resolved} · pending {pending} · still HOLD {still_hold} "
+                f"· error {error}"
+            )
+            lines.append(child_line)
         if coverage.surface_completed_inconclusive_child_count is not None:
             lines.append(
                 "- "
@@ -317,7 +337,7 @@ def coverage_report_lines(
             if total > 0 and type(coverage.surface_reviewed_count) is int:
                 version = (
                     coverage.surface_proof_version
-                    if coverage.surface_proof_version in (6, 7, 8)
+                    if coverage.surface_proof_version in (6, 7, 8, 9)
                     else 5
                 )
                 reviewed_label = (
@@ -338,7 +358,7 @@ def coverage_report_lines(
                     ]
                 )
         if (
-            coverage.surface_proof_version == 8
+            coverage.surface_proof_version in (8, 9)
             and type(coverage.surface_template_scope_limit_count) is int
         ):
             lines.append(
@@ -641,6 +661,7 @@ def render_bundle_files(
                 **(
                     {
                         "surface_proof_version": facts.coverage.surface_proof_version,
+                        "surface_coverage_hash": facts.coverage.surface_coverage_hash,
                         "surface_scope_certificate_hash": (
                             facts.coverage.surface_scope_certificate_hash
                         ),
@@ -660,7 +681,7 @@ def render_bundle_files(
                                 )
                             }
                             if facts.coverage.surface_proof_version
-                            in (3, 4, 5, 6, 7, 8)
+                            in (3, 4, 5, 6, 7, 8, 9)
                             else {}
                         ),
                         **(
@@ -682,7 +703,25 @@ def render_bundle_files(
                                 ),
                             }
                             if facts.coverage.surface_proof_version
-                            in (3, 4, 5, 6, 7, 8)
+                            in (3, 4, 5, 6, 7, 8, 9)
+                            else {}
+                        ),
+                        **(
+                            {
+                                "child_revalidation": {
+                                    "resolved": (
+                                        facts.coverage.surface_child_resolved_count
+                                    ),
+                                    "pending": (
+                                        facts.coverage.surface_child_pending_count
+                                    ),
+                                    "still_hold": (
+                                        facts.coverage.surface_child_still_hold_count
+                                    ),
+                                    "error": facts.coverage.surface_child_error_count,
+                                }
+                            }
+                            if facts.coverage.surface_proof_version == 9
                             else {}
                         ),
                         **(
@@ -691,11 +730,11 @@ def render_bundle_files(
                                     facts.coverage.surface_template_scope_limit_count
                                 )
                             }
-                            if facts.coverage.surface_proof_version == 8
+                            if facts.coverage.surface_proof_version in (8, 9)
                             else {}
                         ),
                     }
-                    if facts.coverage.surface_proof_version in (2, 3, 4, 5, 6, 7, 8)
+                    if facts.coverage.surface_proof_version in (2, 3, 4, 5, 6, 7, 8, 9)
                     else {}
                 ),
             }

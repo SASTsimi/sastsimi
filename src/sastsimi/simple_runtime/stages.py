@@ -6144,6 +6144,16 @@ this local route requires citations=[].
             disposition=run.static_disposition,
         )
         terminal = run.candidate_terminal
+        if run.surface_enrichment_v11_plan_ref is not None and (
+            terminal is None or terminal.surface_proof_version != 9
+        ):
+            raise StageFailed(
+                StageFailure(
+                    code="REPORT_SURFACE_PROOF_UNVERIFIED",
+                    retryable=False,
+                    safe_message="Saved attack-surface proof could not be verified",
+                )
+            )
         if terminal is not None and terminal.status == "PARTIAL":
             # A legacy surface proof may be unreadable without changing the
             # independently verified static result. Preserve the known run
@@ -6151,7 +6161,13 @@ this local route requires citations=[].
             disclosure = replace(disclosure, analysis_status="PARTIAL")
 
         def unverified_surface_proof() -> CoverageDisclosure:
-            if terminal is not None and terminal.surface_proof_version in (5, 6, 7, 8):
+            if terminal is not None and terminal.surface_proof_version in (
+                5,
+                6,
+                7,
+                8,
+                9,
+            ):
                 if self._store is not None and verified_pending_v9_predecessor(
                     run, self._artifacts, self._store
                 ):
@@ -6167,7 +6183,7 @@ this local route requires citations=[].
 
         if (
             terminal is None
-            or terminal.surface_proof_version not in (2, 3, 4, 5, 6, 7, 8)
+            or terminal.surface_proof_version not in (2, 3, 4, 5, 6, 7, 8, 9)
             or not run.candidate_scope_fingerprint
             or not terminal.surface_coverage_hash
         ):
@@ -6175,7 +6191,7 @@ this local route requires citations=[].
         try:
             proof_identity = (
                 checkpoint.identity.model_copy(update={"hypothesis_id": None})
-                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else checkpoint.identity
             )
             proof_artifacts = (
@@ -6184,7 +6200,7 @@ this local route requires citations=[].
                     proof_identity,
                     create_dirs=False,
                 )
-                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else self._artifacts
             )
             index_record = self._store.get_attack_surface_index(
@@ -6236,18 +6252,19 @@ this local route requires citations=[].
             disclosure,
             analysis_status=terminal.status,
             surface_proof_version=terminal.surface_proof_version,
+            surface_coverage_hash=terminal.surface_coverage_hash,
             surface_scope_certificate_hash=terminal.scope_certificate_hash,
             surface_raw_static_gap_count=counts["RAW_STATIC_GAP_COUNT"],
             surface_effective_python_gap_count=counts["EFFECTIVE_PYTHON_GAP_COUNT"],
             surface_unresolved_reason_count=counts["UNRESOLVED_REASON_COUNT"],
             surface_template_scope_limit_count=(
                 counts.get("TEMPLATE_CONTENT_NOT_ANALYZED_COUNT")
-                if terminal.surface_proof_version == 8
+                if terminal.surface_proof_version in (8, 9)
                 else None
             ),
             surface_completed_inconclusive_child_count=(
                 counts.get("COMPLETED_INCONCLUSIVE_CHILD_COUNT")
-                if terminal.surface_proof_version in (5, 6, 7, 8)
+                if terminal.surface_proof_version in (5, 6, 7, 8, 9)
                 else None
             ),
             surface_unresolved_reasons=tuple(
@@ -6257,24 +6274,32 @@ this local route requires citations=[].
                     if key.startswith("REASON_CODE_")
                 )
             )
-            if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
+            if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
             else (),
             surface_reviewed_count=counts.get("REVIEWED"),
             surface_covered_count=(
                 counts["COVERED"]
-                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else None
             ),
             surface_uncovered_count=(
                 counts["UNCOVERED"]
-                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else None
             ),
             surface_insufficient_count=(
                 counts["INSUFFICIENT"]
-                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else None
             ),
+            surface_child_resolved_count=counts.get(
+                "CHILD_REVALIDATION_RESOLVED_COUNT"
+            ),
+            surface_child_pending_count=counts.get("CHILD_REVALIDATION_PENDING_COUNT"),
+            surface_child_still_hold_count=counts.get(
+                "CHILD_REVALIDATION_STILL_HOLD_COUNT"
+            ),
+            surface_child_error_count=counts.get("CHILD_REVALIDATION_ERROR_COUNT"),
         )
 
     def _validated_poc(

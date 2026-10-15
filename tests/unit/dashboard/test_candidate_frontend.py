@@ -187,6 +187,35 @@ shown = text(nodes.get("overview"));
 for (const expected of [
   "v8 검토 완료 36/56", "Python 범위 밖 템플릿 HTML/Jinja 내용 1건",
 ]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+detail.phase_counts.surface = {
+  proof_version: 9, template_content_not_analyzed_count: 1,
+  completed: 20, total: 56, reviewed: 36,
+  covered: 20, uncovered: 0, insufficient: 36,
+  child_revalidation_resolved: 1, child_revalidation_pending: 2,
+  child_revalidation_still_hold: 3, child_revalidation_error: 4,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "v9 검토 완료 36/56", "자식 근거 재검증", "해결 1", "대기 2",
+  "HOLD 유지 3", "오류 4", "Python 범위 밖 템플릿 HTML/Jinja 내용 1건",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+detail.phase_counts.surface = {
+  total: 56, recorded_contexts: 3, recorded_surfaces: 2,
+  child_revalidation_attempts_unverified: 1,
+  child_revalidation_attempt_pending: 1,
+  child_revalidation_attempt_running: 2,
+  child_revalidation_attempt_resolved: 3,
+  child_revalidation_attempt_still_hold: 4,
+  child_revalidation_attempt_error: 5,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "검증 전 시도 기록", "대기 1", "실행 중 2", "해결 3",
+  "HOLD 유지 4", "오류 5", "coverage 확인 전",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+assert.ok(!shown.includes("v9 검토 완료"), shown);
 detail.status = "RUNNING";
 vm.runInContext("renderOverview(state.detail)", context);
 shown = text(nodes.get("overview"));

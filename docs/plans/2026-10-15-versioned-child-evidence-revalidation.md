@@ -19,6 +19,22 @@ worker. Use the repository Python 3.12 `.venv`, pytest, Ruff and mypy.
   evidence; no fallback to old COMPLETE or static-only report.
 - Add tests before each production change; verify RED then GREEN.
 
+## Current safe implementation boundary
+
+The first V11 successor may independently close only an already terminal PoC
+`INCONCLUSIVE` whose exact saved execution and interpretation replay. Initial
+`HOLD` stays `STILL_HOLD` until a separately verified PoC or negative proof
+path exists. A newly obtained final `TRUE` also stays `STILL_HOLD` until the
+finding, technical gate, scope gate, and both report outputs can be replayed
+as one downstream chain. The current code does not claim that chain exists.
+This boundary intentionally prevents a displayed 100% from being inferred
+from a Verification Agent response alone. A later evidence version, not a
+silent retry of the same CAS attempt, is required for those remaining cases.
+An exact CAS permits same-plan resume after a preflight failure only when no
+child attempt has entered `RUNNING` or `ERROR`. In-flight cleanup or a failed
+provider attempt requires a separately proved new attempt generation; the
+first V11 implementation does not yet provide that generation.
+
 ## Task 1 — Inventory, frozen plan and fail-closed progress
 
 **Files:** new `surface_child_evidence_v11.py`; `models.py`, `store.py`;
