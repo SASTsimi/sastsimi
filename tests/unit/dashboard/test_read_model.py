@@ -270,6 +270,79 @@ def test_failed_scan_cannot_mark_newer_success_incomplete(
     )
 
 
+def test_failed_rebuild_from_ready_marks_same_generation_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "same-marker", _pages(1))
+
+    class Query:
+        def __init__(self, _data_dir: Path) -> None:
+            pass
+
+        def _resolved(self, analysis_id: str) -> str:
+            return analysis_id
+
+    def scan(_query: object, _analysis_id: str) -> tuple[str, object]:
+        raise ValueError("SOURCE_ARTIFACT_DAMAGED")
+
+    monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
+    monkeypatch.setattr(projection_module, "collect_source_pages", scan)
+    result = projection_module.rebuild_analysis(tmp_path, "DEMO-ANALYSIS")
+    assert result.status == "FAILED"
+    with pytest.raises(DashboardIndexNotReady):
+        model.page("DEMO-ANALYSIS", "outputs", offset=0, limit=10)
+
+
+def test_failed_rebuild_cannot_dirty_newer_ready_with_same_source_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "same-marker", _pages(1))
+
+    class Query:
+        def __init__(self, _data_dir: Path) -> None:
+            pass
+
+        def _resolved(self, analysis_id: str) -> str:
+            return analysis_id
+
+    def scan(_query: object, _analysis_id: str) -> tuple[str, object]:
+        model.replace("DEMO-ANALYSIS", "same-marker", _pages(2))
+        raise ValueError("OLD_SCAN_FAILED")
+
+    monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
+    monkeypatch.setattr(projection_module, "collect_source_pages", scan)
+    result = projection_module.rebuild_analysis(tmp_path, "DEMO-ANALYSIS")
+    assert result.status == "FAILED"
+    assert (
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)["total_items"] == 2
+    )
+
+
+def test_failure_without_captured_guard_version_cannot_dirty_ready(
+    tmp_path: Path,
+) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "same-marker", _pages(1))
+
+    with model._connect(True) as guard:
+        assert not model.mark_incomplete_if_current(
+            "DEMO-ANALYSIS",
+            "same-marker",
+            "SCAN_FAILED",
+            guard=guard,
+            expected_data_version=None,
+        )
+
+    assert (
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)["total_items"] == 1
+    )
+
+
 def test_incomplete_index_fails_closed_and_can_be_rebuilt(tmp_path: Path) -> None:
     model = DashboardReadModel(tmp_path)
     model.initialize()
@@ -297,6 +370,21 @@ def test_hold_review_dirty_index_has_distinct_not_ready_reason(tmp_path: Path) -
 
     with pytest.raises(DashboardIndexNotReady, match="DASHBOARD_INDEX_RESUME_REQUIRED"):
         model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
+
+
+def test_dirty_index_with_unknown_lease_does_not_claim_active_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "marker-1", _pages(1))
+    model.mark_incomplete("DEMO-ANALYSIS", "dirty", "SOURCE_UPDATED")
+    monkeypatch.setattr(
+        "sastsimi.dashboard.read_model.analysis_run_lease_active",
+        lambda _data_dir, _analysis_id: None,
+    )
+    with pytest.raises(DashboardIndexNotReady, match="DASHBOARD_INDEX_NOT_READY"):
+        model.page("DEMO-ANALYSIS", "outputs", offset=0, limit=10)
 
 
 def test_legacy_ready_index_remains_readable_without_hold_generation(

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, SQLite, `ContextVar`, pytest, Ruff, mypy; existing vanilla-JS dashboard.
 
-**Spec:** `docs/superpowers/specs/2026-10-15-v9-dashboard-projection-batching-design.md`
+**Spec:** `docs/plans/2026-10-15-v9-dashboard-projection-batching-design.md`
 
 ## Global Constraints
 

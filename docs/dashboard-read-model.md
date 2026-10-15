@@ -22,7 +22,7 @@ uv run sastsimi --data-dir <DATA_DIR> dashboard-index rebuild --all
 uv run sastsimi --data-dir <DATA_DIR> dashboard-index rebuild --analysis-id <ANALYSIS_ID>
 ```
 
-분석별 트랜잭션으로 기존 인덱스 행을 교체하며 `(analysis_id, list_kind, item_id)` 기본 키로 중복을 방지합니다. 출력의 원본 개수와 인덱스 개수를 비교하십시오. 재구축 중 원본이 다시 변경되면 이전 스냅샷을 `READY`로 게시하지 않습니다. 한 분석의 투영이 실패하면 원본은 보존되고 색인은 `INCOMPLETE`로 남습니다. 원인을 수정한 뒤 같은 재구축 명령을 다시 실행할 수 있습니다.
+분석별 트랜잭션으로 기존 인덱스 행을 교체하며 `(analysis_id, list_kind, item_id)` 기본 키로 중복을 방지합니다. 출력의 원본 개수와 인덱스 개수를 비교하십시오. 재구축 중 원본이 다시 변경되면 이전 스냅샷을 `READY`로 게시하지 않습니다. 이 충돌은 `STALE`로 반환되며 명령 결과의 `skipped`에 집계됩니다. 원본 쓰기가 끝난 뒤 재구축을 다시 실행하십시오. 한 분석의 투영이 실패하면 원본은 보존되고 색인은 `INCOMPLETE`로 남습니다. 원인을 수정한 뒤 같은 재구축 명령을 다시 실행할 수 있습니다.
 
 ## 저장 시 투영
 
@@ -32,7 +32,7 @@ V9 공격 표면 검토는 한 *문맥 묶음*의 제안·가설 자식 처리 �
 
 상세 목록(특히 보고서가 보이는 `outputs`)의 HTTP 409 의미는 다음과 같습니다.
 
-- `index_not_ready`: 최초 백필이 필요합니다. `dashboard-index rebuild --analysis-id <ANALYSIS_ID>`를 실행합니다.
+- `index_not_ready`: 최초 백필이 필요하거나 실행 상태를 확인할 수 없습니다. 상태를 확인한 뒤 `dashboard-index rebuild --analysis-id <ANALYSIS_ID>`를 실행합니다.
 - `index_updating`: 분석이 실행 중이며 색인이 갱신 중입니다. 잠시 후 다시 조회합니다.
 - `index_resume_required`: 분석 실행이 멈춘 채 색인이 미완료입니다. 원인 확인 후 분석을 재개하거나 명시적으로 색인을 재구축합니다.
 

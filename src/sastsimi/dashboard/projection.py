@@ -200,6 +200,7 @@ def rebuild_analysis(
     indexed_id = analysis_id
     guard: sqlite3.Connection | None = None
     expected_state_marker: str | None = None
+    expected_data_version: int | None = None
     try:
         indexed_id = query._resolved(analysis_id)
         if not dry_run:
@@ -241,6 +242,8 @@ def rebuild_analysis(
                     indexed_id,
                     expected_state_marker,
                     f"{type(error).__name__}: {error}",
+                    guard=guard,
+                    expected_data_version=expected_data_version,
                 )
             except (OSError, sqlite3.Error):
                 pass

@@ -31,6 +31,6 @@ def run(
         "processed": len(results),
         "succeeded": sum(item.status in {"READY", "DRY_RUN"} for item in results),
         "failed": sum(item.status == "FAILED" for item in results),
-        "skipped": 0,
+        "skipped": sum(item.status == "STALE" for item in results),
         "analyses": payload,
     }
