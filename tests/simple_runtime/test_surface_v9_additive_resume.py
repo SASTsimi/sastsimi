@@ -313,7 +313,9 @@ async def test_v9_projects_once_per_context_and_rebuilds_dirty_resume(
     data_dir = store.database_path.parent.parent
     model = DashboardReadModel(data_dir)
     model.initialize()
-    empty = {tab: ([], {"tab": tab}) for tab in INDEXED_TABS}
+    empty: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
     model.replace(identity.analysis_id, "before", empty)
     projected: list[str] = []
 
@@ -419,7 +421,9 @@ async def test_v9_cancelled_proposal_keeps_committed_attempt_and_dirty_index(
     data_dir = store.database_path.parent.parent
     model = DashboardReadModel(data_dir)
     model.initialize()
-    empty = {tab: ([], {"tab": tab}) for tab in INDEXED_TABS}
+    empty: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
     model.replace(identity.analysis_id, "before", empty)
     fail_projection = False
     projected = 0

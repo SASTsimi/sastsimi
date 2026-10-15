@@ -6,13 +6,13 @@ import sqlite3
 from contextvars import copy_context
 from pathlib import Path
 
-from sastsimi.dashboard.projection_batch import (
+from sastsimi.dashboard.read_model import DashboardReadModel
+from sastsimi.simple_runtime.dashboard_projection_batch import (
     defer_dashboard_projection,
     dispatch_dashboard_projection,
     mark_index_dirty_connection,
     projection_is_deferred,
 )
-from sastsimi.dashboard.read_model import DashboardReadModel
 
 
 def test_nested_scope_flushes_once_and_other_analysis_is_independent(

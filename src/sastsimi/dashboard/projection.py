@@ -219,6 +219,7 @@ def rebuild_analysis(
         if dry_run:
             return RebuildResult(analysis_id, source, {}, True, "DRY_RUN")
         assert guard is not None
+        assert expected_data_version is not None
         indexed = model.replace_if_current(
             indexed_id,
             marker,

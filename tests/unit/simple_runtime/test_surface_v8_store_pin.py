@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from pydantic import ValidationError
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.dashboard.read_model import INDEXED_TABS, DashboardReadModel
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.models import (
     CandidateTerminal,
@@ -431,6 +433,37 @@ def test_v9_pin_is_idempotent_and_preserves_v8_parent(tmp_path: Path) -> None:
     assert saved.surface_enrichment_v8_plan_ref == parent.surface_enrichment_v8_plan_ref
     assert saved.candidate_terminal == parent.candidate_terminal
     assert not store.pin_surface_enrichment_v9_plan(parent, plan_ref, v8_hash)
+
+
+def test_v9_plan_pin_dirties_dashboard_only_for_first_write(tmp_path: Path) -> None:
+    store, identity, parent, plan_ref, v8_hash = _v9_pin_case(tmp_path)
+    model = DashboardReadModel(tmp_path / "data")
+    model.database = tmp_path / "ledger.sqlite3"
+    model.initialize()
+
+    def ready() -> None:
+        model.replace(
+            identity.analysis_id,
+            "seed:hold:0",
+            {tab: ([], {"tab": tab}) for tab in INDEXED_TABS},
+        )
+
+    def status() -> str:
+        with sqlite3.connect(model.database) as connection:
+            row = connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id = ?",
+                (identity.analysis_id,),
+            ).fetchone()
+        assert row is not None
+        return str(row[0])
+
+    ready()
+    assert store.pin_surface_enrichment_v9_plan(parent, plan_ref, v8_hash)
+    assert status() == "INCOMPLETE"
+
+    ready()
+    assert not store.pin_surface_enrichment_v9_plan(parent, plan_ref, v8_hash)
+    assert status() == "READY"
 
 
 def test_v9_pin_rejects_changed_v8_progress(tmp_path: Path) -> None:

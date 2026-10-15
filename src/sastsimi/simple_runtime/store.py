@@ -1721,6 +1721,7 @@ class SimpleCheckpointStore:
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            before_changes = connection.total_changes
             self._register_candidate_hypothesis_connection(
                 connection,
                 identity,
@@ -1732,6 +1733,10 @@ class SimpleCheckpointStore:
                 chain_depth=chain_depth,
                 parent_hypothesis_ids=parent_hypothesis_ids,
             )
+            if connection.total_changes > before_changes:
+                # Candidate registration is a high-frequency batch operation.
+                # Invalidate atomically; the stage boundary rebuilds the index.
+                self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
 
     def register_candidate_hypotheses_batch(
         self,
@@ -1746,6 +1751,7 @@ class SimpleCheckpointStore:
             raise ValueError("CANDIDATE_HYPOTHESIS_BATCH_EMPTY")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            before_changes = connection.total_changes
             for hypothesis_id, hypothesis_ref, checkpoint in registrations:
                 self._register_candidate_hypothesis_connection(
                     connection,
@@ -1756,6 +1762,8 @@ class SimpleCheckpointStore:
                     hypothesis_ref,
                     checkpoint=checkpoint,
                 )
+            if connection.total_changes > before_changes:
+                self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
 
     def commit_candidate_batch_outcome(
         self,
@@ -1871,6 +1879,7 @@ class SimpleCheckpointStore:
                     encoded_ref,
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
         return True
 
     def list_candidate_batch_outcomes(
@@ -2928,13 +2937,17 @@ class SimpleCheckpointStore:
                     error_code="PRO_CON_LEGACY_ROLE_CACHE_REPAIRED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(
+                connection, checkpoint.identity.analysis_id
+            )
             connection.commit()
-            return True
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(checkpoint.identity.analysis_id)
+        return True
 
     def save_chaining_pool_batch(
         self,
@@ -3117,6 +3130,7 @@ class SimpleCheckpointStore:
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            before_changes = connection.total_changes
             self._register_free_hypothesis_connection(
                 connection,
                 identity,
@@ -3126,6 +3140,11 @@ class SimpleCheckpointStore:
                 chain_depth=chain_depth,
                 parent_hypothesis_ids=parent_hypothesis_ids,
             )
+            changed = connection.total_changes > before_changes
+            if changed:
+                self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
+        if changed:
+            self._project_after_direct_commit(identity.analysis_id)
 
     def _register_free_hypothesis_connection(
         self,
@@ -6835,6 +6854,8 @@ class SimpleCheckpointStore:
             )
             if changed.rowcount != 1:
                 raise ValueError("SURFACE_ENRICHMENT_V9_PIN_STALE")
+            self._mark_dashboard_dirty_connection(connection, expected.analysis_id)
+        self._project_after_direct_commit(expected.analysis_id)
         return True
 
     def pin_surface_enrichment_v10_plan(
@@ -8509,6 +8530,9 @@ class SimpleCheckpointStore:
                         "VALUES (?, ?, ?)",
                         (call_id, analysis_id, version),
                     )
+            # Reserving a child process changes report currentness. Invalidate
+            # atomically, without rebuilding for every high-frequency call.
+            self._mark_dashboard_dirty_connection(connection, analysis_id)
             return True
 
     def begin_codex_child_spawn(
@@ -8762,13 +8786,17 @@ class SimpleCheckpointStore:
                 )
                 self._upsert_checkpoint_connection(connection, pending)
                 reopened += 1
+            if reopened:
+                self._mark_dashboard_dirty_connection(connection, analysis_id)
             connection.commit()
-            return reopened
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        if reopened:
+            self._project_after_direct_commit(analysis_id)
+        return reopened
 
     def reopen_token_budget_failures(self, analysis_id: str) -> int:
         """Reopen only token-ceiling failures on an unlimited-token resume."""
@@ -8805,13 +8833,17 @@ class SimpleCheckpointStore:
                 )
                 self._upsert_checkpoint_connection(connection, pending)
                 reopened += 1
+            if reopened:
+                self._mark_dashboard_dirty_connection(connection, analysis_id)
             connection.commit()
-            return reopened
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        if reopened:
+            self._project_after_direct_commit(analysis_id)
+        return reopened
 
     def reopen_budget_failures(
         self,
@@ -8886,13 +8918,17 @@ class SimpleCheckpointStore:
                 )
                 self._upsert_checkpoint_connection(connection, pending)
                 reopened += 1
+            if reopened:
+                self._mark_dashboard_dirty_connection(connection, analysis_id)
             connection.commit()
-            return reopened
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        if reopened:
+            self._project_after_direct_commit(analysis_id)
+        return reopened
 
     def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
         with self._connect() as connection:
@@ -9970,7 +10006,11 @@ class SimpleCheckpointStore:
                     "WHERE call_id = ? AND analysis_id = ? AND status = 'CAPTURED'",
                     (call_id, checkpoint.identity.analysis_id),
                 )
+            self._mark_dashboard_dirty_connection(
+                connection, checkpoint.identity.analysis_id
+            )
             connection.commit()
+        self._project_after_direct_commit(checkpoint.identity.analysis_id)
 
     def reusable(
         self,
@@ -10285,12 +10325,16 @@ class SimpleCheckpointStore:
             self._upsert_checkpoint_connection(connection, pending)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
+            self._mark_dashboard_dirty_connection(
+                connection, failed.identity.analysis_id
+            )
             connection.commit()
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(failed.identity.analysis_id)
         return pending
 
     def prepare_offline_environment_repair(
@@ -10889,13 +10933,15 @@ class SimpleCheckpointStore:
             )
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def prepare_poc_local_import_exhaustion_replay(
         self,
@@ -20482,6 +20528,7 @@ class SimpleCheckpointStore:
             self._upsert_checkpoint_connection(connection, pending)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -20585,13 +20632,15 @@ class SimpleCheckpointStore:
             self._upsert_checkpoint_connection(connection, pending)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             connection.commit()
-            return pending
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return pending
 
     def record_recovery_stop(
         self,
@@ -20630,12 +20679,16 @@ class SimpleCheckpointStore:
             AgentActivityStore.append_connection(connection, event)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
+            self._mark_dashboard_dirty_connection(
+                connection, failed.identity.analysis_id
+            )
             connection.commit()
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(failed.identity.analysis_id)
 
     def mark_recovery_exhausted(
         self,
@@ -20750,13 +20803,17 @@ class SimpleCheckpointStore:
                     output_refs=completed.output_refs,
                 ),
             )
+            self._mark_dashboard_dirty_connection(
+                connection, blocked.identity.analysis_id
+            )
             connection.commit()
-            return completed
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(blocked.identity.analysis_id)
+        return completed
 
     def promote_exit_one_inconclusive_execution(
         self,
@@ -21059,13 +21116,17 @@ class SimpleCheckpointStore:
                     output_refs=completed.output_refs,
                 ),
             )
+            self._mark_dashboard_dirty_connection(
+                connection, exhausted.identity.analysis_id
+            )
             connection.commit()
-            return completed
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(exhausted.identity.analysis_id)
+        return completed
 
     def _verified_inconclusive_stop(
         self,
@@ -21280,8 +21341,9 @@ class SimpleCheckpointStore:
     def _mark_dashboard_dirty_connection(
         connection: sqlite3.Connection, analysis_id: str
     ) -> None:
-        # A module-level dashboard import here would cycle through query -> store.
-        from sastsimi.dashboard.projection_batch import mark_index_dirty_connection
+        from sastsimi.simple_runtime.dashboard_projection_batch import (
+            mark_index_dirty_connection,
+        )
 
         mark_index_dirty_connection(connection, analysis_id)
 
@@ -21290,7 +21352,7 @@ class SimpleCheckpointStore:
             self._artifact_data_dir is not None
             and self._post_commit_projection is not None
         ):
-            from sastsimi.dashboard.projection_batch import (
+            from sastsimi.simple_runtime.dashboard_projection_batch import (
                 dispatch_dashboard_projection,
             )
 
@@ -21304,7 +21366,9 @@ class SimpleCheckpointStore:
         if self._artifact_data_dir is None or self._post_commit_projection is None:
             yield
             return
-        from sastsimi.dashboard.projection_batch import defer_dashboard_projection
+        from sastsimi.simple_runtime.dashboard_projection_batch import (
+            defer_dashboard_projection,
+        )
 
         with defer_dashboard_projection(
             self._artifact_data_dir, analysis_id, self._post_commit_projection
@@ -21443,7 +21507,7 @@ class SimpleCheckpointStore:
         placeholders = ",".join("?" for _ in stages)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+            deleted = connection.execute(
                 f"""
                 DELETE FROM simple_runtime_checkpoints
                 WHERE analysis_id = ?
@@ -21456,7 +21520,12 @@ class SimpleCheckpointStore:
                     *stages,
                 ),
             )
+            changed = deleted.rowcount > 0
+            if changed:
+                self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             connection.commit()
+        if changed:
+            self._project_after_direct_commit(identity.analysis_id)
 
     def repair_legacy_pro_con_evidence(
         self,
@@ -21774,13 +21843,15 @@ class SimpleCheckpointStore:
                     error_code="PRO_CON_LEGACY_EVIDENCE_REPAIRED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             connection.commit()
-            return True
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(identity.analysis_id)
+        return True
 
     def prepare_surface_hold_replay(
         self,
@@ -22446,12 +22517,16 @@ class SimpleCheckpointStore:
             self._upsert_checkpoint_connection(connection, pending)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
+            self._mark_dashboard_dirty_connection(
+                connection, pending.identity.analysis_id
+            )
             connection.commit()
         except BaseException:
             connection.rollback()
             raise
         finally:
             connection.close()
+        self._project_after_direct_commit(pending.identity.analysis_id)
 
     def _first_value(
         self,

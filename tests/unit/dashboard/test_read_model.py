@@ -780,7 +780,9 @@ def test_page_uses_one_snapshot_during_replacement(
     page = model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
 
     assert replaced
-    assert page["total_items"] == page["summary"]["demo"] == len(_items(page))
+    summary = page["summary"]
+    assert isinstance(summary, dict)
+    assert page["total_items"] == summary["demo"] == len(_items(page))
 
 
 def _event(number: int) -> AgentActivityEvent:

@@ -107,7 +107,9 @@ def test_checkpoint_and_llm_attempt_commit_before_one_deferred_projection(
     projected: list[str] = []
     model = DashboardReadModel(tmp_path)
     model.initialize()
-    empty = {tab: ([], {"tab": tab}) for tab in INDEXED_TABS}
+    empty: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
     model.replace(identity.analysis_id, "before", empty)
 
     def project(_path: Path, analysis_id: str) -> None:
@@ -198,7 +200,9 @@ def test_run_only_change_dirties_index_and_projects_once_on_scope_exit(
     artifacts = SimpleArtifactRepository(tmp_path, identity)
     model = DashboardReadModel(tmp_path)
     model.initialize()
-    empty = {tab: ([], {"tab": tab}) for tab in INDEXED_TABS}
+    empty: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
     model.replace(identity.analysis_id, "before", empty)
     projected: list[str] = []
 
@@ -260,7 +264,9 @@ def test_failed_deferred_projection_leaves_durable_dirty_index_for_resume(
     artifacts = SimpleArtifactRepository(tmp_path, identity)
     model = DashboardReadModel(tmp_path)
     model.initialize()
-    empty = {tab: ([], {"tab": tab}) for tab in INDEXED_TABS}
+    empty: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
     model.replace(identity.analysis_id, "before", empty)
     checkpoint = StageCheckpoint(
         identity=identity,

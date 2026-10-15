@@ -31,7 +31,7 @@
 
 ## File map
 
-- Create `src/sastsimi/dashboard/projection_batch.py`: shared task-local scope and transactional dirty-state helper.
+- Create `src/sastsimi/simple_runtime/dashboard_projection_batch.py`: shared task-local scope and transactional dirty-state helper. Place it below the runtime/dashboard import boundary.
 - Modify `src/sastsimi/dashboard/read_model.py`: guarded conditional publication, CAS-safe failure state, coherent page reads.
 - Modify `src/sastsimi/dashboard/projection.py`: guarded source snapshot and no stale failure overwrite.
 - Modify `src/sastsimi/simple_runtime/store.py`: mark source writes dirty in their transaction and route post-commit callbacks through the shared scope.
@@ -65,7 +65,7 @@
 
 ### Task 3: Shared deferral and atomic dirty markers
 
-**Files:** Create `src/sastsimi/dashboard/projection_batch.py`; modify `src/sastsimi/simple_runtime/store.py`; test `tests/unit/simple_runtime/test_usage_record.py`, `tests/simple_runtime/test_surface_hold_replay_v5_store.py`, and new `tests/unit/dashboard/test_projection_batch.py`.
+**Files:** Create `src/sastsimi/simple_runtime/dashboard_projection_batch.py`; modify `src/sastsimi/simple_runtime/store.py`; test `tests/unit/simple_runtime/test_usage_record.py`, `tests/simple_runtime/test_surface_hold_replay_v5_store.py`, and new `tests/unit/dashboard/test_projection_batch.py`.
 
 **Interfaces:** `defer_dashboard_projection(data_dir: Path, analysis_id: str, project: Callable[[Path, str], None]) -> Iterator[None]`; `projection_is_deferred(data_dir: Path, analysis_id: str) -> bool`; `mark_index_dirty_connection(connection: sqlite3.Connection, analysis_id: str) -> None`; `SimpleCheckpointStore.defer_dashboard_projection(analysis_id: str) -> Iterator[None]`. A fresh opaque dirty `source_marker` is written in the same source transaction; the published marker still carries the existing HOLD-generation suffix.
 
