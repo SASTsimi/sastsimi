@@ -1318,6 +1318,44 @@ def test_hold_review_dirty_index_reports_update_in_progress_when_active(
     assert payload == {"error": "index_updating", "action": "retry"}
 
 
+@pytest.mark.parametrize(
+    ("active", "expected"),
+    [
+        (
+            False,
+            {
+                "error": "index_resume_required",
+                "action": "resume analysis or dashboard-index rebuild",
+            },
+        ),
+        (True, {"error": "index_updating", "action": "retry"}),
+    ],
+)
+def test_general_dirty_index_returns_actionable_409(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, active: bool, expected: dict[str, str]
+) -> None:
+    """A non-HOLD source write must not appear as a missing index."""
+    monkeypatch.delenv("SASTSIMI_DASHBOARD_INDEX_MODE", raising=False)
+    seed(tmp_path)
+    assert rebuild_analysis(tmp_path, "analysis-1").status == "READY"
+    DashboardReadModel(tmp_path).mark_incomplete(
+        "analysis-1", "dirty-new", "DASHBOARD_INDEX_SOURCE_UPDATED"
+    )
+    monkeypatch.setattr(
+        "sastsimi.dashboard.read_model.analysis_run_lease_active",
+        lambda _data_dir, _analysis_id: active,
+    )
+
+    with running_server(tmp_path) as base:
+        response = request(
+            f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=10"
+        )
+        payload = json.loads(response.read())
+
+    assert response.status == 409
+    assert payload == expected
+
+
 def test_log_cursor_route_returns_latest_then_older_without_duplicates(
     tmp_path,
 ) -> None:

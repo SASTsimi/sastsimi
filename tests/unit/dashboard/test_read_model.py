@@ -659,6 +659,42 @@ def test_concurrent_reads_and_rebuilds_remain_consistent(tmp_path: Path) -> None
     assert len(_items(final_page)) == 5
 
 
+def test_page_uses_one_snapshot_during_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replacement between summary and items cannot mix generations."""
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    with model._connect(True) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    model.replace("DEMO-ANALYSIS", "old", _pages(1))
+    original_connect = model._connect
+    replaced = False
+
+    def traced_connect(writable: bool = False) -> sqlite3.Connection:
+        nonlocal replaced
+        connection = original_connect(writable)
+        if not writable:
+
+            def trace(statement: str) -> None:
+                nonlocal replaced
+                if (
+                    not replaced
+                    and "SELECT COUNT(*) FROM dashboard_list_items" in statement
+                ):
+                    replaced = True
+                    model.replace("DEMO-ANALYSIS", "new", _pages(2))
+
+            connection.set_trace_callback(trace)
+        return connection
+
+    monkeypatch.setattr(model, "_connect", traced_connect)
+    page = model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
+
+    assert replaced
+    assert page["total_items"] == page["summary"]["demo"] == len(_items(page))
+
+
 def _event(number: int) -> AgentActivityEvent:
     return AgentActivityEvent(
         event_id=f"event-{number:03d}",

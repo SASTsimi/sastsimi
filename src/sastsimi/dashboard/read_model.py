@@ -500,6 +500,8 @@ class DashboardReadModel:
         if tab not in INDEXED_TABS:
             raise ValueError("DASHBOARD_INDEX_KIND_INVALID")
         with self._connect() as connection:
+            # Keep state, HOLD generation, summary and rows on one generation.
+            connection.execute("BEGIN")
             if not self.schema_present(connection):
                 raise DashboardIndexNotReady("DASHBOARD_INDEX_SCHEMA_MISSING")
             state = connection.execute(
@@ -508,11 +510,7 @@ class DashboardReadModel:
                 "WHERE analysis_id=?",
                 (analysis_id,),
             ).fetchone()
-            if (
-                state is not None
-                and state["status"] == "INCOMPLETE"
-                and state["last_error"] == "SURFACE_HOLD_REVIEW_IN_PROGRESS"
-            ):
+            if state is not None and state["status"] == "INCOMPLETE":
                 raise DashboardIndexNotReady(self._hold_review_status(analysis_id))
             if (
                 state is None
