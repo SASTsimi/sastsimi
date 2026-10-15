@@ -25,6 +25,7 @@ from sastsimi.simple_runtime.provider import SimpleLLMClient
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.simple_runtime.surface_contexts import SurfaceContext
 from sastsimi.simple_runtime.surface_evidence_validation_v5 import (
+    negative_claim_context_ready,
     validate_v5_context,
     validate_v5_response,
 )
@@ -274,6 +275,117 @@ def test_v5_rev3_no_hypothesis_requires_gap_free_whole_graph(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="V5_SOURCE_INCOMPLETE"):
         validate_v5_response(_saved_v5_wrapper(context, artifacts), response)
+
+
+def test_v5_gap_with_available_items_forbids_negative_agent_reply(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, _ = _v5_fixture(
+        tmp_path,
+        proof_revision="v5-source-bound-3",
+        blocking_gaps=[],
+        graph_gaps=[{"path": "other.py", "reason": "UNRELATED_DYNAMIC_DISPATCH"}],
+    )
+    client.replies.append(
+        _reply(context.context_id, status="INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS")
+    )
+
+    result = _propose_without_event_loop(bootstrap, identity, static, context)
+
+    assert isinstance(result, SurfaceProposalResult)
+    assert result.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+    assert len(client.requests) == 1
+    statuses = client.requests[0]["schema"]["properties"]["status"]["enum"]
+    assert "NO_HYPOTHESIS" not in statuses
+    assert b"NO_HYPOTHESIS is not allowed" in client.requests[0]["prompt"]
+
+
+def test_v5_multiple_available_parts_forbid_negative_agent_reply(
+    tmp_path: Path,
+) -> None:
+    bootstrap, client, identity, static, context, artifacts = _v5_fixture(
+        tmp_path,
+        proof_revision="v5-source-bound-3",
+        blocking_gaps=[],
+    )
+    payload = json.loads(artifacts.read(context.context_ref))
+    payload["part_count"] = 2
+    context_ref = artifacts.put_json(payload)
+    context_hash = context_ref.content_hash
+    context_id = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "simple_surface_context_id_v5",
+                "plan_binding_hash": payload["plan_binding_hash"],
+                "surface_id": context.surface_id,
+                "part_index": context.part_index,
+                "context_hash": context_hash,
+            }
+        )
+    ).hexdigest()
+    context = replace(
+        context,
+        part_count=2,
+        context_id=context_id,
+        context_hash=context_hash,
+        context_ref=context_ref,
+        prompt_bytes=len(artifacts.read(context_ref)),
+    )
+    client.replies.append(
+        _reply(context.context_id, status="INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS")
+    )
+
+    result = _propose_without_event_loop(bootstrap, identity, static, context)
+
+    assert isinstance(result, SurfaceProposalResult)
+    assert result.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+    assert len(client.requests) == 1
+    statuses = client.requests[0]["schema"]["properties"]["status"]["enum"]
+    assert "NO_HYPOTHESIS" not in statuses
+    assert b"NO_HYPOTHESIS is not allowed" in client.requests[0]["prompt"]
+
+
+def test_v5_legacy_complete_source_without_path_cannot_support_negative_claim(
+    tmp_path: Path,
+) -> None:
+    _, _, _, _, context, artifacts = _v5_fixture(
+        tmp_path, proof_revision="v5-source-bound-2"
+    )
+    wrapper = _saved_v5_wrapper(context, artifacts)
+    graph = wrapper["graph_payload"]
+    payload = wrapper["context_payload"]
+    assert isinstance(graph, dict) and isinstance(payload, dict)
+    graph["paths"] = []
+    graph["edges"] = []
+    items = payload["items"]
+    assert isinstance(items, list)
+    payload["items"] = [
+        item
+        for item in items
+        if isinstance(item, dict) and item["category"] not in {"paths", "edges"}
+    ]
+    payload["graph_hash"] = hashlib.sha256(canonical_bytes(graph)).hexdigest()
+    context_hash = hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    wrapper["context_hash"] = context_hash
+    wrapper["context_id"] = hashlib.sha256(
+        canonical_bytes(
+            {
+                "kind": "simple_surface_context_id_v5",
+                "plan_binding_hash": payload["plan_binding_hash"],
+                "surface_id": context.surface_id,
+                "part_index": context.part_index,
+                "context_hash": context_hash,
+            }
+        )
+    ).hexdigest()
+
+    validate_v5_context(wrapper)
+    assert not negative_claim_context_ready(wrapper, version=5)
+    with pytest.raises(ValueError, match="V5_REVIEW_PATH_INCOMPLETE"):
+        validate_v5_response(
+            wrapper,
+            _reply(cast(str, wrapper["context_id"]), status="NO_HYPOTHESIS"),
+        )
 
 
 def test_v5_successor_normal_review_saves_v6_result_kind(tmp_path: Path) -> None:

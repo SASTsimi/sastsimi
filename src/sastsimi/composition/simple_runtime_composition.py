@@ -121,6 +121,7 @@ from sastsimi.simple_runtime.provider import (
 from sastsimi.simple_runtime.recovery import SimpleRecoveryCoordinator
 from sastsimi.simple_runtime.report_currentness import (
     candidate_report_currentness_blocked,
+    current_surface_report_binding,
 )
 from sastsimi.simple_runtime.run_lease import analysis_run_lease_active
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
@@ -130,6 +131,10 @@ from sastsimi.simple_runtime.scope_policy import (
 )
 from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
+from sastsimi.simple_runtime.surface_child_evidence_v11 import (
+    interim_child_attempt_counts_v11,
+    verified_v11_predecessor_counts,
+)
 
 from .simple_process import LocalProcessExecutor
 
@@ -977,6 +982,21 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             candidate_scope_fingerprint=scope if candidate_mode else None,
             surface_counts=surface_counts,
             surface_index_hash=surface_index_hash,
+            child_attempt_counts=(
+                {
+                    status: surface_counts[f"CHILD_REVALIDATION_ATTEMPT_{status}_COUNT"]
+                    for status in (
+                        "PENDING",
+                        "RUNNING",
+                        "RESOLVED",
+                        "STILL_HOLD",
+                        "ERROR",
+                    )
+                }
+                if surface_counts is not None
+                and surface_counts.get("CHILD_REVALIDATION_ATTEMPTS_UNVERIFIED") == 1
+                else None
+            ),
             analysis_active=(
                 analysis_run_lease_active(self._config.data_dir, run.analysis_id)
                 is True
@@ -1032,6 +1052,49 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "CONTEXT_SURFACES": len({item.surface_id for item in matching_contexts}),
         }
         terminal = run.candidate_terminal
+        interim_attempts = False
+        if (
+            run.surface_enrichment_v11_plan_ref is not None
+            and run.surface_enrichment_status in {"RUNNING", "BLOCKED"}
+            and terminal is not None
+            and terminal.surface_proof_version == 8
+        ):
+            interim_attempts = True
+            try:
+                attempts = interim_child_attempt_counts_v11(
+                    run,
+                    identity,
+                    record.index_ref.content_hash,
+                    self._store,
+                    repository,
+                )
+            except (OSError, ValueError, TypeError, sqlite3.Error):
+                pass
+            else:
+                counts["CHILD_REVALIDATION_ATTEMPTS_UNVERIFIED"] = 1
+                counts.update(
+                    {
+                        f"CHILD_REVALIDATION_ATTEMPT_{status}_COUNT": count
+                        for status, count in attempts.items()
+                    }
+                )
+        if interim_attempts:
+            try:
+                verified_base = verified_v11_predecessor_counts(
+                    run,
+                    identity,
+                    index,
+                    record.index_ref.content_hash,
+                    self._store,
+                    repository,
+                )
+            except (OSError, ValueError, TypeError, sqlite3.Error):
+                verified_base = None
+            if verified_base is not None:
+                counts.update(
+                    {f"BASE_{key}": value for key, value in verified_base.items()}
+                )
+            return counts, record.index_ref.content_hash
         if (
             terminal is not None
             and terminal.surface_index_hash == record.index_ref.content_hash
@@ -1066,7 +1129,7 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                                 run.static_coverage_ref,
                                 terminal,
                             )
-                            if terminal.surface_proof_version in (2, 3, 4, 5, 6)
+                            if terminal.surface_proof_version in (2, 3, 4, 5, 6, 7, 8)
                             else None
                         ),
                         artifacts=repository,
@@ -1507,6 +1570,12 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                     finding_ref,
                     run.static_coverage_ref,
                     run.static_disposition,
+                    **current_surface_report_binding(
+                        run,
+                        self._store.list_checkpoints(run.analysis_id),
+                        data_dir=self._config.data_dir,
+                        store=self._store,
+                    ),
                 )
             except (OSError, ValueError) as error:
                 raise LookupError("CURRENT_REPORT_STALE") from error

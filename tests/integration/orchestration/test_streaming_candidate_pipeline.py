@@ -1157,7 +1157,7 @@ async def test_streaming_fixture_preserves_known_positive_and_exact_public_count
     public = _public_app(data_dir)
     status = public.status(outcome.display_analysis_id)
     assert status["status"] == "COMPLETE"
-    assert status["percentage_kind"] == "known_checkpoint_fraction"
+    assert status["percentage_kind"] == "base_work_fraction"
     assert status["candidate_total_count"] == 3
     assert status["hypothesis_count"] == 1
     assert status["finding_count"] == 0
@@ -1171,6 +1171,7 @@ async def test_streaming_fixture_preserves_known_positive_and_exact_public_count
             "recorded_contexts": 4,
             "recorded_surfaces": 4,
             "completed": 4,
+            "evaluated": 4,
             "total": 4,
             "covered": 4,
             "uncovered": 0,
@@ -1184,7 +1185,10 @@ async def test_streaming_fixture_preserves_known_positive_and_exact_public_count
     assert "포함 2" in rendered and "제외 1" in rendered
     assert "심층 분석: 진행 0 · 완료 2 · 대기 0" in rendered
     assert "가설: 1개" in rendered and "Finding: 0개" in rendered
-    assert "보안 surface: 검토 근거 충족 4/4 · 미검토 0 · 근거 부족 0" in rendered
+    assert (
+        "보안 surface: 검토 종료 4/4 · 증명된 경로 4/4 · 미검토 0 · 근거 부족 0"
+        in rendered
+    )
 
 
 @pytest.mark.asyncio
@@ -1289,6 +1293,7 @@ async def test_streaming_fixture_unreviewed_sink_is_partial_in_terminal_and_cli(
         "recorded_contexts": 4,
         "recorded_surfaces": 4,
         "completed": 3,
+        "evaluated": 4,
         "total": 4,
         "covered": 3,
         "uncovered": 0,
@@ -1297,7 +1302,8 @@ async def test_streaming_fixture_unreviewed_sink_is_partial_in_terminal_and_cli(
     output = StringIO()
     emit_public("text", output, command="status", data=status)
     assert (
-        "보안 surface: 검토 근거 충족 3/4 · 미검토 0 · 근거 부족 1" in output.getvalue()
+        "보안 surface: 검토 종료 4/4 · 증명된 경로 3/4 · 미검토 0 · 근거 부족 1"
+        in output.getvalue()
     )
 
 

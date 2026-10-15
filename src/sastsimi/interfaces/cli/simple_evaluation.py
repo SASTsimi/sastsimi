@@ -34,6 +34,7 @@ from sastsimi.simple_runtime.models import (
 from sastsimi.simple_runtime.provider import SimpleCodexClient
 from sastsimi.simple_runtime.report_currentness import (
     candidate_report_currentness_blocked,
+    current_surface_report_binding,
 )
 from sastsimi.simple_runtime.runner import SimpleRuntimeRunner
 from sastsimi.simple_runtime.scope_policy import (
@@ -105,6 +106,12 @@ def _report_path_for_result(
                 report.input_refs[0],
                 run.static_coverage_ref,
                 run.static_disposition,
+                **current_surface_report_binding(
+                    run,
+                    store.list_checkpoints(identity.analysis_id),
+                    data_dir=artifacts.data_dir,
+                    store=store,
+                ),
             )
         review = project_scope_review(
             store.get(identity, SimpleStage.SCOPE_GATE_DONE),

@@ -115,11 +115,15 @@ from .scope_policy import (
     verified_policy_snapshot,
 )
 from .store import SimpleCheckpointStore
+from .surface_contexts import SurfaceContext
+from .surface_evidence_validation_v4 import validate_v4_context_payload
 from .surface_evidence_validation_v5 import validate_v5_context, validate_v7_context
+from .surface_evidence_validation_v9 import validate_v9_context
 from .surface_proof_read import (
     read_surface_scope_certificate,
     verified_surface_coverage_counts,
 )
+from .surface_v9_predecessor_read import verified_pending_v9_predecessor
 
 _LOCAL_TIMEOUT_MS = 180_000
 _POC_TIMEOUT_MS = 120_000
@@ -1268,9 +1272,11 @@ def _verification_anchor_refs(
             "simple_surface_context_v1": "surface_context_ref",
             "simple_surface_context_v2": "surface_context_ref",
             "simple_surface_context_v3": "surface_context_ref",
+            "simple_surface_context_v4": "surface_context_ref",
             "simple_surface_context_v5": "surface_context_ref",
             "simple_surface_context_v7": "surface_context_ref",
             "simple_surface_context_v8": "surface_context_ref",
+            "simple_surface_context_v9": "surface_context_ref",
             "simple_hypothesis_source_page": "page_input_ref",
         }.get(kind if isinstance(kind, str) else "")
         if source_link is not None and (
@@ -1387,6 +1393,7 @@ def _verification_anchor_refs(
                             raise ValueError("pinned source unavailable")
                         supporting.add((step["path"], step["line"]))
         elif kind in {
+            "simple_surface_context_v4",
             "simple_surface_context_v5",
             "simple_surface_context_v7",
             "simple_surface_context_v8",
@@ -1414,7 +1421,70 @@ def _verification_anchor_refs(
                 "context_hash": source_ref.content_hash,
                 "context_id": proposal.get("context_id"),
             }
-            if kind == "simple_surface_context_v5":
+            if kind == "simple_surface_context_v4":
+                surface_id = source.get("surface_id")
+                context_id = proposal.get("context_id")
+                part_index = source.get("part_index")
+                part_count = source.get("part_count")
+                source_sha256 = source.get("source_sha256")
+                static_bundle_hash = source.get("static_bundle_hash")
+                if (
+                    source.get("analysis_id") != identity.analysis_id
+                    or not isinstance(surface_id, str)
+                    or not isinstance(context_id, str)
+                    or type(part_index) is not int
+                    or type(part_count) is not int
+                    or not isinstance(source_sha256, str)
+                    or not isinstance(static_bundle_hash, str)
+                    or not isinstance(graph, dict)
+                    or graph.get("kind") != "simple_surface_evidence_graph_v4"
+                    or graph.get("anchor")
+                    != {
+                        "surface_id": surface_id,
+                        "path": source.get("path"),
+                        "line": source.get("line"),
+                    }
+                    or graph.get("scope_fingerprint") != source.get("scope_fingerprint")
+                    or graph.get("index_hash") != source.get("surface_index_hash")
+                    or graph.get("ast_manifest_hash") != source.get("ast_manifest_hash")
+                ):
+                    raise ValueError("surface v4 binding invalid")
+                context = SurfaceContext(
+                    surface_id=surface_id,
+                    context_id=context_id,
+                    context_hash=source_ref.content_hash,
+                    context_ref=source_ref,
+                    part_index=part_index,
+                    part_count=part_count,
+                    prompt_bytes=len(artifacts.read(source_ref)),
+                    source_sha256=source_sha256,
+                    source_unavailable_reason=None,
+                    ast_unavailable_reason=None,
+                    omitted_source_line_count=0,
+                    omitted_ast_fact_count=0,
+                )
+                validate_v4_context_payload(context, source, static_bundle_hash)
+                for item in source["items"]:
+                    category = item["category"]
+                    ordinal = item["ordinal"]
+                    rows = graph.get(category)
+                    if (
+                        category
+                        not in {
+                            "source_files",
+                            "source_lines",
+                            "ast_facts",
+                            "nodes",
+                            "edges",
+                            "paths",
+                            "gaps",
+                        }
+                        or not isinstance(rows, list)
+                        or ordinal >= len(rows)
+                        or item["value"] != rows[ordinal]
+                    ):
+                        raise ValueError("surface v4 item not in pinned graph")
+            elif kind == "simple_surface_context_v5":
                 validate_v5_context(wrapper)
             elif kind == "simple_surface_context_v7":
                 validate_v7_context(wrapper)
@@ -1435,6 +1505,12 @@ def _verification_anchor_refs(
                 ):
                     raise ValueError("surface source file invalid")
                 source_hashes[path] = digest
+            if kind == "simple_surface_context_v4":
+                anchor_path = source.get("path")
+                if not isinstance(anchor_path, str) or source_hashes.get(
+                    anchor_path
+                ) != source.get("source_sha256"):
+                    raise ValueError("surface v4 anchor hash mismatch")
             for item in source["items"]:
                 if item["category"] != "source_lines":
                     continue
@@ -1453,6 +1529,111 @@ def _verification_anchor_refs(
                 ):
                     raise ValueError("surface source line invalid")
                 available[(path, line)] = text
+        elif kind == "simple_surface_context_v9":
+            part = source.get("context_part")
+            context_id = proposal.get("context_id")
+            source_hash = part.get("source_sha256") if isinstance(part, dict) else None
+            part_index = source.get("part_index")
+            part_count = source.get("part_count")
+            static_bundle_hash = source.get("static_bundle_hash")
+            if (
+                proposal.get("surface_id") != source.get("surface_id")
+                or not isinstance(part, dict)
+                or not isinstance(context_id, str)
+                or not isinstance(source_hash, str)
+                or type(part_index) is not int
+                or type(part_count) is not int
+                or not isinstance(static_bundle_hash, str)
+            ):
+                raise ValueError("surface v9 anchor invalid")
+            context = SurfaceContext(
+                surface_id=cast(str, source["surface_id"]),
+                context_id=context_id,
+                context_hash=source_ref.content_hash,
+                context_ref=source_ref,
+                part_index=part_index,
+                part_count=part_count,
+                prompt_bytes=len(artifacts.read(source_ref)),
+                source_sha256=source_hash,
+                source_unavailable_reason=None,
+                ast_unavailable_reason=None,
+                omitted_source_line_count=0,
+                omitted_ast_fact_count=0,
+            )
+            validate_v9_context(context, source, identity, static_bundle_hash)
+            graph_hash = source.get("graph_hash")
+            if not isinstance(graph_hash, str):
+                raise ValueError("surface v9 graph invalid")
+            graph_ref = StoredDataRef.model_validate(
+                {
+                    **source_ref.model_dump(mode="json"),
+                    "stored_data_id": graph_hash,
+                    "content_hash": graph_hash,
+                }
+            )
+            graph = json.loads(artifacts.read(graph_ref))
+            if (
+                not isinstance(graph, dict)
+                or graph.get("kind") != "simple_surface_evidence_graph_v5"
+                or graph.get("proof_semantics_revision") != "v5-source-bound-5"
+                or graph.get("anchor")
+                != {
+                    "surface_id": source.get("surface_id"),
+                    "path": source.get("path"),
+                    "line": source.get("line"),
+                }
+                or graph.get("scope_fingerprint") != source.get("scope_fingerprint")
+                or graph.get("index_hash") != source.get("surface_index_hash")
+                or graph.get("ast_manifest_hash") != source.get("ast_manifest_hash")
+            ):
+                raise ValueError("surface v9 graph binding invalid")
+            part_path = part.get("path")
+            start = part.get("start_line")
+            end = part.get("end_line")
+            excerpt = source.get("source_excerpt")
+            if (
+                not isinstance(part_path, str)
+                or not tracked_path(part_path)
+                or type(start) is not int
+                or type(end) is not int
+                or not isinstance(excerpt, str)
+                or workspace_path is None
+            ):
+                raise ValueError("surface v9 source unavailable")
+            raw, error = _read_pinned_blob(
+                workspace_path,
+                part_path,
+                commit=identity.commit_id,
+                git_executable=git_executable,
+                remaining=2 * 1024 * 1024,
+            )
+            if (
+                error is not None
+                or raw is None
+                or hashlib.sha256(raw).hexdigest() != source_hash
+            ):
+                raise ValueError("surface v9 pinned source mismatch")
+            raw_lines = raw.decode("utf-8").splitlines()
+            part_safe_lines = (
+                redact_untrusted_text_preserving_lines(raw)
+                .data.decode("utf-8")
+                .splitlines()
+            )
+            content_hash = hashlib.sha256(
+                "\n".join(raw_lines[start - 1 : end]).encode()
+            ).hexdigest()
+            if (
+                end > len(raw_lines)
+                or len(raw_lines) != len(part_safe_lines)
+                or content_hash != part.get("content_sha256")
+                or "\n".join(part_safe_lines[start - 1 : end]) != excerpt
+            ):
+                raise ValueError("surface v9 excerpt mismatch")
+            source_hashes[part_path] = source_hash
+            pinned_source_lines[part_path] = raw_lines
+            pinned_safe_source_lines[part_path] = part_safe_lines
+            for line in range(start, end + 1):
+                available[(part_path, line)] = part_safe_lines[line - 1]
         elif kind == "simple_hypothesis_source_page":
             page = source.get("page")
             segments = page.get("segments") if isinstance(page, dict) else None
@@ -5963,6 +6144,16 @@ this local route requires citations=[].
             disposition=run.static_disposition,
         )
         terminal = run.candidate_terminal
+        if run.surface_enrichment_v11_plan_ref is not None and (
+            terminal is None or terminal.surface_proof_version != 9
+        ):
+            raise StageFailed(
+                StageFailure(
+                    code="REPORT_SURFACE_PROOF_UNVERIFIED",
+                    retryable=False,
+                    safe_message="Saved attack-surface proof could not be verified",
+                )
+            )
         if terminal is not None and terminal.status == "PARTIAL":
             # A legacy surface proof may be unreadable without changing the
             # independently verified static result. Preserve the known run
@@ -5970,7 +6161,17 @@ this local route requires citations=[].
             disclosure = replace(disclosure, analysis_status="PARTIAL")
 
         def unverified_surface_proof() -> CoverageDisclosure:
-            if terminal is not None and terminal.surface_proof_version in (5, 6):
+            if terminal is not None and terminal.surface_proof_version in (
+                5,
+                6,
+                7,
+                8,
+                9,
+            ):
+                if self._store is not None and verified_pending_v9_predecessor(
+                    run, self._artifacts, self._store
+                ):
+                    return replace(disclosure, analysis_status="PARTIAL")
                 raise StageFailed(
                     StageFailure(
                         code="REPORT_SURFACE_PROOF_UNVERIFIED",
@@ -5982,7 +6183,7 @@ this local route requires citations=[].
 
         if (
             terminal is None
-            or terminal.surface_proof_version not in (2, 3, 4, 5, 6)
+            or terminal.surface_proof_version not in (2, 3, 4, 5, 6, 7, 8, 9)
             or not run.candidate_scope_fingerprint
             or not terminal.surface_coverage_hash
         ):
@@ -5990,7 +6191,7 @@ this local route requires citations=[].
         try:
             proof_identity = (
                 checkpoint.identity.model_copy(update={"hypothesis_id": None})
-                if terminal.surface_proof_version in (3, 4, 5, 6)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else checkpoint.identity
             )
             proof_artifacts = (
@@ -5999,7 +6200,7 @@ this local route requires citations=[].
                     proof_identity,
                     create_dirs=False,
                 )
-                if terminal.surface_proof_version in (3, 4, 5, 6)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else self._artifacts
             )
             index_record = self._store.get_attack_surface_index(
@@ -6051,13 +6252,19 @@ this local route requires citations=[].
             disclosure,
             analysis_status=terminal.status,
             surface_proof_version=terminal.surface_proof_version,
+            surface_coverage_hash=terminal.surface_coverage_hash,
             surface_scope_certificate_hash=terminal.scope_certificate_hash,
             surface_raw_static_gap_count=counts["RAW_STATIC_GAP_COUNT"],
             surface_effective_python_gap_count=counts["EFFECTIVE_PYTHON_GAP_COUNT"],
             surface_unresolved_reason_count=counts["UNRESOLVED_REASON_COUNT"],
+            surface_template_scope_limit_count=(
+                counts.get("TEMPLATE_CONTENT_NOT_ANALYZED_COUNT")
+                if terminal.surface_proof_version in (8, 9)
+                else None
+            ),
             surface_completed_inconclusive_child_count=(
                 counts.get("COMPLETED_INCONCLUSIVE_CHILD_COUNT")
-                if terminal.surface_proof_version in (5, 6)
+                if terminal.surface_proof_version in (5, 6, 7, 8, 9)
                 else None
             ),
             surface_unresolved_reasons=tuple(
@@ -6067,24 +6274,32 @@ this local route requires citations=[].
                     if key.startswith("REASON_CODE_")
                 )
             )
-            if terminal.surface_proof_version in (3, 4, 5, 6)
+            if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
             else (),
             surface_reviewed_count=counts.get("REVIEWED"),
             surface_covered_count=(
                 counts["COVERED"]
-                if terminal.surface_proof_version in (3, 4, 5, 6)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else None
             ),
             surface_uncovered_count=(
                 counts["UNCOVERED"]
-                if terminal.surface_proof_version in (3, 4, 5, 6)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else None
             ),
             surface_insufficient_count=(
                 counts["INSUFFICIENT"]
-                if terminal.surface_proof_version in (3, 4, 5, 6)
+                if terminal.surface_proof_version in (3, 4, 5, 6, 7, 8, 9)
                 else None
             ),
+            surface_child_resolved_count=counts.get(
+                "CHILD_REVALIDATION_RESOLVED_COUNT"
+            ),
+            surface_child_pending_count=counts.get("CHILD_REVALIDATION_PENDING_COUNT"),
+            surface_child_still_hold_count=counts.get(
+                "CHILD_REVALIDATION_STILL_HOLD_COUNT"
+            ),
+            surface_child_error_count=counts.get("CHILD_REVALIDATION_ERROR_COUNT"),
         )
 
     def _validated_poc(

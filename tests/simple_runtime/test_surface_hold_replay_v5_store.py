@@ -633,7 +633,7 @@ def test_multiple_keep_hold_markers_share_one_dashboard_projection(
     assert _index_status(store, run.analysis_id) == "READY"
 
 
-def test_stale_external_projection_after_marker_is_rebuilt_on_batch_exit(
+def test_stale_external_projection_after_marker_cannot_publish_ready(
     tmp_path: Path,
 ) -> None:
     store, artifacts, run, child, _, _ = _seed(tmp_path)
@@ -645,19 +645,41 @@ def test_stale_external_projection_after_marker_is_rebuilt_on_batch_exit(
     }
     decision = classify_hold_replay(child.identity, child, {}, artifacts)
 
-    with batched.defer_surface_hold_projection(run.analysis_id):
-        batched.prepare_surface_hold_replay(
-            child,
-            decision,
-            artifacts,
-            review_plan_ref=plan_ref,
-            review_context_ref=context_ref,
-            review_result_ref=result_ref,
-        )
-        # A competing rebuild began before the marker and published afterward.
-        model.replace(run.analysis_id, "old-snapshot:hold:0", pages)
-        assert _index_status(store, run.analysis_id) == "READY"
+    guard = model._connect(True)
+    try:
+        version = int(guard.execute("PRAGMA data_version").fetchone()[0])
+        state = guard.execute(
+            "SELECT source_marker FROM dashboard_index_state WHERE analysis_id=?",
+            (run.analysis_id,),
+        ).fetchone()
+        assert state is not None
+        with batched.defer_surface_hold_projection(run.analysis_id):
+            batched.prepare_surface_hold_replay(
+                child,
+                decision,
+                artifacts,
+                review_plan_ref=plan_ref,
+                review_context_ref=context_ref,
+                review_result_ref=result_ref,
+            )
+            # A competing rebuild began before the marker; guarded publication
+            # must refuse that old snapshot rather than briefly claiming READY.
+            assert (
+                model.replace_if_current(
+                    run.analysis_id,
+                    "old-snapshot:hold:0",
+                    pages,
+                    guard=guard,
+                    expected_data_version=version,
+                    expected_state_marker=str(state["source_marker"]),
+                )
+                is None
+            )
+            assert _index_status(store, run.analysis_id) == "INCOMPLETE"
+    finally:
+        guard.close()
     assert projected == [run.analysis_id]
+    assert _index_status(store, run.analysis_id) == "READY"
 
 
 def test_keep_hold_projection_failure_recovers_without_duplicate_marker(

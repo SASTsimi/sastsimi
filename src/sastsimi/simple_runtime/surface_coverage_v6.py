@@ -22,12 +22,13 @@ from .surface_coverage_v2 import _child_reasons, _ref, _related_child_ids
 from .surface_coverage_v3 import _bound_ref, _read_object
 from .surface_coverage_v5 import (
     SurfaceCoverageV5,
-    SurfaceProofV5,
     _completed_inconclusive_child,
     _pending_counts,
-    _validated_v7_part,
 )
-from .surface_enrichment_v7_bindings import prior_progress_snapshot_hash
+from .surface_coverage_v5 import (
+    _frozen_parent_v5_from_json as _frozen_parent_v5_from_json,
+)
+from .surface_coverage_v5 import read_frozen_parent_v5 as read_frozen_parent_v5
 from .surface_enrichment_v8 import (
     V8ValidatedResponse,
     prepare_surface_enrichment_v8,
@@ -145,6 +146,92 @@ class SurfaceCoverageV6:
         }
 
 
+def surface_coverage_v6_from_json(value: object) -> SurfaceCoverageV6:
+    """Read an immutable v8 certificate without reinterpreting successor rows.
+
+    This parser authenticates the canonical saved shape. Its caller must still
+    bind the content-addressed ref and the v8 progress snapshot before use.
+    """
+
+    invalid = "SURFACE_COVERAGE_V6_SAVED_INVALID"
+    try:
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") != "simple_attack_surface_coverage_v6"
+        ):
+            raise ValueError(invalid)
+        raw_surfaces = value["surfaces"]
+        if not isinstance(raw_surfaces, list) or not raw_surfaces:
+            raise ValueError(invalid)
+        surfaces: list[SurfaceProofV6] = []
+        for raw in raw_surfaces:
+            if not isinstance(raw, dict):
+                raise ValueError(invalid)
+            if raw["coverage_status"] not in {
+                "COVERED",
+                "UNCOVERED",
+                "INSUFFICIENT",
+            } or raw["prior_v5_status"] not in {"COVERED", "UNCOVERED", "INSUFFICIENT"}:
+                raise ValueError(invalid)
+            surfaces.append(
+                SurfaceProofV6(
+                    surface_id=raw["surface_id"],
+                    path=raw["path"],
+                    line=raw["line"],
+                    coverage_status=raw["coverage_status"],
+                    prior_v5_status=raw["prior_v5_status"],
+                    review_classification=raw["review_classification"],
+                    verified_roles=tuple(raw["verified_roles"]),
+                    evidence_refs=tuple(
+                        StoredDataRef.model_validate(ref)
+                        for ref in raw["evidence_refs"]
+                    ),
+                    unresolved_reason_codes=tuple(raw["unresolved_reason_codes"]),
+                    completed_inconclusive_children=tuple(
+                        raw.get("completed_inconclusive_children", ())
+                    ),
+                )
+            )
+        if any(
+            type(value[key]) is not int or value[key] < 0
+            for key in (
+                "candidate_count",
+                "pending_candidate_count",
+                "pending_child_count",
+            )
+        ):
+            raise ValueError(invalid)
+        coverage = SurfaceCoverageV6(
+            scope_fingerprint=value["scope_fingerprint"],
+            static_bundle_hash=value["static_bundle_hash"],
+            ast_manifest_hash=value["ast_manifest_hash"],
+            candidate_inventory_hash=value["candidate_inventory_hash"],
+            candidate_count=value["candidate_count"],
+            index_hash=value["index_hash"],
+            original_coverage_ref=StoredDataRef.model_validate(
+                value["original_coverage_ref"]
+            ),
+            scope_certificate_ref=StoredDataRef.model_validate(
+                value["scope_certificate_ref"]
+            ),
+            prior_v5_ref=StoredDataRef.model_validate(value["prior_v5_ref"]),
+            prior_v7_plan_ref=StoredDataRef.model_validate(value["prior_v7_plan_ref"]),
+            v8_plan_ref=StoredDataRef.model_validate(value["v8_plan_ref"]),
+            prior_progress_hash=value["prior_progress_hash"],
+            missing_v7_parts=tuple(value["missing_v7_parts"]),
+            raw_static_gaps=tuple(value["raw_static_gaps"]),
+            effective_python_gaps=tuple(value["effective_python_gaps"]),
+            surfaces=tuple(surfaces),
+            pending_candidate_count=value["pending_candidate_count"],
+            pending_child_count=value["pending_child_count"],
+        )
+        if coverage.to_json() != value:
+            raise ValueError(invalid)
+        return coverage
+    except (KeyError, TypeError, ValueError, UnicodeError) as error:
+        raise ValueError(invalid) from error
+
+
 def _relevant_anchor_path_ids(
     graph: Mapping[str, object], surface_path: str, surface_line: int
 ) -> set[str]:
@@ -215,277 +302,6 @@ def _usable_v8_path_id(checked: V8ValidatedResponse) -> str | None:
         and checked.proof_level == "CONNECTED"
         else None
     )
-
-
-def _frozen_parent_v5_from_json(raw: Mapping[str, object]) -> SurfaceCoverageV5:
-    """Parse old saved bytes exactly, without consulting mutable child counts."""
-
-    if (
-        raw.get("kind") != "simple_attack_surface_coverage_v5"
-        or any(
-            not isinstance(raw.get(field), str)
-            for field in (
-                "scope_fingerprint",
-                "static_bundle_hash",
-                "ast_manifest_hash",
-                "candidate_inventory_hash",
-                "index_hash",
-                "prior_progress_hash",
-            )
-        )
-        or any(
-            type(raw.get(field)) is not int or cast(int, raw[field]) < 0
-            for field in (
-                "candidate_count",
-                "pending_candidate_count",
-                "pending_child_count",
-            )
-        )
-    ):
-        raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-    for field in (
-        "missing_v6_parts",
-        "raw_static_gaps",
-        "effective_python_gaps",
-    ):
-        value = raw.get(field)
-        if not isinstance(value, list) or any(
-            not isinstance(row, dict) for row in value
-        ):
-            raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-    raw_rows = raw.get("surfaces")
-    if not isinstance(raw_rows, list):
-        raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-    proofs: list[SurfaceProofV5] = []
-    for row in raw_rows:
-        if not isinstance(row, dict):
-            raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-        if row.get("coverage_status") not in {
-            "COVERED",
-            "UNCOVERED",
-            "INSUFFICIENT",
-        } or row.get("prior_v4_status") not in {"COVERED", "UNCOVERED", "INSUFFICIENT"}:
-            raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-        if (
-            not isinstance(row.get("surface_id"), str)
-            or not isinstance(row.get("path"), str)
-            or type(row.get("line")) is not int
-            or row["line"] < 1
-            or row.get("review_classification") is not None
-            and not isinstance(row.get("review_classification"), str)
-        ):
-            raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-        for field in ("verified_roles", "evidence_refs", "unresolved_reason_codes"):
-            if not isinstance(row.get(field), list):
-                raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-        if (
-            any(not isinstance(role, dict) for role in row["verified_roles"])
-            or any(
-                not isinstance(reason, str) for reason in row["unresolved_reason_codes"]
-            )
-            or not isinstance(row.get("completed_inconclusive_children", []), list)
-            or any(
-                not isinstance(item, dict)
-                for item in row.get("completed_inconclusive_children", [])
-            )
-        ):
-            raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-        proofs.append(
-            SurfaceProofV5(
-                surface_id=cast(str, row["surface_id"]),
-                path=cast(str, row["path"]),
-                line=cast(int, row["line"]),
-                coverage_status=cast(
-                    Literal["COVERED", "UNCOVERED", "INSUFFICIENT"],
-                    row["coverage_status"],
-                ),
-                prior_v4_status=cast(
-                    Literal["COVERED", "UNCOVERED", "INSUFFICIENT"],
-                    row["prior_v4_status"],
-                ),
-                review_classification=cast(str | None, row["review_classification"]),
-                verified_roles=tuple(
-                    cast(list[dict[str, object]], row["verified_roles"])
-                ),
-                evidence_refs=tuple(
-                    StoredDataRef.model_validate(value)
-                    for value in cast(list[object], row["evidence_refs"])
-                ),
-                unresolved_reason_codes=tuple(
-                    cast(list[str], row["unresolved_reason_codes"])
-                ),
-                completed_inconclusive_children=tuple(
-                    cast(
-                        list[dict[str, object]],
-                        row.get("completed_inconclusive_children", []),
-                    )
-                ),
-            )
-        )
-    parent = SurfaceCoverageV5(
-        scope_fingerprint=cast(str, raw["scope_fingerprint"]),
-        static_bundle_hash=cast(str, raw["static_bundle_hash"]),
-        ast_manifest_hash=cast(str, raw["ast_manifest_hash"]),
-        candidate_inventory_hash=cast(str, raw["candidate_inventory_hash"]),
-        candidate_count=cast(int, raw["candidate_count"]),
-        index_hash=cast(str, raw["index_hash"]),
-        original_coverage_ref=StoredDataRef.model_validate(
-            raw["original_coverage_ref"]
-        ),
-        scope_certificate_ref=StoredDataRef.model_validate(
-            raw["scope_certificate_ref"]
-        ),
-        prior_v4_ref=StoredDataRef.model_validate(raw["prior_v4_ref"]),
-        prior_v6_plan_ref=StoredDataRef.model_validate(raw["prior_v6_plan_ref"]),
-        v7_plan_ref=StoredDataRef.model_validate(raw["v7_plan_ref"]),
-        prior_progress_hash=cast(str, raw["prior_progress_hash"]),
-        missing_v6_parts=tuple(cast(list[dict[str, str]], raw["missing_v6_parts"])),
-        raw_static_gaps=tuple(cast(list[dict[str, object]], raw["raw_static_gaps"])),
-        effective_python_gaps=tuple(
-            cast(list[dict[str, object]], raw["effective_python_gaps"])
-        ),
-        surfaces=tuple(proofs),
-        pending_candidate_count=cast(int, raw["pending_candidate_count"]),
-        pending_child_count=cast(int, raw["pending_child_count"]),
-    )
-    if parent.to_json() != raw:
-        raise ValueError("SURFACE_COVERAGE_V6_PARENT_INVALID")
-    return parent
-
-
-def read_frozen_parent_v5(
-    identity: CheckpointIdentity,
-    index: SurfaceIndex,
-    parent_ref: StoredDataRef,
-    v7_plan_ref: StoredDataRef,
-    v7_plan: Mapping[str, object],
-    progress: Mapping[tuple[str, str], SurfaceExplorationProgressRecord],
-    store: SimpleCheckpointStore,
-    artifacts: SimpleArtifactRepository,
-) -> SurfaceCoverageV5:
-    """Read the pinned v5 proof without counting newly registered v8 work."""
-
-    invalid = "SURFACE_COVERAGE_V6_PARENT_INVALID"
-    try:
-        if not _bound_ref(parent_ref, identity) or not _bound_ref(
-            v7_plan_ref, identity
-        ):
-            raise ValueError("parent reference unbound")
-        if _read_object(artifacts, v7_plan_ref, _MAX_OBJECT) != v7_plan:
-            raise ValueError("v7 plan changed")
-        parent = _frozen_parent_v5_from_json(
-            _read_object(artifacts, parent_ref, _MAX_OBJECT)
-        )
-        if (
-            parent.v7_plan_ref != v7_plan_ref
-            or parent.scope_fingerprint != index.scope_fingerprint
-            or parent.static_bundle_hash != index.static_bundle_hash
-            or parent.ast_manifest_hash != index.ast_manifest_hash
-            or parent.candidate_inventory_hash != index.candidate_inventory_hash
-            or parent.candidate_count != index.candidate_count
-            or parent.index_hash
-            != hashlib.sha256(canonical_bytes(index.to_json())).hexdigest()
-            or parent.prior_progress_hash != v7_plan.get("prior_progress_hash")
-            or v7_plan.get("prior_v4_coverage_ref")
-            != parent.prior_v4_ref.model_dump(mode="json")
-            or v7_plan.get("prior_v6_plan_ref")
-            != parent.prior_v6_plan_ref.model_dump(mode="json")
-            or len(parent.surfaces) != len(index.surfaces)
-            or any(
-                (old.surface_id, old.path, old.line)
-                != (surface.surface_id, surface.path, surface.line)
-                for old, surface in zip(parent.surfaces, index.surfaces, strict=True)
-            )
-        ):
-            raise ValueError("parent scope changed")
-        old_progress = {
-            key: row for key, row in progress.items() if row.proposal_version <= 7
-        }
-        prior_progress = {
-            key: row for key, row in old_progress.items() if row.proposal_version <= 6
-        }
-        if missing_v7_part_set(v7_plan, old_progress) or prior_progress_snapshot_hash(
-            prior_progress
-        ) != v7_plan.get("prior_progress_hash"):
-            raise ValueError("missing v7 part")
-        for row in old_progress.values():
-            for ref in (row.result_ref, _ref(identity, row.context_hash)):
-                if not _bound_ref(ref, identity):
-                    raise ValueError("old progress reference unbound")
-                artifacts.read(ref)
-        targets = v7_plan.get("targets")
-        parts = v7_plan.get("expected_parts")
-        if not isinstance(targets, list) or not isinstance(parts, list):
-            raise ValueError("v7 plan malformed")
-        by_surface = {
-            row["surface_id"]: row for row in targets if isinstance(row, dict)
-        }
-        if len(by_surface) != len(targets):
-            raise ValueError("v7 target duplicate")
-        index_ref = StoredDataRef.model_validate(v7_plan["index_ref"])
-        for part in parts:
-            if not isinstance(part, dict):
-                raise ValueError("v7 part malformed")
-            key = (cast(str, part["surface_id"]), cast(str, part["context_id"]))
-            _validated_v7_part(
-                identity,
-                index,
-                index_ref,
-                v7_plan,
-                by_surface[key[0]],
-                part,
-                old_progress[key],
-                artifacts,
-            )
-        for proof in parent.surfaces:
-            for ref in proof.evidence_refs:
-                if not _bound_ref(ref, identity):
-                    raise ValueError("parent evidence unbound")
-                artifacts.read(ref)
-            for completed in proof.completed_inconclusive_children:
-                child_id = completed.get("hypothesis_id")
-                if not isinstance(child_id, str) or (
-                    _completed_inconclusive_child(identity, child_id, store, artifacts)
-                    != completed
-                ):
-                    raise ValueError("old completed child changed")
-        pinned_children = v7_plan.get("child_checkpoint_hashes")
-        if not isinstance(pinned_children, dict):
-            raise ValueError("old child lineage missing")
-        checkpoint_rows: dict[str, list[dict[str, object]]] = {
-            child_id: [] for child_id in pinned_children
-        }
-        for checkpoint in store.list_checkpoints(identity.analysis_id):
-            child_id = checkpoint.identity.hypothesis_id
-            if child_id in checkpoint_rows:
-                for ref in (
-                    *checkpoint.input_refs,
-                    *checkpoint.output_refs,
-                    *checkpoint.recovery_decision_refs,
-                ):
-                    artifacts.read(ref)
-                checkpoint_rows[child_id].append(checkpoint.model_dump(mode="json"))
-        for child_id, digest in pinned_children.items():
-            rows = checkpoint_rows[child_id]
-            if (
-                not rows
-                or not isinstance(digest, str)
-                or hashlib.sha256(
-                    canonical_bytes(sorted(rows, key=lambda row: str(row["stage"])))
-                ).hexdigest()
-                != digest
-            ):
-                raise ValueError("old child checkpoint changed")
-        return parent
-    except (
-        KeyError,
-        IndexError,
-        OSError,
-        TypeError,
-        ValueError,
-        UnicodeError,
-    ) as error:
-        raise ValueError(invalid) from error
 
 
 def _validated_v8_part(

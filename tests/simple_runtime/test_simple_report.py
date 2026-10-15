@@ -17,6 +17,7 @@ from sastsimi.dashboard.query import DashboardNotFound, DashboardQuery
 from sastsimi.interfaces.cli.simple_evaluation import _report_path_for_result
 from sastsimi.reporting.analysis_display_id import AnalysisDisplayIdStore
 from sastsimi.reporting.finding_display_id import FindingDisplayIdStore
+from sastsimi.reporting.safe_windows_directory import windows_extended_path
 from sastsimi.simple_runtime.application import (
     SimpleAnalysisApplication,
     StaticBootstrapResult,
@@ -146,7 +147,7 @@ def test_policy_lookup_is_empty_for_a_simple_runtime_database(tmp_path: Path) ->
     assert refs == ()
 
 
-@pytest.mark.parametrize("proof_version", [5, 6])
+@pytest.mark.parametrize("proof_version", [5, 6, 7])
 def test_report_rejects_unverified_modern_surface_proof_even_when_static_scan_is_full(
     tmp_path: Path,
     proof_version: int,
@@ -617,7 +618,9 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
                 finding_ref=finding_ref,
                 display_id="F-001",
                 scope_status=json.loads(
-                    (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
+                    windows_extended_path(
+                        refreshed_bundle / "evidence" / "provenance.json"
+                    ).read_bytes()
                 )["scope_status"],
                 public_projection=lambda body: body,
             )
@@ -630,7 +633,9 @@ async def test_restricted_report_contains_exact_validated_poc_and_stable_name(
             finding_ref=finding_ref,
             display_id="F-001",
             scope_status=json.loads(
-                (refreshed_bundle / "evidence" / "provenance.json").read_bytes()
+                windows_extended_path(
+                    refreshed_bundle / "evidence" / "provenance.json"
+                ).read_bytes()
             )["scope_status"],
             public_projection=lambda body: body,
         )

@@ -455,6 +455,41 @@ async def test_invalid_json_schema_and_edge_retries_are_bounded(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_v4_graph_gap_excludes_no_hypothesis_and_repairs_to_insufficient(
+    tmp_path: Path,
+) -> None:
+    graph = _graph()
+    graph["gaps"] = [{"path": "app.py", "reason": "ENCLOSING_CONTEXT_TRUNCATED"}]
+    bootstrap, client, identity, static, context, _, _, _ = _fixture(
+        tmp_path, graph=graph
+    )
+    client.replies.extend(
+        [
+            _reply(context.context_id, status="NO_HYPOTHESIS"),
+            _reply(
+                context.context_id,
+                status="INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS",
+            ),
+        ]
+    )
+
+    result = await bootstrap.propose_surface(identity, static, context)
+
+    assert not isinstance(result, StageFailure)
+    assert result.status == "INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS"
+    assert len(client.requests) == 2
+    assert all(
+        "NO_HYPOTHESIS" not in request["schema"]["properties"]["status"]["enum"]
+        for request in client.requests
+    )
+    assert b"NO_HYPOTHESIS is not allowed" in client.requests[0]["prompt"]
+    assert (
+        b"INSUFFICIENT_EVIDENCE_FOR_HYPOTHESIS with hypotheses=[]"
+        in client.requests[1]["prompt"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_v4_prompt_supplies_compact_path_directory_for_line_only_part(
     tmp_path: Path,
 ) -> None:

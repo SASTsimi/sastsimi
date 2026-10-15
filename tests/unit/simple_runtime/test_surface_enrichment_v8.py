@@ -9,7 +9,7 @@ from typing import Any, TypedDict, cast
 
 import pytest
 
-import sastsimi.simple_runtime.surface_coverage_v6 as coverage_v6
+import sastsimi.simple_runtime.surface_coverage_v5 as coverage_v5
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
@@ -716,7 +716,7 @@ def test_v8_frozen_parent_ignores_new_child_pending_but_rejects_old_row_change(
             raise AssertionError("frozen parent must not recount new v8 children")
 
     monkeypatch.setattr(
-        coverage_v6,
+        coverage_v5,
         "_validated_v7_part",
         lambda *_args: ((), (), None, "NO_HYPOTHESIS"),
     )

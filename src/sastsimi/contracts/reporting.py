@@ -64,8 +64,23 @@ _DEFAULT_BIND_PREFIX = re.compile(r"\bdefault\s*$", re.IGNORECASE)
 _ENDPOINT_NOUN_SUFFIX = re.compile(
     r"^\s+(?:bind|binding|host|address|endpoint)\b", re.IGNORECASE
 )
+_LOOPBACK_URL_PREFIX = re.compile(
+    r"\b(?:direct|redirect(?:s|ed)?(?:\s+to)?)\s*$", re.IGNORECASE
+)
+_LOOPBACK_URL_SUFFIX = re.compile(r"^\s+(?:URL|URI)\b", re.IGNORECASE)
+_LOOPBACK_REDIRECT_PREFIX = re.compile(r"\bredirect(?:s|ed)?\s+to\s*$", re.IGNORECASE)
+_HOST_REDIRECT_PREFIX = re.compile(r"\bhost\s+redirect[^.;!?\n]{0,24}$", re.IGNORECASE)
+_KOREAN_NETWORK_PREFIX = re.compile(
+    r"(?:호스트|주소|URL|URI|내부[^.;!?\n]{0,12}PoC)[^.;!?\n]{0,48}$",
+    re.IGNORECASE,
+)
+_KOREAN_DIRECT_REQUEST_SUFFIX = re.compile(r"^(?:에|로|으로)?\s*직접\s*요청")
 _VERSION_ROLE_SUFFIX = re.compile(
     r"\b(?:versions?|releases?|builds?)\b|(?:버전|릴리스|빌드)", re.IGNORECASE
+)
+_VERSION_ROLE_PREFIX = re.compile(
+    r"\b(?:versions?|releases?|builds?)\s*$|(?:버전|릴리스|빌드)\s*$",
+    re.IGNORECASE,
 )
 _TESTED_RISK_SETTING = re.compile(
     r"\b(?:same|identical)\s+payload\s+at\s+"
@@ -215,7 +230,9 @@ def _is_network_ipv4(text: str, match: re.Match[str]) -> bool:
     prefix = text[max(0, match.start() - 48) : match.start()]
     suffix = text[match.end() : match.end() + 48]
     same_clause_suffix = re.split(r"[;.!?]", suffix, maxsplit=1)[0]
-    if _VERSION_ROLE_SUFFIX.search(same_clause_suffix):
+    if _VERSION_ROLE_PREFIX.search(prefix) or _VERSION_ROLE_SUFFIX.search(
+        same_clause_suffix
+    ):
         return False
     network_prefix = _NETWORK_ENDPOINT_PREFIX.search(prefix)
     return bool(
@@ -229,6 +246,23 @@ def _is_network_ipv4(text: str, match: re.Match[str]) -> bool:
         and address.is_loopback
         or _KOREAN_LISTENER_PREFIX.search(prefix)
         and address.is_loopback
+        or _has_loopback_url_or_request_context(address, prefix, suffix)
+    )
+
+
+def _has_loopback_url_or_request_context(
+    address: ipaddress.IPv4Address, prefix: str, suffix: str
+) -> bool:
+    return bool(
+        address.is_loopback
+        and (
+            _LOOPBACK_URL_PREFIX.search(prefix)
+            and _LOOPBACK_URL_SUFFIX.search(suffix)
+            or _LOOPBACK_REDIRECT_PREFIX.search(prefix)
+            or _HOST_REDIRECT_PREFIX.search(prefix)
+            or _KOREAN_NETWORK_PREFIX.search(prefix)
+            and _KOREAN_DIRECT_REQUEST_SUFFIX.search(suffix)
+        )
     )
 
 
@@ -305,6 +339,14 @@ def has_report_validator_false_positive(content: BilingualReportContent) -> bool
                 claim_text
             ) or _TESTED_RISK_SETTING.search(claim_text):
                 return True
+            for match in _IPV4_TOKEN.finditer(claim_text):
+                if not _is_network_ipv4(claim_text, match):
+                    continue
+                address = ipaddress.IPv4Address(match.group())
+                prefix = claim_text[max(0, match.start() - 48) : match.start()]
+                suffix = claim_text[match.end() : match.end() + 48]
+                if _has_loopback_url_or_request_context(address, prefix, suffix):
+                    return True
     return False
 
 

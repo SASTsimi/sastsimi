@@ -296,18 +296,131 @@ class DashboardReadModel:
         except (OSError, sqlite3.Error):
             pass
 
+    def mark_incomplete_if_current(
+        self,
+        analysis_id: str,
+        expected_state_marker: str | None,
+        error: str,
+        *,
+        guard: sqlite3.Connection | None = None,
+        expected_data_version: int | None = None,
+    ) -> bool:
+        """Fail the scanned generation without clobbering a newer publisher."""
+        if guard is not None and expected_data_version is None:
+            return False
+        connection = guard if guard is not None else self._connect(True)
+        try:
+            if not self.schema_present(connection):
+                return False
+            connection.execute("BEGIN IMMEDIATE")
+            if (
+                expected_data_version is not None
+                and int(connection.execute("PRAGMA data_version").fetchone()[0])
+                != expected_data_version
+            ):
+                connection.rollback()
+                return False
+            state = connection.execute(
+                "SELECT status,source_marker FROM dashboard_index_state "
+                "WHERE analysis_id=?",
+                (analysis_id,),
+            ).fetchone()
+            marker = str(state["source_marker"]) if state else None
+            if marker != expected_state_marker:
+                connection.rollback()
+                return False
+            if state is None:
+                changed = connection.execute(
+                    """INSERT OR IGNORE INTO dashboard_index_state
+                    (analysis_id,projection_version,source_marker,status,last_error,indexed_at)
+                    VALUES (?,?,'unknown','INCOMPLETE',?,?)""",
+                    (analysis_id, VERSION, error[:1000], datetime.now(UTC).isoformat()),
+                ).rowcount
+            else:
+                if guard is None and state["status"] != "INCOMPLETE":
+                    # Without the original connection's data_version, a
+                    # repeated READY marker cannot identify a newer publisher.
+                    connection.rollback()
+                    return False
+                changed = connection.execute(
+                    """UPDATE dashboard_index_state
+                    SET status='INCOMPLETE',last_error=?,indexed_at=?
+                    WHERE analysis_id=? AND source_marker=?""",
+                    (
+                        error[:1000],
+                        datetime.now(UTC).isoformat(),
+                        analysis_id,
+                        expected_state_marker,
+                    ),
+                ).rowcount
+            connection.commit()
+            return changed == 1
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            if guard is None:
+                connection.close()
+
     def replace(
         self,
         analysis_id: str,
         marker: str,
         pages: dict[str, tuple[list[dict[str, object]], dict[str, object]]],
     ) -> dict[str, int]:
+        result = self._replace(analysis_id, marker, pages)
+        assert result is not None
+        return result
+
+    def replace_if_current(
+        self,
+        analysis_id: str,
+        marker: str,
+        pages: dict[str, tuple[list[dict[str, object]], dict[str, object]]],
+        *,
+        guard: sqlite3.Connection,
+        expected_data_version: int,
+        expected_state_marker: str | None,
+    ) -> dict[str, int] | None:
+        return self._replace(
+            analysis_id,
+            marker,
+            pages,
+            guard=guard,
+            expected_data_version=expected_data_version,
+            expected_state_marker=expected_state_marker,
+        )
+
+    def _replace(
+        self,
+        analysis_id: str,
+        marker: str,
+        pages: dict[str, tuple[list[dict[str, object]], dict[str, object]]],
+        *,
+        guard: sqlite3.Connection | None = None,
+        expected_data_version: int | None = None,
+        expected_state_marker: str | None = None,
+    ) -> dict[str, int] | None:
         counts = {kind: len(data[0]) for kind, data in pages.items()}
-        connection = self._connect(True)
+        connection = guard if guard is not None else self._connect(True)
         try:
             if not self.schema_present(connection):
                 raise DashboardIndexNotReady("DASHBOARD_INDEX_SCHEMA_MISSING")
             connection.execute("BEGIN IMMEDIATE")
+            if expected_data_version is not None:
+                version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+                state = connection.execute(
+                    "SELECT source_marker FROM dashboard_index_state "
+                    "WHERE analysis_id=?",
+                    (analysis_id,),
+                ).fetchone()
+                current_marker = str(state["source_marker"]) if state else None
+                if (
+                    version != expected_data_version
+                    or current_marker != expected_state_marker
+                ):
+                    connection.rollback()
+                    return None
             connection.execute(
                 """INSERT INTO dashboard_index_state
                 (analysis_id,projection_version,source_marker,status,last_error,indexed_at)
@@ -400,16 +513,17 @@ class DashboardReadModel:
             connection.rollback()
             raise
         finally:
-            connection.close()
+            if guard is None:
+                connection.close()
         return counts
 
     def _hold_review_status(self, analysis_id: str) -> str:
         active = analysis_run_lease_active(self.data_dir, analysis_id)
-        return (
-            "DASHBOARD_INDEX_RESUME_REQUIRED"
-            if active is False
-            else "DASHBOARD_INDEX_UPDATING"
-        )
+        if active is True:
+            return "DASHBOARD_INDEX_UPDATING"
+        if active is False:
+            return "DASHBOARD_INDEX_RESUME_REQUIRED"
+        return "DASHBOARD_INDEX_NOT_READY"
 
     def page(
         self,
@@ -424,6 +538,8 @@ class DashboardReadModel:
         if tab not in INDEXED_TABS:
             raise ValueError("DASHBOARD_INDEX_KIND_INVALID")
         with self._connect() as connection:
+            # Keep state, HOLD generation, summary and rows on one generation.
+            connection.execute("BEGIN")
             if not self.schema_present(connection):
                 raise DashboardIndexNotReady("DASHBOARD_INDEX_SCHEMA_MISSING")
             state = connection.execute(
@@ -432,11 +548,7 @@ class DashboardReadModel:
                 "WHERE analysis_id=?",
                 (analysis_id,),
             ).fetchone()
-            if (
-                state is not None
-                and state["status"] == "INCOMPLETE"
-                and state["last_error"] == "SURFACE_HOLD_REVIEW_IN_PROGRESS"
-            ):
+            if state is not None and state["status"] == "INCOMPLETE":
                 raise DashboardIndexNotReady(self._hold_review_status(analysis_id))
             if (
                 state is None

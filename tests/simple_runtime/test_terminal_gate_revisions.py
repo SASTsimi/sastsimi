@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.dashboard.read_model import INDEXED_TABS, DashboardReadModel
 from sastsimi.simple_runtime.models import (
     HYPOTHESIS_STAGES,
     STAGE_VERSION,
@@ -265,21 +267,44 @@ def test_gate_rewind_is_atomic_and_idempotent_after_crash(tmp_path: Path) -> Non
         StageResult(output_refs=(_ref("gate-feedback"),), gate_decision="REVISE"),
     )
     original_candidate = store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE)
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
 
+    def ready() -> None:
+        model.replace(
+            _identity().analysis_id,
+            "seed:hold:0",
+            {tab: ([], {"tab": tab}) for tab in INDEXED_TABS},
+        )
+
+    def status() -> str:
+        with sqlite3.connect(model.database) as connection:
+            row = connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id = ?",
+                (_identity().analysis_id,),
+            ).fetchone()
+        assert row is not None
+        return str(row[0])
+
+    ready()
     with pytest.raises(RuntimeError, match="simulated crash"):
         store.prepare_gate_revision(gate, fail_before_commit=True)
+    assert status() == "READY"
     assert (
         store.require(_identity(), SimpleStage.POC_CANDIDATE_DONE) == original_candidate
     )
     assert store.require(_identity(), SimpleStage.TECH_GATE_DONE) == gate
 
     pending = store.prepare_gate_revision(gate)
+    assert status() == "INCOMPLETE"
     assert pending.status is StageStatus.PENDING
     assert pending.stage is SimpleStage.POC_CANDIDATE_DONE
     assert pending.gate_revision_count == 1
     assert pending.input_refs[0] == gate.output_refs[0]
     assert store.get(_identity(), SimpleStage.TECH_GATE_DONE) is None
+    ready()
     assert store.prepare_gate_revision(gate) == pending
+    assert status() == "READY"
 
 
 def test_gate_budget_is_independent_of_poc_repair_attempts(tmp_path: Path) -> None:

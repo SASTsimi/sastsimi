@@ -17,7 +17,7 @@ import shlex
 import stat
 import subprocess
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -36,6 +36,7 @@ _MAX_XML_NODES = 4096
 _MAX_XML_RECORDS = 256
 _MAX_DISCOVERY_FILES = 256
 _MAX_DISCOVERY_BYTES = 4 * 1024 * 1024
+_MAX_PINNED_CACHE_BYTES = 8 * 1024 * 1024
 _MAX_DISCOVERY_LAUNCHERS = 16
 _MAX_DISCOVERY_PAIRS = 64
 _MAX_TREE_OUTPUT_BYTES = 1024 * 1024
@@ -132,15 +133,21 @@ def _verified_blob(
     limit: int,
     *,
     oversize_gap: str = "SOURCE_TOO_LARGE",
+    pinned_cache: MutableMapping[tuple[Path, str, str], bytes] | None = None,
 ) -> tuple[bytes, str]:
     if not _COMMIT.fullmatch(commit_id) or not _safe_repo_path(path):
         raise _Gap("PINNED_BLOB_UNAVAILABLE")
     source = safe_tracked_file(workspace, path)
     if source is None:
         raise _Gap("PINNED_BLOB_UNAVAILABLE")
-    pinned, reason = _read_pinned_blob(
-        workspace, path, commit=commit_id, git_executable="git", remaining=limit
-    )
+    cache_key = (workspace.resolve(strict=True), commit_id, path)
+    pinned = pinned_cache.get(cache_key) if pinned_cache is not None else None
+    if pinned is None:
+        pinned, reason = _read_pinned_blob(
+            workspace, path, commit=commit_id, git_executable="git", remaining=limit
+        )
+    else:
+        reason = "TOTAL_BUDGET_EXHAUSTED" if len(pinned) > limit else None
     if reason == "TOTAL_BUDGET_EXHAUSTED":
         raise _Gap(oversize_gap)
     if reason is not None or pinned is None:
@@ -164,6 +171,13 @@ def _verified_blob(
         raise _Gap(oversize_gap)
     if checkout != pinned:
         raise _Gap("PINNED_BLOB_MISMATCH")
+    if (
+        pinned_cache is not None
+        and cache_key not in pinned_cache
+        and sum(map(len, pinned_cache.values())) + len(pinned)
+        <= _MAX_PINNED_CACHE_BYTES
+    ):
+        pinned_cache[cache_key] = pinned
     return pinned, hashlib.sha256(pinned).hexdigest()
 
 

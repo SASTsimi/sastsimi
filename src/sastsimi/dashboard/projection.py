@@ -198,14 +198,38 @@ def rebuild_analysis(
     query = DashboardQuery(data_dir)
     model = DashboardReadModel(data_dir)
     indexed_id = analysis_id
+    guard: sqlite3.Connection | None = None
+    expected_state_marker: str | None = None
+    expected_data_version: int | None = None
     try:
         indexed_id = query._resolved(analysis_id)
+        if not dry_run:
+            model.initialize()
+            guard = model._connect(True)
+            expected_data_version = int(
+                guard.execute("PRAGMA data_version").fetchone()[0]
+            )
+            state = guard.execute(
+                "SELECT source_marker FROM dashboard_index_state WHERE analysis_id=?",
+                (indexed_id,),
+            ).fetchone()
+            expected_state_marker = str(state["source_marker"]) if state else None
         marker, pages = collect_source_pages(query, indexed_id)
         source = {kind: len(data[0]) for kind, data in pages.items()}
         if dry_run:
             return RebuildResult(analysis_id, source, {}, True, "DRY_RUN")
-        model.initialize()
-        indexed = model.replace(indexed_id, marker, pages)
+        assert guard is not None
+        assert expected_data_version is not None
+        indexed = model.replace_if_current(
+            indexed_id,
+            marker,
+            pages,
+            guard=guard,
+            expected_data_version=expected_data_version,
+            expected_state_marker=expected_state_marker,
+        )
+        if indexed is None:
+            return RebuildResult(analysis_id, source, {}, False, "STALE")
         return RebuildResult(analysis_id, source, indexed, False, "READY")
     except Exception as error:
         if not dry_run:
@@ -214,12 +238,22 @@ def rebuild_analysis(
                     indexed_id = query._resolved(analysis_id)
                 except Exception:
                     pass
-            model.mark_incomplete(
-                indexed_id, "unknown", f"{type(error).__name__}: {error}"
-            )
+            try:
+                model.mark_incomplete_if_current(
+                    indexed_id,
+                    expected_state_marker,
+                    f"{type(error).__name__}: {error}",
+                    guard=guard,
+                    expected_data_version=expected_data_version,
+                )
+            except (OSError, sqlite3.Error):
+                pass
         return RebuildResult(
             analysis_id, {}, {}, dry_run, "FAILED", f"{type(error).__name__}: {error}"
         )
+    finally:
+        if guard is not None:
+            guard.close()
 
 
 def rebuild_all(
@@ -248,8 +282,4 @@ def project_after_source_write(data_dir: str | Path, analysis_id: str) -> None:
                 return
     except (DashboardIndexNotReady, OSError, sqlite3.Error):
         return
-    result = rebuild_analysis(data_dir, analysis_id)
-    if result.status != "READY":
-        model.mark_incomplete(
-            analysis_id, "post-commit", result.error or "DASHBOARD_INDEX_FAILED"
-        )
+    rebuild_analysis(data_dir, analysis_id)

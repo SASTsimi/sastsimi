@@ -139,6 +139,35 @@ def test_v7_accepts_clean_claimed_path_with_unrelated_global_gap(
     assert validate_v7_response(wrapper, response).verified_path_id == "path-real"
 
 
+def test_v7_negative_claim_readiness_requires_selected_path_without_gaps(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.simple_runtime.surface_evidence_validation_v5 import (
+        negative_claim_context_ready,
+    )
+
+    wrapper, _ = _wrapper(tmp_path, unrelated_gap=True)
+    assert negative_claim_context_ready(wrapper, version=7)
+
+    blocked = deepcopy(wrapper)
+    graph = blocked["graph_payload"]
+    payload = blocked["context_payload"]
+    assert isinstance(graph, dict) and isinstance(payload, dict)
+    paths = graph["paths"]
+    assert isinstance(paths, list) and isinstance(paths[0], dict)
+    paths[0]["blocking_gaps"] = ["DYNAMIC_DISPATCH_UNRESOLVED"]
+    items = payload["items"]
+    assert isinstance(items, list)
+    for item in items:
+        assert isinstance(item, dict)
+        if item["category"] == "paths" and item["ordinal"] == 0:
+            item["value"] = deepcopy(paths[0])
+    payload["graph_hash"] = hashlib.sha256(canonical_bytes(graph)).hexdigest()
+    _rebind_context(blocked)
+
+    assert not negative_claim_context_ready(blocked, version=7)
+
+
 def test_v7_prior_hypothesis_does_not_forbid_new_rev4_decision(
     tmp_path: Path,
 ) -> None:

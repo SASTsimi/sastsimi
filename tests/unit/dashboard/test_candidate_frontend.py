@@ -134,6 +134,36 @@ for (const expected of [
 const listText = text(vm.runInContext("analysisButton(state.detail)", context));
 assert.ok(listText.includes("현재 알려진 checkpoint 비율"), listText);
 const previousSurface = detail.phase_counts.surface;
+detail.percentage_kind = "base_work_fraction";
+detail.status = "PARTIAL";
+detail.progress_percent = 100;
+detail.phase_counts.surface = {
+  total: 1, evaluated: 1, completed: 0,
+  covered: 0, uncovered: 0, insufficient: 1,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "기본 분석 작업 진행률", "100%", "PARTIAL", "검토 종료 1/1",
+  "증명된 경로 0/1", "근거 부족 1", "제보 가능을 뜻하지 않습니다",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+assert.ok(shown.includes("기본 작업"), shown);
+assert.ok(!shown.includes("전체 진행"), shown);
+const baseListText = text(vm.runInContext("analysisButton(state.detail)", context));
+assert.ok(baseListText.includes("기본 분석 작업 진행률"), baseListText);
+vm.runInContext("renderAnalysisList([state.detail])", context);
+const repositoryListText = text(nodes.get("analyses"));
+assert.ok(repositoryListText.includes("기본 분석 작업 진행률"), repositoryListText);
+vm.runInContext("state.shell = state.detail; renderProgressSummary([])", context);
+const progressSummaryText = text(nodes.get("progress-summary"));
+assert.ok(progressSummaryText.includes("기본 분석 작업 진행률"), progressSummaryText);
+assert.ok(
+  progressSummaryText.includes("제보 가능을 뜻하지 않습니다"),
+  progressSummaryText
+);
+detail.status = "PAUSED";
+detail.progress_percent = 65;
+detail.percentage_kind = "known_checkpoint_fraction";
 detail.phase_counts.surface = {
   total: 1, covered: 1, uncovered: 0, insufficient: 0,
   raw_static_gap_count: 3, effective_python_gap_count: 0,
@@ -176,6 +206,46 @@ shown = text(nodes.get("overview"));
 for (const expected of [
   "v5 검토 완료 36/56", "증명된 경로 20/56", "근거 부족 36", "전체 분석은 PARTIAL",
 ]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+detail.phase_counts.surface = {
+  recorded_contexts: 127, recorded_surfaces: 56,
+  proof_version: 8, template_content_not_analyzed_count: 1,
+  completed: 20, total: 56, reviewed: 36,
+  covered: 20, uncovered: 0, insufficient: 36,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "v8 검토 완료 36/56", "Python 범위 밖 템플릿 HTML/Jinja 내용 1건",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+detail.phase_counts.surface = {
+  proof_version: 9, template_content_not_analyzed_count: 1,
+  completed: 20, total: 56, reviewed: 36,
+  covered: 20, uncovered: 0, insufficient: 36,
+  child_revalidation_resolved: 1, child_revalidation_pending: 2,
+  child_revalidation_still_hold: 3, child_revalidation_error: 4,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "v9 검토 완료 36/56", "자식 근거 재검증", "해결 1", "대기 2",
+  "HOLD 유지 3", "오류 4", "Python 범위 밖 템플릿 HTML/Jinja 내용 1건",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+detail.phase_counts.surface = {
+  total: 56, recorded_contexts: 3, recorded_surfaces: 2,
+  child_revalidation_attempts_unverified: 1,
+  child_revalidation_attempt_pending: 1,
+  child_revalidation_attempt_running: 2,
+  child_revalidation_attempt_resolved: 3,
+  child_revalidation_attempt_still_hold: 4,
+  child_revalidation_attempt_error: 5,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "검증 전 시도 기록", "대기 1", "실행 중 2", "해결 3",
+  "HOLD 유지 4", "오류 5", "coverage 확인 전",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+assert.ok(!shown.includes("v9 검토 완료"), shown);
 detail.status = "RUNNING";
 vm.runInContext("renderOverview(state.detail)", context);
 shown = text(nodes.get("overview"));

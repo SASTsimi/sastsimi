@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any, Literal, cast
@@ -170,6 +170,30 @@ def child_identity_matches(pid: int, start_identity: str) -> bool | None:
     if status == "UNKNOWN":
         return None
     return status == "RUNNING" and observed == start_identity
+
+
+def windows_boot_time_utc() -> datetime | None:
+    """Return the current Windows boot time, or ``None`` if it cannot be read.
+
+    A post-reboot cleanup proof must come from the host, never from a missing
+    PID alone. GetTickCount64 is the elapsed time since this Windows boot.
+    """
+
+    if os.name != "nt":
+        return None
+    try:
+        load_library = cast(Callable[..., Any], vars(ctypes)["WinDLL"])
+        kernel32 = load_library("kernel32", use_last_error=True)
+        kernel32.GetTickCount64.argtypes = []
+        kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+        before = datetime.now(UTC)
+        elapsed_ms = kernel32.GetTickCount64()
+        after = datetime.now(UTC)
+        if type(elapsed_ms) is not int or elapsed_ms < 0:
+            return None
+        return before + (after - before) / 2 - timedelta(milliseconds=elapsed_ms)
+    except (AttributeError, OSError, OverflowError, TypeError, ValueError):
+        return None
 
 
 # Keep the historical module-local name used by provider boundary tests.

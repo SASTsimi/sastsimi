@@ -77,6 +77,69 @@ def test_public_artifact_reader_never_loads_unbounded_cas(tmp_path: Path) -> Non
     assert raw == b'{"kind":"example"}'
 
 
+def test_v8_dashboard_previews_only_verified_python_surface_gaps(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-a",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    repository = SimpleArtifactRepository(tmp_path, identity)
+    coverage_ref = repository.put_json(
+        {
+            "surfaces": [
+                {
+                    "surface_id": "route-1",
+                    "path": "app.py",
+                    "unresolved_reason_codes": ["ROUTE_DOWNSTREAM_UNVERIFIED"],
+                    "external_scope_limit": "TEMPLATE_CONTENT_NOT_ANALYZED",
+                }
+            ]
+        }
+    )
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash="b" * 64,
+        scope_fingerprint="s" * 64,
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=0,
+        surface_coverage_hash=coverage_ref.content_hash,
+        surface_proof_version=8,
+    )
+    run = SimpleAnalysisRun(
+        analysis_id=identity.analysis_id,
+        display_analysis_id="A-001",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        repository="example/repo",
+        candidate_terminal=terminal,
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.HYPOTHESIS_DONE,
+        status=StageStatus.SUCCEEDED,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+        output_refs=(coverage_ref,),
+    )
+    count, preview = DashboardQuery(tmp_path)._surface_unresolved_preview(
+        run,
+        [checkpoint],
+        {"UNRESOLVED_REASON_COUNT": 1},
+    )
+    assert count == 1
+    assert preview == (
+        {
+            "surface_id": "route-1",
+            "path": "app.py",
+            "reason": "ROUTE_DOWNSTREAM_UNVERIFIED",
+        },
+    )
+
+
 def test_surface_proof_reader_reuses_verified_bytes_only_within_one_query(
     tmp_path: Path,
 ) -> None:
@@ -878,7 +941,7 @@ def test_dashboard_candidate_counts_are_scope_bound_and_not_duplicated(
     )
     v2 = query.get_analysis("analysis-a")
     assert v2.candidate_total_count == 3
-    assert v2.percentage_kind == "known_checkpoint_fraction"
+    assert v2.percentage_kind == "base_work_fraction"
     assert v2.phase_counts["triage"] == {"completed": 2, "known": 3}
 
     store.save_analysis_run(

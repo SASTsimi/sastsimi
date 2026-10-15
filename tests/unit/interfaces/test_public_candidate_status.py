@@ -106,6 +106,65 @@ def test_v2_text_status_labels_phase_counts_and_unknown_surface_coverage() -> No
     assert "비용·시간·저장소 전체 커버리지" in rendered
 
 
+def test_base_work_status_can_be_100_percent_and_partial_without_claiming_proof() -> (
+    None
+):
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-001",
+            "status": "PARTIAL",
+            "percent": 100,
+            "percentage_kind": "base_work_fraction",
+            "phase_counts": {
+                "surface": {
+                    "total": 1,
+                    "evaluated": 1,
+                    "completed": 0,
+                    "covered": 0,
+                    "uncovered": 0,
+                    "insufficient": 1,
+                }
+            },
+        },
+    )
+
+    rendered = output.getvalue()
+    assert "상태: PARTIAL" in rendered
+    assert "기본 분석 작업 진행률: 100%" in rendered
+    assert "검토 종료 1/1" in rendered
+    assert "증명된 경로 0/1" in rendered
+    assert "근거 부족 1" in rendered
+    assert "100%는 전체 범위 검증이나 제보 가능을 뜻하지 않습니다" in rendered
+
+
+def test_base_work_status_without_surface_proof_does_not_claim_evaluation() -> None:
+    output = StringIO()
+    emit_public(
+        "text",
+        output,
+        command="status",
+        data={
+            "analysis_id": "A-001",
+            "status": "RUNNING",
+            "percent": 40,
+            "percentage_kind": "base_work_fraction",
+            "phase_counts": {
+                "surface": {"total": 2, "recorded_contexts": 1, "completed": 0}
+            },
+        },
+    )
+
+    rendered = output.getvalue()
+    assert "기본 분석 작업 진행률: 40%" in rendered
+    assert "coverage 확인 전" in rendered
+    assert "검토 종료" not in rendered
+    assert "증명된 경로 2/2" not in rendered
+
+
 def test_v2_text_status_keeps_legacy_context_label_without_surface_count() -> None:
     output = StringIO()
     emit_public(

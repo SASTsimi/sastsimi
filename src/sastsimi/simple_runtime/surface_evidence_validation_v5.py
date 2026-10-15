@@ -411,6 +411,30 @@ def validate_v7_context(context_wrapper: Mapping[str, object]) -> None:
     _validated_context(context_wrapper, version=7)
 
 
+def negative_claim_context_ready(
+    context_wrapper: Mapping[str, object], *, version: Literal[5, 7]
+) -> bool:
+    """Whether this pinned part can support a ``NO_HYPOTHESIS`` response.
+
+    This is only a readiness check for the Agent contract. The response
+    validator still requires exact review roles on one anchored path.
+    """
+
+    payload, graph, _, complete, _, paths, _ = _validated_context(
+        context_wrapper, version=version
+    )
+    if not complete or not paths:
+        return False
+    if version == 7:
+        return True
+    if graph.get("proof_semantics_revision") in {
+        "v5-source-bound-3",
+        "v5-source-bound-4",
+    }:
+        return any(path.get("blocking_gaps") == [] for path in paths.values())
+    return True
+
+
 def v5_review_directory(
     context_payload: Mapping[str, object], graph_payload: Mapping[str, object]
 ) -> list[dict[str, object]]:

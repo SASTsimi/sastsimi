@@ -51,7 +51,9 @@ class AnalysisSummaryView(ContractModel):
     cursor_output_tokens: int = 0
     cursor_cost_cents: float | None = None
     progress_percent: int = 0
-    percentage_kind: Literal["known_checkpoint_fraction"] | None = None
+    percentage_kind: (
+        Literal["known_checkpoint_fraction", "base_work_fraction"] | None
+    ) = None
     phase_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
     completed_units: int = 0
     known_units: int = 0

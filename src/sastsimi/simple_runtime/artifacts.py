@@ -961,15 +961,68 @@ class SimpleArtifactRepository:
         )
         return manifest.display_id
 
+    def published_report_surface_proof(
+        self, report: StageCheckpoint, finding_ref: StoredDataRef
+    ) -> tuple[int, str]:
+        """Read the exact surface certificate bound into a published bundle."""
+
+        if report.bundle_manifest_ref is None:
+            raise ValueError("REPORT_SURFACE_PROOF_STALE")
+        manifest = parse_bundle_manifest(
+            self.read_bounded(report.bundle_manifest_ref, MAX_BUNDLE_MANIFEST_BYTES),
+            finding_ref=finding_ref,
+        )
+        raw, _ = read_bundle_file(
+            manifest,
+            "evidence/provenance.json",
+            lambda ref: self.read_bounded(ref, MAX_BUNDLE_FILE_BYTES),
+        )
+        provenance = json.loads(raw)
+        coverage = (
+            provenance.get("static_coverage") if isinstance(provenance, dict) else None
+        )
+        version = (
+            coverage.get("surface_proof_version")
+            if isinstance(coverage, dict)
+            else None
+        )
+        digest = (
+            coverage.get("surface_coverage_hash")
+            if isinstance(coverage, dict)
+            else None
+        )
+        if (
+            type(version) is not int
+            or not 1 <= version <= 9
+            or not isinstance(digest, str)
+            or _SHA256_HEX.fullmatch(digest) is None
+        ):
+            raise ValueError("REPORT_SURFACE_PROOF_STALE")
+        return version, digest
+
     def require_current_report_coverage(
         self,
         report: StageCheckpoint,
         finding_ref: StoredDataRef,
         current_ref: StoredDataRef | None,
         current_disposition: str,
+        *,
+        current_surface_proof_version: int | None = None,
+        current_surface_hash: str | None = None,
     ) -> None:
         """Do not expose a completed report for superseded static coverage."""
 
+        if (
+            current_surface_proof_version is not None
+            or current_surface_hash is not None
+        ):
+            if current_surface_proof_version is None or current_surface_hash is None:
+                raise ValueError("REPORT_SURFACE_PROOF_STALE")
+            if self.published_report_surface_proof(report, finding_ref) != (
+                current_surface_proof_version,
+                current_surface_hash,
+            ):
+                raise ValueError("REPORT_SURFACE_PROOF_STALE")
         if current_ref is None:
             return
         if report.bundle_manifest_ref is None:

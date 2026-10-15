@@ -11,9 +11,12 @@ import pytest
 
 from sastsimi.simple_runtime.operational_config_v5 import (
     OperationalRouteMap,
+    _Gap,
+    _verified_blob,
     discover_operational_route_maps,
     load_operational_routes,
 )
+from sastsimi.simple_runtime.retrieval import _read_pinned_blob
 
 PARSER = b"""import xml.etree.ElementTree as XML
 import pkg.endpoints as actions
@@ -569,6 +572,57 @@ def test_changed_checkout_blob_never_supplies_a_binding(
 
     assert result.bindings == ()
     assert "PINNED_BLOB_MISMATCH" in result.gaps
+
+
+def test_pinned_blob_cache_reuses_git_only_and_rechecks_live_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace, commit = _fixture(tmp_path)
+    from sastsimi.simple_runtime import operational_config_v5
+
+    original_read = _read_pinned_blob
+    reads = 0
+
+    def counted_read(
+        workspace: Path,
+        path: str,
+        *,
+        commit: str,
+        git_executable: str,
+        remaining: int,
+    ) -> tuple[bytes | None, str | None]:
+        nonlocal reads
+        reads += 1
+        return original_read(
+            workspace,
+            path,
+            commit=commit,
+            git_executable=git_executable,
+            remaining=remaining,
+        )
+
+    monkeypatch.setattr(operational_config_v5, "_read_pinned_blob", counted_read)
+    cache: dict[tuple[Path, str, str], bytes] = {}
+    for _ in range(2):
+        raw, digest = _verified_blob(
+            workspace, commit, "pkg/dispatch.py", 4096, pinned_cache=cache
+        )
+        assert raw == PARSER
+        assert digest == hashlib.sha256(PARSER).hexdigest()
+    assert reads == 1
+    with pytest.raises(_Gap, match="SOURCE_TOO_LARGE"):
+        _verified_blob(
+            workspace,
+            commit,
+            "pkg/dispatch.py",
+            len(PARSER) - 1,
+            pinned_cache=cache,
+        )
+    assert reads == 1
+    (workspace / "pkg/dispatch.py").write_bytes(PARSER + b"changed")
+    with pytest.raises(_Gap, match="PINNED_BLOB_MISMATCH"):
+        _verified_blob(workspace, commit, "pkg/dispatch.py", 4096, pinned_cache=cache)
+    assert reads == 1
 
 
 @pytest.mark.parametrize(

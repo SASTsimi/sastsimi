@@ -41,6 +41,8 @@ from sastsimi.simple_runtime.recall_audit import (
 )
 from sastsimi.simple_runtime.recall_oracle import parse_oracle_bytes
 from sastsimi.simple_runtime.recall_review import ReviewLedger, reviewed_oracle
+from sastsimi.simple_runtime.report_currentness import current_surface_report_binding
+from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
 class ScoredCase(TypedDict):
@@ -243,7 +245,20 @@ def _current_findings(
             for output in report.output_refs:
                 artifacts.read_bounded(output, 16 * 1024 * 1024)
             artifacts.require_current_report_coverage(
-                report, ref, run.static_coverage_ref, run.static_disposition
+                report,
+                ref,
+                run.static_coverage_ref,
+                run.static_disposition,
+                **current_surface_report_binding(
+                    run,
+                    (),
+                    data_dir=data_dir,
+                    store=SimpleCheckpointStore(
+                        RuntimePaths(data_dir).database,
+                        artifact_data_dir=data_dir,
+                        read_only=True,
+                    ),
+                ),
             )
             manifest = parse_bundle_manifest(
                 artifacts.read_bounded(

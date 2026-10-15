@@ -6,10 +6,18 @@ from pathlib import Path
 
 import pytest
 
+from sastsimi.dashboard.read_model import INDEXED_TABS, DashboardReadModel
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.attempt_owner import AttemptOwner, PromptByteCounts
 from sastsimi.simple_runtime.call_queue import RunUsageBudget
-from sastsimi.simple_runtime.models import CheckpointIdentity, SimpleAnalysisRun
+from sastsimi.simple_runtime.models import (
+    CheckpointIdentity,
+    SimpleAnalysisRun,
+    SimpleStage,
+    StageCheckpoint,
+    StageStatus,
+    input_reference_hash,
+)
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 
 
@@ -83,6 +91,246 @@ def test_usage_summary_is_durable_idempotent_and_preserves_unknown_cost(
             output_tokens=0,
             cost_cents=75.0,
             artifact_ref=ref,
+        )
+
+
+def test_checkpoint_and_llm_attempt_commit_before_one_deferred_projection(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-batched",
+        workspace_id="workspace-batched",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    projected: list[str] = []
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    empty: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
+    model.replace(identity.analysis_id, "before", empty)
+
+    def project(_path: Path, analysis_id: str) -> None:
+        projected.append(analysis_id)
+        model.replace(analysis_id, "after", empty)
+
+    store = SimpleCheckpointStore(
+        artifacts.paths.database,
+        artifact_data_dir=tmp_path,
+        post_commit_projection=project,
+    )
+    separate = SimpleCheckpointStore(
+        artifacts.paths.database,
+        artifact_data_dir=tmp_path,
+        post_commit_projection=project,
+    )
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.STATIC_DONE,
+        status=StageStatus.PENDING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+    )
+    ref = artifacts.put_json({"kind": "attempt"})
+
+    with store.defer_dashboard_projection(identity.analysis_id):
+        store.save_checkpoint(checkpoint)
+        with sqlite3.connect(store.database_path) as connection:
+            first_dirty_marker = connection.execute(
+                "SELECT source_marker FROM dashboard_index_state WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+        separate.record_llm_attempt(
+            attempt_id="attempt-batched",
+            analysis_id=identity.analysis_id,
+            agent="demo",
+            model="test-model",
+            attempt_number=1,
+            status="SUCCEEDED",
+            elapsed_ms=1,
+            input_tokens=1,
+            output_tokens=1,
+            cost_cents=None,
+            artifact_ref=ref,
+        )
+        assert projected == []
+        with sqlite3.connect(store.database_path) as connection:
+            state = connection.execute(
+                "SELECT status,source_marker FROM dashboard_index_state "
+                "WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()
+            assert state[0] == "INCOMPLETE"
+            assert state[1] != first_dirty_marker
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM simple_runtime_checkpoints"
+                ).fetchone()[0]
+                == 1
+            )
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM simple_llm_attempts"
+                ).fetchone()[0]
+                == 1
+            )
+
+    assert projected == [identity.analysis_id]
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+            == "READY"
+        )
+
+
+def test_run_only_change_dirties_index_and_projects_once_on_scope_exit(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-run-only",
+        workspace_id="workspace-run-only",
+        commit_id="a" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    empty: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
+    model.replace(identity.analysis_id, "before", empty)
+    projected: list[str] = []
+
+    def project(_data_dir: Path, analysis_id: str) -> None:
+        projected.append(analysis_id)
+        model.replace(analysis_id, f"after-{len(projected)}", empty)
+
+    store = SimpleCheckpointStore(
+        artifacts.paths.database,
+        artifact_data_dir=tmp_path,
+        post_commit_projection=project,
+    )
+    run = SimpleAnalysisRun(
+        analysis_id=identity.analysis_id,
+        display_analysis_id="A-001",
+        workspace_id=identity.workspace_id,
+        commit_id=identity.commit_id,
+        repository="https://example.invalid/repo.git",
+    )
+    with store.defer_dashboard_projection(identity.analysis_id):
+        store.save_analysis_run(run)
+        store.save_analysis_run(run.model_copy(update={"display_analysis_id": "A-002"}))
+        with sqlite3.connect(store.database_path) as connection:
+            assert (
+                connection.execute(
+                    "SELECT status FROM dashboard_index_state WHERE analysis_id=?",
+                    (identity.analysis_id,),
+                ).fetchone()[0]
+                == "INCOMPLETE"
+            )
+            assert (
+                connection.execute(
+                    "SELECT run_json FROM simple_analysis_runs WHERE analysis_id=?",
+                    (identity.analysis_id,),
+                ).fetchone()
+                is not None
+            )
+        assert projected == []
+    assert projected == [identity.analysis_id]
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+            == "READY"
+        )
+
+
+def test_failed_deferred_projection_leaves_durable_dirty_index_for_resume(
+    tmp_path: Path,
+) -> None:
+    identity = CheckpointIdentity(
+        analysis_id="analysis-resume-index",
+        workspace_id="workspace-resume-index",
+        commit_id="b" * 40,
+        hypothesis_id=None,
+    )
+    artifacts = SimpleArtifactRepository(tmp_path, identity)
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    empty: dict[str, tuple[list[dict[str, object]], dict[str, object]]] = {
+        tab: ([], {"tab": tab}) for tab in INDEXED_TABS
+    }
+    model.replace(identity.analysis_id, "before", empty)
+    checkpoint = StageCheckpoint(
+        identity=identity,
+        stage=SimpleStage.STATIC_DONE,
+        status=StageStatus.PENDING,
+        input_refs=(),
+        input_hash=input_reference_hash(()),
+    )
+
+    def fail(_path: Path, _analysis_id: str) -> None:
+        raise RuntimeError("projection failed after source commit")
+
+    store = SimpleCheckpointStore(
+        artifacts.paths.database,
+        artifact_data_dir=tmp_path,
+        post_commit_projection=fail,
+    )
+    with store.defer_dashboard_projection(identity.analysis_id):
+        store.save_checkpoint(checkpoint)
+
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM simple_runtime_checkpoints WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+            == "INCOMPLETE"
+        )
+
+    projected: list[str] = []
+
+    def recover(_path: Path, analysis_id: str) -> None:
+        projected.append(analysis_id)
+        model.replace(analysis_id, "recovered", empty)
+
+    resumed = SimpleCheckpointStore(
+        artifacts.paths.database,
+        artifact_data_dir=tmp_path,
+        post_commit_projection=recover,
+    )
+    with resumed.defer_dashboard_projection(identity.analysis_id):
+        pass
+    assert projected == [identity.analysis_id]
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM simple_runtime_checkpoints WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+            == "READY"
         )
 
 
