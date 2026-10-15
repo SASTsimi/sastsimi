@@ -133,6 +133,7 @@ from sastsimi.simple_runtime.stages import build_stage_handlers
 from sastsimi.simple_runtime.store import SimpleCheckpointStore
 from sastsimi.simple_runtime.surface_child_evidence_v11 import (
     interim_child_attempt_counts_v11,
+    verified_v11_predecessor_counts,
 )
 
 from .simple_process import LocalProcessExecutor
@@ -1051,12 +1052,14 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
             "CONTEXT_SURFACES": len({item.surface_id for item in matching_contexts}),
         }
         terminal = run.candidate_terminal
+        interim_attempts = False
         if (
             run.surface_enrichment_v11_plan_ref is not None
             and run.surface_enrichment_status in {"RUNNING", "BLOCKED"}
             and terminal is not None
             and terminal.surface_proof_version == 8
         ):
+            interim_attempts = True
             try:
                 attempts = interim_child_attempt_counts_v11(
                     run,
@@ -1074,6 +1077,22 @@ class PublicSimpleRuntimeApplication(PublicCommandApplication):
                         f"CHILD_REVALIDATION_ATTEMPT_{status}_COUNT": count
                         for status, count in attempts.items()
                     }
+                )
+        if interim_attempts:
+            try:
+                verified_base = verified_v11_predecessor_counts(
+                    run,
+                    identity,
+                    index,
+                    record.index_ref.content_hash,
+                    self._store,
+                    repository,
+                )
+            except (OSError, ValueError, TypeError, sqlite3.Error):
+                verified_base = None
+            if verified_base is not None:
+                counts.update(
+                    {f"BASE_{key}": value for key, value in verified_base.items()}
                 )
             return counts, record.index_ref.content_hash
         if (

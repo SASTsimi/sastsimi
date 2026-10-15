@@ -49,18 +49,13 @@ _HOLD_STAGES = frozenset(
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
-def interim_child_attempt_counts_v11(
+def _pinned_v10_predecessor_v11(
     run: SimpleAnalysisRun,
     identity: CheckpointIdentity,
     index_hash: str,
-    store: SimpleCheckpointStore,
     artifacts: SimpleArtifactRepository,
-) -> dict[str, int]:
-    """Count exact pinned ledger rows as unverified attempt status only.
-
-    This reader does not replay result artifacts or issue a coverage verdict.
-    The independent proof9 reader owns those claims after promotion.
-    """
+) -> tuple[CandidateTerminal, StageCheckpoint, StoredDataRef, list[object]]:
+    """Read only the frozen V10 binding, independently of V11 attempt rows."""
 
     plan_ref = run.surface_enrichment_v11_plan_ref
     terminal = run.candidate_terminal
@@ -81,42 +76,102 @@ def interim_child_attempt_counts_v11(
         or _SHA256.fullmatch(index_hash) is None
     ):
         raise ValueError("SURFACE_CHILD_V11_INTERIM_INVALID")
+    plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
+    if not isinstance(plan, dict):
+        raise ValueError("plan object missing")
+    frozen_terminal = CandidateTerminal.model_validate(plan["v10_terminal"])
+    frozen_root = StageCheckpoint.model_validate_json(json.dumps(plan["v10_root"]))
+    coverage_ref = StoredDataRef.model_validate_json(
+        json.dumps(plan["v10_coverage_ref"])
+    )
+    raw_targets = plan["targets"]
+    if (
+        plan.get("kind") != "simple_surface_enrichment_plan_v11"
+        or plan.get("analysis_id") != identity.analysis_id
+        or plan.get("workspace_id") != identity.workspace_id
+        or plan.get("commit_id") != identity.commit_id
+        or plan.get("scope_fingerprint") != run.candidate_scope_fingerprint
+        or plan.get("static_bundle_hash") != frozen_terminal.bundle_hash
+        or plan.get("index_hash") != index_hash
+        or plan.get("v10_plan_ref")
+        != run.surface_enrichment_v10_plan_ref.model_dump(mode="json")
+        or frozen_terminal.surface_proof_version != 8
+        or frozen_terminal.model_copy(update={"status": "PARTIAL"}) != terminal
+        or coverage_ref.content_hash != frozen_terminal.surface_coverage_hash
+        or frozen_root.identity != identity
+        or frozen_root.stage is not SimpleStage.HYPOTHESIS_DONE
+        or frozen_root.status is not StageStatus.SUCCEEDED
+        or len(frozen_root.output_refs) != 2
+        or frozen_root.output_refs[0].content_hash != index_hash
+        or frozen_root.output_refs[1] != coverage_ref
+        or not isinstance(raw_targets, list)
+        or not isinstance(plan.get("child_snapshot_hash"), str)
+        or _SHA256.fullmatch(plan["child_snapshot_hash"]) is None
+        or not isinstance(plan.get("v9_progress_hash"), str)
+        or _SHA256.fullmatch(plan["v9_progress_hash"]) is None
+    ):
+        raise ValueError("plan binding mismatch")
+    return frozen_terminal, frozen_root, coverage_ref, raw_targets
+
+
+def verified_v11_predecessor_counts(
+    run: SimpleAnalysisRun,
+    identity: CheckpointIdentity,
+    index: SurfaceIndex,
+    index_hash: str,
+    store: SimpleCheckpointStore,
+    artifacts: SimpleArtifactRepository,
+) -> dict[str, int]:
+    """Replay frozen V10 base work while V11's result remains unverified."""
+
+    from .surface_coverage_v8_read import verified_saved_coverage_v8
+
     try:
-        plan = json.loads(artifacts.read_bounded(plan_ref, 16 * 1024 * 1024))
-        if not isinstance(plan, dict):
-            raise ValueError("plan object missing")
-        frozen_terminal = CandidateTerminal.model_validate(plan["v10_terminal"])
-        frozen_root = StageCheckpoint.model_validate_json(json.dumps(plan["v10_root"]))
-        coverage_ref = StoredDataRef.model_validate_json(
-            json.dumps(plan["v10_coverage_ref"])
+        terminal, root, coverage_ref, _ = _pinned_v10_predecessor_v11(
+            run, identity, index_hash, artifacts
         )
-        raw_targets = plan["targets"]
-        if (
-            plan.get("kind") != "simple_surface_enrichment_plan_v11"
-            or plan.get("analysis_id") != identity.analysis_id
-            or plan.get("workspace_id") != identity.workspace_id
-            or plan.get("commit_id") != identity.commit_id
-            or plan.get("scope_fingerprint") != run.candidate_scope_fingerprint
-            or plan.get("static_bundle_hash") != frozen_terminal.bundle_hash
-            or plan.get("index_hash") != index_hash
-            or plan.get("v10_plan_ref")
-            != run.surface_enrichment_v10_plan_ref.model_dump(mode="json")
-            or frozen_terminal.surface_proof_version != 8
-            or frozen_terminal.model_copy(update={"status": "PARTIAL"}) != terminal
-            or coverage_ref.content_hash != frozen_terminal.surface_coverage_hash
-            or frozen_root.identity != identity
-            or frozen_root.stage is not SimpleStage.HYPOTHESIS_DONE
-            or frozen_root.status is not StageStatus.SUCCEEDED
-            or len(frozen_root.output_refs) != 2
-            or frozen_root.output_refs[0].content_hash != index_hash
-            or frozen_root.output_refs[1] != coverage_ref
-            or not isinstance(raw_targets, list)
-            or not isinstance(plan.get("child_snapshot_hash"), str)
-            or _SHA256.fullmatch(plan["child_snapshot_hash"]) is None
-            or not isinstance(plan.get("v9_progress_hash"), str)
-            or _SHA256.fullmatch(plan["v9_progress_hash"]) is None
-        ):
-            raise ValueError("plan binding mismatch")
+        if store.get(identity, SimpleStage.HYPOTHESIS_DONE) != root:
+            raise ValueError("live root differs from pinned predecessor")
+        coverage = verified_saved_coverage_v8(
+            identity,
+            index,
+            coverage_ref,
+            store,
+            artifacts,
+            predecessor_terminal=terminal,
+            predecessor_root=root,
+        )
+        return {
+            **{
+                status: sum(row.coverage_status == status for row in coverage.surfaces)
+                for status in ("COVERED", "UNCOVERED", "INSUFFICIENT")
+            },
+            "RAW_STATIC_GAP_COUNT": len(index.static_gaps),
+            "EFFECTIVE_PYTHON_GAP_COUNT": len(coverage.effective_python_gaps),
+        }
+    except (KeyError, OSError, TypeError, ValueError, UnicodeError) as error:
+        raise ValueError("SURFACE_CHILD_V11_BASE_INVALID") from error
+
+
+def interim_child_attempt_counts_v11(
+    run: SimpleAnalysisRun,
+    identity: CheckpointIdentity,
+    index_hash: str,
+    store: SimpleCheckpointStore,
+    artifacts: SimpleArtifactRepository,
+) -> dict[str, int]:
+    """Count exact pinned ledger rows as unverified attempt status only.
+
+    This reader does not replay result artifacts or issue a coverage verdict.
+    The independent proof9 reader owns those claims after promotion.
+    """
+
+    try:
+        _, _, _, raw_targets = _pinned_v10_predecessor_v11(
+            run, identity, index_hash, artifacts
+        )
+        plan_ref = run.surface_enrichment_v11_plan_ref
+        assert plan_ref is not None
         targets: dict[tuple[str, SimpleStage], str] = {}
         for raw in raw_targets:
             if not isinstance(raw, dict):

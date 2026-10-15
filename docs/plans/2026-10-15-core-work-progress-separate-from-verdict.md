@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3, Pydantic contracts, pytest, vanilla JavaScript dashboard.
 
-**Spec:** `docs/superpowers/specs/2026-10-15-core-work-progress-separate-from-verdict-design.md`
+**Spec:** `docs/plans/2026-10-15-core-work-progress-separate-from-verdict-design.md`
 
 ## Global Constraints
 

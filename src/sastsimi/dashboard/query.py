@@ -76,6 +76,7 @@ from sastsimi.simple_runtime.scope_policy import (
 from sastsimi.simple_runtime.store import ROLE_BY_STAGE, SimpleCheckpointStore
 from sastsimi.simple_runtime.surface_child_evidence_v11 import (
     interim_child_attempt_counts_v11,
+    verified_v11_predecessor_counts,
 )
 
 from .models import (
@@ -4295,12 +4296,14 @@ class DashboardQuery:
             "CONTEXT_SURFACES": len(set(matching_surface_ids)),
         }
         terminal = run.candidate_terminal
+        interim_attempts = False
         if (
             run.surface_enrichment_v11_plan_ref is not None
             and run.surface_enrichment_status in {"RUNNING", "BLOCKED"}
             and terminal is not None
             and terminal.surface_proof_version == 8
         ):
+            interim_attempts = True
             try:
                 attempts = interim_child_attempt_counts_v11(
                     run,
@@ -4322,6 +4325,26 @@ class DashboardQuery:
                         f"CHILD_REVALIDATION_ATTEMPT_{status}_COUNT": count
                         for status, count in attempts.items()
                     }
+                )
+        if interim_attempts:
+            try:
+                verified_base = verified_v11_predecessor_counts(
+                    run,
+                    identity,
+                    index,
+                    index_ref.content_hash,
+                    SimpleCheckpointStore(
+                        self._database,
+                        artifact_data_dir=self._data_dir,
+                        read_only=True,
+                    ),
+                    repository,
+                )
+            except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error):
+                verified_base = None
+            if verified_base is not None:
+                counts.update(
+                    {f"BASE_{key}": value for key, value in verified_base.items()}
                 )
             return counts, index_ref.content_hash
         if (

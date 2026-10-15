@@ -121,7 +121,7 @@ function progressDonut(value, label = "전체 분석 진행률") {
   donut.setAttribute?.("role", "progressbar"); donut.setAttribute?.("aria-label", label);
   donut.setAttribute?.("aria-valuemin", "0"); donut.setAttribute?.("aria-valuemax", "100");
   if (known) donut.setAttribute?.("aria-valuenow", String(bounded)); else donut.setAttribute?.("aria-valuetext", "미확인");
-  const center = el("div", undefined, "donut-center"); center.append(el("strong", known ? `${bounded}%` : "—"), el("span", "전체 진행", "meta")); donut.append(center);
+  const center = el("div", undefined, "donut-center"); center.append(el("strong", known ? `${bounded}%` : "—"), el("span", label === "기본 분석 작업 진행률" ? "기본 작업" : "전체 진행", "meta")); donut.append(center);
   return donut;
 }
 

@@ -712,7 +712,15 @@ def test_v11_successor_attempts_do_not_change_base_work_fraction(
         hypothesis_id=None,
     )
     _save(store, identity, SimpleStage.STATIC_DONE)
-    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        output_refs=(
+            _ref("surface-index").model_copy(update={"content_hash": "b" * 64}),
+            _ref("surface-coverage").model_copy(update={"content_hash": "c" * 64}),
+        ),
+    )
     terminal = CandidateTerminal(
         status="PARTIAL",
         bundle_hash="a" * 64,
@@ -720,6 +728,10 @@ def test_v11_successor_attempts_do_not_change_base_work_fraction(
         decision_counts={},
         deep_counts={},
         hypothesis_count=0,
+        surface_index_hash="b" * 64,
+        surface_coverage_hash="c" * 64,
+        surface_counts={"COVERED": 0, "UNCOVERED": 0, "INSUFFICIENT": 1},
+        producer_finished=True,
         surface_proof_version=8,
     )
     projector = ProgressProjector(store)
@@ -729,32 +741,86 @@ def test_v11_successor_attempts_do_not_change_base_work_fraction(
         candidate_counts={},
         candidate_deep_counts={},
         candidate_terminal=terminal,
-        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 0},
-        surface_enrichment_status="RUNNING",
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+        surface_counts={
+            "TOTAL": 1,
+            "CONTEXT_RECORDS": 0,
+            "COVERED": 0,
+            "UNCOVERED": 0,
+            "INSUFFICIENT": 1,
+        },
+        surface_index_hash="b" * 64,
     )
+    interim_counts = {
+        "TOTAL": 1,
+        "CONTEXT_RECORDS": 0,
+        "BASE_COVERED": 0,
+        "BASE_UNCOVERED": 0,
+        "BASE_INSUFFICIENT": 1,
+    }
+    attempt_counts = {
+        "PENDING": 0,
+        "RUNNING": 1,
+        "RESOLVED": 0,
+        "STILL_HOLD": 0,
+        "ERROR": 0,
+    }
     after = projector.snapshot(
         identity.analysis_id,
         candidate_pipeline_version=2,
         candidate_counts={},
         candidate_deep_counts={},
         candidate_terminal=terminal,
-        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 0},
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+        surface_counts=interim_counts,
+        surface_index_hash="b" * 64,
         surface_enrichment_status="RUNNING",
-        child_attempt_counts={
-            "PENDING": 0,
-            "RUNNING": 1,
-            "RESOLVED": 0,
-            "STILL_HOLD": 0,
-            "ERROR": 0,
-        },
+        child_attempt_counts=attempt_counts,
     )
 
     assert after.completed_units == before.completed_units
     assert after.known_units == before.known_units
-    assert after.percent == before.percent
+    assert before.percent == after.percent == 100
     assert after.percentage_kind == "base_work_fraction"
+    assert before.phase_counts["surface"]["evaluated"] == 1
     assert "evaluated" not in after.phase_counts["surface"]
+    assert "covered" not in after.phase_counts["surface"]
     assert after.phase_counts["surface"]["child_revalidation_attempt_running"] == 1
+    without_ledger = projector.snapshot(
+        identity.analysis_id,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+        surface_counts=interim_counts,
+        surface_index_hash="b" * 64,
+        surface_enrichment_status="BLOCKED",
+    )
+    assert without_ledger.percent == before.percent == 100
+    assert without_ledger.status == "BLOCKED"
+    assert "evaluated" not in without_ledger.phase_counts["surface"]
+    assert "child_revalidation_attempts_unverified" not in without_ledger.phase_counts[
+        "surface"
+    ]
+    mismatched = projector.snapshot(
+        identity.analysis_id,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+        surface_counts={**interim_counts, "BASE_INSUFFICIENT": 0},
+        surface_index_hash="b" * 64,
+        surface_enrichment_status="RUNNING",
+        child_attempt_counts=attempt_counts,
+    )
+    assert mismatched.percent < 100
+    assert "evaluated" not in mismatched.phase_counts["surface"]
 
 
 def test_registered_hypotheses_without_checkpoints_expand_progress_denominator(

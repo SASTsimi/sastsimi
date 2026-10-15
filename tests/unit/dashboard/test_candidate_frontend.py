@@ -147,6 +147,8 @@ for (const expected of [
   "기본 분석 작업 진행률", "100%", "PARTIAL", "검토 종료 1/1",
   "증명된 경로 0/1", "근거 부족 1", "제보 가능을 뜻하지 않습니다",
 ]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+assert.ok(shown.includes("기본 작업"), shown);
+assert.ok(!shown.includes("전체 진행"), shown);
 const baseListText = text(vm.runInContext("analysisButton(state.detail)", context));
 assert.ok(baseListText.includes("기본 분석 작업 진행률"), baseListText);
 vm.runInContext("renderAnalysisList([state.detail])", context);

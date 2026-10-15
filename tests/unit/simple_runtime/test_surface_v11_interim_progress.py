@@ -206,6 +206,21 @@ def test_cli_and_dashboard_readers_project_interim_ledger_separately(
         lambda *_args: counts,
         raising=False,
     )
+    base_coverage = {
+        "COVERED": 1,
+        "UNCOVERED": 0,
+        "INSUFFICIENT": 1,
+        "RAW_STATIC_GAP_COUNT": 0,
+        "EFFECTIVE_PYTHON_GAP_COUNT": 0,
+    }
+    monkeypatch.setattr(
+        "sastsimi.composition.simple_runtime_composition.verified_v11_predecessor_counts",
+        lambda *_args: base_coverage,
+    )
+    monkeypatch.setattr(
+        "sastsimi.dashboard.query.verified_v11_predecessor_counts",
+        lambda *_args: base_coverage,
+    )
 
     app = object.__new__(PublicSimpleRuntimeApplication)
     app._store = case.store
@@ -220,3 +235,63 @@ def test_cli_and_dashboard_readers_project_interim_ledger_separately(
     for projected in (cli_counts, dashboard_counts):
         assert projected["CHILD_REVALIDATION_ATTEMPT_RUNNING_COUNT"] == 1
         assert "COVERED" not in projected
+        assert projected["BASE_COVERED"] == 1
+        assert projected["BASE_UNCOVERED"] == 0
+        assert projected["BASE_INSUFFICIENT"] == 1
+
+
+def test_readers_keep_verified_base_when_v11_attempt_ledger_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bad successor ledger does not erase independent base-work evidence."""
+
+    data, checkpoint, terminal = _saved_v4_case(tmp_path, old_hold=True)
+    case = data["case"]
+    run = case.store.require_analysis_run(case.identity.analysis_id)
+    assert run.static_coverage_ref is not None
+    run = run.model_copy(
+        update={
+            "candidate_terminal": terminal.model_copy(
+                update={"surface_proof_version": 8, "status": "PARTIAL"}
+            ),
+            "surface_enrichment_v11_plan_ref": run.static_coverage_ref,
+            "surface_enrichment_status": "BLOCKED",
+        }
+    )
+
+    def invalid_ledger(*_args: object) -> dict[str, int]:
+        raise ValueError("ledger unavailable")
+
+    for module in (
+        "sastsimi.composition.simple_runtime_composition",
+        "sastsimi.dashboard.query",
+    ):
+        monkeypatch.setattr(
+            f"{module}.interim_child_attempt_counts_v11", invalid_ledger
+        )
+        monkeypatch.setattr(
+            f"{module}.verified_v11_predecessor_counts",
+            lambda *_args: {
+                "COVERED": 1,
+                "UNCOVERED": 0,
+                "INSUFFICIENT": 1,
+                "RAW_STATIC_GAP_COUNT": 0,
+                "EFFECTIVE_PYTHON_GAP_COUNT": 0,
+            },
+            raising=False,
+        )
+    app = object.__new__(PublicSimpleRuntimeApplication)
+    app._store = case.store
+    app._config = cast(UserConfig, SimpleNamespace(data_dir=tmp_path / "data"))
+    cli_counts, _ = app._surface_metrics(
+        run, case.identity, case.index.scope_fingerprint
+    )
+    dashboard_counts, _ = DashboardQuery(tmp_path / "data")._surface_metrics(
+        run, [checkpoint]
+    )
+    for projected in (cli_counts, dashboard_counts):
+        assert projected is not None
+        assert projected["BASE_COVERED"] == 1
+        assert projected["BASE_INSUFFICIENT"] == 1
+        assert "COVERED" not in projected
+        assert "CHILD_REVALIDATION_ATTEMPT_PENDING_COUNT" not in projected

@@ -341,6 +341,7 @@ class ProgressProjector:
             and candidate_terminal.hypothesis_count == registered_hypotheses
         )
         surface_phase: dict[str, int] | None = None
+        base_proof_counts = False
         if candidate_pipeline_version >= 2 and surface_counts is not None:
             if any(
                 not isinstance(key, str)
@@ -366,6 +367,11 @@ class ProgressProjector:
                     "CHILD_REVALIDATION_ATTEMPT_RESOLVED_COUNT",
                     "CHILD_REVALIDATION_ATTEMPT_STILL_HOLD_COUNT",
                     "CHILD_REVALIDATION_ATTEMPT_ERROR_COUNT",
+                    "BASE_COVERED",
+                    "BASE_UNCOVERED",
+                    "BASE_INSUFFICIENT",
+                    "BASE_RAW_STATIC_GAP_COUNT",
+                    "BASE_EFFECTIVE_PYTHON_GAP_COUNT",
                 }
                 and not (
                     key.startswith(SURFACE_REASON_CODE_PREFIX)
@@ -375,6 +381,18 @@ class ProgressProjector:
                 or type(value) is not int
                 or value < 0
                 for key, value in surface_counts.items()
+            ):
+                raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
+            base_proof_counts = any(key.startswith("BASE_") for key in surface_counts)
+            if base_proof_counts and (
+                candidate_terminal is None
+                or candidate_terminal.surface_proof_version != 8
+                or surface_enrichment_status not in {"RUNNING", "BLOCKED"}
+                or any(
+                    f"BASE_{status}" not in surface_counts
+                    for status in _SURFACE_STATUSES
+                )
+                or any(status in surface_counts for status in _SURFACE_STATUSES)
             ):
                 raise ValueError("ANALYSIS_PROGRESS_SURFACE_COUNTS_INVALID")
             reason_counts = {
@@ -480,7 +498,6 @@ class ProgressProjector:
             )
             terminal_valid = bool(
                 terminal_valid
-                and child_attempt_counts is None
                 and candidate_terminal is not None
                 and surface_phase is not None
                 and surface_counts is not None
@@ -494,7 +511,10 @@ class ProgressProjector:
                 and getattr(candidate_terminal, "pending_child_count", -1) == 0
                 and terminal_surface_total == surface_phase["total"]
                 and all(
-                    surface_counts.get(status) == terminal_surface_counts.get(status, 0)
+                    surface_counts.get(
+                        f"BASE_{status}" if base_proof_counts else status
+                    )
+                    == terminal_surface_counts.get(status, 0)
                     for status in _SURFACE_STATUSES
                 )
                 and (
@@ -518,8 +538,18 @@ class ProgressProjector:
                             or candidate_terminal.surface_proof_version
                             in (2, 3, 4, 5, 6, 7, 8, 9)
                             and surface_counts is not None
-                            and surface_counts.get("EFFECTIVE_PYTHON_GAP_COUNT") == 0
-                            and "RAW_STATIC_GAP_COUNT" in surface_counts
+                            and surface_counts.get(
+                                "BASE_EFFECTIVE_PYTHON_GAP_COUNT"
+                                if base_proof_counts
+                                else "EFFECTIVE_PYTHON_GAP_COUNT"
+                            )
+                            == 0
+                            and (
+                                "BASE_RAW_STATIC_GAP_COUNT"
+                                if base_proof_counts
+                                else "RAW_STATIC_GAP_COUNT"
+                            )
+                            in surface_counts
                             and candidate_terminal.scope_certificate_hash is not None
                         )
                         and terminal_surface_counts.get("UNCOVERED", 0) == 0
@@ -567,15 +597,20 @@ class ProgressProjector:
                 covered = terminal_surface_counts.get("COVERED", 0)
                 evaluated = covered + terminal_surface_counts.get("INSUFFICIENT", 0)
                 completed += evaluated
-                surface_phase.update(
-                    {
-                        "completed": covered,
-                        "covered": covered,
-                        "evaluated": evaluated,
-                        "uncovered": terminal_surface_counts.get("UNCOVERED", 0),
-                        "insufficient": terminal_surface_counts.get("INSUFFICIENT", 0),
-                    }
-                )
+                # A pinned V11 attempt keeps the verified base-work credit, but its
+                # predecessor coverage must not appear as current coverage.
+                if not base_proof_counts:
+                    surface_phase.update(
+                        {
+                            "completed": covered,
+                            "covered": covered,
+                            "evaluated": evaluated,
+                            "uncovered": terminal_surface_counts.get("UNCOVERED", 0),
+                            "insufficient": terminal_surface_counts.get(
+                                "INSUFFICIENT", 0
+                            ),
+                        }
+                    )
         if candidate_mode and candidate_counts is not None:
             known += candidate_total + deep_eligible
             completed += (

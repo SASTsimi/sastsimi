@@ -197,6 +197,99 @@ def test_v10_read_replays_parent_and_successor_from_pinned_source(
     )
 
 
+def test_v11_interim_replays_complete_frozen_v10_without_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """V11's provisional PARTIAL claim cannot erase verified V10 base work."""
+
+    from sastsimi.simple_runtime.surface_child_evidence_v11 import (
+        verified_v11_predecessor_counts,
+    )
+
+    case = _saved_v10_case(tmp_path, monkeypatch)
+    original = case["coverage"]
+    complete = replace(
+        original,
+        surfaces=tuple(
+            replace(row, coverage_status="COVERED", unresolved_reason_codes=())
+            for row in original.surfaces
+        ),
+        effective_python_gaps=(),
+        missing_v9_parts=(),
+        remaining_route_gap_events=(),
+    )
+    assert complete.complete
+    artifacts = case["artifacts"]
+    coverage_ref = artifacts.put_json(complete.to_json())
+    store = case["store"]
+    frozen_terminal = case["terminal"].model_copy(
+        update={
+            "status": "COMPLETE",
+            "surface_coverage_hash": coverage_ref.content_hash,
+            "surface_counts": {"COVERED": 1, "UNCOVERED": 0, "INSUFFICIENT": 0},
+        }
+    )
+    frozen_root = store.get().model_copy(
+        update={"output_refs": (store.get().output_refs[0], coverage_ref)}
+    )
+    store.get = lambda *_args: frozen_root
+    monkeypatch.setattr(
+        "sastsimi.simple_runtime.surface_coverage_v8_read.evaluate_surface_coverage_v8",
+        lambda *_args, **_kwargs: complete,
+    )
+    v10_plan_ref = store.run.surface_enrichment_v10_plan_ref
+    assert v10_plan_ref is not None
+    v10_plan = json.loads(artifacts.read(v10_plan_ref))
+    plan_ref = artifacts.put_json(
+        {
+            "kind": "simple_surface_enrichment_plan_v11",
+            "analysis_id": case["identity"].analysis_id,
+            "workspace_id": case["identity"].workspace_id,
+            "commit_id": case["identity"].commit_id,
+            "scope_fingerprint": case["index"].scope_fingerprint,
+            "static_bundle_hash": frozen_terminal.bundle_hash,
+            "index_hash": frozen_terminal.surface_index_hash,
+            "v10_plan_ref": v10_plan_ref.model_dump(mode="json"),
+            "v10_coverage_ref": coverage_ref.model_dump(mode="json"),
+            "v10_terminal": frozen_terminal.model_dump(mode="json"),
+            "v10_root": frozen_root.model_dump(mode="json"),
+            "v9_progress_hash": v10_plan["v9_progress_hash"],
+            "child_snapshot_hash": "f" * 64,
+            "targets": [],
+        }
+    )
+    store.run = store.run.model_copy(
+        update={
+            "candidate_terminal": frozen_terminal.model_copy(
+                update={"status": "PARTIAL"}
+            ),
+            "surface_enrichment_v11_plan_ref": plan_ref,
+            "surface_enrichment_status": "RUNNING",
+        }
+    )
+    assert (
+        verified_surface_coverage_counts(
+            complete.to_json(),
+            case["index"],
+            store.run.candidate_terminal,
+            artifacts=artifacts,
+            coverage_ref=coverage_ref,
+            store=cast(SimpleCheckpointStore, store),
+        )
+        is None
+    )
+    counts = verified_v11_predecessor_counts(
+        store.run,
+        case["identity"],
+        case["index"],
+        frozen_terminal.surface_index_hash,
+        cast(SimpleCheckpointStore, store),
+        artifacts,
+    )
+    assert counts["COVERED"] == 1
+    assert counts["INSUFFICIENT"] == 0
+
+
 def test_v10_read_rejects_changed_v9_progress_after_successor_promotion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
