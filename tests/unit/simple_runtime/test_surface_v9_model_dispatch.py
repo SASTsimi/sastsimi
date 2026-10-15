@@ -120,10 +120,17 @@ def test_v9_dispatch_precedes_v10_without_reopening_v8_parent(
     )
     app = object.__new__(SimpleAnalysisApplication)
     app._data_dir = tmp_path
+
+    def clear_claims(root: CheckpointIdentity) -> None:
+        assert root == identity
+
     monkeypatch.setattr(
         app,
         "_store",
-        SimpleNamespace(require_analysis_run=lambda _analysis_id: promoted),
+        SimpleNamespace(
+            require_analysis_run=lambda _analysis_id: promoted,
+            clear_stale_hypothesis_claims=clear_claims,
+        ),
         raising=False,
     )
     expected = SimpleAnalysisOutcome(

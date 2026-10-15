@@ -71,6 +71,10 @@ def test_completed_v9_resume_dispatches_successor_without_repeating_v9(
     )
 
     class _Store:
+        def clear_stale_hypothesis_claims(self, root: CheckpointIdentity) -> None:
+            assert root == identity
+            calls.append("clear-claims")
+
         def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
             assert analysis_id == run.analysis_id
             return run
@@ -102,7 +106,7 @@ def test_completed_v9_resume_dispatches_successor_without_repeating_v9(
     outcome = asyncio.run(app._run_candidate_pipeline(run, identity, static))
 
     assert outcome == result
-    assert calls == ["run-v10"]
+    assert calls == ["clear-claims", "run-v10"]
 
 
 def test_unfinished_v9_resume_runs_successor_only_after_v9_completion(
@@ -136,6 +140,10 @@ def test_unfinished_v9_resume_runs_successor_only_after_v9_completion(
     class _Store:
         current = unfinished
 
+        def clear_stale_hypothesis_claims(self, root: CheckpointIdentity) -> None:
+            assert root == identity
+            calls.append("clear-claims")
+
         def require_analysis_run(self, _analysis_id: str) -> SimpleAnalysisRun:
             return self.current
 
@@ -168,7 +176,7 @@ def test_unfinished_v9_resume_runs_successor_only_after_v9_completion(
     assert (
         asyncio.run(app._run_candidate_pipeline(unfinished, identity, static)) == result
     )
-    assert calls == ["saved-v9", "run-v9", "run-v10"]
+    assert calls == ["clear-claims", "saved-v9", "run-v9", "run-v10"]
 
 
 def test_v10_failure_after_v9_is_reported_as_v10(
@@ -193,6 +201,9 @@ def test_v10_failure_after_v9_is_reported_as_v10(
     app._data_dir = tmp_path
 
     class _Store:
+        def clear_stale_hypothesis_claims(self, root: CheckpointIdentity) -> None:
+            assert root == identity
+
         def require_analysis_run(self, _analysis_id: str) -> SimpleAnalysisRun:
             return completed
 

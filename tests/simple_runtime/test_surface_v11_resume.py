@@ -65,6 +65,13 @@ def test_pinned_v11_resume_does_not_replay_v10(
     app = object.__new__(SimpleAnalysisApplication)
     app._data_dir = tmp_path
     calls: list[str] = []
+
+    class Store:
+        def clear_stale_hypothesis_claims(self, root: CheckpointIdentity) -> None:
+            assert root == identity
+            calls.append("clear-claims")
+
+    app._store = cast(SimpleCheckpointStore, Store())
     expected = SimpleAnalysisOutcome(
         identity=identity,
         display_analysis_id=run.display_analysis_id,
@@ -90,7 +97,7 @@ def test_pinned_v11_resume_does_not_replay_v10(
     )
 
     assert asyncio.run(app._run_candidate_pipeline(run, identity, static)) == expected
-    assert calls == ["v11"]
+    assert calls == ["clear-claims", "v11"]
 
 
 def test_blocked_v11_preflight_reactivates_only_through_store_cas(
@@ -129,6 +136,10 @@ def test_blocked_v11_preflight_reactivates_only_through_store_cas(
     calls: list[str] = []
 
     class Store:
+        def clear_stale_hypothesis_claims(self, root: CheckpointIdentity) -> None:
+            assert root == identity
+            calls.append("clear-claims")
+
         def resume_surface_enrichment_v11_if_safe(
             self, run: SimpleAnalysisRun, ref: object
         ) -> bool:
@@ -165,7 +176,7 @@ def test_blocked_v11_preflight_reactivates_only_through_store_cas(
     assert (
         asyncio.run(app._run_candidate_pipeline(blocked, identity, static)) == expected
     )
-    assert calls == ["cas", "v11"]
+    assert calls == ["clear-claims", "cas", "v11"]
 
 
 def test_v11_failure_uses_latest_run_not_stale_pre_promotion_snapshot(
@@ -193,6 +204,9 @@ def test_v11_failure_uses_latest_run_not_stale_pre_promotion_snapshot(
     promoted = old.model_copy(update={"surface_enrichment_status": "PARTIAL"})
 
     class Store:
+        def clear_stale_hypothesis_claims(self, root: CheckpointIdentity) -> None:
+            assert root == identity
+
         def require_analysis_run(self, analysis_id: str) -> SimpleAnalysisRun:
             assert analysis_id == identity.analysis_id
             return promoted

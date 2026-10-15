@@ -18,7 +18,10 @@ import pytest
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.dashboard.read_model import INDEXED_TABS, DashboardReadModel
-from sastsimi.simple_runtime.application import StaticBootstrapResult
+from sastsimi.simple_runtime.application import (
+    SimpleAnalysisOutcome,
+    StaticBootstrapResult,
+)
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import SurfaceProposalResult
 from sastsimi.simple_runtime.models import (
@@ -218,6 +221,49 @@ class _DeterministicAgent:
             reviewed_parts=frozenset(result["reviewed_parts"]),
             evidence_locations=tuple(result["evidence_locations"]),
         )
+
+
+@pytest.mark.asyncio
+async def test_v9_resume_releases_old_child_claims_before_draining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    app = case["app"]
+    store = case["store"]
+    identity = case["identity"]
+    artifacts = case["artifacts"]
+    app._prepare_v9_surface_enrichment(case["run"], identity, artifacts)
+    pinned = store.require_analysis_run(identity.analysis_id)
+    plan, contexts = app._saved_surface_enrichment_v9(pinned, identity, artifacts)
+    agent = _DeterministicAgent(artifacts)
+    monkeypatch.setattr(app, "_candidate_hypotheses", agent)
+    assert store.claim_hypothesis(identity, "old-child", "interrupted-turn")
+    drained = 0
+
+    async def check_claims(*_args: object, **_kwargs: object) -> None:
+        nonlocal drained
+        drained += 1
+        if drained == 1:
+            assert store.claim_hypothesis(identity, "old-child", "resume-turn")
+            store.release_hypothesis_claim(identity, "old-child", "resume-turn")
+        return None
+
+    monkeypatch.setattr(app, "_drain_candidate_children", check_claims)
+
+    async def finish_v10(*_args: object) -> SimpleAnalysisOutcome:
+        return SimpleAnalysisOutcome(
+            identity=identity,
+            display_analysis_id=pinned.display_analysis_id,
+            status="PARTIAL",
+            current_stage=SimpleStage.HYPOTHESIS_DONE,
+        )
+
+    monkeypatch.setattr(app, "_run_v10_surface_enrichment", finish_v10)
+    outcome = await app._run_candidate_pipeline(pinned, identity, case["static"])
+
+    assert outcome.status == "PARTIAL"
+    assert drained == len(contexts)
+    assert agent.calls == len(contexts)
 
 
 @pytest.mark.asyncio

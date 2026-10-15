@@ -4924,6 +4924,11 @@ class SimpleAnalysisApplication:
         identity: CheckpointIdentity,
         static: StaticBootstrapResult,
     ) -> SimpleAnalysisOutcome:
+        # analyze/resume owns the per-analysis lease here. Resume has already
+        # rejected unresolved Codex calls and unconfirmed process cleanup.
+        # Clear claims from interrupted turns before *any* successor route can
+        # drain children; v9/v10/v11 bypass the ordinary candidate batch path.
+        self._store.clear_stale_hypothesis_claims(identity)
         if run.surface_enrichment_v11_plan_ref is not None:
             try:
                 if run.surface_enrichment_status == "BLOCKED":
@@ -7808,7 +7813,6 @@ class SimpleAnalysisApplication:
             )
         outcomes = self._store.list_candidate_batch_outcomes(identity, scope)
         progress = self._store.list_candidate_batch_progress(identity, scope)
-        self._store.clear_stale_hypothesis_claims(identity)
         self._recover_candidate_chains(run, identity, static)
         self._invalidate_stale_report_coverage(run, identity)
         attempted_in_turn: set[str] = set()
