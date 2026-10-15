@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import sqlite3
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -11,6 +16,8 @@ from typing import Any
 import pytest
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.dashboard.read_model import INDEXED_TABS, DashboardReadModel
 from sastsimi.simple_runtime.application import StaticBootstrapResult
 from sastsimi.simple_runtime.artifacts import SimpleArtifactRepository
 from sastsimi.simple_runtime.bootstrap_stages import SurfaceProposalResult
@@ -285,6 +292,293 @@ async def test_v9_pin_review_terminal_and_resume_reuses_completed_parts(
         )
         == saved_progress
     )
+
+
+@pytest.mark.asyncio
+async def test_v9_projects_once_per_context_and_rebuilds_dirty_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    app = case["app"]
+    store = case["store"]
+    identity = case["identity"]
+    artifacts = case["artifacts"]
+    app._prepare_v9_surface_enrichment(case["run"], identity, artifacts)
+    pinned = store.require_analysis_run(identity.analysis_id)
+    plan, contexts = app._saved_surface_enrichment_v9(pinned, identity, artifacts)
+    assert contexts
+    agent = _DeterministicAgent(artifacts)
+    monkeypatch.setattr(app, "_candidate_hypotheses", agent)
+
+    data_dir = store.database_path.parent.parent
+    model = DashboardReadModel(data_dir)
+    model.initialize()
+    empty = {tab: ([], {"tab": tab}) for tab in INDEXED_TABS}
+    model.replace(identity.analysis_id, "before", empty)
+    projected: list[str] = []
+
+    def project(_data_dir: Path, analysis_id: str) -> None:
+        projected.append(analysis_id)
+        model.replace(analysis_id, f"after-{len(projected)}", empty)
+
+    store._artifact_data_dir = data_dir
+    store._post_commit_projection = project
+    separate = SimpleCheckpointStore(
+        store.database_path,
+        artifact_data_dir=data_dir,
+        post_commit_projection=project,
+    )
+    original_scope = store.defer_dashboard_projection
+    scoped_parts: list[int] = []
+
+    @contextmanager
+    def counted_scope(analysis_id: str) -> Iterator[None]:
+        before = len(projected)
+        with original_scope(analysis_id):
+            yield
+            assert len(projected) == before
+        assert len(projected) == before + 1
+        scoped_parts.append(before)
+
+    monkeypatch.setattr(store, "defer_dashboard_projection", counted_scope)
+    attempt_ref = artifacts.put_json({"kind": "attempt"})
+    drained_count = 0
+
+    async def record_children(*_args: object, **_kwargs: object) -> None:
+        nonlocal drained_count
+        drained_count += 1
+        for ordinal in (1, 2):
+            separate.record_llm_attempt(
+                attempt_id=f"batched-{drained_count}-{ordinal}",
+                analysis_id=identity.analysis_id,
+                agent="synthetic-child",
+                model="test-model",
+                attempt_number=1,
+                status="SUCCEEDED",
+                elapsed_ms=1,
+                input_tokens=1,
+                output_tokens=1,
+                cost_cents=None,
+                artifact_ref=attempt_ref,
+            )
+        with sqlite3.connect(store.database_path) as connection:
+            assert (
+                connection.execute(
+                    "SELECT status FROM dashboard_index_state WHERE analysis_id=?",
+                    (identity.analysis_id,),
+                ).fetchone()[0]
+                == "INCOMPLETE"
+            )
+        return None
+
+    monkeypatch.setattr(app, "_drain_candidate_children", record_children)
+    first = await app._run_v9_surface_enrichment(
+        pinned, identity, case["static"], artifacts, plan, contexts
+    )
+    assert first.status == "COMPLETE"
+    assert len(scoped_parts) == len(contexts)
+    assert agent.calls == len(contexts)
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM simple_llm_attempts "
+                "WHERE attempt_id LIKE 'batched-%'"
+            ).fetchone()[0]
+            == len(contexts) * 2
+        )
+
+    monkeypatch.setattr(store, "defer_dashboard_projection", original_scope)
+    model.mark_incomplete(identity.analysis_id, "resume-dirty", "TEST")
+
+    async def no_new_children(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(app, "_drain_candidate_children", no_new_children)
+    before_resume = len(projected)
+    final_run = store.require_analysis_run(identity.analysis_id)
+    second = await app._run_v9_surface_enrichment(
+        final_run, identity, case["static"], artifacts, plan, contexts
+    )
+    assert second.status == "COMPLETE"
+    assert len(projected) == before_resume + 1
+    assert agent.calls == len(contexts)
+
+
+@pytest.mark.asyncio
+async def test_v9_cancelled_proposal_keeps_committed_attempt_and_dirty_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    app = case["app"]
+    store = case["store"]
+    identity = case["identity"]
+    artifacts = case["artifacts"]
+    app._prepare_v9_surface_enrichment(case["run"], identity, artifacts)
+    pinned = store.require_analysis_run(identity.analysis_id)
+    plan, contexts = app._saved_surface_enrichment_v9(pinned, identity, artifacts)
+    data_dir = store.database_path.parent.parent
+    model = DashboardReadModel(data_dir)
+    model.initialize()
+    empty = {tab: ([], {"tab": tab}) for tab in INDEXED_TABS}
+    model.replace(identity.analysis_id, "before", empty)
+    fail_projection = False
+    projected = 0
+
+    def project(_data_dir: Path, analysis_id: str) -> None:
+        nonlocal projected
+        projected += 1
+        if fail_projection:
+            raise RuntimeError("simulated projector failure")
+        model.replace(analysis_id, f"projected-{projected}", empty)
+
+    store._artifact_data_dir = data_dir
+    store._post_commit_projection = project
+    separate = SimpleCheckpointStore(
+        store.database_path,
+        artifact_data_dir=data_dir,
+        post_commit_projection=project,
+    )
+    attempt_ref = artifacts.put_json({"kind": "attempt"})
+
+    class CancellingAgent:
+        calls = 0
+
+        async def propose_surface(self, *_args: object) -> None:
+            nonlocal fail_projection
+            self.calls += 1
+            separate.record_llm_attempt(
+                attempt_id="cancelled-proposal-attempt",
+                analysis_id=identity.analysis_id,
+                agent="hypothesis_surface",
+                model="test-model",
+                attempt_number=1,
+                status="SUCCEEDED",
+                elapsed_ms=1,
+                input_tokens=1,
+                output_tokens=1,
+                cost_cents=None,
+                artifact_ref=attempt_ref,
+            )
+            fail_projection = True
+            raise asyncio.CancelledError
+
+    agent = CancellingAgent()
+    monkeypatch.setattr(app, "_candidate_hypotheses", agent)
+    with pytest.raises(asyncio.CancelledError):
+        await app._run_v9_surface_enrichment(
+            pinned, identity, case["static"], artifacts, plan, contexts
+        )
+    assert agent.calls == 1
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM simple_llm_attempts WHERE attempt_id=?",
+                ("cancelled-proposal-attempt",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+            == "INCOMPLETE"
+        )
+    assert projected == 2  # start-of-run update, then one failed context-exit flush
+    fail_projection = False
+    with store.defer_dashboard_projection(identity.analysis_id):
+        pass
+    assert projected == 3
+    assert agent.calls == 1
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT status FROM dashboard_index_state WHERE analysis_id=?",
+                (identity.analysis_id,),
+            ).fetchone()[0]
+            == "READY"
+        )
+
+
+@pytest.mark.asyncio
+async def test_v9_bounded_projection_count_and_wall_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    measurements: dict[str, tuple[int, int, float]] = {}
+    for mode in ("unbatched", "batched"):
+        root = tmp_path / mode
+        root.mkdir()
+        case = _case(root, monkeypatch)
+        app = case["app"]
+        store = case["store"]
+        identity = case["identity"]
+        artifacts = case["artifacts"]
+        app._prepare_v9_surface_enrichment(case["run"], identity, artifacts)
+        pinned = store.require_analysis_run(identity.analysis_id)
+        plan, contexts = app._saved_surface_enrichment_v9(pinned, identity, artifacts)
+        monkeypatch.setattr(
+            app, "_candidate_hypotheses", _DeterministicAgent(artifacts)
+        )
+        data_dir = store.database_path.parent.parent
+        calls = 0
+
+        def project(_data_dir: Path, _analysis_id: str) -> None:
+            nonlocal calls
+            calls += 1
+            time.sleep(0.005)
+
+        store._artifact_data_dir = data_dir
+        store._post_commit_projection = project
+        separate = SimpleCheckpointStore(
+            store.database_path,
+            artifact_data_dir=data_dir,
+            post_commit_projection=project,
+        )
+        if mode == "unbatched":
+            monkeypatch.setattr(
+                store, "defer_dashboard_projection", lambda _id: nullcontext()
+            )
+        attempt_ref = artifacts.put_json({"kind": "attempt"})
+        drain_count = 0
+
+        async def record_children(
+            *_args: object,
+            separate_store: SimpleCheckpointStore = separate,
+            analysis_id: str = identity.analysis_id,
+            ref: StoredDataRef = attempt_ref,
+            **_kwargs: object,
+        ) -> None:
+            nonlocal drain_count
+            drain_count += 1
+            for ordinal in (1, 2):
+                separate_store.record_llm_attempt(
+                    attempt_id=f"benchmark-{drain_count}-{ordinal}",
+                    analysis_id=analysis_id,
+                    agent="synthetic-child",
+                    model="test-model",
+                    attempt_number=1,
+                    status="SUCCEEDED",
+                    elapsed_ms=1,
+                    input_tokens=1,
+                    output_tokens=1,
+                    cost_cents=None,
+                    artifact_ref=ref,
+                )
+            return None
+
+        monkeypatch.setattr(app, "_drain_candidate_children", record_children)
+        started = time.perf_counter()
+        outcome = await app._run_v9_surface_enrichment(
+            pinned, identity, case["static"], artifacts, plan, contexts
+        )
+        assert outcome.status == "COMPLETE"
+        measurements[mode] = (len(contexts), calls, time.perf_counter() - started)
+
+    unbatched = measurements["unbatched"]
+    batched = measurements["batched"]
+    assert unbatched[0] == batched[0]
+    assert unbatched[1] - batched[1] == 2 * len(contexts)
+    print(f"V9 bounded projection benchmark: {measurements}")
 
 
 @pytest.mark.asyncio

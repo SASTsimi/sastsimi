@@ -5945,26 +5945,108 @@ class SimpleAnalysisApplication:
         attempted: set[str] = set()
         turn_id = uuid4().hex
         for context in contexts:
-            key = (context.surface_id, context.context_id)
-            if key not in completed:
-                if terminal.surface_proof_version == 7:
-                    raise ValueError("SURFACE_ENRICHMENT_V9_TERMINAL_INCOMPLETE")
-                pending = self._store.list_incomplete_hypotheses(
-                    identity, limit=self._max_pending_candidate_children + 1
-                )
-                if len(pending) + 4 > self._max_pending_candidate_children:
-                    return self._v4_failure_outcome(
-                        run,
-                        SimpleAnalysisOutcome(
-                            identity=identity,
-                            display_analysis_id=run.display_analysis_id,
-                            status="BLOCKED",
-                            current_stage=SimpleStage.HYPOTHESIS_DONE,
-                            error_code="CANDIDATE_BACKPRESSURE_BLOCKED",
-                        ),
+            with self._store.defer_dashboard_projection(identity.analysis_id):
+                key = (context.surface_id, context.context_id)
+                if key not in completed:
+                    if terminal.surface_proof_version == 7:
+                        raise ValueError("SURFACE_ENRICHMENT_V9_TERMINAL_INCOMPLETE")
+                    pending = self._store.list_incomplete_hypotheses(
+                        identity, limit=self._max_pending_candidate_children + 1
                     )
-                result = await propose_surface(identity, static, context)
-                if isinstance(result, StageFailure):
+                    if len(pending) + 4 > self._max_pending_candidate_children:
+                        return self._v4_failure_outcome(
+                            run,
+                            SimpleAnalysisOutcome(
+                                identity=identity,
+                                display_analysis_id=run.display_analysis_id,
+                                status="BLOCKED",
+                                current_stage=SimpleStage.HYPOTHESIS_DONE,
+                                error_code="CANDIDATE_BACKPRESSURE_BLOCKED",
+                            ),
+                        )
+                    result = await propose_surface(identity, static, context)
+                    if isinstance(result, StageFailure):
+                        return self._v4_failure_outcome(
+                            run,
+                            SimpleAnalysisOutcome(
+                                identity=identity,
+                                display_analysis_id=run.display_analysis_id,
+                                status=(
+                                    "PAUSED"
+                                    if result.code in BUDGET_PAUSE_CODES
+                                    else "BLOCKED"
+                                ),
+                                current_stage=SimpleStage.HYPOTHESIS_DONE,
+                                error_code=(
+                                    "HYPOTHESIS_SURFACE_PROVIDER_FAILED"
+                                    if result.code == "FAILED"
+                                    else result.code
+                                ),
+                            ),
+                        )
+                    raw = json.loads(artifacts.read(result.result_ref))
+                    if not isinstance(raw, dict) or raw.get("status") != result.status:
+                        raise ValueError("SURFACE_EXPLORATION_RESULT_INVALID")
+                    part = context_parts[key][1]
+                    checked = validate_saved_v9_result(
+                        part,
+                        raw,
+                        tuple(seed.hypothesis_id for seed in result.seeds),
+                    )
+                    registrations: list[tuple[str, StoredDataRef, StageCheckpoint]] = []
+                    for seed in result.seeds:
+                        self._surface_proposal_valid(
+                            artifacts,
+                            identity,
+                            context,
+                            static,
+                            result.result_ref,
+                            seed.hypothesis_id,
+                            seed.proposal_ref,
+                        )
+                        artifacts.prompt_context_strict(
+                            (seed.proposal_ref, context.context_ref)
+                        )
+                        inputs = (seed.proposal_ref, context.context_ref)
+                        registrations.append(
+                            (
+                                seed.hypothesis_id,
+                                seed.proposal_ref,
+                                StageCheckpoint(
+                                    identity=identity.model_copy(
+                                        update={"hypothesis_id": seed.hypothesis_id}
+                                    ),
+                                    stage=SimpleStage.PRO_CON_DONE,
+                                    status=StageStatus.PENDING,
+                                    input_refs=inputs,
+                                    input_hash=input_reference_hash(inputs),
+                                ),
+                            )
+                        )
+                    self._store.commit_surface_exploration(
+                        identity,
+                        index.scope_fingerprint,
+                        context.surface_id,
+                        context.context_id,
+                        static_bundle_hash=static.static_bundle_ref.content_hash,
+                        index_hash=index_ref.content_hash,
+                        context_hash=context.context_hash,
+                        source_sha256=context.source_sha256,
+                        status=result.status,
+                        result_ref=result.result_ref,
+                        registrations=registrations,
+                        proposal_version=9,
+                    )
+                    completed[key] = checked
+                drained = await self._drain_candidate_children(
+                    run,
+                    identity,
+                    static,
+                    attempted_in_turn=attempted,
+                    turn_id=turn_id,
+                    max_runnable=self._max_pending_candidate_children,
+                )
+                if drained is not None:
                     return self._v4_failure_outcome(
                         run,
                         SimpleAnalysisOutcome(
@@ -5972,98 +6054,17 @@ class SimpleAnalysisApplication:
                             display_analysis_id=run.display_analysis_id,
                             status=(
                                 "PAUSED"
-                                if result.code in BUDGET_PAUSE_CODES
+                                if drained.error_code in BUDGET_PAUSE_CODES
+                                else "FAILED"
+                                if drained.status is StageStatus.FAILED
                                 else "BLOCKED"
                             ),
-                            current_stage=SimpleStage.HYPOTHESIS_DONE,
-                            error_code=(
-                                "HYPOTHESIS_SURFACE_PROVIDER_FAILED"
-                                if result.code == "FAILED"
-                                else result.code
-                            ),
+                            current_stage=drained.current_stage,
+                            error_code=drained.error_code,
+                            child_hypothesis_id=drained.hypothesis_id,
+                            child_attempt_id=drained.attempt_id,
                         ),
                     )
-                raw = json.loads(artifacts.read(result.result_ref))
-                if not isinstance(raw, dict) or raw.get("status") != result.status:
-                    raise ValueError("SURFACE_EXPLORATION_RESULT_INVALID")
-                part = context_parts[key][1]
-                checked = validate_saved_v9_result(
-                    part,
-                    raw,
-                    tuple(seed.hypothesis_id for seed in result.seeds),
-                )
-                registrations: list[tuple[str, StoredDataRef, StageCheckpoint]] = []
-                for seed in result.seeds:
-                    self._surface_proposal_valid(
-                        artifacts,
-                        identity,
-                        context,
-                        static,
-                        result.result_ref,
-                        seed.hypothesis_id,
-                        seed.proposal_ref,
-                    )
-                    artifacts.prompt_context_strict(
-                        (seed.proposal_ref, context.context_ref)
-                    )
-                    inputs = (seed.proposal_ref, context.context_ref)
-                    registrations.append(
-                        (
-                            seed.hypothesis_id,
-                            seed.proposal_ref,
-                            StageCheckpoint(
-                                identity=identity.model_copy(
-                                    update={"hypothesis_id": seed.hypothesis_id}
-                                ),
-                                stage=SimpleStage.PRO_CON_DONE,
-                                status=StageStatus.PENDING,
-                                input_refs=inputs,
-                                input_hash=input_reference_hash(inputs),
-                            ),
-                        )
-                    )
-                self._store.commit_surface_exploration(
-                    identity,
-                    index.scope_fingerprint,
-                    context.surface_id,
-                    context.context_id,
-                    static_bundle_hash=static.static_bundle_ref.content_hash,
-                    index_hash=index_ref.content_hash,
-                    context_hash=context.context_hash,
-                    source_sha256=context.source_sha256,
-                    status=result.status,
-                    result_ref=result.result_ref,
-                    registrations=registrations,
-                    proposal_version=9,
-                )
-                completed[key] = checked
-            drained = await self._drain_candidate_children(
-                run,
-                identity,
-                static,
-                attempted_in_turn=attempted,
-                turn_id=turn_id,
-                max_runnable=self._max_pending_candidate_children,
-            )
-            if drained is not None:
-                return self._v4_failure_outcome(
-                    run,
-                    SimpleAnalysisOutcome(
-                        identity=identity,
-                        display_analysis_id=run.display_analysis_id,
-                        status=(
-                            "PAUSED"
-                            if drained.error_code in BUDGET_PAUSE_CODES
-                            else "FAILED"
-                            if drained.status is StageStatus.FAILED
-                            else "BLOCKED"
-                        ),
-                        current_stage=drained.current_stage,
-                        error_code=drained.error_code,
-                        child_hypothesis_id=drained.hypothesis_id,
-                        child_attempt_id=drained.attempt_id,
-                    ),
-                )
         counts = self._store.candidate_counts(identity, index.scope_fingerprint)
         deep = self._store.candidate_deep_counts(identity, index.scope_fingerprint)
         pending_candidates = sum(counts.get(name, 0) for name in ("PENDING", "ERROR"))
