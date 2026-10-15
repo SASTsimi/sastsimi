@@ -296,18 +296,93 @@ class DashboardReadModel:
         except (OSError, sqlite3.Error):
             pass
 
+    def mark_incomplete_if_current(
+        self, analysis_id: str, expected_state_marker: str | None, error: str
+    ) -> bool:
+        """Record a failed scan only while its original dirty generation exists."""
+        with self._connect(True) as connection:
+            if not self.schema_present(connection):
+                return False
+            if expected_state_marker is None:
+                changed = connection.execute(
+                    """INSERT OR IGNORE INTO dashboard_index_state
+                    (analysis_id,projection_version,source_marker,status,last_error,indexed_at)
+                    VALUES (?,?,'unknown','INCOMPLETE',?,?)""",
+                    (analysis_id, VERSION, error[:1000], datetime.now(UTC).isoformat()),
+                ).rowcount
+            else:
+                changed = connection.execute(
+                    """UPDATE dashboard_index_state
+                    SET last_error=?,indexed_at=?
+                    WHERE analysis_id=? AND status='INCOMPLETE' AND source_marker=?""",
+                    (
+                        error[:1000],
+                        datetime.now(UTC).isoformat(),
+                        analysis_id,
+                        expected_state_marker,
+                    ),
+                ).rowcount
+            return changed == 1
+
     def replace(
         self,
         analysis_id: str,
         marker: str,
         pages: dict[str, tuple[list[dict[str, object]], dict[str, object]]],
     ) -> dict[str, int]:
+        result = self._replace(analysis_id, marker, pages)
+        assert result is not None
+        return result
+
+    def replace_if_current(
+        self,
+        analysis_id: str,
+        marker: str,
+        pages: dict[str, tuple[list[dict[str, object]], dict[str, object]]],
+        *,
+        guard: sqlite3.Connection,
+        expected_data_version: int,
+        expected_state_marker: str | None,
+    ) -> dict[str, int] | None:
+        return self._replace(
+            analysis_id,
+            marker,
+            pages,
+            guard=guard,
+            expected_data_version=expected_data_version,
+            expected_state_marker=expected_state_marker,
+        )
+
+    def _replace(
+        self,
+        analysis_id: str,
+        marker: str,
+        pages: dict[str, tuple[list[dict[str, object]], dict[str, object]]],
+        *,
+        guard: sqlite3.Connection | None = None,
+        expected_data_version: int | None = None,
+        expected_state_marker: str | None = None,
+    ) -> dict[str, int] | None:
         counts = {kind: len(data[0]) for kind, data in pages.items()}
-        connection = self._connect(True)
+        connection = guard if guard is not None else self._connect(True)
         try:
             if not self.schema_present(connection):
                 raise DashboardIndexNotReady("DASHBOARD_INDEX_SCHEMA_MISSING")
             connection.execute("BEGIN IMMEDIATE")
+            if expected_data_version is not None:
+                version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+                state = connection.execute(
+                    "SELECT source_marker FROM dashboard_index_state "
+                    "WHERE analysis_id=?",
+                    (analysis_id,),
+                ).fetchone()
+                current_marker = str(state["source_marker"]) if state else None
+                if (
+                    version != expected_data_version
+                    or current_marker != expected_state_marker
+                ):
+                    connection.rollback()
+                    return None
             connection.execute(
                 """INSERT INTO dashboard_index_state
                 (analysis_id,projection_version,source_marker,status,last_error,indexed_at)
@@ -400,7 +475,8 @@ class DashboardReadModel:
             connection.rollback()
             raise
         finally:
-            connection.close()
+            if guard is None:
+                connection.close()
         return counts
 
     def _hold_review_status(self, analysis_id: str) -> str:

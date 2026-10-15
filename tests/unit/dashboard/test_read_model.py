@@ -122,6 +122,154 @@ def test_index_not_ready_is_not_reported_as_empty(tmp_path: Path) -> None:
         model.page("NOT-BACKFILLED", "findings", offset=0, limit=10)
 
 
+def test_guarded_rebuild_rejects_source_commit_after_collection(tmp_path: Path) -> None:
+    """A source write between the scan and publish must not expose old rows."""
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "snapshot-old", _pages(1))
+    guard = model._connect(True)
+    try:
+        version = int(guard.execute("PRAGMA data_version").fetchone()[0])
+        state = guard.execute(
+            "SELECT source_marker FROM dashboard_index_state WHERE analysis_id=?",
+            ("DEMO-ANALYSIS",),
+        ).fetchone()
+        assert state is not None
+        with model._connect(True) as writer:
+            writer.execute("CREATE TABLE demo_source (value TEXT)")
+            writer.execute("INSERT INTO demo_source VALUES ('new')")
+            writer.execute(
+                "UPDATE dashboard_index_state SET status='INCOMPLETE', "
+                "source_marker='dirty-new' WHERE analysis_id='DEMO-ANALYSIS'"
+            )
+
+        result = model.replace_if_current(
+            "DEMO-ANALYSIS",
+            "snapshot-stale",
+            _pages(2),
+            guard=guard,
+            expected_data_version=version,
+            expected_state_marker=str(state["source_marker"]),
+        )
+        assert result is None
+    finally:
+        guard.close()
+    with pytest.raises(DashboardIndexNotReady):
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
+
+
+def test_old_publisher_cannot_replace_newer_ready_index(tmp_path: Path) -> None:
+    """A second publisher with an older state token cannot overwrite READY."""
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "dirty-one", _pages(1))
+    stale = model._connect(True)
+    current = model._connect(True)
+    try:
+        stale_version = int(stale.execute("PRAGMA data_version").fetchone()[0])
+        current_version = int(current.execute("PRAGMA data_version").fetchone()[0])
+        assert model.replace_if_current(
+            "DEMO-ANALYSIS",
+            "snapshot-new",
+            _pages(2),
+            guard=current,
+            expected_data_version=current_version,
+            expected_state_marker="dirty-one",
+        ) == {tab: 2 for tab in INDEXED_TABS}
+        assert (
+            model.replace_if_current(
+                "DEMO-ANALYSIS",
+                "snapshot-stale",
+                _pages(3),
+                guard=stale,
+                expected_data_version=stale_version,
+                expected_state_marker="dirty-one",
+            )
+            is None
+        )
+    finally:
+        stale.close()
+        current.close()
+    page = model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
+    assert page["total_items"] == 2
+
+
+def test_failed_old_publisher_does_not_clobber_new_ready_index(tmp_path: Path) -> None:
+    """A late failure from an older scan must preserve a newer projection."""
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "dirty-one", _pages(1))
+    model.replace("DEMO-ANALYSIS", "snapshot-new", _pages(2))
+
+    assert not model.mark_incomplete_if_current(
+        "DEMO-ANALYSIS", "dirty-one", "old scan failed"
+    )
+    assert (
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)["total_items"] == 2
+    )
+
+
+def test_rebuild_refuses_old_scan_after_source_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production rebuild path must use the guarded publisher."""
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "snapshot-old", _pages(1))
+
+    class Query:
+        def __init__(self, _data_dir: Path) -> None:
+            pass
+
+        def _resolved(self, analysis_id: str) -> str:
+            return analysis_id
+
+    def scan(_query: object, _analysis_id: str) -> tuple[str, object]:
+        with model._connect(True) as writer:
+            writer.execute(
+                "UPDATE dashboard_index_state SET status='INCOMPLETE', "
+                "source_marker='dirty-new' WHERE analysis_id='DEMO-ANALYSIS'"
+            )
+        return "snapshot-stale", _pages(2)
+
+    monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
+    monkeypatch.setattr(projection_module, "collect_source_pages", scan)
+    result = projection_module.rebuild_analysis(tmp_path, "DEMO-ANALYSIS")
+
+    assert result.status == "STALE"
+    with pytest.raises(DashboardIndexNotReady):
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)
+
+
+def test_failed_scan_cannot_mark_newer_success_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production failure handler must compare the captured index token."""
+    model = DashboardReadModel(tmp_path)
+    model.initialize()
+    model.replace("DEMO-ANALYSIS", "dirty-one", _pages(1))
+
+    class Query:
+        def __init__(self, _data_dir: Path) -> None:
+            pass
+
+        def _resolved(self, analysis_id: str) -> str:
+            return analysis_id
+
+    def scan(_query: object, _analysis_id: str) -> tuple[str, object]:
+        model.replace("DEMO-ANALYSIS", "snapshot-new", _pages(2))
+        raise ValueError("OLD_SCAN_FAILED")
+
+    monkeypatch.setattr(dashboard_query_module, "DashboardQuery", Query)
+    monkeypatch.setattr(projection_module, "collect_source_pages", scan)
+    result = projection_module.rebuild_analysis(tmp_path, "DEMO-ANALYSIS")
+
+    assert result.status == "FAILED"
+    assert (
+        model.page("DEMO-ANALYSIS", "findings", offset=0, limit=10)["total_items"] == 2
+    )
+
+
 def test_incomplete_index_fails_closed_and_can_be_rebuilt(tmp_path: Path) -> None:
     model = DashboardReadModel(tmp_path)
     model.initialize()
