@@ -152,6 +152,7 @@ function analysisRouteId(item) { return item.display_analysis_id || item.analysi
 function analysisSelected(item) { return [item.analysis_id, analysisRouteId(item)].includes(state.selected); }
 function analysisTime(item) { return item.started_at || item.last_updated_at || null; }
 function analysisTimestamp(item) { const value = analysisTime(item); if (!value) return null; const parsed = Date.parse(value); return Number.isFinite(parsed) ? parsed : null; }
+function progressKindLabel(item) { if (item.percentage_kind === "base_work_fraction") return "기본 분석 작업 진행률"; if (item.percentage_kind === "known_checkpoint_fraction") return "현재 알려진 checkpoint 비율"; return null; }
 function analysisKey(item) {
   if (item.status === "RUNNING") return Number.isFinite(item.progress_percent) ? `진행 ${item.progress_percent}%` : "진행 —";
   if (["COMPLETE", "SUCCEEDED"].includes(item.status)) return `확정 Finding ${knownCount(item.confirmed_finding_count)}`;
@@ -185,7 +186,7 @@ function analysisHistoryButton(item) {
   button.type = "button"; if (analysisSelected(item)) button.classList.add("selected");
   const heading = el("div", undefined, "analysis-history-heading"), id = el("strong", routeId || "분석 ID 없음", "mono technical-id"); id.title = routeId || ""; heading.append(id, badge(item.status));
   button.append(heading, el("div", analysisKey(item), "analysis-history-key"), el("time", formatTime(analysisTime(item)), "meta"));
-  if (item.percentage_kind === "known_checkpoint_fraction") button.append(el("div", "현재 알려진 checkpoint 비율", "meta"));
+  const qualifier = progressKindLabel(item); if (qualifier) button.append(el("div", qualifier, "meta"));
   button.addEventListener("click", () => selectAnalysis(routeId)); return button;
 }
 function analysisButton(item) { return analysisHistoryButton(item); }
@@ -237,7 +238,7 @@ function analysisRepositoryGroup(group, index) {
   const latestColumn = el("div", undefined, "analysis-latest-column"), latestButton = el("button", undefined, "analysis-latest-button"); latestButton.type = "button"; if (latestSelected) latestButton.classList.add("selected"); latestButton.title = latest.repository || `${repositoryLabel} · ${analysisRouteId(latest)}`;
   const repository = el("strong", repositoryLabel, "analysis-repository line-clamp-2"), status = el("div", undefined, "analysis-latest-status"); status.append(el("span", "최신 실행", "meta"), badge(latest.status));
   const footer = el("div", undefined, "analysis-latest-footer"); footer.append(el("time", formatTime(analysisTime(latest)), "meta")); if (hasHistory) footer.append(el("span", `이전 실행 ${historyTotal}개`, "analysis-history-count"));
-  latestButton.append(repository, status, el("div", analysisKey(latest), "analysis-key")); if (latest.percentage_kind === "known_checkpoint_fraction") latestButton.append(el("div", "현재 알려진 checkpoint 비율", "meta")); latestButton.append(footer); latestButton.addEventListener("click", () => selectAnalysis(analysisRouteId(latest))); latestColumn.append(latestButton);
+  latestButton.append(repository, status, el("div", analysisKey(latest), "analysis-key")); const qualifier = progressKindLabel(latest); if (qualifier) latestButton.append(el("div", qualifier, "meta")); latestButton.append(footer); latestButton.addEventListener("click", () => selectAnalysis(analysisRouteId(latest))); latestColumn.append(latestButton);
   if (selectedHistory) { const currentId = analysisRouteId(selectedHistoryItem) || state.selected, current = el("div", undefined, `analysis-current-history${expanded ? " is-expanded" : ""}`), currentCopy = el("div", undefined, "analysis-current-history-copy"); currentCopy.id = `${historyId}-current-copy`; currentCopy.append(el("span", "과거 실행 보는 중", "analysis-current-history-label"), el("strong", currentId || "분석 ID 없음", "mono technical-id")); const latestAction = el("button", "최신 실행 보기", "analysis-latest-action"); latestAction.type = "button"; latestAction.setAttribute("aria-label", `${repositoryLabel}의 최신 실행 ${analysisRouteId(latest)} 보기`); latestAction.addEventListener("click", (event) => { event.stopPropagation(); selectAnalysis(analysisRouteId(latest)); }); current.append(currentCopy, latestAction); latestColumn.append(current); latestButton.setAttribute("aria-describedby", currentCopy.id); }
   shell.append(latestColumn); container.append(shell);
   if (hasHistory) { const history = el("div", undefined, "analysis-history"); history.id = historyId; history.hidden = !expanded; history.setAttribute("aria-label", `${repositoryLabel}의 이전 분석 실행`); if (expanded && !historyPage && latest.history_count != null) history.append(el("div", "과거 실행을 불러오는 중…", "empty")); else if (historyPage?.load_error) { const error = el("div", historyPage.load_error === "timeout" ? "요청 시간이 초과되었습니다." : "과거 실행을 불러오지 못했습니다.", "error"), retry = el("button", "다시 시도", "small-button"); retry.addEventListener("click", () => loadRepositoryHistory(group, 1)); error.append(retry); history.append(error); } else historyItems.forEach((item) => history.append(analysisHistoryButton(item))); if (historyPage) history.append(repositoryHistoryPager(group, historyPage)); container.append(history); }
@@ -286,7 +287,7 @@ function renderOverview(shell) {
   state.detail = shell;
   const box = el("div"); const heading = el("div", undefined, "panel-heading overview-heading"), headingText = el("div", undefined); const repositoryTitle = el("h2", repositoryName(shell.repository) || "저장소 정보 없음", "repository-title line-clamp-2"); repositoryTitle.title = shell.repository || repositoryTitle.textContent; headingText.append(repositoryTitle, el("div", `분석 ${shell.display_analysis_id || shell.analysis_id}`, "analysis-identity mono meta technical-id")); heading.append(headingText, badge(shell.status)); box.append(heading);
   const repository = el("div", shell.repository || "저장소 정보 없음", "repository mono"); repository.title = shell.repository || ""; box.append(repository);
-  const overviewCore = el("div", undefined, "overview-core"); const stage = el("div", undefined, "overview-stage"); stage.append(el("span", "현재 단계", "section-label"), el("strong", stageLabel(shell.current_stage), "overview-stage-value"), el("code", shell.current_stage || "—", "metric-code mono")); overviewCore.append(stage, progressDonut(Number.isFinite(shell.progress_percent) ? shell.progress_percent : null)); box.append(overviewCore);
+  const overviewCore = el("div", undefined, "overview-core"); const stage = el("div", undefined, "overview-stage"); stage.append(el("span", "현재 단계", "section-label"), el("strong", stageLabel(shell.current_stage), "overview-stage-value"), el("code", shell.current_stage || "—", "metric-code mono")); overviewCore.append(stage, progressDonut(Number.isFinite(shell.progress_percent) ? shell.progress_percent : null, progressKindLabel(shell) || "전체 분석 진행률")); box.append(overviewCore);
   const metrics = el("div", undefined, "metric-grid overview-facts");
   [["Commit", shell.commit_id || "—"], ["실행 프로필", shell.profile_ref || "—"], ["Provider / 모델", [shell.provider, shell.model].filter(Boolean).join(" / ") || "—"], ["시작", formatTime(shell.started_at)], ["종료", shell.finished_at ? formatTime(shell.finished_at) : "진행 중"], ["마지막 갱신", formatTime(shell.last_updated_at)]].forEach(([label, value]) => { const metric = el("div", undefined, "metric"); metric.append(el("span", label, "meta"), el("strong", value)); metrics.append(metric); });
   box.append(metrics);
@@ -300,7 +301,7 @@ function renderOverview(shell) {
     legacyMetrics.push(["심층 분석", `진행 ${shell.deep_analysis_running_count || 0} · 완료 ${shell.deep_analysis_completed_count || 0} · 대기 ${shell.deep_analysis_pending_count || 0} · 오류 ${shell.deep_analysis_error_count || 0}`]);
   }
   legacyMetrics.push(["가설", String(shell.hypothesis_count ?? 0)], ["Finding", String(shell.finding_count ?? 0)]);
-  if (shell.percentage_kind === "known_checkpoint_fraction") {
+  if (progressKindLabel(shell)) {
     const phases = shell.phase_counts || {};
     for (const [key, label] of [["static", "정적 단계"], ["triage", "후보 선별"], ["candidate_deep", "후보 심층 처리"], ["verification", "가설 검증"]]) {
       const phase = phases[key]; if (Number.isInteger(phase?.completed) && Number.isInteger(phase?.known)) legacyMetrics.push([label, `${phase.completed}/${phase.known}`]);
@@ -310,7 +311,9 @@ function renderOverview(shell) {
     const surfaceReviewVersion = surface?.proof_version === 9 ? "v9" : surface?.proof_version === 8 ? "v8" : "v5";
     if (Number.isInteger(surface?.total)) {
       if (["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key]))) {
-        const label = Number.isInteger(surface.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
+        const label = shell.percentage_kind === "base_work_fraction" && Number.isInteger(surface.evaluated) && surface.evaluated === surface.covered + surface.insufficient && surface.evaluated <= surface.total
+          ? `검토 종료 ${surface.evaluated}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`
+          : Number.isInteger(surface.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
           ? `${surfaceReviewVersion} 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`
           : `검토 근거 충족 ${surface.covered}/${surface.total} · 미검토 ${surface.uncovered} · 근거 부족 ${surface.insufficient}`;
         legacyMetrics.push(["보안 surface", label]);
@@ -326,16 +329,18 @@ function renderOverview(shell) {
     if (surface?.proof_version === 9 && ["child_revalidation_resolved", "child_revalidation_pending", "child_revalidation_still_hold", "child_revalidation_error"].every((key) => Number.isInteger(surface[key]))) legacyMetrics.push(["자식 근거 재검증", `해결 ${surface.child_revalidation_resolved} · 대기 ${surface.child_revalidation_pending} · HOLD 유지 ${surface.child_revalidation_still_hold} · 오류 ${surface.child_revalidation_error}`]);
     if (surface?.child_revalidation_attempts_unverified === 1 && ["child_revalidation_attempt_pending", "child_revalidation_attempt_running", "child_revalidation_attempt_resolved", "child_revalidation_attempt_still_hold", "child_revalidation_attempt_error"].every((key) => Number.isInteger(surface[key]))) legacyMetrics.push(["자식 근거 재검증 (검증 전 시도 기록)", `대기 ${surface.child_revalidation_attempt_pending} · 실행 중 ${surface.child_revalidation_attempt_running} · 해결 ${surface.child_revalidation_attempt_resolved} · HOLD 유지 ${surface.child_revalidation_attempt_still_hold} · 오류 ${surface.child_revalidation_attempt_error} · coverage·완료 판정 아님`]);
     if ([8, 9].includes(surface?.proof_version) && Number.isInteger(surface?.template_content_not_analyzed_count)) legacyMetrics.push(["Python 범위 밖 템플릿 HTML/Jinja 내용", `${surface.template_content_not_analyzed_count}건`]);
-    box.append(el("div", "현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
+    box.append(el("div", shell.percentage_kind === "base_work_fraction" ? "기본 분석 작업 진행률입니다. 100%는 전체 범위 검증이나 제보 가능을 뜻하지 않습니다. 새 HOLD 복구 PoC·후속 게이트·보고서는 별도 현황입니다." : "현재 알려진 checkpoint 비율이며 비용·시간·저장소 전체 커버리지를 뜻하지 않습니다.", "meta"));
     if (shell.status === "PARTIAL") {
       const countsKnown = Number.isInteger(surface?.total) && ["covered", "uncovered", "insufficient"].every((key) => Number.isInteger(surface[key])) && surface.covered + surface.uncovered + surface.insufficient === surface.total;
-      const proven = Number.isInteger(surface?.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
+      const proven = shell.percentage_kind === "base_work_fraction" && Number.isInteger(surface?.evaluated) && surface.evaluated <= surface.total
+        ? `검토 종료 ${surface.evaluated}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total}`
+        : Number.isInteger(surface?.reviewed) && surface.reviewed >= 0 && surface.reviewed <= surface.total
         ? `${surfaceReviewVersion} 검토 완료 ${surface.reviewed}/${surface.total} · 증명된 경로 ${surface.covered}/${surface.total}`
         : `보안 표면 근거 충족 ${surface.covered}/${surface.total}`;
       const scope = countsKnown ? ` · ${proven} · 근거 부족 ${surface.insufficient}${surface.uncovered ? ` · 미검토 ${surface.uncovered}` : ""}` : " · 보안 표면 근거 미확인";
       box.append(el("div", `실행 종료${scope} · 전체 분석은 PARTIAL`, "warning"));
     }
-    if ((shell.phase_counts?.surface?.uncovered || 0) > 0 || (shell.phase_counts?.surface?.insufficient || 0) > 0) box.append(el("div", "부분 분석: 보안 surface 검토 범위가 남아 있습니다.", "warning"));
+    if ((shell.phase_counts?.surface?.uncovered || 0) > 0 || (shell.phase_counts?.surface?.insufficient || 0) > 0) box.append(el("div", shell.percentage_kind === "base_work_fraction" ? "부분 분석: 미검토 또는 근거 부족 보안 surface가 남아 있습니다." : "부분 분석: 보안 surface 검토 범위가 남아 있습니다.", "warning"));
   }
   legacyMetrics.forEach(([label, value]) => { const metric = el("div", undefined, "metric"); metric.append(el("span", label, "meta"), el("strong", value)); metrics.append(metric); });
   staticCoverageNodes(shell).forEach((node) => box.append(node));
@@ -370,7 +375,7 @@ function renderProgressSummary(pipeline = []) {
   const retriesKnown = pipeline.every((item) => Number.isInteger(item.attempt_number)); const retries = retriesKnown ? pipeline.reduce((sum, item) => sum + Math.max(0, item.attempt_number), 0) : null;
   const target = document.getElementById("progress-summary"), layout = el("div", undefined, "progress-command-grid");
   const stage = el("div", undefined, "progress-stage"); stage.append(el("span", "현재 단계", "section-label"), el("strong", stageLabel(shell.current_stage), "progress-stage-value"), el("code", shell.current_stage || "—", "mono technical-code"));
-  const overall = el("div", undefined, "progress-overall"); const overallDonut = progressDonut(Number.isFinite(shell.progress_percent) ? shell.progress_percent : null, "전체 분석 진행률"); overallDonut.classList?.add?.("progress-primary-donut"); overall.append(el("span", "전체 진행률", "section-label"), overallDonut);
+  const overall = el("div", undefined, "progress-overall"); const overallLabel = progressKindLabel(shell) || "전체 분석 진행률"; const overallDonut = progressDonut(Number.isFinite(shell.progress_percent) ? shell.progress_percent : null, overallLabel); overallDonut.classList?.add?.("progress-primary-donut"); overall.append(el("span", overallLabel, "section-label"), overallDonut); if (shell.percentage_kind === "base_work_fraction") overall.append(el("span", "100%는 전체 범위 검증이나 제보 가능을 뜻하지 않습니다.", "meta"));
   const primary = el("div", undefined, "progress-primary-group"); primary.append(stage, overall);
   const detail = el("div", undefined, "progress-detail"); const detailMetrics = el("div", undefined, "detail-progress-grid"); detailMetrics.append(phaseProgressMetric("정적 검사 범위 확인률", ratioPercent(kpis.discovery_done, kpis.discovery_total), kpis.discovery_done, kpis.discovery_total, "coverage"), phaseProgressMetric("가설 검증 진행률", ratioPercent(kpis.verification_done, kpis.verification_total), kpis.verification_done, kpis.verification_total, "warning")); detail.append(el("span", "세부 진행", "section-label"), detailMetrics);
   const execution = el("div", undefined, "progress-execution"); const statusGrid = el("dl", undefined, "progress-status-grid"); [["실패", knownCount(failed), failed > 0 ? "danger" : "quiet"], ["차단", knownCount(blocked), blocked > 0 ? "warning" : "quiet"], ["재시도", retries == null ? "—" : knownCount(retries), retries > 0 ? "warning" : "quiet"], ["마지막 갱신", formatTime(shell.last_updated_at), "neutral"]].forEach(([label, value, tone]) => { const row = el("div", undefined, `progress-status-item status-${tone}`); row.append(el("dt", label), el("dd", value)); statusGrid.append(row); }); execution.append(el("span", "실행 상태", "section-label"), statusGrid);

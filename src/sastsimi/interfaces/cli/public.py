@@ -62,15 +62,23 @@ def _emit_static_coverage(stream: TextIO, data: dict[str, object]) -> None:
 
 
 def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
-    if data.get("percentage_kind") not in {
+    percentage_kind = data.get("percentage_kind")
+    if percentage_kind not in {
         "known_checkpoint_fraction",
         "base_work_fraction",
     }:
         return
-    stream.write(
-        "이 비율은 현재 알려진 checkpoint 기준이며 비용·시간·저장소 전체 커버리지를 "
-        "뜻하지 않습니다.\n"
-    )
+    if percentage_kind == "base_work_fraction":
+        stream.write(
+            "기본 분석 작업의 종료 비율입니다. 100%는 전체 범위 검증이나 제보 가능을 "
+            "뜻하지 않습니다. 새 HOLD 복구 PoC·후속 게이트·보고서는 별도 현황이며 "
+            "이 비율에서 제외됩니다.\n"
+        )
+    else:
+        stream.write(
+            "이 비율은 현재 알려진 checkpoint 기준이며 비용·시간·저장소 전체 "
+            "커버리지를 뜻하지 않습니다.\n"
+        )
     phases = data.get("phase_counts")
     if not isinstance(phases, dict):
         stream.write("보안 surface: coverage 확인 불가\n")
@@ -105,7 +113,20 @@ def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
         for key in ("covered", "uncovered", "insufficient")
     ):
         reviewed = surface.get("reviewed")
-        if type(reviewed) is int and 0 <= reviewed <= total:
+        evaluated = surface.get("evaluated")
+        if (
+            percentage_kind == "base_work_fraction"
+            and type(evaluated) is int
+            and 0 <= evaluated <= total
+            and evaluated == surface["covered"] + surface["insufficient"]
+        ):
+            stream.write(
+                f"보안 surface: 검토 종료 {evaluated}/{total} · "
+                f"증명된 경로 {surface['covered']}/{total} · "
+                f"미검토 {surface['uncovered']} · "
+                f"근거 부족 {surface['insufficient']}\n"
+            )
+        elif type(reviewed) is int and 0 <= reviewed <= total:
             stream.write(
                 f"보안 surface: v5 검토 완료 {reviewed}/{total} · "
                 f"증명된 경로 {surface['covered']}/{total} · "
@@ -118,7 +139,13 @@ def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
                 f"미검토 {surface['uncovered']} · 근거 부족 {surface['insufficient']}\n"
             )
         if surface["uncovered"] or surface["insufficient"]:
-            stream.write("부분 분석: 보안 surface 검토 범위가 남아 있습니다.\n")
+            if percentage_kind == "base_work_fraction":
+                stream.write(
+                    "부분 분석: 보안 surface의 미검토 또는 근거 부족 항목이 "
+                    "남아 있습니다.\n"
+                )
+            else:
+                stream.write("부분 분석: 보안 surface 검토 범위가 남아 있습니다.\n")
         child_keys = (
             "child_revalidation_resolved",
             "child_revalidation_pending",
@@ -224,7 +251,9 @@ def emit_public(
         stream.write(f"상태: {data['status']}\n")
     if "percent" in data:
         label = (
-            "현재 알려진 checkpoint 비율"
+            "기본 분석 작업 진행률"
+            if data.get("percentage_kind") == "base_work_fraction"
+            else "현재 알려진 checkpoint 비율"
             if data.get("percentage_kind") == "known_checkpoint_fraction"
             else "진행률"
         )

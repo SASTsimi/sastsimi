@@ -134,6 +134,34 @@ for (const expected of [
 const listText = text(vm.runInContext("analysisButton(state.detail)", context));
 assert.ok(listText.includes("현재 알려진 checkpoint 비율"), listText);
 const previousSurface = detail.phase_counts.surface;
+detail.percentage_kind = "base_work_fraction";
+detail.status = "PARTIAL";
+detail.progress_percent = 100;
+detail.phase_counts.surface = {
+  total: 1, evaluated: 1, completed: 0,
+  covered: 0, uncovered: 0, insufficient: 1,
+};
+vm.runInContext("renderOverview(state.detail)", context);
+shown = text(nodes.get("overview"));
+for (const expected of [
+  "기본 분석 작업 진행률", "100%", "PARTIAL", "검토 종료 1/1",
+  "증명된 경로 0/1", "근거 부족 1", "제보 가능을 뜻하지 않습니다",
+]) assert.ok(shown.includes(expected), `missing ${expected}: ${shown}`);
+const baseListText = text(vm.runInContext("analysisButton(state.detail)", context));
+assert.ok(baseListText.includes("기본 분석 작업 진행률"), baseListText);
+vm.runInContext("renderAnalysisList([state.detail])", context);
+const repositoryListText = text(nodes.get("analyses"));
+assert.ok(repositoryListText.includes("기본 분석 작업 진행률"), repositoryListText);
+vm.runInContext("state.shell = state.detail; renderProgressSummary([])", context);
+const progressSummaryText = text(nodes.get("progress-summary"));
+assert.ok(progressSummaryText.includes("기본 분석 작업 진행률"), progressSummaryText);
+assert.ok(
+  progressSummaryText.includes("제보 가능을 뜻하지 않습니다"),
+  progressSummaryText
+);
+detail.status = "PAUSED";
+detail.progress_percent = 65;
+detail.percentage_kind = "known_checkpoint_fraction";
 detail.phase_counts.surface = {
   total: 1, covered: 1, uncovered: 0, insufficient: 0,
   raw_static_gap_count: 3, effective_python_gap_count: 0,

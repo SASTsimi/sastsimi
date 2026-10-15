@@ -941,7 +941,7 @@ def test_dashboard_candidate_counts_are_scope_bound_and_not_duplicated(
     )
     v2 = query.get_analysis("analysis-a")
     assert v2.candidate_total_count == 3
-    assert v2.percentage_kind == "known_checkpoint_fraction"
+    assert v2.percentage_kind == "base_work_fraction"
     assert v2.phase_counts["triage"] == {"completed": 2, "known": 3}
 
     store.save_analysis_run(

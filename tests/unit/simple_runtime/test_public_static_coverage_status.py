@@ -411,7 +411,7 @@ def test_v2_public_status_exposes_scoped_surface_progress(tmp_path: Path) -> Non
     )
 
     status = app.status("A-001")
-    assert status["percentage_kind"] == "known_checkpoint_fraction"
+    assert status["percentage_kind"] == "base_work_fraction"
     phase_counts = cast(dict[str, dict[str, int]], status["phase_counts"])
     assert phase_counts["surface"] == {
         "recorded_contexts": 1,
