@@ -1249,18 +1249,17 @@ def test_tab_page_contract_defaults_to_ten_and_rejects_mixed_paging(
     assert invalid.code == 400
 
 
+@pytest.mark.parametrize("tab", ("findings", "outputs"))
 def test_unbuilt_read_model_returns_index_not_ready(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path, monkeypatch: pytest.MonkeyPatch, tab: str
 ) -> None:
     monkeypatch.delenv("SASTSIMI_DASHBOARD_INDEX_MODE", raising=False)
     seed(tmp_path)
     with running_server(tmp_path) as base:
-        response = request(
-            f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=10"
-        )
+        response = request(f"{base}/api/analyses/A-001/tabs/{tab}?page=1&page_size=10")
         payload = json.loads(response.read())
         oversized = request(
-            f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=201"
+            f"{base}/api/analyses/A-001/tabs/{tab}?page=1&page_size=201"
         )
 
     assert oversized.status == 400
@@ -1318,6 +1317,7 @@ def test_hold_review_dirty_index_reports_update_in_progress_when_active(
     assert payload == {"error": "index_updating", "action": "retry"}
 
 
+@pytest.mark.parametrize("tab", ("findings", "outputs"))
 @pytest.mark.parametrize(
     ("active", "expected"),
     [
@@ -1332,7 +1332,11 @@ def test_hold_review_dirty_index_reports_update_in_progress_when_active(
     ],
 )
 def test_general_dirty_index_returns_actionable_409(
-    tmp_path, monkeypatch: pytest.MonkeyPatch, active: bool, expected: dict[str, str]
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    active: bool,
+    expected: dict[str, str],
+    tab: str,
 ) -> None:
     """A non-HOLD source write must not appear as a missing index."""
     monkeypatch.delenv("SASTSIMI_DASHBOARD_INDEX_MODE", raising=False)
@@ -1347,9 +1351,7 @@ def test_general_dirty_index_returns_actionable_409(
     )
 
     with running_server(tmp_path) as base:
-        response = request(
-            f"{base}/api/analyses/A-001/tabs/findings?page=1&page_size=10"
-        )
+        response = request(f"{base}/api/analyses/A-001/tabs/{tab}?page=1&page_size=10")
         payload = json.loads(response.read())
 
     assert response.status == 409
