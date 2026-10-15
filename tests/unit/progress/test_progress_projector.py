@@ -803,9 +803,10 @@ def test_v11_successor_attempts_do_not_change_base_work_fraction(
     assert without_ledger.percent == before.percent == 100
     assert without_ledger.status == "BLOCKED"
     assert "evaluated" not in without_ledger.phase_counts["surface"]
-    assert "child_revalidation_attempts_unverified" not in without_ledger.phase_counts[
-        "surface"
-    ]
+    assert (
+        "child_revalidation_attempts_unverified"
+        not in without_ledger.phase_counts["surface"]
+    )
     mismatched = projector.snapshot(
         identity.analysis_id,
         candidate_pipeline_version=2,

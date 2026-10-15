@@ -106,8 +106,9 @@ def test_v2_text_status_labels_phase_counts_and_unknown_surface_coverage() -> No
     assert "비용·시간·저장소 전체 커버리지" in rendered
 
 
-def test_base_work_status_can_be_100_percent_and_partial_without_claiming_proof(
-) -> None:
+def test_base_work_status_can_be_100_percent_and_partial_without_claiming_proof() -> (
+    None
+):
     output = StringIO()
     emit_public(
         "text",
