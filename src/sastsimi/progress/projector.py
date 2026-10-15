@@ -565,11 +565,13 @@ class ProgressProjector:
                     }
                     surface_phase.update(child_counts)
                 covered = terminal_surface_counts.get("COVERED", 0)
-                completed += covered
+                evaluated = covered + terminal_surface_counts.get("INSUFFICIENT", 0)
+                completed += evaluated
                 surface_phase.update(
                     {
                         "completed": covered,
                         "covered": covered,
+                        "evaluated": evaluated,
                         "uncovered": terminal_surface_counts.get("UNCOVERED", 0),
                         "insufficient": terminal_surface_counts.get("INSUFFICIENT", 0),
                     }
@@ -641,11 +643,17 @@ class ProgressProjector:
             status = "RUNNING"
             revalidation_pending = False
         credited = completed + skipped
-        percent = (
-            100
-            if status == "COMPLETE"
-            else min(99, int(credited * 100 / max(known, 1)))
-        )
+        if candidate_pipeline_version >= 2:
+            percent = min(
+                100 if terminal_valid else 99,
+                int(credited * 100 / max(known, 1)),
+            )
+        else:
+            percent = (
+                100
+                if status == "COMPLETE"
+                else min(99, int(credited * 100 / max(known, 1)))
+            )
         error_code = (
             "POC_REVALIDATION_REQUIRED" if revalidation_pending else current.error_code
         )
@@ -671,7 +679,7 @@ class ProgressProjector:
             known_units=known,
             percent=percent,
             percentage_kind=(
-                "known_checkpoint_fraction" if candidate_pipeline_version >= 2 else None
+                "base_work_fraction" if candidate_pipeline_version >= 2 else None
             ),
             phase_counts=(
                 {

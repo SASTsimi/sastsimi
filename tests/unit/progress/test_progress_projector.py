@@ -94,6 +94,7 @@ def test_progress_counts_known_work_and_only_complete_reaches_100(
     assert running.known_units == 2 + len(HYPOTHESIS_STAGES)
     assert running.percent < 100
     assert running.status == "RUNNING"
+    assert running.percentage_kind is None
     assert running.candidate_total_count is None
     assert running.attempt_number == 1
     assert running.attempt_limit == 3
@@ -472,7 +473,7 @@ def test_v2_progress_is_phase_counted_and_replay_stable(tmp_path: Path) -> None:
         )
 
     first = snapshot()
-    assert first.percentage_kind == "known_checkpoint_fraction"
+    assert first.percentage_kind == "base_work_fraction"
     assert first.phase_counts == {
         "static": {"completed": 1, "known": 1},
         "triage": {"completed": 2, "known": 3},
@@ -626,6 +627,7 @@ def test_v2_terminal_uses_exact_surface_proof_and_partial_status(
         surface_index_hash="b" * 64,
     )
     assert unbound.status == "RUNNING"
+    assert "evaluated" not in unbound.phase_counts["surface"]
 
     unverified_counts = ProgressProjector(store).snapshot(
         "v2-terminal",
@@ -639,6 +641,120 @@ def test_v2_terminal_uses_exact_surface_proof_and_partial_status(
         surface_index_hash="b" * 64,
     )
     assert unverified_counts.status == "RUNNING"
+
+
+def test_v2_partial_insufficient_surface_can_finish_base_work(tmp_path: Path) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="v2-insufficient-terminal",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(
+        store,
+        identity,
+        SimpleStage.HYPOTHESIS_DONE,
+        output_refs=(
+            _ref("surface-index").model_copy(update={"content_hash": "b" * 64}),
+            _ref("surface-coverage").model_copy(update={"content_hash": "c" * 64}),
+        ),
+    )
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash="a" * 64,
+        scope_fingerprint="scope-1",
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=0,
+        surface_index_hash="b" * 64,
+        surface_coverage_hash="c" * 64,
+        surface_counts={"COVERED": 0, "UNCOVERED": 0, "INSUFFICIENT": 1},
+        producer_finished=True,
+        pending_child_count=0,
+    )
+
+    snapshot = ProgressProjector(store).snapshot(
+        identity.analysis_id,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        candidate_bundle_hash="a" * 64,
+        candidate_scope_fingerprint="scope-1",
+        surface_counts={
+            "TOTAL": 1,
+            "CONTEXT_RECORDS": 0,
+            "COVERED": 0,
+            "UNCOVERED": 0,
+            "INSUFFICIENT": 1,
+        },
+        surface_index_hash="b" * 64,
+    )
+
+    assert snapshot.status == "PARTIAL"
+    assert snapshot.percent == 100
+    assert snapshot.percentage_kind == "base_work_fraction"
+    assert snapshot.phase_counts["surface"]["evaluated"] == 1
+    assert snapshot.phase_counts["surface"]["covered"] == 0
+    assert snapshot.phase_counts["surface"]["completed"] == 0
+
+
+def test_v11_successor_attempts_do_not_change_base_work_fraction(
+    tmp_path: Path,
+) -> None:
+    store = SimpleCheckpointStore(tmp_path / "sastsimi.sqlite3")
+    identity = CheckpointIdentity(
+        analysis_id="v11-attempt-isolation",
+        workspace_id="workspace-1",
+        commit_id="commit-1",
+        hypothesis_id=None,
+    )
+    _save(store, identity, SimpleStage.STATIC_DONE)
+    _save(store, identity, SimpleStage.HYPOTHESIS_DONE)
+    terminal = CandidateTerminal(
+        status="PARTIAL",
+        bundle_hash="a" * 64,
+        scope_fingerprint="scope-1",
+        decision_counts={},
+        deep_counts={},
+        hypothesis_count=0,
+        surface_proof_version=8,
+    )
+    projector = ProgressProjector(store)
+    before = projector.snapshot(
+        identity.analysis_id,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 0},
+        surface_enrichment_status="RUNNING",
+    )
+    after = projector.snapshot(
+        identity.analysis_id,
+        candidate_pipeline_version=2,
+        candidate_counts={},
+        candidate_deep_counts={},
+        candidate_terminal=terminal,
+        surface_counts={"TOTAL": 1, "CONTEXT_RECORDS": 0},
+        surface_enrichment_status="RUNNING",
+        child_attempt_counts={
+            "PENDING": 0,
+            "RUNNING": 1,
+            "RESOLVED": 0,
+            "STILL_HOLD": 0,
+            "ERROR": 0,
+        },
+    )
+
+    assert after.completed_units == before.completed_units
+    assert after.known_units == before.known_units
+    assert after.percent == before.percent
+    assert after.percentage_kind == "base_work_fraction"
+    assert "evaluated" not in after.phase_counts["surface"]
+    assert after.phase_counts["surface"]["child_revalidation_attempt_running"] == 1
 
 
 def test_registered_hypotheses_without_checkpoints_expand_progress_denominator(

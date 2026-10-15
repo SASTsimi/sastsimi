@@ -62,7 +62,10 @@ def _emit_static_coverage(stream: TextIO, data: dict[str, object]) -> None:
 
 
 def _emit_v2_phase_counts(stream: TextIO, data: dict[str, object]) -> None:
-    if data.get("percentage_kind") != "known_checkpoint_fraction":
+    if data.get("percentage_kind") not in {
+        "known_checkpoint_fraction",
+        "base_work_fraction",
+    }:
         return
     stream.write(
         "이 비율은 현재 알려진 checkpoint 기준이며 비용·시간·저장소 전체 커버리지를 "
