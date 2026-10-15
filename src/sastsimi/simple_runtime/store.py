@@ -2220,6 +2220,8 @@ class SimpleCheckpointStore:
                 "registrations_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (*key, surface_id, context_id, *expected),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
+        self._project_after_direct_commit(identity.analysis_id)
         return True
 
     def _assert_surface_v4_registration_connection(
@@ -4617,6 +4619,7 @@ class SimpleCheckpointStore:
                     error_code="DOCKER_DAEMON_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -4971,6 +4974,7 @@ class SimpleCheckpointStore:
                     ),
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -5233,6 +5237,7 @@ class SimpleCheckpointStore:
                     error_code="REPORT_SURFACE_PROOF_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -5990,6 +5995,7 @@ class SimpleCheckpointStore:
                     error_code="REPORT_VALIDATOR_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -6151,7 +6157,18 @@ class SimpleCheckpointStore:
     def save_analysis_run(self, run: object) -> None:
         validated = SimpleAnalysisRun.model_validate(run)
         with self._connect() as connection:
+            current = connection.execute(
+                "SELECT run_json FROM simple_analysis_runs WHERE analysis_id = ?",
+                (validated.analysis_id,),
+            ).fetchone()
+            if (
+                current is not None
+                and current["run_json"] == validated.model_dump_json()
+            ):
+                return
             self._upsert_analysis_run_connection(connection, validated)
+            self._mark_dashboard_dirty_connection(connection, validated.analysis_id)
+        self._project_after_direct_commit(validated.analysis_id)
 
     def pin_surface_enrichment_v6_plan(
         self, expected_run: SimpleAnalysisRun, plan_ref: StoredDataRef
@@ -7160,6 +7177,7 @@ class SimpleCheckpointStore:
             if changed.rowcount != 1:
                 raise ValueError("SURFACE_ENRICHMENT_V10_RESULT_STALE")
             self._upsert_checkpoint_connection(connection, updated_root)
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
         self._project_after_direct_commit(identity.analysis_id)
         return True
 
@@ -7346,6 +7364,7 @@ class SimpleCheckpointStore:
                         now,
                     ),
                 )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
         self._project_after_direct_commit(identity.analysis_id)
         return True
 
@@ -7529,6 +7548,7 @@ class SimpleCheckpointStore:
             )
             if changed.rowcount != 1:
                 raise ValueError("SURFACE_ENRICHMENT_V11_RESUME_UNSAFE")
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
         self._project_after_direct_commit(identity.analysis_id)
         return True
 
@@ -7931,6 +7951,7 @@ class SimpleCheckpointStore:
             if changed.rowcount != 1:
                 raise ValueError("SURFACE_ENRICHMENT_V11_RESULT_STALE")
             self._upsert_checkpoint_connection(connection, updated_root)
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
         self._project_after_direct_commit(identity.analysis_id)
         return True
 
@@ -8186,6 +8207,7 @@ class SimpleCheckpointStore:
                 """,
                 values,
             )
+            changed = cursor.rowcount == 1
             if cursor.rowcount == 0:
                 row = connection.execute(
                     "SELECT attempt_id, analysis_id, agent, model, attempt_number, "
@@ -8250,6 +8272,7 @@ class SimpleCheckpointStore:
                     "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     metadata,
                 )
+                changed = changed or inserted.rowcount == 1
                 if inserted.rowcount == 0:
                     row = connection.execute(
                         "SELECT attempt_id, analysis_id, stage, candidate_ids_json, "
@@ -8262,11 +8285,10 @@ class SimpleCheckpointStore:
                     ).fetchone()
                     if row is None or tuple(row) != metadata:
                         raise ValueError("LLM_ATTEMPT_CONFLICT")
-        if (
-            self._artifact_data_dir is not None
-            and self._post_commit_projection is not None
-        ):
-            self._post_commit_projection(self._artifact_data_dir, analysis_id)
+            if changed:
+                self._mark_dashboard_dirty_connection(connection, analysis_id)
+        if changed:
+            self._project_after_direct_commit(analysis_id)
 
     def unresolved_codex_call(self, analysis_id: str) -> str | None:
         """Return the durable call ID that still needs process resolution."""
@@ -10468,6 +10490,7 @@ class SimpleCheckpointStore:
                 (identity.analysis_id, self._hypothesis_key(identity), *stages),
             )
             self._upsert_checkpoint_connection(connection, pending)
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -11376,6 +11399,7 @@ class SimpleCheckpointStore:
                     error_code="POC_VALIDATOR_CORRECTION_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -11715,6 +11739,7 @@ class SimpleCheckpointStore:
                     ),
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -13482,6 +13507,7 @@ class SimpleCheckpointStore:
                     error_code="POC_DJANGO_MIGRATION_FIXTURE_LATE_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -13875,6 +13901,7 @@ class SimpleCheckpointStore:
                     error_code="POC_DJANGO_MIGRATION_SETTINGS_CANDIDATE_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -16357,6 +16384,7 @@ class SimpleCheckpointStore:
                     error_code=replay_code,
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -16773,6 +16801,7 @@ class SimpleCheckpointStore:
                     error_code="POC_PLACEHOLDER_EXHAUSTION_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -17060,6 +17089,7 @@ class SimpleCheckpointStore:
                     error_code="AUTH_REQUIRED_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -17467,6 +17497,7 @@ class SimpleCheckpointStore:
                     error_code="POC_SENSITIVE_CONTENT_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -17973,6 +18004,7 @@ class SimpleCheckpointStore:
                     error_code="POC_SENSITIVE_REWRITE_TIMEOUT_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -18389,6 +18421,7 @@ class SimpleCheckpointStore:
                     error_code="POC_SENSITIVE_EXHAUSTION_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -18950,6 +18983,7 @@ class SimpleCheckpointStore:
                     error_code="POC_SENSITIVE_AUTH_TRANSPORT_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -19344,6 +19378,7 @@ class SimpleCheckpointStore:
                     error_code="POC_SENSITIVE_AUTH_RECAP_REPLAYED",
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -19919,6 +19954,7 @@ class SimpleCheckpointStore:
                     ),
                 ),
             )
+            self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -20928,6 +20964,9 @@ class SimpleCheckpointStore:
                     output_refs=completed.output_refs,
                 ),
             )
+            self._mark_dashboard_dirty_connection(
+                connection, exhausted.identity.analysis_id
+            )
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -21223,6 +21262,9 @@ class SimpleCheckpointStore:
                 self._upsert_analysis_run_connection(connection, analysis_run)
             for event in activity_events:
                 AgentActivityStore.append_connection(connection, event)
+            self._mark_dashboard_dirty_connection(
+                connection, checkpoint.identity.analysis_id
+            )
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             connection.commit()
@@ -21231,22 +21273,43 @@ class SimpleCheckpointStore:
             raise
         finally:
             connection.close()
-        if (
-            self._artifact_data_dir is not None
-            and self._post_commit_projection is not None
-        ):
-            # The source transaction above is already durable. A read-model
-            # failure is recorded as INCOMPLETE and never rolls it back.
-            self._post_commit_projection(
-                self._artifact_data_dir, checkpoint.identity.analysis_id
-            )
+        # The source transaction above is already durable.
+        self._project_after_direct_commit(checkpoint.identity.analysis_id)
+
+    @staticmethod
+    def _mark_dashboard_dirty_connection(
+        connection: sqlite3.Connection, analysis_id: str
+    ) -> None:
+        # A module-level dashboard import here would cycle through query -> store.
+        from sastsimi.dashboard.projection_batch import mark_index_dirty_connection
+
+        mark_index_dirty_connection(connection, analysis_id)
 
     def _project_after_direct_commit(self, analysis_id: str) -> None:
         if (
             self._artifact_data_dir is not None
             and self._post_commit_projection is not None
         ):
-            self._post_commit_projection(self._artifact_data_dir, analysis_id)
+            from sastsimi.dashboard.projection_batch import (
+                dispatch_dashboard_projection,
+            )
+
+            dispatch_dashboard_projection(
+                self._artifact_data_dir, analysis_id, self._post_commit_projection
+            )
+
+    @contextmanager
+    def defer_dashboard_projection(self, analysis_id: str) -> Iterator[None]:
+        """Commit each source result now and project indexed tabs once on exit."""
+        if self._artifact_data_dir is None or self._post_commit_projection is None:
+            yield
+            return
+        from sastsimi.dashboard.projection_batch import defer_dashboard_projection
+
+        with defer_dashboard_projection(
+            self._artifact_data_dir, analysis_id, self._post_commit_projection
+        ):
+            yield
 
     @contextmanager
     def defer_surface_hold_projection(self, analysis_id: str) -> Iterator[None]:
@@ -22330,6 +22393,8 @@ class SimpleCheckpointStore:
                     )
                     if changed_run.rowcount != 1:
                         raise ValueError("SURFACE_HOLD_REPLAY_STALE")
+            if changed:
+                self._mark_dashboard_dirty_connection(connection, identity.analysis_id)
             if fail_before_commit:
                 raise RuntimeError("simulated crash")
             deferred_keep = (
@@ -22339,28 +22404,6 @@ class SimpleCheckpointStore:
                 and self._artifact_data_dir is not None
                 and self._post_commit_projection is not None
             )
-            if (
-                deferred_keep
-                and connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' "
-                    "AND name='dashboard_index_state'"
-                ).fetchone()
-            ):
-                # Version 0 is deliberately unreadable until the projector
-                # replaces this durable dirty row with its actual version.
-                connection.execute(
-                    "INSERT INTO dashboard_index_state "
-                    "(analysis_id, projection_version, source_marker, status, "
-                    "last_error, indexed_at) VALUES (?, 0, ?, 'INCOMPLETE', ?, ?) "
-                    "ON CONFLICT(analysis_id) DO UPDATE SET "
-                    "status='INCOMPLETE', last_error=excluded.last_error",
-                    (
-                        identity.analysis_id,
-                        "surface-hold-review",
-                        "SURFACE_HOLD_REVIEW_IN_PROGRESS",
-                        datetime.now(UTC).isoformat(),
-                    ),
-                )
             connection.commit()
         except BaseException:
             connection.rollback()
