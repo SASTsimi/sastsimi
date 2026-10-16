@@ -1,5 +1,10 @@
 # 보안 경계
 
+이 문서는 저장소 코드·Agent 출력·PoC 입력이 Runtime 권한에 도달하기 전에 적용되는
+검사와 노출 제한을 설명합니다. 실행 경로는 [전체 파이프라인](./pipeline.md),
+결과 파일의 검증·공개 경계는 [데이터 계약과 저장](./contracts-and-storage.md) 및
+[Gate·Chaining·Finding·보고서](./gates-chaining-reporting.md)를 봅니다.
+
 ## 구현된 책임
 
 SASTSIMI는 저장소 내용, 정적 분석 출력과 Agent 입력을 신뢰하지 않는 데이터로 다룹니다.

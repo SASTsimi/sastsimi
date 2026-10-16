@@ -1,5 +1,10 @@
 # 현재 구현 위치 지도
 
+기능을 수정하거나 검증할 때 코드와 테스트의 시작 위치를 찾는 문서입니다.
+먼저 동작 순서는 [전체 파이프라인](./pipeline.md), 실패 재개와 저장 조건은
+[Runtime과 실패 지점 재개](./runtime-and-recovery.md) 및
+[데이터 계약과 저장](./contracts-and-storage.md)에서 확인하세요.
+
 ## 사용자 진입점
 
 - 패키지 명령: `pyproject.toml`의 `sastsimi.interfaces.cli.main:main`

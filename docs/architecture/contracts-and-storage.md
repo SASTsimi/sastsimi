@@ -1,5 +1,10 @@
 # 데이터 계약과 저장
 
+이 문서는 checkpoint와 저장 아티팩트가 어떤 ID·hash로 연결되는지 설명합니다.
+단계가 이 자료를 재사용하는 조건은 [Runtime과 실패 지점 재개](./runtime-and-recovery.md),
+보고서를 열기 전에 확인하는 Gate 조건은
+[Gate·Chaining·Finding·보고서](./gates-chaining-reporting.md)를 봅니다.
+
 ## 구현된 책임
 
 공통 계약은 Pydantic model로 정의하고 JSON schema로 내보냅니다. 핵심 연결 단위는
