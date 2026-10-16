@@ -159,14 +159,14 @@ sastsimi report export F-001 --format markdown
 
 - [설치](docs/installation.md): 환경과 외부 도구 준비
 - [Provider·모델](docs/provider-setup.md): 인증과 모델 선택
-- [CLI·대시보드](docs/usage.md): 분석, 재개, 결과 확인
-- [문제 해결](docs/troubleshooting.md): 오류별 확인과 복구
+- [CLI·대시보드](docs/usage.md): 분석, 재개, 결과 확인. 화면·보고서 상세는 [별도 안내](docs/usage/dashboard-and-results.md)에 있습니다.
+- [문제 해결](docs/troubleshooting.md): 증상부터 확인. PoC 의존성·복구 절차는 [상세 안내](docs/troubleshooting/poc-environment.md)로 이어집니다.
 
 ### 동작 원리와 검증
 
 - [아키텍처](docs/architecture/README.md): 파이프라인과 구현 구조
 - [재개·근거 버전](docs/architecture/runtime-and-recovery.md): 체크포인트와 재개 조건
-- [탐지율 평가 방법](docs/validation/2026-10-08-python-recall-methodology.md): 정답표와 측정 범위
+- [검증 기록](docs/validation/README.md): 대상·버전이 고정된 과거 시험. 수치를 현재 성능으로 일반화하지 마세요.
 - [현재 제한과 후속 작업](docs/release-follow-ups.md): 아직 지원하거나 검증하지 않은 범위
 
 ### 프로젝트 안내

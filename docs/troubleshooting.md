@@ -371,7 +371,7 @@ sastsimi resume A-001
 허가를 확정하지 않습니다.
 
 이전 분석의 근거 없는 `ALLOW`가 있으면 CLI의 `report`와 대시보드는 제한된 내용을
-보여 주고, `report F-001 --export markdown`은 기존 원본을 보존한 채
+보여 주고, `sastsimi report export F-001 --format markdown`은 기존 원본을 보존한 채
 `F-001.restricted.md`를 만듭니다. 원본을 외부에 전달하지 마세요. 정책이나 도구가
 갱신됐더라도 기존 분석의 snapshot은 자동 변경되지 않으므로 새 분석으로 다시
 판정해야 합니다. `ALLOW`도 정책상 비공개 제보 조건만 나타내며 외부 공개 승인이
