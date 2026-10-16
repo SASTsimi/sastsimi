@@ -3,6 +3,8 @@
 이 디렉터리는 현재 설치되는 SASTSIMI 코드가 실제로 어떻게 동작하는지 설명합니다.
 과거 설계안이나 작업 계획이 아니라 `src/sastsimi`의 실행 경로를 기준으로 합니다.
 
+<a id="먼저-읽을-문서"></a>
+
 처음에는 [전체 파이프라인](./pipeline.md)에서 단계와 상태를 확인하고,
 [Runtime과 재개](./runtime-and-recovery.md)에서 checkpoint의 재사용 조건을 읽으세요.
 저장된 Python 분석의 v4–v11 표면 보강을 살펴볼 때는

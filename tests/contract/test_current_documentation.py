@@ -51,6 +51,29 @@ def test_local_fragments_reject_missing_target(tmp_path: Path) -> None:
     ]
 
 
+def test_legacy_public_doc_fragments_remain_valid(tmp_path: Path) -> None:
+    validate = _load_fragment_validator()
+    docs = tmp_path / "docs"
+    (docs / "architecture").mkdir(parents=True)
+    (docs / "decisions").mkdir()
+    for relative in (
+        Path("architecture/README.md"),
+        Path("decisions/README.md"),
+    ):
+        source = ROOT / "docs" / relative
+        (docs / relative).write_text(
+            source.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    (docs / "source.md").write_text(
+        "[옛 시작점](architecture/README.md#먼저-읽을-문서) "
+        "[옛 결정 제목](decisions/README.md#현재-설계-결정) "
+        "[옛 결정 목록](decisions/README.md#결정-목록)\n",
+        encoding="utf-8",
+    )
+
+    assert validate(tmp_path, [Path("docs/source.md")]) == []
+
+
 def test_fragment_cli_ignores_untracked_test_artifacts(tmp_path: Path) -> None:
     docs = tmp_path / "docs"
     docs.mkdir()
