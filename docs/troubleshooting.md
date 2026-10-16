@@ -1,5 +1,15 @@
 # 실행 실패 해결
 
+## 증상별 시작점
+
+분석 ID가 있다면 먼저 `sastsimi status A-001`로 상태와 오류 코드를 확인한 뒤 해당 항목으로 이동하세요.
+
+- 명령이나 필수 도구를 찾을 수 없음: [`sastsimi` 명령이 없음](#sastsimi-명령이-없음), [setup이 BLOCKED](#setup이-blocked)
+- 로그인·저장소 접근 오류: [LLM 인증 실패](#llm-인증-실패), [clone 또는 commit 실패](#clone-또는-commit-실패)
+- 정적 검사 또는 동적 검증 오류: [OpenGrep 또는 CodeQL 실패](#opengrep-또는-codeql-실패), [Docker 또는 PoC 실패](#docker-또는-poc-실패)
+- 결과 확인 오류: [대시보드에 분석이 없음](#대시보드에-분석이-없음), [보고서 또는 PoC가 없음](#보고서-또는-poc가-없음), [Scope Gate가 `UNCERTAIN`이거나 보고서가 제한됨](#scope-gate가-uncertain이거나-보고서가-제한됨), [영문·국문 보고서 또는 첨부파일 링크가 보이지 않음](#영문국문-보고서-또는-첨부파일-링크가-보이지-않음)
+- 예상하지 못한 내부 오류: [INTERNAL_ERROR](#internal_error)
+
 ## 먼저 확인할 원칙
 
 인증 실패, 도구 미설치, timeout, LLM 형식 오류, Docker build·실행 실패는 취약점이 없다는 뜻이 아닙니다. SASTSIMI는 이런 오류를 `FALSE`로 바꾸지 않고 `BLOCKED` 또는 verdict 없는 `FAILED`로 저장합니다.
@@ -177,6 +187,8 @@ profile의 정상 capability로 저장하지 않습니다.
 
 ## Docker 또는 PoC 실패
 
+### Docker 엔진 연결과 초기 재개
+
 ```text
 docker version
 docker info
@@ -193,6 +205,8 @@ Docker Desktop은 Linux container 모드여야 합니다.
 기존 완료 작업과 실패 기록은 보존하며, 엔진이 여전히 끊겨 있으면 `BLOCKED`를
 유지합니다. 이 처리는 PoC나 취약점이 확인됐다는 뜻이 아닙니다.
 
+### Python 의존성 준비: `AUTO`와 `OFFLINE_ONLY`
+
 새 실행 프로필의 기본
 `poc_dependency_bundle_mode = "AUTO"`는 `python:3.12-slim` 태그를 확인하고 로컬에 없을
 때만 한 번 받은 뒤 그 실행의 local digest를 고정하고, 안전한 Python 요구사항을 별도
@@ -200,12 +214,15 @@ Docker Desktop은 Linux container 모드여야 합니다.
 수집합니다. resolver에는 대상 저장소를 마운트하거나 실행하지 않고, 완성된 PoC 이미지와
 PoC 컨테이너는 계속 `--network none`입니다. 외부 통신을 전혀 허용하지 않거나 자동
 resolver가 지원하지 않는 프로젝트라면 `OFFLINE_ONLY`를 선택하고 승인된 Python wheel을
-미리 준비할 수 있습니다. Windows의 `AUTO`에서 `WHEEL_ARCHIVE_INVALID`가 나면
+미리 준비할 수 있습니다.
+
+Windows의 `AUTO`에서 `WHEEL_ARCHIVE_INVALID`가 나면
 실제 wheel 손상뿐 아니라 Docker가 임시 폴더에 만든 파일의 호스트 읽기 권한 문제일 수
 있습니다. 현재 버전은 Windows 임시 폴더 권한을 상속해 받은 파일을 다시 검증합니다.
 이전 버전에서 막힌 동일 분석 ID는 오류가 난 초기 검증 단계를 최초 시도 포함 총 3회까지만 재개할 수
 있으며, 정적 검사와 앞서 완료된 단계는 보존합니다. 같은 오류가 계속되면 손상된 wheel
 또는 권한 문제를 확인해야 하며 PoC 성공이나 취약점 반증으로 취급하지 않습니다.
+
 다음 PowerShell 명령은 지정한 폴더의 `.whl` 파일만 평탄한 TAR로 묶고
 SHA-256을 출력합니다. `C:\approved-wheels`는 실제 wheel 폴더로 바꾸고, 그 폴더에는
 필요한 직접·전이·빌드 의존성 wheel을 모두 준비하세요. 빈 폴더나 하위 폴더를 포함한
@@ -241,6 +258,8 @@ poc_wheel_archive_sha256 = "<소문자 SHA-256 64자리>"
 wheel만으로 수집합니다. resolver는 `bridge` 네트워크가 필요한 유일한 Docker 작업이며,
 읽기 전용 컨테이너·capability 제거·리소스 제한으로 실행되고 대상 저장소를 받지 않습니다.
 
+### 비기본 Python 버전과 오프라인 이미지
+
 고정 소스 근거가 다른 Python 버전을 요구하면 초기 Verification은
 `python:X.Y[.Z]`를 기록할 수 있습니다. 기본 `AUTO`의 Python 3.12 동작은
 그대로이며, 비기본 버전은 운영자가 신뢰 가능한 Linux 이미지를 **미리 로컬에
@@ -252,41 +271,59 @@ wheel만으로 수집합니다. resolver는 `bridge` 네트워크가 필요한 �
 `POC_OFFLINE_PYTHON_RUNTIME_UNAVAILABLE`, 실제 버전 불일치는
 `POC_OFFLINE_PYTHON_RUNTIME_MISMATCH`로 남깁니다. 수동 오프라인 경로에
 필요한 wheel 묶음이 없으면 `POC_OFFLINE_PYTHON_RUNTIME_BUNDLE_REQUIRED`입니다.
+
 버전 변경만으로 오래된 고정 의존성의 binary wheel이 생기지는 않습니다.
 형식이 맞지 않는 `python:` 또는 `python ` 런타임 요청은 다른 Python 버전으로
 조용히 실행하지 않고 `POC_OFFLINE_PYTHON_RUNTIME_INVALID`로 거부합니다.
+
 설치할 패키지가 없는 저장소(패키징 manifest가 없거나 빈 `requirements.txt`)는
 검증된 로컬 이미지와 고정 commit의 파일만으로 네트워크 없는 이미지를 만들며,
 선택한 manifest가 `.dockerignore`로 제외되면 빌드 성공으로 처리하지 않고
 `POC_OFFLINE_MANIFEST_EXCLUDED`로 중단합니다. 이미지의 기본 `ENTRYPOINT`는
 PoC 컨테이너 시작 명령에 영향을 주지 않도록 덮어씁니다.
+
 일치하는 wheel을 구할 수 없는 경우에는 sdist·OS 패키지 설치나 PoC 컨테이너의
 네트워크 개방으로 우회하지 않고 해당 시도를 미확정 또는 실패 상태로 보존합니다.
 
+### wheel 검증과 빌드 경계
+
 수집한 wheel의 해시·base digest·입력 hash는 artifact로 기록되며, resolver 실패 시에는
-해당 시도의 stderr/stdout도 별도 artifact로 보존됩니다. 고정 commit의 제품 manifest와
+해당 시도의 stderr/stdout도 별도 artifact로 보존됩니다.
+
+고정 commit의 제품 manifest와
 PEP 621 build-system 요구사항은 권위 있는 입력이라 제거·대체하지 않습니다. 정확한
 `No matching distribution` 진단이 있고 manifest와 정규화한 패키지명이 겹치지 않으며
 다른 요구사항이 남는 경우에만 Agent가 추가한 `pip:` 항목을 제외할 수 있습니다. 이때
 recipe에는 `dependency_resolution_omitted_agent_requirements`와
-`dependency_resolution_omission_attempt_refs`가 남습니다. DB·Redis·메시지 브로커 등
+`dependency_resolution_omission_attempt_refs`가 남습니다.
+
+DB·Redis·메시지 브로커 등
 외부 서비스는 이 모드에서 자동으로 기동하지 않으므로, 실제로 필요하면 `INCONCLUSIVE`
 또는 환경 미검증으로 남습니다.
+
 `OFFLINE_ONLY`는 로컬에 이미 있는 이미지와 검증된 wheel만
 사용합니다. 두 모드 모두 TAR 크기와 TAR 안의 wheel 데이터는 각각 최대 64 MiB이고,
 wheel은 최대 20,000개입니다. 대상 Linux 이미지와 호환되는 wheel이어야 하며 대상
 태그를 확인할 수 없으면 범용 `py3-none-any` wheel만 허용합니다. 저장소 Dockerfile
 대신 생성된 Dockerfile과 고정 commit의 파일로 분리된 빌드 문맥을 만들고,
 `pip --no-index --find-links`로 설치합니다. Docker build와 PoC 컨테이너는 모두
-`--network none`입니다. 제품 패키지를 wheel로 만들 때 ZIP 형식의 최소 시각보다 오래된
+`--network none`입니다.
+
+제품 패키지를 wheel로 만들 때 ZIP 형식의 최소 시각보다 오래된
 파일 때문에 실패하지 않도록, 이미지 안에 복사된 소스 파일의 수정 시각만 고정된
-1980년 값으로 맞춥니다. 파일 내용과 대상 commit은 변경하지 않습니다. 현재 선택된
+1980년 값으로 맞춥니다. 파일 내용과 대상 commit은 변경하지 않습니다.
+
+현재 선택된
 Buildx 빌더가 로컬 Docker 엔진 드라이버인지 `docker buildx inspect`로 확인하며,
-지원되지 않는 빌더면 `POC_OFFLINE_BUILDER_UNSUPPORTED`로 중단합니다. 고정 저장소에
+지원되지 않는 빌더면 `POC_OFFLINE_BUILDER_UNSUPPORTED`로 중단합니다.
+
+고정 저장소에
 추적된 비밀파일은 Docker 문맥에 넣지 않습니다. 공통 테스트 파일 판정과 지원하는
 Flit 패키지 경계를 통해 제품 데이터가 아니라고 확인된 테스트용 비밀파일만
 제외합니다. 패키지 데이터 여부가 불명확하거나 그 밖의 비밀파일이면
-`PINNED_CONTEXT_SECRET_FILE_DENIED`로 차단합니다. 필요한 wheel·전이 의존성·빌드
+`PINNED_CONTEXT_SECRET_FILE_DENIED`로 차단합니다.
+
+필요한 wheel·전이 의존성·빌드
 의존성 또는 로컬 base image가 없으면 명시적으로 `BLOCKED`로 남습니다. sdist,
 VCS·apt 설치, uv/Poetry lock 및 지원되지 않는 manifest는 이 모드에서 설치하지
 않습니다. 실패를 PoC 반증이나 `confirmed` Finding으로 바꾸지 않습니다.
@@ -295,6 +332,7 @@ VCS·apt 설치, uv/Poetry lock 및 지원되지 않는 manifest는 이 모드�
 
 `AUTO`가 지원하지 않는 설치 방식(예: VCS/URL, sdist, OS 패키지, uv/Poetry)에는
 resolver를 임의로 확장하거나 대상 Dockerfile의 네트워크를 열지 않습니다.
+
 `POC_AUTO_BUNDLE_DOWNLOAD_FAILED` attempt receipt가 있다고 항상 PoC가 차단된 것은
 아닙니다. 위 조건을 만족하는 Agent 추가 항목은 receipt를 보존한 뒤 나머지 요구사항으로
 계속할 수 있습니다. 반대로 고정 manifest·build 요구사항의 no-match는 제외하거나 같은
@@ -303,7 +341,9 @@ source·PoC 입력의 다운로드를 자동 재시도하지 않습니다. 해�
 종료합니다. timeout·receipt 연결 실패·지원하지 않는 manifest는 이 종료로 바꾸지 않고
 `BLOCKED`로 남습니다. 이 경우 `POC_AUTO_BUNDLE_MANIFEST_UNSUPPORTED` 또는
 `POC_AUTO_BUNDLE_DOWNLOAD_FAILED` artifact를 확인한 뒤 수동 wheel 묶음을 사용하거나
-새 분석으로 재시도하세요. `OFFLINE_ONLY`에서 wheel 묶음 없이 쓰는 기존
+새 분석으로 재시도하세요.
+
+`OFFLINE_ONLY`에서 wheel 묶음 없이 쓰는 기존
 경로는 저장소 Dockerfile이 있으면 우선 사용하고, 없으면 Python package 파일을
 바탕으로 기본 Dockerfile을 만듭니다. 하위 프로젝트 설치가 실패하면 의존성 없는
 이미지로 성공을 가장하지 않고 빌드 오류와 시도 기록을 남깁니다. 그 외 의존성 설치
@@ -311,25 +351,33 @@ source·PoC 입력의 다운로드를 자동 재시도하지 않습니다. 해�
 시도합니다. 이 경우 recipe의 `dockerfile_source`가 `GENERATED_NO_INSTALL`,
 `degraded`가 `true`가 되고 두 빌드 시도와 원본 진단이 artifact에 남습니다. 소스 전용
 image가 만들어졌다는 사실만으로 PoC 검증이나 취약점 판정이 성공한 것은 아닙니다.
+
 두 빌드가 모두 실패하거나 실패 원인이 의존성 설치가 아니면 `DOCKER_BUILD_FAILED`로
 중단하고 환경을 확인한 뒤 `sastsimi resume A-001`을 실행합니다.
+
+### 환경 미검증과 실행 전 검사
 
 소스 전용 image만 만들 수 있고 제품 의존성이 재현되지 않았다면 PoC 실행 전에
 `POC_ENVIRONMENT_UNVERIFIED`로 차단합니다. 이 환경의 결과를 검증된 PoC나 취약점
 부재의 근거로 승격하지 않습니다. `AUTO`는 안전한 Python binary wheel 설치만
 제한적으로 처리하며, 최종 build·PoC 네트워크 정책은 자동으로 완화하지 않습니다.
+
 이미 재시도 불가로 저장된 이 PoC는 profile에 wheel 묶음을 추가해도 같은 ID의
 `resume`으로 다시 실행되지 않습니다. 기존 분석을 보존하고 검증 가능한 의존성 환경을
 준비한 뒤 새 분석을 시작해야 합니다.
 
-`POC_RUNTIME_IMPORT_FAILED`는 컨테이너에서 PoC 또는 대상 앱을 불러오는 중 Python import가 실패했다는 뜻입니다. 실행·stderr·컨테이너 정리 근거를 보존한 `BLOCKED` 상태이며, 실제 공격 요청이 실행됐거나 취약점이 반증됐다는 뜻은 아닙니다. 누락된 모듈이 제품 의존성인지 PoC 코드 의존성인지는 고정 소스와 이미지 입력을 함께 확인해야 합니다. 패키지를 임의로 설치하거나 네트워크 격리를 풀지 않으며, 승인된 의존성·wheel로 환경을 다시 만들 수 있는 경우에만 재검증하세요. 단순 `resume`이 기존 이미지 digest를 재사용한다면 환경 변경이 반영되지 않으므로 같은 오류를 반복할 수 있습니다.
+`POC_RUNTIME_IMPORT_FAILED`는 컨테이너에서 PoC 또는 대상 앱을 불러오는 중 Python import가 실패했다는 뜻입니다. 실행·stderr·컨테이너 정리 근거를 보존한 `BLOCKED` 상태이며, 실제 공격 요청이 실행됐거나 취약점이 반증됐다는 뜻은 아닙니다.
+
+누락된 모듈이 제품 의존성인지 PoC 코드 의존성인지는 고정 소스와 이미지 입력을 함께 확인해야 합니다. 패키지를 임의로 설치하거나 네트워크 격리를 풀지 않으며, 승인된 의존성·wheel로 환경을 다시 만들 수 있는 경우에만 재검증하세요. 단순 `resume`이 기존 이미지 digest를 재사용한다면 환경 변경이 반영되지 않으므로 같은 오류를 반복할 수 있습니다.
 
 `POC_OFFLINE_BASE_IMAGE_UNAVAILABLE`은 PoC 실행 전 로컬 Python base image를
 확인하거나 고정하는 과정이 실패했다는 뜻입니다. 이미지가 실제로 없을 수도
 있고 Docker 응답 지연일 수도 있으므로 이 코드만으로 원인을 단정하지 않습니다.
 Docker가 정상이고 설정된 이미지가 로컬에 있는지 확인한 뒤 `resume`을
 실행하면, 도구가 base-image 준비 상태를 다시 검사한 경우에만 실패한 초기
-검증 단계를 제한된 횟수 내에서 재시도합니다. 기존 가설과 PoC 결과를 지우거나
+검증 단계를 제한된 횟수 내에서 재시도합니다.
+
+기존 가설과 PoC 결과를 지우거나
 강제로 `COMPLETE`로 바꾸지 않습니다.
 
 이 안전 검사보다 앞서 완료된 PoC는 DB와 아티팩트를 보존하되 현재 검증으로 표시하지 않습니다. 상태가 `POC_REVALIDATION_REQUIRED`라면 같은 분석 ID를 `sastsimi resume A-001`로 재개하세요. 완료된 정적 검사·후보 선별·Pro/Con·초기 검증·PoC 후보는 재사용하고 PoC 실행과 후속 판정만 새 기준으로 확인합니다. 필요한 의존성을 오프라인에서 구할 수 없으면 재검증도 `BLOCKED`로 남으며, 이전 보고서를 제보 근거로 다시 사용해서는 안 됩니다.
@@ -353,6 +401,8 @@ sastsimi resume A-001 --repair-docker-owned-list-exhaustion hypothesis-...
 
 Windows에서 Docker 소유 리소스 journal 파일의 원자적 교체가 일시적인 공유 거부로 실패하면 최대 5회 재시도합니다. 계속 `Access denied`가 나면 권한이나 보안 프로그램 점유를 확인하세요. 이때 다른 분석의 컨테이너를 임의로 정리하지 않습니다.
 
+### 브라우저 실행 환경
+
 wheel 묶음을 지정하지 않은 기존 경로에서 Python Playwright가 PoC 실행 중
 `BrowserType.launch: Executable doesn't exist` 오류를 내고 실제 실행 stderr가
 누락된 Chromium·Firefox·WebKit 바이너리를 가리키면, 해당 가설의 일회용 Docker
@@ -365,6 +415,8 @@ wheel 묶음을 지정하지 않은 기존 경로에서 Python Playwright가 PoC
 지원되지 않으면 실행 오류로 `BLOCKED`에 남깁니다. 대상 저장소나 호스트 파일은
 수정하지 않고 PoC 런타임 네트워크 차단도 해제하지 않습니다.
 
+### PoC 결과 해석과 종료 상태
+
 `POC_INCONCLUSIVE`는 스크립트 실행이 완료됐지만 출력만으로 가설을 지지하거나
 반증할 수 없다는 뜻입니다. 제한된 횟수 안에서 PoC 입력을 보강합니다.
 PoC 스크립트의 종료 코드 0은 관찰 완료를 뜻할 뿐 취약점 재현 증거는 아닙니다.
@@ -374,20 +426,24 @@ PoC 스크립트의 종료 코드 0은 관찰 완료를 뜻할 뿐 취약점 재
 출력을 별도로 검사합니다. 완료된
 미확정 관찰은 표식 출력 후 종료 0, 실제 PoC 실행 오류만 stderr 진단 후 종료 2로
 구분해야 합니다. 분기 구조가 모호하면 자동으로 취약점 근거로 받아들이지 않습니다.
+
 `POC_PROCESS_LOCAL_FIXTURE_UNVERIFIED`는 PoC 안에서만 정의한 클래스를
 직렬화한 뒤 같은 프로세스의 테스트 클라이언트에 보낸 경우입니다. 대상 서버가
 그 클래스를 실제로 해석할 수 있다는 증거가 아니므로 후보를 보강하게 하며,
 기존에 저장된 후보라도 실행 전에 다시 검사합니다. 분석 불가 신호는 취약점
 반증으로 취급하지 않습니다.
+
 예를 들어 실제 HTTP 경로가 5xx로 끝났다면 이를 프레임워크 테스트 모드의
 예외 전파와 구분해 기록하고, 주장한 효과가 관찰되지 않으면 재현 성공으로
 해석하지 않습니다. PoC가 `SASTSIMI_POC_INCONCLUSIVE`를 별도 출력 줄로
 선언했는데 해석 Agent가 이를 지지·반증으로 판정하면 그 판정은 수용하지 않고
 오류로 남깁니다.
+
 `POC_OUTPUT_TRUNCATED`는 stdout 또는 stderr가 캡처 상한(각 1 MiB)에 도달해
 앞부분이 잘렸을 수 있다는 뜻입니다. 누락된 출력에 반증이나 미확정 표식이 있을 수
 있으므로 이를 취약점 재현으로 판정하지 않고 실행 오류로 남깁니다. PoC 출력량을
 줄여 다시 실행해야 하며, 잘린 출력만으로 `TRUE`를 부여하지 않습니다.
+
 복구 상한에 이른 마지막 실행이 종료 코드 0이면서 여전히 근거 부족이면
 가설을 `INCONCLUSIVE`·제보 불가로 종료합니다.
 상한 전이라도 복구 Agent가 `STOP`을 결정했다면, 같은 시도의 실행 성공·해석
@@ -395,6 +451,7 @@ PoC 스크립트의 종료 코드 0은 관찰 완료를 뜻할 뿐 취약점 재
 근거 연결이 없거나 실행 자체가 실패했다면 `BLOCKED`를 유지합니다.
 전체 가설이 분석상 종료되고 다른 실행 오류가 없으면 정적 범위에 따라
 `COMPLETE` 또는 `PARTIAL`입니다.
+
 반면 `POC_EXECUTION_FAILED`와 Docker/Provider 오류는 완료된 관찰이 아니므로
 계속 `BLOCKED` 또는 판정 없는 `FAILED`로 남습니다.
 
@@ -405,6 +462,8 @@ PoC 스크립트의 종료 코드 0은 관찰 완료를 뜻할 뿐 취약점 재
 Docker 호출 자체가 실패했다면 이 규칙을 적용하지 않습니다. 복구 Agent의
 결정이 정책 검증에 실패하면 허용된 결정 형식과 오류 코드만 알려 한 번 다시
 요청하고, 두 번째도 실패하면 실패 근거를 보존한 채 중단합니다.
+
+### 과거 실패 기록의 명시적 재개
 
 이 규칙이 추가되기 전에 `recovery output failed policy validation`으로
 저장된 `POC_EXECUTION_FAILED`의 `FALLBACK STOP`은 일반 `resume`만으로
@@ -474,9 +533,15 @@ sastsimi resume A-001 --repair-poc-sensitive-content hypothesis-...
 sastsimi resume A-001 --repair-poc-anchor hypothesis-...
 ```
 
+### 검증 근거와 복구 상한
+
 PoC 초안은 validated PoC가 아닙니다. 같은 attempt에서 실제 실행이 성공하고 가설을 지지해야만 validated PoC가 됩니다.
 
-초기 Verification의 `environment_requirements`에는 설치 가능한 Python 실행환경과 패키지만 넣습니다. 공격자가 대상 프로세스 설정을 바꿀 권한, 외부 서비스·자격 증명·네트워크 호출처럼 별도로 입증해야 하는 조건은 `unmet_external_prerequisites`로 기록합니다. 이 조건이 남으면 해당 가설은 환경 준비·PoC·Finding·보고서를 실행하지 않고 `INCONCLUSIVE`(제보 불가)로 끝납니다. 검증하지 못한 공격 표면은 여전히 미검증이며 전체 분석이 `PARTIAL`일 수 있습니다. 반대로 설치 요구 자체가 지원되지 않아 `POC_OFFLINE_REQUIREMENT_UNSUPPORTED`가 발생했다면 이를 미확정으로 위장하지 않고 `BLOCKED`로 남깁니다. 과거 형식 때문에 이 오류로 멈춘 같은 분석은 완료된 앞 단계를 보존하고 초기 Verification만 최대 3회까지 재평가할 수 있습니다.
+초기 Verification의 `environment_requirements`에는 설치 가능한 Python 실행환경과 패키지만 넣습니다. 공격자가 대상 프로세스 설정을 바꿀 권한, 외부 서비스·자격 증명·네트워크 호출처럼 별도로 입증해야 하는 조건은 `unmet_external_prerequisites`로 기록합니다.
+
+이 조건이 남으면 해당 가설은 환경 준비·PoC·Finding·보고서를 실행하지 않고 `INCONCLUSIVE`(제보 불가)로 끝납니다. 검증하지 못한 공격 표면은 여전히 미검증이며 전체 분석이 `PARTIAL`일 수 있습니다.
+
+반대로 설치 요구 자체가 지원되지 않아 `POC_OFFLINE_REQUIREMENT_UNSUPPORTED`가 발생했다면 이를 미확정으로 위장하지 않고 `BLOCKED`로 남깁니다. 과거 형식 때문에 이 오류로 멈춘 같은 분석은 완료된 앞 단계를 보존하고 초기 Verification만 최대 3회까지 재평가할 수 있습니다.
 
 `INITIAL_VERIFICATION_EVIDENCE_INVALID`는 이 조기 종료의 Agent 근거 아티팩트가 없거나 내용·해시·시도 ID가 일치하지 않는다는 뜻입니다. CLI와 대시보드는 이를 완료로 계산하지 않고 `BLOCKED`로 표시하며, `resume`도 손상된 근거를 미확정 판정으로 재사용하지 않습니다. 원본 분석 데이터를 지우거나 임의로 복구했다고 표시하지 마세요.
 
@@ -484,13 +549,29 @@ PoC 초안은 validated PoC가 아닙니다. 같은 attempt에서 실제 실행�
 
 `POC_TERMINAL_EVIDENCE_INVALID`는 복구 상한에 이른 PoC의 실행·해석 근거가 삭제·손상됐다는 뜻입니다. 이 경우에도 완료된 미확정 판정으로 세지 않고 `BLOCKED`로 표시합니다.
 
-PoC Agent에는 고정 commit에서 검증한 Pro/Con 핵심 소스와 Pro·Con Agent가 요청한 저장소 상대 경로 중 Git 추적 파일만 전달합니다. 본문은 현재 작업 폴더가 아니라 고정 commit의 Git blob에서 읽어 재개 중 파일 변경의 영향을 받지 않습니다. 경로 이탈, 심볼릭 링크, 비추적 파일과 크기 한도 초과 파일은 거부하고 `simple_requested_sources` artifact에 제공·거부 내역을 남깁니다. PoC 단계는 원본 소스 총량 128,000바이트, 요청 경로 32개, JSON 변환 후 프롬프트 source artifact 96,000바이트로 제한합니다. 큰 파일은 내용을 읽기 전에 거부하고, 포장 후 한도를 넘는 파일은 `PROMPT_BUDGET_EXHAUSTED`로 남깁니다. 재시도는 최신 후보·실행 기록과, 존재하는 경우 최신 검증 피드백을 필수 근거로 전달하고 이전의 큰 스크립트·stdout·stderr는 한도 내 선택 문맥으로만 추가합니다. 필수 근거가 문맥 한도를 넘거나 고정 소스 anchor가 손상되면 각각 `HYPOTHESIS_CONTEXT_OVERFLOW` 또는 `HYPOTHESIS_ANCHOR_INVALID`로 중단하며 임의로 잘라 성공 처리하지 않습니다. 이 근거 제공은 재현 코드의 성공을 보장하지 않습니다.
+PoC Agent에는 고정 commit에서 검증한 Pro/Con 핵심 소스와 Pro·Con Agent가 요청한 저장소 상대 경로 중 Git 추적 파일만 전달합니다. 본문은 현재 작업 폴더가 아니라 고정 commit의 Git blob에서 읽어 재개 중 파일 변경의 영향을 받지 않습니다. 경로 이탈, 심볼릭 링크, 비추적 파일과 크기 한도 초과 파일은 거부하고 `simple_requested_sources` artifact에 제공·거부 내역을 남깁니다.
 
-동적 실행 오류의 복구 계보가 최대 3회 시도를 소진하면 `RECOVERY_EXHAUSTED`로 남습니다. 일반 `resume`은 이미 소진된 시도를 임의로 초기화하지 않습니다. 예외적으로 과거 초기 Docker 빌드 실패 기록에서 **엔진 연결 실패**가 저장된 원문과 계보로 확인되고 현재 Docker API가 정상일 때만, 한 번의 감사 가능한 추가 재개를 허용합니다. `--enrich-saved-surface-evidence`와 함께 재개해도 같은 검증을 적용합니다. 실제 Dockerfile·의존성 오류에는 적용하지 않습니다. 위의 증거로 확인된 로컬 import-root 수리나 아래의 명시적 오프라인 base-image 수리 조건에도 해당하지 않으면 원인을 수정한 뒤 새 분석을 시작하고 이전 분석·artifact를 보존하세요.
+PoC 단계는 원본 소스 총량 128,000바이트, 요청 경로 32개, JSON 변환 후 프롬프트 source artifact 96,000바이트로 제한합니다. 큰 파일은 내용을 읽기 전에 거부하고, 포장 후 한도를 넘는 파일은 `PROMPT_BUDGET_EXHAUSTED`로 남깁니다.
 
-오프라인 PoC의 **base-image 환경 결함을 별도로 확인한 경우**, 로컬에 준비한 **Python 3.12·헤드리스 브라우저 포함 Linux 이미지의 고정 digest**를 실행 프로필의 `poc_offline_base_image_digest`에 지정할 수 있습니다. 브라우저 부재는 실제 분석에서 확인된 예시이며, PoC 논리·취약점 근거·정책 오류는 이미지 변경으로 해결되지 않습니다. 이미지는 신뢰할 수 있는 소스에서 별도로 준비해야 하며 실제 PoC 빌드·실행에는 네트워크를 열지 않습니다. 현재 분석 ID와 실패한 `hypothesis-...` ID를 확인한 다음 `sastsimi resume A-001 --repair-exhausted-hypothesis hypothesis-...`로 명시적으로 요청하세요. 도구는 `POC_EXECUTION_DONE`의 정확한 소진 기록과 오프라인 레시피, 새 digest가 이전 레시피와 다른지, 로컬 이미지가 네트워크 없는 비루트·읽기 전용 컨테이너에서 Python과 브라우저를 실제 실행하는지 검사합니다. 검사가 통과할 때에만 해당 가설의 환경 단계부터 **추가 시도 1회**를 허용하고 기존 실패 아티팩트와 다른 완료 작업은 보존합니다. 이것은 원래 오류가 이미지 때문임을 자동 증명하거나 PoC 성공을 보장하지 않습니다. 새 시도도 실패하면 `BLOCKED`를 유지하며, 다른 단계의 소진 오류나 증거 손상에는 이 경로를 사용하지 않습니다.
+재시도는 최신 후보·실행 기록과, 존재하는 경우 최신 검증 피드백을 필수 근거로 전달하고 이전의 큰 스크립트·stdout·stderr는 한도 내 선택 문맥으로만 추가합니다. 필수 근거가 문맥 한도를 넘거나 고정 소스 anchor가 손상되면 각각 `HYPOTHESIS_CONTEXT_OVERFLOW` 또는 `HYPOTHESIS_ANCHOR_INVALID`로 중단하며 임의로 잘라 성공 처리하지 않습니다. 이 근거 제공은 재현 코드의 성공을 보장하지 않습니다.
 
-Technical Gate의 `REVISE`는 Docker 오류가 아니라 검증 근거 보완 요청입니다. Runtime은 요청을 저장하고 해당 가설의 PoC 후보부터 Docker 실행·최종 Verification·Gate를 새 시도로 진행합니다. Gate 결정은 최대 세 번이며, 마지막에도 `REVISE`이면 `INCONCLUSIVE`, 명시적으로 `REJECT`이면 제보 불가로 끝납니다. 이 두 결과는 Finding 없이 분석을 끝낼 수 있지만 정적 누락이 남으면 최종 상태는 `PARTIAL`입니다. 취약점 반증이나 제보 승인을 뜻하지 않습니다. Docker·인증·Provider·DB 실행 오류는 `BLOCKED` 또는 `FAILED`가 우선합니다.
+동적 실행 오류의 복구 계보가 최대 3회 시도를 소진하면 `RECOVERY_EXHAUSTED`로 남습니다. 일반 `resume`은 이미 소진된 시도를 임의로 초기화하지 않습니다.
+
+예외적으로 과거 초기 Docker 빌드 실패 기록에서 **엔진 연결 실패**가 저장된 원문과 계보로 확인되고 현재 Docker API가 정상일 때만, 한 번의 감사 가능한 추가 재개를 허용합니다. `--enrich-saved-surface-evidence`와 함께 재개해도 같은 검증을 적용합니다. 실제 Dockerfile·의존성 오류에는 적용하지 않습니다.
+
+위의 증거로 확인된 로컬 import-root 수리나 아래의 명시적 오프라인 base-image 수리 조건에도 해당하지 않으면 원인을 수정한 뒤 새 분석을 시작하고 이전 분석·artifact를 보존하세요.
+
+오프라인 PoC의 **base-image 환경 결함을 별도로 확인한 경우**, 로컬에 준비한 **Python 3.12·헤드리스 브라우저 포함 Linux 이미지의 고정 digest**를 실행 프로필의 `poc_offline_base_image_digest`에 지정할 수 있습니다. 브라우저 부재는 실제 분석에서 확인된 예시이며, PoC 논리·취약점 근거·정책 오류는 이미지 변경으로 해결되지 않습니다. 이미지는 신뢰할 수 있는 소스에서 별도로 준비해야 하며 실제 PoC 빌드·실행에는 네트워크를 열지 않습니다.
+
+현재 분석 ID와 실패한 `hypothesis-...` ID를 확인한 다음 `sastsimi resume A-001 --repair-exhausted-hypothesis hypothesis-...`로 명시적으로 요청하세요. 도구는 `POC_EXECUTION_DONE`의 정확한 소진 기록과 오프라인 레시피, 새 digest가 이전 레시피와 다른지, 로컬 이미지가 네트워크 없는 비루트·읽기 전용 컨테이너에서 Python과 브라우저를 실제 실행하는지 검사합니다.
+
+검사가 통과할 때에만 해당 가설의 환경 단계부터 **추가 시도 1회**를 허용하고 기존 실패 아티팩트와 다른 완료 작업은 보존합니다. 이것은 원래 오류가 이미지 때문임을 자동 증명하거나 PoC 성공을 보장하지 않습니다. 새 시도도 실패하면 `BLOCKED`를 유지하며, 다른 단계의 소진 오류나 증거 손상에는 이 경로를 사용하지 않습니다.
+
+### Technical Gate 재검토
+
+Technical Gate의 `REVISE`는 Docker 오류가 아니라 검증 근거 보완 요청입니다. Runtime은 요청을 저장하고 해당 가설의 PoC 후보부터 Docker 실행·최종 Verification·Gate를 새 시도로 진행합니다. Gate 결정은 최대 세 번이며, 마지막에도 `REVISE`이면 `INCONCLUSIVE`, 명시적으로 `REJECT`이면 제보 불가로 끝납니다.
+
+이 두 결과는 Finding 없이 분석을 끝낼 수 있지만 정적 누락이 남으면 최종 상태는 `PARTIAL`입니다. 취약점 반증이나 제보 승인을 뜻하지 않습니다. Docker·인증·Provider·DB 실행 오류는 `BLOCKED` 또는 `FAILED`가 우선합니다.
 
 ## 대시보드에 분석이 없음
 
