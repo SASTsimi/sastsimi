@@ -1,8 +1,8 @@
 # LLM Provider 설정
 
-Agent 이름·역할·입출력은 특정 Provider나 model에 고정되지 않습니다. 실제 연결은 setup이 만든 `provider_profile_ref + model` 설정으로 선택합니다.
+Agent 이름·역할·입출력은 특정 Provider나 model에 고정되지 않습니다. 실제 연결은 `setup`이 만든 `provider_profile_ref + model` 설정으로 선택합니다.
 
-먼저 사용할 인증 경로를 고른 뒤 해당 절의 로그인·설정 명령을 실행하세요. 현재 SimpleRuntime에서 직접 사용할 수 있는 경로는 네 가지입니다.
+아래에서 **하나의 인증 경로**를 골라 해당 절의 로그인·설정 명령만 실행하세요. 현재 SimpleRuntime에서 직접 사용할 수 있는 경로는 네 가지입니다.
 
 - [OpenAI API](#openai-api): 환경변수의 API key로 Responses API 사용
 - [Codex 회원 로그인](#codex-회원-로그인): 공식 Codex CLI에서 ChatGPT 회원 로그인 사용

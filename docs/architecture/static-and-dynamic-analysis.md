@@ -1,5 +1,10 @@
 # 정적 분석과 동적 재현
 
+이 문서는 고정 commit에서 어떤 파일·규칙을 검사했는지와 PoC 후보를 실제 실행 근거로
+인정하는 조건을 설명합니다. Python 범위의 공백과 PoC 실패는 취약점 부재가 아닙니다.
+전체 단계 순서는 [실제 분석 파이프라인](./pipeline.md), 실행·재개 상태는
+[Runtime과 실패 지점 재개](./runtime-and-recovery.md)를 봅니다.
+
 ## 구현된 책임
 
 Repository Loader는 URL 또는 로컬 경로의 저장소를 고정 commit으로 준비하고 추적 파일을

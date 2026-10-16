@@ -1,5 +1,9 @@
 # Agent와 LLM Provider
 
+이 문서는 각 Agent가 맡는 판단과 모델 라우팅을 설명합니다. 실제 로그인·설정 절차는
+[Provider 설정](../provider-setup.md)을, 호출 예산과 재개 규칙은
+[Runtime과 실패 지점 재개](./runtime-and-recovery.md)를 참고하세요.
+
 ## 구현된 책임
 
 Agent 이름은 역할을 뜻하며 특정 회사나 모델 이름이 아닙니다. 실제 Provider와 model은

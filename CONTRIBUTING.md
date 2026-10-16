@@ -1,7 +1,7 @@
 # SASTSIMI 기여 안내
 
 SASTSIMI의 현재 실행 기능을 유지하면서 코드와 문서를 안전하게 개선하기 위한 안내입니다.
-처음 참여한다면 [문서 지도](./docs/DOCUMENT_GUIDE.md),
+처음 참여한다면 [문서 시작점](./docs/README.md)과 [상세 문서 지도](./docs/DOCUMENT_GUIDE.md),
 [현재 구현 아키텍처](./docs/architecture/README.md),
 [구현 위치 지도](./docs/architecture/implementation-map.md)를 먼저 확인하세요.
 
@@ -74,7 +74,8 @@ sastsimi resume <analysis_id>
 sastsimi dashboard
 sastsimi result <analysis_id>
 sastsimi poc <finding_id>
-sastsimi report <finding_id> --export markdown
+sastsimi report show <finding_id>
+sastsimi report export <finding_id> --format markdown
 ```
 
 CLI나 설정을 수정할 때는 Windows와 Linux/WSL 경로 처리, 기존 분석 데이터 조회,
@@ -134,4 +135,7 @@ Medium과 Low는 별도 Issue로 분리할 수 있습니다.
 - 현재 지원하지 않거나 검증하지 않은 기능을 사용할 수 있다고 쓰지 않습니다.
 - 실제 동작, 사용자 명령, 기본 경로와 생성 파일명을 코드와 맞춥니다.
 - 과거 경로 대신 `docs/architecture/`, `docs/decisions/`와 실제 코드 경로를 연결합니다.
-- 문서를 삭제하거나 옮겼다면 `docs/DOCUMENT_GUIDE.md`와 내부 링크도 함께 수정합니다.
+- 현재 사용법은 `docs/README.md`에서, 과거 설계·검증 기록은 `docs/plans/README.md`와
+  `docs/validation/README.md`에서 찾을 수 있게 연결합니다. 원본 기록의 수치를 최신 성능으로 쓰지 않습니다.
+- 문서를 삭제하거나 옮겼다면 원래 경로의 길잡이, `docs/DOCUMENT_GUIDE.md`와 내부 링크를 함께 수정합니다.
+- 문서 변경 후 프래그먼트까지 검사하는 `scripts/validate-current-docs.ps1`을 실행합니다.
