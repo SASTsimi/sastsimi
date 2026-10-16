@@ -1,13 +1,13 @@
 # 대시보드 발표 시나리오
 
-짧은 시연에서 같은 결과를 설명할 수 있도록 저장소와 commit을 고정합니다.
+짧은 시연에서는 저장소와 commit을 고정합니다. 아래는 **예시 대상**이며, 실제 Finding 수와 상태는 실행 환경에 따라 달라집니다. 발표 전에 저장된 분석의 상태와 근거를 직접 확인하세요.
 
 ```text
 저장소: https://github.com/adeyosemanputra/pygoat.git
 commit: 19d17cc8874861142b330636d068bbde54e86b85
 ```
 
-두 개의 터미널을 준비합니다. 첫 번째 터미널에서 분석을 시작합니다.
+두 개의 터미널을 준비합니다. 첫 번째에서 분석을 시작하고, 두 번째에서 읽기 전용 대시보드를 엽니다.
 
 ```text
 sastsimi analyze https://github.com/adeyosemanputra/pygoat.git --commit 19d17cc8874861142b330636d068bbde54e86b85

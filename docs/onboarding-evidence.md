@@ -1,6 +1,8 @@
 # 운영 onboarding manifest와 근거 작성 안내
 
-이 문서는 production profile을 `READY`로 검사할 때 필요한 secret 없는 파일과 각 필드의 의미를 설명합니다. 여기의 값은 예시이며 실제 시험·평가·사람 승인을 대신하지 않습니다.
+이 문서는 production profile을 `READY`로 검사할 때 필요한 secret 없는 파일과 필드의 의미를 설명합니다. 예시는 실제 시험·평가·사람 승인을 대신하지 않습니다.
+
+읽는 순서는 [필요한 값 조회](#1-먼저-필요한-값을-조회합니다) → [근거 파일 규칙](#2-근거-파일의-공통-규칙) → [Provisioning manifest](#3-productionprovisioningmanifest) → [Onboarding manifest](#4-productiononboardingmanifest) → [가져오기와 확인](#5-승인-입력-조립-가져오기와-ready-확인)입니다.
 
 현재 실행 계약은 `src/sastsimi/orchestration/production_onboarding.py`의 `ProductionOnboardingManifest`, `ProductionProvisioningManifest`, `PVDObservation`과 `src/sastsimi/orchestration/production_provisioning.py`의 슬롯별 문서 모델입니다. Provider와 Agent 경계는 [Agent와 LLM Provider](./architecture/agents-and-providers.md), 실제 코드 위치는 [구현 위치 지도](./architecture/implementation-map.md)를 함께 확인합니다.
 
