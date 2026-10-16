@@ -49,15 +49,32 @@ OpenGrep, Docker 및 LLM 인증 수단을 먼저 준비하세요. 아래는 본�
 외부 도구 설치는 [설치 안내](docs/installation.md), Cursor·Claude·OpenAI API 및
 모델 선택은 [Provider 안내](docs/provider-setup.md)에 있습니다.
 
+### 1. 저장소 복제·가상환경 준비
+
 ```powershell
 git clone https://github.com/SASTsimi/sastsimi.git
 cd sastsimi
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install .
+```
+
+### 2. Codex 로그인 확인
+
+```powershell
 codex login
 codex login status
+```
+
+### 3. SASTSIMI 설정
+
+```powershell
 sastsimi setup --non-interactive --auth subscription --provider codex --model gpt-6-sol --profile lightweight
+```
+
+### 4. 대상 저장소·커밋 지정 후 분석
+
+```powershell
 $repo = Read-Host 'Git 저장소 URL 또는 로컬 경로'
 $commit = Read-Host '분석할 정확한 commit SHA'
 sastsimi analyze $repo --commit $commit
