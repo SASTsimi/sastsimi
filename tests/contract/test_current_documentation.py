@@ -1,13 +1,15 @@
 import importlib.util
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[2]
 FRAGMENT_SCRIPT = ROOT / "scripts" / "validate_doc_fragments.py"
 
 
-def _load_fragment_validator():
+def _load_fragment_validator() -> Callable[[Path, list[Path]], list[str]]:
     assert FRAGMENT_SCRIPT.is_file(), "local Markdown fragment validator is missing"
     spec = importlib.util.spec_from_file_location(
         "validate_doc_fragments", FRAGMENT_SCRIPT
@@ -15,7 +17,9 @@ def _load_fragment_validator():
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.validate_local_fragments
+    return cast(
+        Callable[[Path, list[Path]], list[str]], module.validate_local_fragments
+    )
 
 
 def test_local_fragments_accept_unicode_duplicate_and_explicit_id(
