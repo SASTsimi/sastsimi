@@ -134,6 +134,19 @@ foreach ($relativePath in $markdown) {
     }
 }
 
+$python = Get-Command python -ErrorAction SilentlyContinue
+if (-not $python) {
+    Add-Failure 'Python is required to validate local Markdown fragments.'
+}
+else {
+    $fragmentOutput = @(& $python.Source (Join-Path $root 'scripts/validate_doc_fragments.py') --root $root 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        foreach ($line in $fragmentOutput) {
+            Add-Failure "fragment validation: $line"
+        }
+    }
+}
+
 $sourceReferenceCount = 0
 $architectureFiles = Get-ChildItem -LiteralPath (Join-Path $root 'docs/architecture') -File -Filter '*.md'
 foreach ($file in $architectureFiles) {
