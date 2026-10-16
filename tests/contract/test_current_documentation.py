@@ -25,7 +25,7 @@ def test_local_fragments_accept_unicode_duplicate_and_explicit_id(
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "target.md").write_text(
-        "# 분석 방법\n\n## 결과\n\n## 결과\n\n<a id=\"manual\"></a>\n",
+        '# 분석 방법\n\n## 결과\n\n## 결과\n\n<a id="manual"></a>\n',
         encoding="utf-8",
     )
     (docs / "source.md").write_text(
