@@ -38,6 +38,8 @@ flowchart LR
 `full` 프로필에는 CodeQL Python 검사가 추가됩니다. 선택형 Semgrep CE는
 OpenGrep이 검증하지 못한 파일·규칙 조합만 재검사합니다. 한 도구의 실패를
 다른 도구의 “탐지 없음”으로 바꾸지 않습니다.
+Semgrep 재검사를 사용하려면 `python -m pip install semgrep` 후 `sastsimi setup`에
+`--semgrep-fallback`을 추가하고 기존 인증·모델·프로필 옵션도 함께 지정하세요.
 
 ## 빠른 시작
 
@@ -65,6 +67,8 @@ sastsimi analyze $repo --commit $commit
 `.\.venv\Scripts\Activate.ps1`을 다시 실행하세요. `full` 프로필은 공식
 CodeQL bundle과 Python query pack이 필요합니다. 긴 분석은 LLM 사용량과
 실행시간이 커질 수 있습니다.
+개발용 잠금 의존성까지 설치할 때는 `uv sync --frozen --all-groups`를 사용할 수
+있습니다. OpenAI API 인증은 `OPENAI_API_KEY` 환경변수로 전달합니다.
 
 ### 진행 상황 보기
 
