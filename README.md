@@ -155,12 +155,26 @@ sastsimi report export F-001 --format markdown
 
 ## 더 알아보기
 
-| 시작과 운영 | 원리와 검증 |
-| :--- | :--- |
-| [설치](docs/installation.md) · [Provider·모델](docs/provider-setup.md) · [CLI·대시보드](docs/usage.md) · [문제 해결](docs/troubleshooting.md) | [아키텍처](docs/architecture/README.md) · [재개·근거 버전](docs/architecture/runtime-and-recovery.md) · [탐지율 평가 방법](docs/validation/2026-10-08-python-recall-methodology.md) · [검증 기록](docs/release-follow-ups.md) |
+### 시작과 운영
 
-[기여 안내](CONTRIBUTING.md) · [용어집](docs/GLOSSARY.md)
+- [설치](docs/installation.md): 환경과 외부 도구 준비
+- [Provider·모델](docs/provider-setup.md): 인증과 모델 선택
+- [CLI·대시보드](docs/usage.md): 분석, 재개, 결과 확인
+- [문제 해결](docs/troubleshooting.md): 오류별 확인과 복구
 
-SASTSIMI는 모든 저장소의 완전한 검사나 취약점 발견·제보 가능한 보고서를
-보장하지 않습니다. 현재 별도 라이선스 파일이 없으므로 재사용·수정·배포
-조건은 라이선스가 명시되기 전까지 별도로 확인해야 합니다.
+### 동작 원리와 검증
+
+- [아키텍처](docs/architecture/README.md): 파이프라인과 구현 구조
+- [재개·근거 버전](docs/architecture/runtime-and-recovery.md): 체크포인트와 재개 조건
+- [탐지율 평가 방법](docs/validation/2026-10-08-python-recall-methodology.md): 정답표와 측정 범위
+- [현재 제한과 후속 작업](docs/release-follow-ups.md): 아직 지원하거나 검증하지 않은 범위
+
+### 프로젝트 안내
+
+- [전체 문서 지도](docs/DOCUMENT_GUIDE.md): 필요한 문서 찾기
+- [용어집](docs/GLOSSARY.md): 공통 용어와 상태값
+- [기여 안내](CONTRIBUTING.md): 코드·문서 변경과 PR 절차
+
+> SASTSIMI는 모든 저장소의 완전한 검사나 취약점 발견·제보 가능한 보고서를
+> 보장하지 않습니다. 현재 별도 라이선스 파일이 없으므로 재사용·수정·배포
+> 조건은 라이선스가 명시되기 전까지 별도로 확인해야 합니다.

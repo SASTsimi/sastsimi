@@ -3,6 +3,8 @@
 이 목록은 현재 코드와 README에 남아 있는 실제 제한만 기록합니다. 구현되지 않았거나
 검증하지 않은 기능을 지원한다고 간주하지 않습니다.
 
+## 지원 범위와 출력
+
 - HTML·PDF 보고서 출력: Markdown 출력이 첫 버전의 필수 형식이므로 후속입니다.
 - 추가 Provider와 model: exact capability·평가·사람 승인 없이 활성화하지 않습니다.
 - Python 밖의 언어(JS/TS 포함)와 framework: 현재 정적 검사는 Python 전용입니다. 지원을 넓히려면 RepositoryProfile과 실제 도구 probe를 함께 추가해야 합니다.
@@ -11,12 +13,18 @@
   추가하지 않습니다.
 - 원격 Sandbox와 분산 worker: host·secret·network·resource 경계를 새로 검증해야 합니다.
 - 자동 외부 제출·공개: 사람의 최종 권한 경계를 바꾸므로 현재 자동화 범위에 포함하지 않습니다.
+
+## 정책·제보 범위
+
 - 정책 출처 확대: 현재 자동 수집은 공개 GitHub 저장소의 공식 `SECURITY.md` 위치와
   같은 소유자의 공개 `.github` 저장소만 확인합니다. GitHub 외 호스트, 별도 버그바운티
   프로그램 정책과 저장소 내 임의 링크를 검증해 연결하는 기능은 후속입니다.
 - 저장된 정책 재확인: `resume`은 분석 시작 시 고정한 snapshot을 재사용합니다.
   진행 중 분석의 정책만 다시 조회해 종속 Gate·Finding·보고서를 선택적으로
   갱신하는 명시적 기능은 아직 없습니다. 바뀐 정책을 적용하려면 새 분석이 필요합니다.
+
+## 검사·재개·사용량
+
 - CodeQL 조합 확대: 공식 platform bundle과 query pack, 실행량·출력 제한을 확인한
   profile에서만 활성화합니다.
 - 강제 종료 후 진행상태 판별: 현재 체크포인트만으로는 실제 장시간 실행과 종료된
@@ -35,6 +43,9 @@
   현재 OpenAI API 경로의 신뢰할 수 있는 요청별 금액은 미제공입니다. API의 비용
   미확인 시도 뒤 후속 API 요청을 차단해도 이미 발생한 청구액이나 정확한
   `max_cost_minor_units` 상한은 보장할 수 없습니다. 계측·예산 경계를 보강해야 합니다.
+
+## 실측·출시 전 검증
+
 - Dify 고정 commit 전체 파이프라인 검증: [실제 분석 `A-008`](validation/2026-09-28-dify-end-to-end.md)은
   후속 Agent와 Docker PoC까지 실행했으나 최종 `PARTIAL`입니다. confirmed Finding과
   제출용 보고서는 각각 0개입니다. 미검증 파일·규칙 조합의 coverage와 실제
