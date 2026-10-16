@@ -2,33 +2,52 @@
 
 # SASTSIMI
 
-**Python 제품 코드의 보안 후보를 수집하고, 재현 근거까지 검토하는 로컬 분석 도구**
+**Python 코드의 보안 신호를, 검토 가능한 근거로.**
+
+Evidence-first security analysis for Python repositories.
 
 [![CI](https://github.com/SASTsimi/sastsimi/actions/workflows/ci.yml/badge.svg)](https://github.com/SASTsimi/sastsimi/actions/workflows/ci.yml)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Scope: Python product code](https://img.shields.io/badge/Scope-Python%20product%20code-155e75)](#검사-범위)
 
-[빠른 시작](#빠른-시작) · [결과 해석](#결과-해석) · [사용법](docs/usage.md) · [문제 해결](docs/troubleshooting.md)
+[빠른 시작](#빠른-시작) · [분석 흐름](#분석-흐름) · [결과 해석](#결과-해석) · [전체 문서](docs/README.md)
 
 </div>
 
-SASTSIMI는 고정된 Git 커밋의 제품용 Python `.py` 파일을 정적 검사하고, 후보를 AI Agent가 검토한 뒤 필요한 경우 격리된 Docker 환경에서 PoC를 실행합니다. 확인된 근거는 로컬 대시보드와 영문·국문 보고서로 볼 수 있습니다. **경고, 가설, Finding은 서로 다르며 최종 제보 여부는 사람이 결정합니다.**
+SASTSIMI는 **고정된 Git 커밋의 제품용 Python 코드**에서 보안 후보를 수집하고,
+AI Agent의 찬성·반대 근거 검토와 필요한 경우 격리된 Docker PoC를 거쳐 결과를
+로컬에 남기는 도구입니다. 스캐너 경고, 가설, Finding은 서로 다른 단계이며
+**취약점 확정과 외부 제보 여부는 검증 근거와 사람의 판단에 달려 있습니다.**
 
 ## 분석 흐름
 
-```text
-저장소·커밋 고정 → Python AST·OpenGrep 검사 (full: CodeQL 추가)
-→ 후보 수집·Discovery 선별 → 가설·찬반 근거 검토
-→ 필요한 경우 Docker PoC·최종 검증·Gate → Finding·보고서
+```mermaid
+flowchart LR
+    A["고정된 Git 커밋"] --> B["Python 정적 검사"]
+    B --> C["후보 수집 · Discovery"]
+    C --> D["가설 · 찬반 근거 검토"]
+    D --> E["필요 시 Docker PoC"]
+    E --> F["최종 검증 · Scope Gate"]
+    F --> G["Finding · 영문/국문 보고서"]
 ```
 
-- Git에 추적된 **제품용 Python `.py` 코드**만 정적 검사합니다. 식별된 테스트 전용 파일은 제외 사유를 기록하며, `.pyi`, JS/TS 등에는 Python 규칙을 적용하지 않습니다. 혼합 언어 저장소의 비Python 제품 코드는 검사 완료로 계산하지 않습니다.
-- OpenGrep이 일부 파일·규칙을 검증하지 못하면 선택형 Semgrep CE로 해당 조합만 재검사할 수 있습니다. 검증에 성공한 AST·CodeQL 결과는 유지하고, 끝내 확인하지 못한 조합은 누락으로 남깁니다.
-- Discovery의 `INCLUDE`·`UNDECIDED`는 심층 검토 대상이지 취약점 확정이 아닙니다. 정적 경고나 LLM 답변만으로 `TRUE` 또는 제보 가능 상태를 만들지 않습니다.
-- 개별 도구·LLM 호출에는 시간·재시도 제한이 있습니다. 새 설정에서 누적 LLM 시간·토큰 한도는 기본 무제한이지만, 별도의 누적 비용 한도는 유지되며 계정·공급자 사용량도 확인해야 합니다. 완료 근거가 일치하는 작업만 재개 시 재사용합니다.
+| 수집 | 검토 | 확인 |
+| :--- | :--- | :--- |
+| AST·OpenGrep으로 Python 코드의 사실과 후보를 보존합니다. | Agent가 후보를 선별하고 가설의 Pro/Con 근거를 대조합니다. | 필요한 PoC를 격리 실행하고 판정·정책 범위·보고서를 확인합니다. |
+
+`full` 프로필에는 CodeQL Python 검사가 추가됩니다. 선택형 Semgrep CE는
+OpenGrep이 검증하지 못한 파일·규칙 조합만 재검사합니다. 한 도구의 실패를
+다른 도구의 “탐지 없음”으로 바꾸지 않습니다.
+Semgrep 재검사를 사용하려면 `python -m pip install semgrep` 후 `sastsimi setup`에
+`--semgrep-fallback`을 추가하고 기존 인증·모델·프로필 옵션도 함께 지정하세요.
 
 ## 빠른 시작
 
-아래 명령은 **Windows PowerShell에서 각각 한 줄씩** 실행합니다. Python 3.12, Git, OpenGrep, Docker와 LLM 인증 수단이 필요합니다. 이 예시는 본인 계정의 Codex CLI 회원 로그인과 CodeQL을 요구하지 않는 `lightweight` 프로필을 사용합니다. `full` 프로필은 공식 CodeQL bundle의 Python query pack도 필요합니다. 설치 방법은 [외부 프로그램 안내](docs/installation.md)를 참고하세요.
+Windows PowerShell에서 **각 줄을 한 명령씩** 실행합니다. Python 3.12, Git,
+OpenGrep, Docker 및 LLM 인증 수단을 먼저 준비하세요. 아래는 본인 계정의
+**Codex CLI 로그인**과 CodeQL 없이 시작하는 `lightweight` 예시입니다.
+외부 도구 설치는 [설치 안내](docs/installation.md), Cursor·Claude·OpenAI API 및
+모델 선택은 [Provider 안내](docs/provider-setup.md)에 있습니다.
 
 ```powershell
 git clone https://github.com/SASTsimi/sastsimi.git
@@ -44,15 +63,17 @@ $commit = Read-Host '분석할 정확한 commit SHA'
 sastsimi analyze $repo --commit $commit
 ```
 
-새 PowerShell 창에서는 `.venv`를 다시 활성화하세요. 개발용 잠금 의존성까지 설치할 때는 `uv sync --frozen --all-groups`를 사용할 수 있습니다. OpenAI API 방식은 `OPENAI_API_KEY`를 환경변수로 전달하며, Cursor·Claude 인증과 모델별 설정은 [Provider 안내](docs/provider-setup.md)에 있습니다. 대상은 허가받은 저장소와 정확한 커밋으로 지정하세요.
+대상은 **허가받은 저장소의 정확한 커밋**으로 지정합니다. 새 PowerShell 창에서는
+`.\.venv\Scripts\Activate.ps1`을 다시 실행하세요. `full` 프로필은 공식
+CodeQL bundle과 Python query pack이 필요합니다. 긴 분석은 LLM 사용량과
+실행시간이 커질 수 있습니다.
+개발용 잠금 의존성까지 설치할 때는 `uv sync --frozen --all-groups`를 사용할 수
+있습니다. OpenAI API 인증은 `OPENAI_API_KEY` 환경변수로 전달합니다.
 
-같은 Provider 안에서 가벼운 분류·보고서 초안만 다른 모델로 실행하려면, 두 모델의 계정 사용 가능 여부를 확인한 뒤 setup에 `--light-model <모델-ID>`를 추가할 수 있습니다. 취약점 선별·PoC·검증은 기본 모델을 유지합니다. 모델 배치는 비용·대기시간 선택이며 입력 토큰 수가 자동으로 줄어든다는 뜻은 아닙니다.
+### 진행 상황 보기
 
-OpenGrep이 확인하지 못한 파일·규칙 조합을 선택형 Semgrep CE로 재검사하려면 `python -m pip install semgrep`으로 설치한 뒤 `sastsimi setup`에 `--semgrep-fallback`을 추가하세요. 기존 인증·모델·프로필 옵션도 함께 유지해야 합니다.
-
-### 진행 상황과 결과
-
-`A-001`과 `F-001`은 예시 ID입니다. 실제 ID는 분석 출력에서 확인합니다.
+`A-001`은 예시 ID입니다. 실제 ID는 `analyze` 출력에서 확인합니다.
+분석 실행 중 상태를 보려면 새 PowerShell 창에서 `.venv`를 활성화하고 아래 명령을 실행하세요.
 
 ```powershell
 sastsimi status A-001
@@ -60,39 +81,48 @@ sastsimi result A-001
 sastsimi dashboard
 ```
 
-대시보드는 기본적으로 [http://127.0.0.1:8765](http://127.0.0.1:8765)에서 열리며, 조회 전용입니다. 장시간 실행 중인 분석을 끝까지 기다리지 않아도 상태를 확인할 수 있습니다. **실행 중인 분석에 `resume`을 동시에 호출하지 마세요.** 중단 또는 일시정지된 분석은 오류 원인을 확인한 뒤 `sastsimi resume A-001`로 재개합니다. 완료된 작업은 저장 근거가 맞을 때만 재사용됩니다. 단, 신규 후보 파이프라인에서 정적 단계 `STATIC_DONE`이 성공한 `PARTIAL` 분석은 같은 ID로 미검증 정적 조합을 다시 스캔하지 않습니다. 원인을 고친 뒤 새 분석 ID로 시작해야 합니다. 자세한 복구 조건은 [문제 해결](docs/troubleshooting.md)에 있습니다.
+읽기 전용 대시보드는 기본적으로 [127.0.0.1:8765](http://127.0.0.1:8765)에서
+열립니다. 대시보드가 터미널을 차지하므로 다른 명령은 새 PowerShell 창에서
+실행하세요. **실행 중인 분석에 `resume`을 동시에 호출하지 마세요.**
+중단·일시정지된 경우 원인을 확인한 뒤 `sastsimi resume A-001`로 이어갑니다.
+완료 근거가 일치하는 작업만 재사용됩니다.
 
-저장된 Python 분석의 보안 표면을 다시 검토하려면, 분석이 실행 중이지 않은지 확인한 뒤 아래 **명시적 옵션**을 사용합니다. 일반 `resume`은 이 보강 검토를 자동으로 시작하지 않습니다.
-
-```powershell
-sastsimi resume A-001 --enrich-saved-surface-evidence
-```
-
-보강 전에는 대상 커밋·파일 해시·기존 정적 결과·표면 인덱스와 저장 근거를 대조합니다. 같은 분석 ID에서 검증된 기존 작업은 재사용하고 누락된 보강 문맥만 처리하며, 정적 검사를 다시 실행하거나 기존 정적 결과·표면 근거·PoC·Finding을 덮어쓰지 않습니다. 원래 기록된 제외 파일·정적 검사 공백은 남기고, 고정 커밋에서 확인된 비Python 코드만 Python 전용 검사 범위 밖으로 별도 판정합니다. 모든 보강 작업을 마쳐도 Python 검사 공백, 연결된 경로 근거 부족 또는 미해결 자식 가설이 있으면 정상적인 결과가 `PARTIAL`일 수 있습니다. 보강으로 표면이 `COVERED`가 되어도 Finding의 `TRUE` 판정, Scope Gate 통과 또는 제보 허가를 뜻하지 않습니다. 자세한 검증 조건은 [런타임·재개 구조](docs/architecture/runtime-and-recovery.md)에 있습니다.
-
-이미 v3 표면 증거가 저장된 분석은 새 경로 증거를 별도 후속 회차에 기록합니다. 이전 검사·보고서는 그대로 보존하며, 새 호출 경로를 찾더라도 기존 PoC·검증의 `HOLD`는 독립적인 재검증 근거 없이 해제하지 않습니다.
-
-v6 표면 증거까지 저장된 분석에서 같은 옵션으로 v7 재검토를 시작하려면 v6 계획의 모든 예상 작업이 먼저 끝나야 합니다. v7은 모든 인덱스 표면(이전 `COVERED` 포함)의 연결된 경로를 경로별 part로 새 그래프 버전에서 재검토하고 별도 계획·결과·coverage를 저장하며 기존 v6 기록을 바꾸지 않습니다. 이전 회차의 가설·자식 작업은 보존하지만 새 경로와 동일하다는 근거로 재사용하지 않습니다. 따라서 이전 가설이 있는 표면도 새 경로를 독립적으로 심층 검토하며, 필요하면 별도 가설·자식 작업을 만들 수 있습니다. `COVERED`는 해당 인덱스 표면의 연결된 요청 경로를 검토했다는 뜻으로, 요청 파라미터가 sink까지 오염됐다는 증명이나 취약점의 확정·부재 판정이 아닙니다. 동일 sink의 다른 미검증 경로·연결 가능한 dispatch 공백도 `INSUFFICIENT`로 남습니다. 모든 v7 작업을 마쳐도 미검증 표면이나 검증 근거가 부족한 자식 `HOLD`가 있으면 결과는 `PARTIAL`입니다. 검증된 실행 체인을 갖춘 PoC가 취약점 판정을 내리지 못한 경우에만 해당 가설을 완료된 `INCONCLUSIVE`로 별도 표시하며, Finding으로 계산하지 않습니다.
-
-v9 보강 계획이 저장된 분석에서는 같은 옵션으로 미완료 v9 검토를 먼저 끝내고, 검증된 v9 종료 근거가 있을 때만 v10 요청 경로 증명을 별도 계획·증거로 기록합니다. 고정 커밋의 Python 소스 해시와 라우트별 호출 경로를 대조하여, 같은 파일에 있다는 이유만으로 무관한 초기화 코드를 요청 경로에 합치지 않습니다. 리터럴 템플릿 호출은 Python에서 템플릿으로 넘기는 지점까지만 검증하며 HTML/Jinja 내용은 `TEMPLATE_CONTENT_NOT_ANALYZED` 범위 제한으로 표시합니다. 동적·외부 호출, 미해결 경로, 정적 검사 누락 또는 자식 `HOLD`는 완료로 간주하지 않아 결과가 `PARTIAL`일 수 있습니다.
-
-v10 경로 증명이 끝난 분석은 같은 옵션으로 연결된 자식 가설의 기존 `HOLD`를 별도 증거 버전에서 확인합니다. 이전 체크포인트와 PoC는 보존하며, 대시보드·CLI의 자식 재검증 건수는 검토 진행 상태이지 표면 검사 완료나 취약점 확정 건수가 아닙니다. 현재는 실행·해석 근거가 모두 남은 PoC의 `INCONCLUSIVE`만 독립적으로 완료 처리할 수 있습니다. 초기 검증의 `HOLD`나 최종 `TRUE` 재판정은 후속 PoC·검증·Gate·보고서 체인이 입증되지 않으면 계속 `PARTIAL`로 남습니다. 재검증 중 오류는 취약점 부재로 바꾸지 않습니다.
+저장된 보안 표면을 다시 검토하는
+`sastsimi resume A-001 --enrich-saved-surface-evidence`는 **별도 명시 옵션**입니다.
+일반 `resume`이 자동으로 시작하지 않으며, 근거가 부족하면 보강 후에도
+`PARTIAL`일 수 있습니다. 상세 재개 조건은
+[문제 해결](docs/troubleshooting.md)과
+[런타임·재개 구조](docs/architecture/runtime-and-recovery.md)를 참고하세요.
 
 ## 결과 해석
 
-| 표시 | 의미 |
-| --- | --- |
-| `COMPLETE` | **계획된 검사와 후속 작업**이 끝났습니다. 취약점이 없거나 저장소의 모든 언어를 검사했다는 뜻은 아닙니다. |
-| `PARTIAL` | 확인된 부분은 분석했지만 Python 파일·규칙, 보안 표면 또는 범위 밖 제품 코드 등 미검증 항목이 남았습니다. Finding이 있어도 전체 완료는 아닙니다. |
-| `PAUSED` | 설정된 사용 한도 등으로 다음 작업이 일시 중단되었습니다. 남은 작업과 사용량을 확인한 뒤 재개할 수 있습니다. |
-| `BLOCKED` / `FAILED` | 환경, Agent, 실행 또는 증거 무결성 문제로 결과를 신뢰할 수 없습니다. 이를 취약점 부재로 해석하지 마세요. |
-| 가설 `INCONCLUSIVE` | 실행·근거만으로 취약점 여부를 확정하지 못했습니다. 이 가설의 Finding이나 제보 보고서를 만들지 않습니다. |
+| 상태 | 읽는 방법 |
+| :--- | :--- |
+| `COMPLETE` | 계획된 검사와 필수 후속 작업이 끝났습니다. 취약점이 없거나 모든 언어를 검사했다는 뜻은 아닙니다. |
+| `PARTIAL` | 검증된 결과는 남겼지만 제품 코드·파일×규칙·호출 경로 등 미검증 범위가 있습니다. **진행률 100%와 함께 표시될 수도 있습니다.** |
+| `PAUSED` | 사용 한도 등으로 다음 작업을 일시 중단했습니다. 남은 작업과 사용량을 확인한 뒤 재개합니다. |
+| `BLOCKED` / `FAILED` | 환경·Agent·실행 또는 증거 무결성 문제입니다. 취약점 부재로 해석하지 않습니다. |
+| 가설 `INCONCLUSIVE` | 근거만으로 취약점 여부를 확정하지 못했습니다. 이 가설을 Finding으로 세지 않습니다. |
 
-후보 수·가설 수·Finding 수는 서로 다른 지표입니다. `TRUE`로 판정된 Finding이 있더라도 **기술적 재현과 외부 제보 허가는 별개**입니다. Scope Gate가 `UNCERTAIN`이면 정책상 제보 가능하다고 가정하지 마세요. 제출 전에는 대상 버전, 실제 PoC, 영향, 보안 정책과 공개 조건을 직접 확인해야 합니다.
+후보 수, 가설 수, Finding 수는 다른 지표입니다. Finding의 기술적 판정과
+**Scope Gate의 정책 판단도 별개**입니다. `UNCERTAIN`은 제보 가능 승인이
+아니며, `ALLOW`도 자동 제출 허가는 아닙니다.
 
-## Finding과 보고서
+## 검사 범위
 
-Finding이 생성된 경우에만 해당 ID로 검증된 PoC와 보고서를 조회할 수 있습니다.
+- 정적 검사는 Git에 추적된 **제품용 Python `.py` 파일**을 대상으로 합니다.
+  식별된 테스트 전용 파일은 이유를 기록해 제외합니다. `.pyi`, JS/TS 및
+  기타 비Python 제품 코드에는 Python 규칙을 적용하지 않습니다.
+- 실패하거나 시간 초과된 파일·규칙은 “탐지 없음”이 아니라 **미검증**으로
+  남습니다. 혼합 언어 저장소의 검사 범위 밖 제품 코드도 전체 완료로 세지
+  않습니다.
+- 정적 경고나 LLM 답변만으로 `TRUE`를 만들지 않습니다. 최종 확인에는
+  검증된 PoC와 기술 근거가 필요하고, 외부 제출 전에는 영향 버전·정책·공개
+  조건을 사람이 검토해야 합니다.
+
+## 보고서와 첨부파일
+
+Finding이 생성된 경우에만 해당 ID(`F-001`은 예시)로 PoC와 보고서를 조회합니다.
 
 ```powershell
 sastsimi poc F-001
@@ -100,28 +130,20 @@ sastsimi report show F-001
 sastsimi report export F-001 --format markdown
 ```
 
-검증된 Finding에는 기존 Markdown 보고서와 함께 `report_en.md`(비공개 제보용 **초안**), `report_kr.md`(내부 검토용), PoC 스크립트(`poc.sh`), `evidence/` 및 `bundle.zip`이 생성될 수 있습니다. 실제 파일과 경로는 결과마다 다르며, 영문 초안도 검증되지 않은 영향 버전·심각도를 임의로 채우지 않습니다. 대시보드 또는 [결과 안내](docs/usage.md)에서 첨부를 확인하세요. 동일 취약점 흐름으로 **입증된** 여러 Finding은 표시용 그룹으로 묶을 수 있지만 원본 Finding과 근거는 보존합니다.
+검증 결과에 따라 `report_en.md`(비공개 제보용 **초안**),
+`report_kr.md`(내부 검토용), `poc.sh`, `evidence/`, `manifest.json`,
+`bundle.zip`이 생성될 수 있습니다. 영향 버전·심각도처럼 확인되지 않은 값은
+임의로 채우지 않습니다. [보고서 사용법](docs/usage.md)에서 생성 조건과
+첨부파일 확인 방법을 확인하세요.
 
-영문·국문 보고서는 Python 정적 검사의 `FULL` 여부와 전체 분석의 `PARTIAL` 여부를 별도로 표시합니다. 정적 검사가 끝났어도 보안 표면·가설 검증이 미완료라면 부분 분석 경고를 확인하세요. 완료됐지만 취약점 근거가 부족한 가설은 미확정으로 기록하며 Finding이나 제보 허가로 계산하지 않습니다.
+## 더 알아보기
 
-### 고정 커밋 탐지율 평가
+| 시작과 운영 | 원리와 검증 |
+| :--- | :--- |
+| [설치](docs/installation.md) · [Provider·모델](docs/provider-setup.md) · [CLI·대시보드](docs/usage.md) · [문제 해결](docs/troubleshooting.md) | [아키텍처](docs/architecture/README.md) · [재개·근거 버전](docs/architecture/runtime-and-recovery.md) · [탐지율 평가 방법](docs/validation/2026-10-08-python-recall-methodology.md) · [검증 기록](docs/release-follow-ups.md) |
 
-알려진 취약점의 탐지율은 분석 전에 고정한 정답표와 분석 후 독립적으로 작성한 검토 기록이 있을 때만 계산합니다. 평가기는 실행 데이터를 바꾸지 않고 읽기만 하며, 환경 미검증은 미탐으로 세지 않습니다. [평가 방법과 정답표 범위](docs/validation/2026-10-08-python-recall-methodology.md)를 먼저 확인하세요.
+[기여 안내](CONTRIBUTING.md) · [용어집](docs/GLOSSARY.md)
 
-```powershell
-$dataDir = Read-Host '분석 데이터 폴더'
-$analysisId = Read-Host '정확한 분석 ID'
-$oracle = Read-Host '실행 전에 고정한 정답표 JSON 경로'
-$review = Read-Host '분석 후 독립 검토 JSON 경로'
-python tools/recall_audit.py --data-dir $dataDir --analysis-id $analysisId --oracle $oracle --score --review $review
-```
-
-## 문서와 한계
-
-- [설치·외부 프로그램](docs/installation.md) · [Provider·인증](docs/provider-setup.md) · [분석·재개·보고서](docs/usage.md)
-- [오류·복구](docs/troubleshooting.md) · [아키텍처](docs/architecture/README.md) · [검증 기록](docs/release-follow-ups.md)
-- [기여 안내](CONTRIBUTING.md)
-
-Python 정적 검사 범위의 완료는 알려지지 않은 모든 취약점을 찾았다는 증명이 아닙니다. 미검증 코드·환경 보류·정책 불확실성을 숨기지 않으며, 탐지율이나 오탐률은 **고정 커밋의 독립적으로 검토된 정답표와 실행 근거**가 있을 때만 산출해야 합니다. 모든 저장소에서 `COMPLETE`, `TRUE`, 제보 가능한 보고서를 보장하지 않습니다.
-
-현재 저장소에는 별도 라이선스 파일이 없습니다. 재사용·수정·배포 조건은 라이선스가 명시되기 전까지 별도로 확인해야 합니다.
+SASTSIMI는 모든 저장소의 완전한 검사나 취약점 발견·제보 가능한 보고서를
+보장하지 않습니다. 현재 별도 라이선스 파일이 없으므로 재사용·수정·배포
+조건은 라이선스가 명시되기 전까지 별도로 확인해야 합니다.
