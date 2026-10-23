@@ -424,7 +424,7 @@ async def test_probe_fails_closed_when_any_required_check_is_missing(
                 CommitId(_COMMIT_ID),
             ),
         ),
-        clock=SystemClock(),
+        clock=FixedClock(),
         per_check_timeout_ms=100,
         executable_sha256="a" * 64,
         terms_approval=_terms_approval(),
