@@ -1,0 +1,27 @@
+{
+  "schema": "sastsimi_historical_six_repository_aggregate_v1",
+  "source": {
+    "filename": "최종발표.pptx",
+    "sha256": "befd8af850c99ebafc7567ea94452deeb9465eebe742252e02a5e8fe65f03627",
+    "embedded_workbook": "ppt/embeddings/Microsoft_Excel_Worksheet.xlsx",
+    "worksheet_range": "Sheet1!A1:F7"
+  },
+  "interpretation": "Presentation-era internal aggregate only. Target commits and answer-to-Finding ledger are not supplied; not verified current-main recall.",
+  "rows": [
+    {"repository": "VAmPI", "gt": 9, "tp": 9, "fp": 0, "fn": 0,
+     "pinned_source_inventory": {"count": 9, "unit": "broad README labels", "source": "README.md:42-51"}},
+    {"repository": "DSVPWA", "gt": 17, "tp": 17, "fp": 0, "fn": 0,
+     "pinned_source_inventory": {"count": 13, "unit": "attack IDs", "source": "db/attacks.xml:3-205", "additional": "README.md:7-19 lists 12 broad categories"}},
+    {"repository": "BreakableFlask", "gt": 12, "tp": 11, "fp": 0, "fn": 1,
+     "pinned_source_inventory": {"count": 8, "unit": "numbered route entries", "source": "vulnerability_index.md:5-14"}},
+    {"repository": "Flask AppSec Lab", "gt": 3, "tp": 3, "fp": 0, "fn": 0,
+     "pinned_source_inventory": {"count": 3, "unit": "broad README classes", "source": "README.md:14-20"}},
+    {"repository": "Python Vulns", "gt": 5, "tp": 5, "fp": 0, "fn": 0,
+     "pinned_source_inventory": {"count": 5, "unit": "vulnerable endpoints", "source": "README.md:82-112", "additional": "README.md:3-4 lists 4 broad classes"}},
+    {"repository": "Vulpy", "gt": 7, "tp": 5, "fp": 0, "fn": 2,
+     "pinned_source_inventory": {"count": 7, "unit": "broad README labels", "source": "README.rst:53-64"}}
+  ],
+  "totals": {"gt": 53, "tp": 50, "fp": 0, "fn": 3},
+  "case_to_finding_mapping": "unavailable",
+  "presentation_target_commits": "unavailable"
+}
