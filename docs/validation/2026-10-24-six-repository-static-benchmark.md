@@ -11,7 +11,9 @@ the measured Python AST and OpenGrep scope, **not** a complete SASTSIMI analysis
 
 The team's final presentation (`최종발표.pdf`, slides 16–17, SHA-256
 `d654f0dfab6e59b7abce796d49fb27a2ec588f40c17f89891611439087c8b8f3`)
-shows 50 corresponding results among 53 answers and 37 duplicate reports.
+has six rows whose answer and corresponding-result totals are 53 and 50,
+respectively, and records 37 duplicate reports. The ratio 50/53 is calculated
+from those rows, not printed as a case-level result in the PDF.
 The embedded chart workbook in the supplied `최종발표.pptx` (SHA-256
 `befd8af850c99ebafc7567ea94452deeb9465eebe742252e02a5e8fe65f03627`,
 `ppt/embeddings/Microsoft_Excel_Worksheet.xlsx`, `Sheet1!A1:F7`) independently
@@ -63,6 +65,22 @@ targets. These counts cannot be added together or substituted for the
 presentation's 50 corresponding answers: several reports may describe the
 same underlying issue, and the earlier runs have no reviewed answer-to-Finding
 decisions. The new six-repository run below measures static execution only.
+
+One additional **read-only, case-level replay** is possible for a previously
+saved DSVPWA run. The existing [`recall_audit.py`](../../tools/recall_audit.py)
+scorer, its [frozen 14-case oracle](../../tests/evaluation/oracles/dsvpwa-c98b7795-v2.json),
+and [human review ledger](reviews/dsvpwa-c98b7795-v2-review.json) reproduce
+the [saved score](results/dsvpwa-c98b7795-v2-score.json): **PARTIAL**,
+1 matched true positive, 11 HOLD, and 2 outside the Python evaluation scope.
+There are also 6 unmatched Findings still requiring review; the confirmed
+false-positive count is zero, not an assertion that all six are correct.
+Recall remains **undefined** because the 11 HOLD cases are not established
+false negatives. This older, 14-case assessment is neither the presentation's
+17-case DSVPWA denominator nor a new current-main full-pipeline run. A second
+read-only audit of the older, differently pinned BreakableFlask run against its
+local eight-item oracle returned **8 INCOMPLETE**, not eight false negatives or
+the presentation's 11/12. Both replays used saved artifacts only; they made no
+scanner, LLM, or PoC calls and did not execute target code.
 
 All six scans returned zero scanner errors and zero unverified OpenGrep pairs.
 The fresh run made 42 finite scanner calls (seven rule batches per repository),
