@@ -89,6 +89,14 @@ checkout inspection and AST work, so it is not end-to-end analysis time. An
 unchanged second run made zero scanner calls and reused all 42 verified batches;
 the success markers bind each batch to the rule/tool/commit/scope fingerprint,
 which includes the raw Python source-byte digest.
+An independent, fresh-output rerun on 2026-10-24 made another 42 scanner calls
+with **136.918 seconds of summed scanner-call wall time**. For each of the six
+repositories, its pinned commit, scope fingerprint, AST parsed count,
+file×rule coverage, and static-hint count matched the first measurement;
+scanner errors and coverage gaps remained zero. Its ignored local output is
+`runtime-data/benchmark-20261024/recheck-20261024/summary.json`. The elapsed
+time difference is an observed run-to-run variation, not a change in analysis
+coverage or an end-to-end runtime claim.
 The common file-scope policy excluded 7 test files and identified 10 non-Python
 product files outside this Python-only measurement; neither category was counted
 as a successful Python scan. VAmPI emitted one non-fatal Python
