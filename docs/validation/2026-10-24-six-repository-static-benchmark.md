@@ -31,7 +31,9 @@ likewise leave four of 12 unidentified. The other inventories use different
 units (categories, labels, or endpoints), so their matching totals alone do
 not establish a case-level correspondence. The [historical aggregate record](data/six-educational-historical-aggregate.json)
 records each first-party inventory's unit and source without inventing the
-missing eight case definitions.
+missing eight case definitions. Across the six pinned checkouts, the first-party
+inventories describe 45 heterogeneous units in total; neither 45 nor 53 is a
+verified, uniform current-main recall denominator.
 
 | Repository | Presentation correspondence | This run: Python files / AST parsed | OpenGrep verified file×rule pairs | Verified static hints | First-party answer description at pinned SHA |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -42,6 +44,25 @@ missing eight case definitions.
 | [Python Vulns](https://github.com/cybersecurity-repo-study/python-vulns/blob/4163acacc4134bb7b70afe0435f8926e59d433c1/README.md) | 5/5 | 1/1 | 17/17 | 32 | README describes 4 classes and 5 vulnerable endpoints; class versus endpoint is a different counting unit. |
 | [Vulpy](https://github.com/fportantier/vulpy/blob/5249cc8b05a1c37f6b2f757b1cf16a509c327122/README.rst) | 5/7 | 57/57 | 969/969 | 89 | README lists 7 broad categories; the checkout also contains `good` comparators. |
 | **Total** | **50/53 (historical only)** | **79/79** | **1,343/1,343** | **222** | **No 53-case correspondence established.** |
+
+### Existing full-pipeline artifacts are not a case-level reproduction
+
+A read-only inventory of earlier local SASTSIMI run metadata found the
+following artifacts. These runs were not made by this benchmark, and their
+Finding IDs are neither independently verified true positives nor deduplicated
+vulnerability cases.
+
+| Earlier target | Commit relation to this measurement | Recorded Finding IDs / report drafts | Candidate terminal record | 53-case answer mapping |
+| --- | --- | ---: | --- | --- |
+| DSVPWA | Same pinned commit | 43 / 43 | PARTIAL | Unavailable |
+| Python Vulns | Same pinned commit | 54 / 54 | PARTIAL | Unavailable |
+| BreakableFlask | Different commit | 51 / 51 | PARTIAL | Unavailable |
+
+No comparable stored full-pipeline run was identified for the other three
+targets. These counts cannot be added together or substituted for the
+presentation's 50 corresponding answers: several reports may describe the
+same underlying issue, and the earlier runs have no reviewed answer-to-Finding
+decisions. The new six-repository run below measures static execution only.
 
 All six scans returned zero scanner errors and zero unverified OpenGrep pairs.
 The fresh run made 42 finite scanner calls (seven rule batches per repository),
