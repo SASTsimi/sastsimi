@@ -1,0 +1,76 @@
+{
+  "schema": "sastsimi_six_repository_python_static_measurement_v1",
+  "main_base_commit": "39676cc4fa03eb83f67963a0dcf9421e05a2b222",
+  "measurement_date_kst": "2026-10-24",
+  "scope": "Python product files; AST and OpenGrep only",
+  "not_measured": ["LLM", "PoC", "Finding", "true_positive", "false_positive", "false_negative", "recall"],
+  "opengrep": {
+    "version": "1.30.0",
+    "executable_sha256": "b5cf4f8fe9f44e030aab2d579d96bd395c139db1f1ba66633676ff4d5ebc7c39",
+    "rules_sha256": "50cb35975d2786150e608ece691c608d3fcf6de5a674fd1fc4876818ef18c814",
+    "configured_rules": 25,
+    "python_applicable_rules": 17
+  },
+  "results": [
+    {
+      "name": "VAmPI", "commit": "f16052dce83f05847133ec98f01c5193a41de7d8",
+      "scope_fingerprint": "c99ee2f60ce2a73c2ae62094f6de41f7e3ff1fdbd01cc74fe99c439038c985be",
+      "source_content_sha256": "dadefc0fc6d8d28fc99504c7289738e23ea147d327d1e10f099839111a080d8d",
+      "coverage_fingerprint": "4293c0bb84cd148caae7aa93ab65a8097839a574cfd94f3a4d8d6c9f2bde2eea",
+      "python_files": 11, "ast_parsed": 11, "verified_pairs": 187, "expected_pairs": 187,
+      "static_hints": 16, "scanner_errors": 0, "excluded_tests": 0, "out_of_scope_product": 0,
+      "first_scan_elapsed_seconds": 16.875
+    },
+    {
+      "name": "DSVPWA", "commit": "c98b77950bf1c54080c4113a2488ce0509b21cff",
+      "scope_fingerprint": "29e47d0024b91cf1f27015b643d861b33132e71cc110c3c3c11a47c64473f831",
+      "source_content_sha256": "74e3c1984b69459b1313187716e72626b96717de13682600547c878935978936",
+      "coverage_fingerprint": "f2f4f28554b8a10267101fba0557c7402e6427a772446a79a3805f22beab92c9",
+      "python_files": 5, "ast_parsed": 5, "verified_pairs": 85, "expected_pairs": 85,
+      "static_hints": 51, "scanner_errors": 0, "excluded_tests": 1, "out_of_scope_product": 3,
+      "first_scan_elapsed_seconds": 18.421
+    },
+    {
+      "name": "BreakableFlask", "commit": "553e8b2f51c14f259f565d5df478339c366a9172",
+      "scope_fingerprint": "e0acd66353ee72c115b035fc2b7c458855d20f97faa33f8313e56c67fb46da67",
+      "source_content_sha256": "af9e1f944ef03b8662ff02807cab3a1771b84d974e50b49d046d1d212fb4335c",
+      "coverage_fingerprint": "15431b6ef59e1da0c1f7e54c953f9d0f7d13444bba68ff1bf91e749646fe730c",
+      "python_files": 1, "ast_parsed": 1, "verified_pairs": 17, "expected_pairs": 17,
+      "static_hints": 18, "scanner_errors": 0, "excluded_tests": 0, "out_of_scope_product": 0,
+      "first_scan_elapsed_seconds": 20.203
+    },
+    {
+      "name": "Flask AppSec Lab", "commit": "64457488173d25662c6d7ce6467bb20616ebc5d3",
+      "scope_fingerprint": "63defad56d44ed3b392facd7162e28488c11b0d014086fb76d2912250d1831e7",
+      "source_content_sha256": "acd4f26db2918ee01ef0fca30091301588e74c767822391ee6a0496204f63ae0",
+      "coverage_fingerprint": "5762fd7e885776566b7151264a94133ce9791e8f0323a2c39688e1169c00f177",
+      "python_files": 4, "ast_parsed": 4, "verified_pairs": 68, "expected_pairs": 68,
+      "static_hints": 16, "scanner_errors": 0, "excluded_tests": 6, "out_of_scope_product": 0,
+      "first_scan_elapsed_seconds": 18.234
+    },
+    {
+      "name": "Python Vulns", "commit": "4163acacc4134bb7b70afe0435f8926e59d433c1",
+      "scope_fingerprint": "81c8a05a56bb312df5cf26412dd31721fd4022c48643a33b2ad45e67fa044ed1",
+      "source_content_sha256": "22c1ad7ebd8a224504b81e26ee747aeafe5134f458ea7f954500a8844d7e53ad",
+      "coverage_fingerprint": "f778b4fe943841239604bb6ac6e22127ca1cbc998bd374ce787d8fa0811f0bcd",
+      "python_files": 1, "ast_parsed": 1, "verified_pairs": 17, "expected_pairs": 17,
+      "static_hints": 32, "scanner_errors": 0, "excluded_tests": 0, "out_of_scope_product": 0,
+      "first_scan_elapsed_seconds": 17.389
+    },
+    {
+      "name": "Vulpy", "commit": "5249cc8b05a1c37f6b2f757b1cf16a509c327122",
+      "scope_fingerprint": "f3db2bc8b71b634a2ece3f6c7d7c60dcce20a1d85cd9b7d988bbc9b44c8a91ac",
+      "source_content_sha256": "2d7f5f113bb36c4e807193ec9b9194bf0b877c2ea08c7a612ca1a4ccb59e4642",
+      "coverage_fingerprint": "8c0e983de4a974ba3d387b75d5a244574f76aec9220637989de70efa8ed168e4",
+      "python_files": 57, "ast_parsed": 57, "verified_pairs": 969, "expected_pairs": 969,
+      "static_hints": 89, "scanner_errors": 0, "excluded_tests": 0, "out_of_scope_product": 7,
+      "first_scan_elapsed_seconds": 20.157
+    }
+  ],
+  "totals": {
+    "python_files": 79, "ast_parsed": 79, "verified_pairs": 1343,
+    "expected_pairs": 1343, "static_hints": 222, "scanner_errors": 0,
+    "excluded_tests": 7, "out_of_scope_product": 10,
+    "first_scan_elapsed_seconds": 111.279
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema": "sastsimi_six_educational_targets_v1",
+  "historical_presentation_commits_verified": false,
+  "targets": [
+    {
+      "name": "VAmPI",
+      "url": "https://github.com/erev0s/VAmPI.git",
+      "commit": "f16052dce83f05847133ec98f01c5193a41de7d8"
+    },
+    {
+      "name": "DSVPWA",
+      "url": "https://github.com/sgabe/DSVPWA.git",
+      "commit": "c98b77950bf1c54080c4113a2488ce0509b21cff"
+    },
+    {
+      "name": "BreakableFlask",
+      "url": "https://github.com/stephenbradshaw/breakableflask.git",
+      "commit": "553e8b2f51c14f259f565d5df478339c366a9172"
+    },
+    {
+      "name": "Flask AppSec Lab",
+      "url": "https://github.com/koushikchowdary6/flask-appsec-lab.git",
+      "commit": "64457488173d25662c6d7ce6467bb20616ebc5d3"
+    },
+    {
+      "name": "Python Vulns",
+      "url": "https://github.com/cybersecurity-repo-study/python-vulns.git",
+      "commit": "4163acacc4134bb7b70afe0435f8926e59d433c1"
+    },
+    {
+      "name": "Vulpy",
+      "url": "https://github.com/fportantier/vulpy.git",
+      "commit": "5249cc8b05a1c37f6b2f757b1cf16a509c327122"
+    }
+  ]
+}
